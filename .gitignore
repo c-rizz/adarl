@@ -1,0 +1,3 @@
+src/lr_gym.egg-info/*
+*__pycache__*
+*.gch
