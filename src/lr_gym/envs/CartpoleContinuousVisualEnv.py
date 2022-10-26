@@ -312,7 +312,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         args.update(color_args)
 
 
-        self._environmentController.spawn_model(model_definition=("lr_gym_ros","/models/cartpole_v0.urdf.xacro"),
+        self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
                                                 pose=Pose(0,0,0,0,0,0,1),
                                                 model_name=model_name,
                                                 model_kwargs=args)

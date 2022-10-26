@@ -79,6 +79,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
             self._publish_goal = True
         except ImportError:
             self._publish_goal = False
+        
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                

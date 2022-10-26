@@ -162,7 +162,7 @@ class HopperEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
         if not self._spawned and self._backend == "gazebo":
-            self._environmentController.spawn_model(model_definition=("lr_gym_ros","/models/hopper_v1.urdf.xacro"),
+            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=Pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":"213","camera_height":"120"})
@@ -264,7 +264,7 @@ class HopperEnv(ControlledEnv):
             if self._useMjcfFile:
                 self._environmentController.build_scenario(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_mjcf_pybullet.xml"), format = "mjcf")
             else:
-                self._environmentController.build_scenario(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v0_pybullet.urdf"), format = "urdf")
+                self._environmentController.build_scenario(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf"), format = "urdf")
             self._spawned = True
         else:
             raise NotImplementedError("Backend "+backend+" not supported")

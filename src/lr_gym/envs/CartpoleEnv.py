@@ -14,6 +14,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
+from lr_gym.utils.utils import Pose
 
 class CartpoleEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
@@ -31,7 +32,7 @@ class CartpoleEnv(ControlledEnv):
                     maxStepsPerEpisode : int = 500,
                     render : bool = False,
                     stepLength_sec : float = 0.05,
-                    simulatorController = None,
+                    environmentController = None,
                     startSimulation : bool = False,
                     wall_sim_speed = False,
                     seed = 1):
@@ -49,18 +50,18 @@ class CartpoleEnv(ControlledEnv):
             Duration in seconds of each simulation step. Lower values will lead to
             slower simulation. This value should be kept higher than the gazebo
             max_step_size parameter.
-        simulatorController : EnvironmentController
+        environmentController : EnvironmentController
             Specifies which simulator controller to use. By default it connects to Gazebo
 
 
         """
 
-
+        self._spawned = False
         self._wall_sim_speed = wall_sim_speed
         self.seed(seed)
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          stepLength_sec = stepLength_sec,
-                         environmentController = simulatorController,
+                         environmentController = environmentController,
                          startSimulation = startSimulation,
                          simulationBackend = "gazebo")
         self._renderingEnabled = render
@@ -109,6 +110,12 @@ class CartpoleEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
+        if not self._spawned and self._backend == "gazebo":
+            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
+                                                    model_name="cartpole_v0",
+                                                    pose=Pose(0,0,0,0,0,0,1),
+                                                    model_kwargs={"camera_width":"213","camera_height":"120"})
+            self._spawned = True
         self._environmentController.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])
 
 
@@ -156,9 +163,13 @@ class CartpoleEnv(ControlledEnv):
         if backend != "gazebo":
             raise NotImplementedError("Backend "+backend+" not supported")
 
-
-        self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/cartpole_gazebo_sim.launch"),
+        worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
+        self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
                                                     launch_file_args={  "gui":"false",
+                                                                        "paused":"true",
+                                                                        "physics_engine":"ode",
+                                                                        "limit_sim_speed":"true",
+                                                                        "world_name":worldpath,
                                                                         "gazebo_seed":f"{self._envSeed}",
                                                                         "wall_sim_speed":f"{self._wall_sim_speed}"})
 

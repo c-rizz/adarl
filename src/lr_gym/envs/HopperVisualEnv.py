@@ -143,19 +143,32 @@ class HopperVisualEnv(HopperEnv):
         imgObservation = np.copy(self._stackedImg)
         return (robotState, imgObservation)
 
-
-
-    def buildSimulation(self, backend : str = "gazebo"):
-        if backend == "gazebo":
-            # simCamHeight = int(self._obs_img_height*240.0/220.0)
-            # simCamWidth =  int(simCamHeight*16.0/9.0)
+    def initializeEpisode(self) -> None:
+        if not self._spawned and self._backend == "gazebo":
             simCamHeight = int(64*(self._obs_img_height/64))
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/hopper_gazebo_sim.launch"),
+            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
+                                                    model_name="hopper",
+                                                    pose=Pose(0,0,0,0,0,0,1),
+                                                    model_kwargs={"camera_width":str(simCamWidth),"camera_height":str(simCamHeight)})
+            self._spawned = True
+        self._environmentController.setJointsEffortCommand([("hopper","torso_to_thigh",0),
+                                                            ("hopper","thigh_to_leg",0),
+                                                            ("hopper","leg_to_foot",0)])
+
+    def buildSimulation(self, backend : str = "gazebo"):
+
+        if backend == "gazebo":
+            worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
+            self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
+                                                                            "paused":"true",
+                                                                            "physics_engine":"ode",
+                                                                            "limit_sim_speed":"true",
+                                                                            "world_name":worldpath,
                                                                             "gazebo_seed":f"{self._envSeed}",
-                                                                            "camera_width":str(simCamWidth),
-                                                                            "camera_height":str(simCamHeight)})
+                                                                            "wall_sim_speed":"false"})
+
         else:
             raise NotImplementedError("Backend "+backend+" not supported")
 
