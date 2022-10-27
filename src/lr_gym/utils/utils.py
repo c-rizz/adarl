@@ -23,6 +23,7 @@ import sys
 import yaml
 import torch as th
 import importlib
+import traceback
 
 import lr_gym.utils.dbg.ggLog as ggLog
 
@@ -564,3 +565,6 @@ def pkgutil_get_path(package, resource):
     parts.insert(0, os.path.dirname(mod.__file__))
     resource_name = os.path.join(*parts)
     return resource_name
+
+def exc_to_str(exception):
+    return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
