@@ -3,15 +3,10 @@
 from typing import List, Tuple, Dict, Any
 
 import sensor_msgs
-import gazebo_msgs.msg
-import rospy
-from nptyping import NDArray
-import numpy as np
 
 from lr_gym.utils.utils import JointState
 from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
-from lr_gym.utils.utils import Pose
 
 class EnvironmentController(ABC):
     """This class allows to control the execution of a simulation.
@@ -72,6 +67,9 @@ class EnvironmentController(ABC):
         """Start up the controller. This must be called after setCamerasToObserve, setLinksToObserve and setJointsToObserve."""
         raise NotImplementedError()
 
+    def stopController(self):
+        pass
+    
     @abstractmethod
     def step(self) -> float:
         """Run a simulation step.
