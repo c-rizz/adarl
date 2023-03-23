@@ -1,9 +1,14 @@
 <?xml version="1.0" ?>
 <sdf version="1.5" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <xacro:property name="camera_width" value="1920" />
-  <xacro:property name="camera_height" value="1080" />
-  <model name="box">
+  <xacro:arg name="camera_width" default="1920"/>
+  <xacro:arg name="camera_height" default="1080"/>
+  <xacro:arg name="frame_rate" default="30"/>
+  <xacro:property name="camera_width" value="$(arg camera_width)" />
+  <xacro:property name="camera_height" value="$(arg camera_height)" />
+  <xacro:property name="frame_rate" value="$(arg frame_rate)" />
+  <model name="camera_model">
+    <static>true</static>
     <link name="simple_camera_link">
         <sensor type="camera" name="simple_camera">
           <camera>
@@ -18,8 +23,9 @@
             </clip>
           </camera>
           <always_on>1</always_on>
-          <update_rate>30</update_rate>
+          <update_rate>${frame_rate}</update_rate>
           <visualize>true</visualize>
+          <topic>simple_camera</topic>
         </sensor>
 
     </link>

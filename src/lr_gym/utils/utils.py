@@ -1,13 +1,10 @@
 import typing
 from nptyping import NDArray
 import numpy as np
-import sensor_msgs
-import geometry_msgs
-import sensor_msgs.msg
 import time
 import cv2
 import collections
-from typing import List, Tuple, Callable, Dict, Union
+from typing import List, Tuple, Callable, Dict, Union, Any
 import os
 import quaternion
 import signal
@@ -26,6 +23,9 @@ import importlib
 import traceback
 
 import lr_gym.utils.dbg.ggLog as ggLog
+
+
+
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -81,69 +81,6 @@ name_to_dtypes = {
 }
 
 
-def image_to_numpy(rosMsg : sensor_msgs.msg.Image) -> np.ndarray:
-    """Extracts an numpy/opencv image from a ros sensor_msgs image
-
-    Parameters
-    ----------
-    rosMsg : sensor_msgs.msg.Image
-        The ros image message
-
-    Returns
-    -------
-    np.ndarray
-        The numpy array contaning the image. Compatible with opencv
-
-    Raises
-    -------
-    TypeError
-        If the input image encoding is not supported
-
-    """
-    if rosMsg.encoding not in name_to_dtypes:
-        raise TypeError('Unrecognized encoding {}'.format(rosMsg.encoding))
-
-    dtype_class, channels = name_to_dtypes[rosMsg.encoding]
-    dtype = np.dtype(dtype_class)
-    dtype = dtype.newbyteorder('>' if rosMsg.is_bigendian else '<')
-    shape = (rosMsg.height, rosMsg.width, channels)
-
-    data = np.frombuffer(rosMsg.data, dtype=dtype).reshape(shape)
-    data.strides = (
-        rosMsg.step,
-        dtype.itemsize * channels,
-        dtype.itemsize
-    )
-
-    if not np.isfinite(data).all():
-        ggLog.warn(f"image_to_numpy(): nan detected in image")
-
-
-
-    # opencv uses bgr instead of rgb
-    # probably should be done also for other encodings
-    if rosMsg.encoding == "rgb8":
-        data = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
-
-    if channels == 1:
-        data = data[...,0]
-    return data
-
-def numpyImg_to_ros(img : np.ndarray) -> sensor_msgs.msg.Image:
-    """
-    """
-    if img.shape[2] == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-    rosMsg = sensor_msgs.msg.Image()
-    rosMsg.data = img.tobytes()
-    rosMsg.step = img.strides[0]
-    rosMsg.is_bigendian = (img.dtype.byteorder == '>')
-
-    if img.shape[2] == 3:
-        rosMsg.encoding = "rgb8"
-    elif img.shape[2] == 1:
-        rosMsg.encoding = "mono8"
 
 
 class JointState:
@@ -179,17 +116,6 @@ class AverageKeeper:
         self._buffer = collections.deque(maxlen=self._bufferSize)
         self._avg = 0
 
-def buildPoseStamped(position_xyz, orientation_xyzw, frame_id):
-    pose = geometry_msgs.msg.PoseStamped()
-    pose.header.frame_id = frame_id
-    pose.pose.position.x = position_xyz[0]
-    pose.pose.position.y = position_xyz[1]
-    pose.pose.position.z = position_xyz[2]
-    pose.pose.orientation.x = orientation_xyzw[0]
-    pose.pose.orientation.y = orientation_xyzw[1]
-    pose.pose.orientation.z = orientation_xyzw[2]
-    pose.pose.orientation.w = orientation_xyzw[3]
-    return pose
 
 def pyTorch_makeDeterministic(seed):
     """ Make pytorch as deterministic as possible.
@@ -249,7 +175,7 @@ class Pose:
         return f"[{self.position[0],self.position[1],self.position[2],self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w}]"
 
     def getPoseStamped(self, frame_id : str):
-        return buildPoseStamped(self.position, np.array([self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]), frame_id=frame_id)
+        return buildRos1PoseStamped(self.position, np.array([self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]), frame_id=frame_id)
 
     def getListXyzXyzw(self):
         return [self.position[0],self.position[1],self.position[2],self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]
@@ -400,8 +326,9 @@ def lr_gym_startup(main_file_path : str, currentframe = None, using_pytorch : bo
             time.sleep(10)
     return logFolder
 
-def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None):
-
+def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None, predict_func : Callable[[Any], Tuple[Any,Any]] = None, progress_bar : bool = True, images_return = None, obs_return = None):
+    if predict_func is None:
+        predict_func = model.predict
     rewards = np.empty((episodes,), dtype = np.float32)
     steps = np.empty((episodes,), dtype = np.int32)
     wallDurations = np.empty((episodes,), dtype = np.float32)
@@ -410,7 +337,11 @@ def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None):
     successes = 0.0
     #frames = []
     #do an average over a bunch of episodes
-    for episode in tqdm.tqdm(range(0,episodes)):
+    if not progress_bar:
+        maybe_tqdm = lambda x:x
+    else:
+        maybe_tqdm = tqdm.tqdm
+    for episode in maybe_tqdm(range(0,episodes)):
         frame = 0
         episodeReward = 0
         done = False
@@ -419,10 +350,18 @@ def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None):
         # ggLog.info("Env resetting...")
         obs = env.reset()
         # ggLog.info("Env resetted")
+        if images_return is not None:
+            images_return.append([])
+        if obs_return is not None:
+            obs_return.append([])
         while not done:
             t0_pred = time.monotonic()
             # ggLog.info("Predicting")
-            action, _states = model.predict(obs)
+            if images_return is not None:
+                images_return[-1].append(env.render())
+            if obs_return is not None:
+                obs_return[-1].append(obs)
+            action, _states = predict_func(obs)
             predDurations.append(time.monotonic()-t0_pred)
             # ggLog.info("Stepping")
             obs, stepReward, done, info = env.step(action)
@@ -567,4 +506,101 @@ def pkgutil_get_path(package, resource):
     return resource_name
 
 def exc_to_str(exception):
-    return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
+    # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
+    return '\n'.join(traceback.format_exception(exception, value=exception, tb=exception.__traceback__))
+
+
+
+
+
+
+
+
+
+
+
+
+# # TODO: move these in lr_gym_ros
+
+def ros1_image_to_numpy(rosMsg) -> np.ndarray:
+    """Extracts an numpy/opencv image from a ros sensor_msgs image
+
+    Parameters
+    ----------
+    rosMsg : sensor_msgs.msg.Image
+        The ros image message
+
+    Returns
+    -------
+    np.ndarray
+        The numpy array contaning the image. Compatible with opencv
+
+    Raises
+    -------
+    TypeError
+        If the input image encoding is not supported
+
+    """
+    import sensor_msgs
+    import sensor_msgs.msg
+
+    if rosMsg.encoding not in name_to_dtypes:
+        raise TypeError('Unrecognized encoding {}'.format(rosMsg.encoding))
+
+    dtype_class, channels = name_to_dtypes[rosMsg.encoding]
+    dtype = np.dtype(dtype_class)
+    dtype = dtype.newbyteorder('>' if rosMsg.is_bigendian else '<')
+    shape = (rosMsg.height, rosMsg.width, channels)
+
+    data = np.frombuffer(rosMsg.data, dtype=dtype).reshape(shape)
+    data.strides = (
+        rosMsg.step,
+        dtype.itemsize * channels,
+        dtype.itemsize
+    )
+
+    if not np.isfinite(data).all():
+        ggLog.warn(f"ros1_image_to_numpy(): nan detected in image")
+
+
+
+    # opencv uses bgr instead of rgb
+    # probably should be done also for other encodings
+    if rosMsg.encoding == "rgb8":
+        data = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
+
+    if channels == 1:
+        data = data[...,0]
+    return data
+
+def numpyImg_to_ros1(img : np.ndarray):
+    """
+    """
+    import sensor_msgs.msg
+    if img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    rosMsg = sensor_msgs.msg.Image()
+    rosMsg.data = img.tobytes()
+    rosMsg.step = img.strides[0]
+    rosMsg.is_bigendian = (img.dtype.byteorder == '>')
+
+    if img.shape[2] == 3:
+        rosMsg.encoding = "rgb8"
+    elif img.shape[2] == 1:
+        rosMsg.encoding = "mono8"
+
+
+def buildRos1PoseStamped(position_xyz, orientation_xyzw, frame_id):
+    import geometry_msgs.msg
+
+    pose = geometry_msgs.msg.PoseStamped()
+    pose.header.frame_id = frame_id
+    pose.pose.position.x = position_xyz[0]
+    pose.pose.position.y = position_xyz[1]
+    pose.pose.position.z = position_xyz[2]
+    pose.pose.orientation.x = orientation_xyzw[0]
+    pose.pose.orientation.y = orientation_xyzw[1]
+    pose.pose.orientation.z = orientation_xyzw[2]
+    pose.pose.orientation.w = orientation_xyzw[3]
+    return pose

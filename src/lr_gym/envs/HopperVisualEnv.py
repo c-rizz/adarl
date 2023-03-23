@@ -13,7 +13,7 @@ from nptyping import NDArray
 import cv2
 
 from lr_gym.envs.HopperEnv import HopperEnv
-from lr_gym.envControllers.EnvironmentController import EnvironmentController
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 #import tf2_py
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -174,7 +174,7 @@ class HopperVisualEnv(HopperEnv):
 
 
     def _reshapeFrame(self, frame):
-        npArrImage = lr_gym.utils.utils.image_to_numpy(frame)
+        npArrImage = lr_gym.utils.utils.ros1_image_to_numpy(frame)
         # ggLog.info("Received image of shape "+str(npArrImage.shape))
         npArrImage = cv2.cvtColor(npArrImage, cv2.COLOR_BGR2GRAY)
         

@@ -129,7 +129,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         return obs
 
     def _reshapeFrame(self, frame):
-        npArrImage = lr_gym.utils.utils.image_to_numpy(frame)
+        npArrImage = lr_gym.utils.utils.ros1_image_to_numpy(frame)
         npArrImage = cv2.cvtColor(npArrImage, cv2.COLOR_BGR2GRAY)
         # assert npArrImage.shape[0] == 240, "Next few lines assume image size is 426x240"
         # assert npArrImage.shape[1] == 426, "Next few lines assume image size is 426x240"
@@ -315,23 +315,8 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
                                                 pose=Pose(0,0,0,0,0,0,1),
                                                 model_name=model_name,
-                                                model_kwargs=args)
-
-    def buildSimulation(self, backend : str = "gazebo"):
-        if backend != "gazebo":
-            raise NotImplementedError("Backend "+backend+" not supported")
+                                                model_kwargs=args)  
 
 
-        # ggLog.info(f"sim_img_width  = {sim_img_width}")
-        # ggLog.info(f"sim_img_height = {sim_img_height}")
-        worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
-        self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
-                                                    launch_file_args={  "gui":"false",
-                                                                        "paused":"true",
-                                                                        "physics_engine":"bullet",
-                                                                        "limit_sim_speed":"false",
-                                                                        "world_name":worldpath,
-                                                                        "gazebo_seed":f"{self._envSeed}",
-                                                                        "wall_sim_speed":f"{self._wall_sim_speed}"})
 
 

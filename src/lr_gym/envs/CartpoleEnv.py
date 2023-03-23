@@ -11,10 +11,12 @@ import gym
 import numpy as np
 from typing import Tuple, Dict, Any
 import lr_gym.utils.dbg.ggLog as ggLog
+import random
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
-from lr_gym.utils.utils import Pose
+from lr_gym.utils.utils import Pose, JointState
+from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 
 class CartpoleEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
@@ -33,7 +35,7 @@ class CartpoleEnv(ControlledEnv):
                     render : bool = False,
                     stepLength_sec : float = 0.05,
                     environmentController = None,
-                    startSimulation : bool = False,
+                    startSimulation : bool = True,
                     wall_sim_speed = False,
                     seed = 1):
         """Short summary.
@@ -110,23 +112,42 @@ class CartpoleEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and self._backend == "gazebo":
-            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
-                                                    model_name="cartpole_v0",
-                                                    pose=Pose(0,0,0,0,0,0,1),
-                                                    model_kwargs={"camera_width":"213","camera_height":"120"})
+        # ggLog.info(f"Initializing isinstance(self._environmentController, SimulatedEnvController) = {isinstance(self._environmentController, SimulatedEnvController)}")
+        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
+            if type(self._environmentController).__name__ == "GzRosController":
+                model_name = None
+                model_pose = None
+            else:
+                model_name = "cartpole_v0"
+                model_pose = Pose(0,0,0,0,0,0,1)
+            name = self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
+                                                            model_name=model_name,
+                                                            pose=model_pose,
+                                                            # model_kwargs={"camera_width":"213","camera_height":"120"},
+                                                            model_format="urdf.xacro")
             self._spawned = True
+            ggLog.info(f"Model spawned with name {name}")
+        if isinstance(self._environmentController, SimulatedEnvController):
+            self._environmentController.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
+                                                              ("cartpole_v0","cartpole_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0])})
         self._environmentController.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])
 
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
-        img = self._environmentController.getRenderings(["camera"])[0]
-        npImg = lr_gym.utils.utils.image_to_numpy(img)
-        if img is None:
-            time = -1
-        else:
-            time = img.header.stamp.to_sec()
-        return npImg, time
+        try:
+            cam_name = "simple_camera" #"box::simple_camera_link::simple_camera"
+            imgs = self._environmentController.getRenderings([cam_name])
+            return imgs[cam_name]
+            img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])[0]
+            npImg = lr_gym.utils.utils.ros1_image_to_numpy(img)
+            if img is None:
+                time = -1
+            else:
+                time = img.header.stamp.to_sec()
+            return npImg, time
+        except Exception as e:
+            ggLog.warn(f"Exception getting ui image: {lr_gym.utils.utils.exc_to_str(e)}")
+            return None, 0
 
 
     def getObservation(self, state) -> np.ndarray:
@@ -159,19 +180,37 @@ class CartpoleEnv(ControlledEnv):
 
         return np.array(state)
 
-    def buildSimulation(self, backend : str = "gazebo"):
-        if backend != "gazebo":
-            raise NotImplementedError("Backend "+backend+" not supported")
 
-        worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
-        self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
-                                                    launch_file_args={  "gui":"false",
-                                                                        "paused":"true",
-                                                                        "physics_engine":"ode",
-                                                                        "limit_sim_speed":"true",
-                                                                        "world_name":worldpath,
-                                                                        "gazebo_seed":f"{self._envSeed}",
-                                                                        "wall_sim_speed":f"{self._wall_sim_speed}"})
+    def buildSimulation(self, backend):
+        # ggLog.info("Building env")
+        envCtrlName = type(self._environmentController).__name__
+        if envCtrlName in ["GazeboController", "GazeboControllerNoPlugin"]:
+            # ggLog.info(f"sim_img_width  = {sim_img_width}")
+            # ggLog.info(f"sim_img_height = {sim_img_height}")
+            worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
+            self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
+                                                        launch_file_args={  "gui":"false",
+                                                                            "paused":"true",
+                                                                            "physics_engine":"bullet",
+                                                                            "limit_sim_speed":"false",
+                                                                            "world_name":worldpath,
+                                                                            "gazebo_seed":f"{self._envSeed}",
+                                                                            "wall_sim_speed":f"{self._wall_sim_speed}"})
+        elif envCtrlName == "GzRosController":
+            self._environmentController.build_scenario(sdf_file = ("lr_gym_ros2","/worlds/empty_cams.sdf"))
+            self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
+                                                    model_name=None,
+                                                    pose=Pose(0,2,0.5,0,0.0,-0.707,0.707),
+                                                    model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
+                                                    model_format="sdf.xacro")
+            self._environmentController.save_reset_state()
+        else:
+            raise NotImplementedError("environmentController "+envCtrlName+" not supported")
+
+
+
+
+
 
     def _destroySimulation(self):
         self._environmentController.destroy_scenario()

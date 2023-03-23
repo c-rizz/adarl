@@ -7,6 +7,7 @@ import sensor_msgs
 from lr_gym.utils.utils import JointState
 from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
+from threading import Thread, RLock
 
 class EnvironmentController(ABC):
     """This class allows to control the execution of a simulation.
@@ -23,6 +24,8 @@ class EnvironmentController(ABC):
             If it fails to find the gazebo services
 
         """
+        self._running_freerun_async_lock = RLock()
+        self._running_freerun_async = False
         self.setJointsToObserve([])
         self.setLinksToObserve([])
         self.setCamerasToObserve([])
@@ -82,7 +85,7 @@ class EnvironmentController(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]) -> List[sensor_msgs.msg.Image]: #TODO: change this to use cv2 images (i.e. ndarrays)
+    def getRenderings(self, requestedCameras : List[str]):
         """Get the images for the specified cameras.
 
         Parameters
@@ -144,9 +147,18 @@ class EnvironmentController(ABC):
         """
         raise NotImplementedError()
 
+    
+    def getEnvSimTimeFromStart(self) -> float:
+        """Deprecated"""
+        return self.getEnvTimeFromStartup()
 
     @abstractmethod
-    def getEnvSimTimeFromStart(self) -> float:
+    def getEnvTimeFromStartup(self) -> float:
+        """Get the current time within the simulation."""
+        raise NotImplementedError()
+
+    @abstractmethod
+    def getEnvTimeFromReset(self) -> float:
         """Get the current time within the simulation."""
         raise NotImplementedError()
 
@@ -154,6 +166,41 @@ class EnvironmentController(ABC):
     def freerun(self, duration_sec : float):
         """Run the environment for the specified duration"""
         raise NotImplementedError()
+
+
+    def freerun_async_loop(self):
+        # ggLog.info(f"Freerun async")
+        should_run = True
+        t_remaining =  self._freerun_async_timeout - self.getEnvTimeFromStartup()
+        while should_run and t_remaining > 0:
+            # ggLog.info(f"Freerunning")
+            self.freerun(duration_sec = min(0.2,t_remaining))
+            with self._running_freerun_async_lock:
+                should_run = self._running_freerun_async
+            t_remaining =  self._freerun_async_timeout - self.getEnvTimeFromStartup()
+        with self._running_freerun_async_lock:
+            self._running_freerun_async = False
+
+    def freerun_async(self, duration_sec : float = float("+inf")):
+        with self._running_freerun_async_lock:
+            self._freerun_async_duration_sec = duration_sec
+            self._freerun_async_timeout = self.getEnvTimeFromStartup() + duration_sec
+            self._running_freerun_async = True
+            self._freerun_async_thread = Thread(target=self.freerun_async_loop)
+            self._freerun_async_thread.start()
+
+    def wait_freerun_async(self):
+        with self._running_freerun_async_lock:
+            if self._freerun_async_thread is None:
+                return
+        self._freerun_async_thread.join()
+
+    def stop_freerun_async(self):        
+        with self._running_freerun_async_lock:
+            if not self._running_freerun_async:
+                return
+            self._running_freerun_async = False
+        self._freerun_async_thread.join()
 
     @abstractmethod
     def build_scenario(self, **kwargs):

@@ -19,7 +19,7 @@ class PandaEffortStayUpEnv(PandaEffortBaseEnv):
                     maxStepsPerEpisode : int = 500,
                     render : bool = False,
                     maxTorques = [100, 100, 100, 100, 100, 100, 100],
-                    environmentController : lr_gym.envControllers.EnvironmentController = None,
+                    environmentController : lr_gym.env_controllers.EnvironmentController = None,
                     startSimulation : bool = False):
         """Short summary.
 
@@ -33,7 +33,7 @@ class PandaEffortStayUpEnv(PandaEffortBaseEnv):
             Disable this if you don't need the rendering
         maxTorques : Tuple[float, float, float, float, float, float, float]
             Maximum torque that can be applied ot each joint
-        environmentController : lr_gym.envControllers.EnvironmentController
+        environmentController : lr_gym.env_controllers.EnvironmentController
             The contorller to be used to interface with the environment. If left to None an EffortRosControlController will be used.
 
         """

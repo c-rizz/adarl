@@ -145,7 +145,9 @@ class GymEnvWrapper(gym.GoalEnv):
     def _logInfoCsv(self):
         if self._logFileCsvWriter is None:
             try:
-                os.makedirs(os.path.dirname(self._episodeInfoLogFile))
+                log_dir = os.path.dirname(self._episodeInfoLogFile)
+                if log_dir != "":
+                    os.makedirs(log_dir, exist_ok=True)
             except FileExistsError:
                 pass
             existed = os.path.isfile(self._episodeInfoLogFile)
@@ -402,8 +404,8 @@ class GymEnvWrapper(gym.GoalEnv):
 
         npArrImage, imageTime = self._ggEnv.getUiRendering()
 
-        if imageTime < self._lastStepStartEnvTime:
-            ggLog.warn("render(): The most recent camera image is older than the start of the last step! (by "+str(self._lastStepStartEnvTime-imageTime)+"s)")
+        # if imageTime < self._lastStepStartEnvTime:
+        #     ggLog.warn(f"render(): The most recent camera image is older than the start of the last step! (by {self._lastStepStartEnvTime-imageTime}s, imageTime = {imageTime})")
 
         cameraImageAge = self._lastStepEndEnvTime - imageTime
         #ggLog.info("Rendering image age = "+str(cameraImageAge)+"s")
