@@ -145,7 +145,7 @@ class EnvironmentController(ABC):
             Nothing is returned
 
         """
-        raise NotImplementedError()
+        self.__lastResetTime = self.getEnvTimeFromStartup()
 
     
     def getEnvSimTimeFromStart(self) -> float:
@@ -157,10 +157,9 @@ class EnvironmentController(ABC):
         """Get the current time within the simulation."""
         raise NotImplementedError()
 
-    @abstractmethod
     def getEnvTimeFromReset(self) -> float:
         """Get the current time within the simulation."""
-        raise NotImplementedError()
+        return self.getEnvTimeFromStartup() - self.__lastResetTime
 
     @abstractmethod
     def freerun(self, duration_sec : float):
@@ -204,5 +203,11 @@ class EnvironmentController(ABC):
 
     @abstractmethod
     def build_scenario(self, **kwargs):
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        raise NotImplementedError()
+    
+
+    @abstractmethod
+    def destroy_scenario(self, **kwargs):
         """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
         raise NotImplementedError()

@@ -60,13 +60,13 @@ class CartpoleEnv(ControlledEnv):
 
         self._spawned = False
         self._wall_sim_speed = wall_sim_speed
+        self._renderingEnabled = render
         self.seed(seed)
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          stepLength_sec = stepLength_sec,
                          environmentController = environmentController,
                          startSimulation = startSimulation,
                          simulationBackend = "gazebo")
-        self._renderingEnabled = render
 
         self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         if self._renderingEnabled:
@@ -187,7 +187,10 @@ class CartpoleEnv(ControlledEnv):
         if envCtrlName in ["GazeboController", "GazeboControllerNoPlugin"]:
             # ggLog.info(f"sim_img_width  = {sim_img_width}")
             # ggLog.info(f"sim_img_height = {sim_img_height}")
-            worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
+            if not self._renderingEnabled:
+                worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
+            else:
+                worldpath = "\"$(find lr_gym_ros)/worlds/fixed_camera_world_plugin.world\""
             self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "paused":"true",
