@@ -7,7 +7,7 @@ import sensor_msgs.msg
 import time
 import cv2
 import collections
-from typing import List, Tuple, Callable, Dict, Union
+from typing import List, Tuple, Callable, Dict, Union, Optional
 import os
 import quaternion
 import signal
@@ -148,9 +148,9 @@ def numpyImg_to_ros(img : np.ndarray) -> sensor_msgs.msg.Image:
 
 class JointState:
     # These are lists because the joint may have multiple DOF
-    position = []
-    rate = []
-    effort = []
+    # position = []
+    # rate = []
+    # effort = []
 
     def __init__(self, position : List[float], rate : List[float], effort : List[float]):
         self.position = position
@@ -337,7 +337,7 @@ def createSymlink(src, dst):
         except:
             pass
 
-def setupLoggingForRun(file : str, currentframe = None, run_id_prefix : str = "", folderName : str = None):
+def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None):
     """Sets up a logging output folder for a training run.
         It creates the folder, saves the current main script file for reference
 
@@ -355,7 +355,8 @@ def setupLoggingForRun(file : str, currentframe = None, run_id_prefix : str = ""
         The logging folder to be used
     """
     if folderName is None:
-        run_id = run_id_prefix+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        if run_id is None:
+            run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
         script_out_folder = os.getcwd()+"/"+os.path.basename(file)
         folderName = script_out_folder+"/"+run_id
         os.makedirs(folderName, exist_ok=True)
@@ -374,12 +375,25 @@ def setupLoggingForRun(file : str, currentframe = None, run_id_prefix : str = ""
     #     print(str(inputargs), file=input_args_file)
     with open(folderName+"/input_args.yaml", "w") as input_args_yamlfile:
         yaml.dump(values,input_args_yamlfile, default_flow_style=None)
+
+    if use_wandb:
+        import wandb
+        if experiment_name is None:
+            experiment_name = os.path.basename(file)
+        wandb.init(project="lr_gym_"+experiment_name, config = values, name = run_id)
+
     return folderName
 
 
     
-def lr_gym_startup(main_file_path : str, currentframe = None, using_pytorch : bool = True, run_id_prefix : str = "", folderName : str = None, seed = None) -> str:
-    logFolder = setupLoggingForRun(main_file_path, currentframe, run_id_prefix=run_id_prefix, folderName=folderName)
+def lr_gym_startup( main_file_path : str,
+                    currentframe = None,
+                    using_pytorch : bool = True,
+                    folderName : Optional[str] = None,
+                    seed = None,
+                    experiment_name : Optional[str] = None,
+                    run_id : Optional[str] = None) -> str:
+    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
     ggLog.addLogFile(logFolder+"/gglog.log")
     if seed is None:
         raise AttributeError("You must specify the run seed")
