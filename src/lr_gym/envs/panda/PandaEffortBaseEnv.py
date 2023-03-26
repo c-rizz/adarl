@@ -67,7 +67,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                     maxStepsPerEpisode : int = 500,
                     render : bool = False,
                     maxTorques : Tuple[float, float, float, float, float, float, float] = [87, 87, 87, 87, 12, 12, 12],
-                    environmentController : lr_gym.envControllers.EnvironmentController = None,
+                    environmentController : lr_gym.env_controllers.EnvironmentController = None,
                     forced_ros_master_uri : str = None,
                     stepLength_sec : float = 0.01,
                     startSimulation : bool = False):
@@ -83,7 +83,7 @@ class PandaEffortBaseEnv(ControlledEnv):
             Disable this if you don't need the rendering
         maxTorques : Tuple[float, float, float, float, float, float, float]
             Maximum torque that can be applied ot each joint
-        environmentController : lr_gym.envControllers.EnvironmentController
+        environmentController : lr_gym.env_controllers.EnvironmentController
             The contorller to be used to interface with the environment. If left to None an EffortRosControlController will be used.
 
         """
@@ -119,7 +119,7 @@ class PandaEffortBaseEnv(ControlledEnv):
             #                  stepLength_sec = stepLength_sec,
             #                  forced_ros_master_uri = forced_ros_master_uri)
             raise AttributeError("You must specify an environmentController")
-        if not isinstance(environmentController, lr_gym.envControllers.JointEffortEnvController):
+        if not isinstance(environmentController, lr_gym.env_controllers.JointEffortEnvController):
             raise AttributeError("environmentController must be a JointEffortEnvController")
 
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,

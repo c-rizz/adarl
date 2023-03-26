@@ -8,8 +8,8 @@ import pybullet as p
 import gazebo_msgs.msg
 
 from lr_gym.utils.utils import JointState, LinkState
-from lr_gym.envControllers.EnvironmentController import EnvironmentController
-from lr_gym.envControllers.JointEffortEnvController import JointEffortEnvController
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 
 class PyBulletController(EnvironmentController, JointEffortEnvController):

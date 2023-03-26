@@ -57,21 +57,23 @@ class ControlledEnv(BaseEnv):
         if environmentController is None:
             raise AttributeError("You must specify environmentController")
         self._environmentController = environmentController
+        self._estimatedSimTime = 0.0 # Estimated from the results of each environmentController.step()
+        self._intendedStepLength_sec = stepLength_sec
 
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          startSimulation = startSimulation,
                          simulationBackend = simulationBackend,
                          is_time_limited=is_time_limited)
 
-        self._estimatedSimTime = 0.0 # Estimated from the results of each environmentController.step()
-        self._intendedStepLength_sec = stepLength_sec
 
 
 
 
     def performStep(self) -> None:
         super().performStep()
-        estimatedStepDuration_sec = self._environmentController.step()
+        estimatedStepDuration_sec = 0
+        while estimatedStepDuration_sec < self._intendedStepLength_sec:
+            estimatedStepDuration_sec += self._environmentController.step()
         self._estimatedSimTime += estimatedStepDuration_sec
 
 

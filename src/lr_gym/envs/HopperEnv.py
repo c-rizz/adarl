@@ -11,7 +11,7 @@ from typing import Tuple, Dict, Any
 from nptyping import NDArray
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
-from lr_gym.envControllers.EnvironmentController import EnvironmentController
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 #import tf2_py
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -243,7 +243,7 @@ class HopperEnv(ControlledEnv):
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
         imgMsg = self._environmentController.getRenderings(["camera"])[0]
-        npArrImg = lr_gym.utils.utils.image_to_numpy(imgMsg)
+        npArrImg = lr_gym.utils.utils.ros1_image_to_numpy(imgMsg)
         t = imgMsg.header.stamp.to_sec()
         return (npArrImg,t)
 

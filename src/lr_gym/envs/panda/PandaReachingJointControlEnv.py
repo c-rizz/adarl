@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""This file implements PandaMoveitReachingEnv."""
-
 
 import gym
 import numpy as np
@@ -10,15 +8,17 @@ import quaternion
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym.utils.dbg.ggLog as ggLog
+import lr_gym
 
 
-class PandaMoveitReachingEnv(ControlledEnv):
+class PandaReachingJointControlEnv(ControlledEnv):
     """This class represents and environment in which a Panda arm is controlled with Moveit to reach a goal pose.
 
     As moveit_commander is not working with python3 this environment relies on an intermediate ROS node for sending moveit commands.
     """
 
     action_space_high = np.array([  1,
+                                    1,
                                     1,
                                     1,
                                     1,
@@ -49,7 +49,6 @@ class PandaMoveitReachingEnv(ControlledEnv):
     def __init__(   self,
                     goalPose : Tuple[float,float,float,float,float,float,float] = (0,0,0, 0,0,0,0),
                     maxStepsPerEpisode : int = 500,
-                    render : bool = False,
                     goalTolerancePosition : float = 0.05,
                     goalToleranceOrientation_rad : float = 0.0175*5,
                     operatingArea = np.array([[-1, -1, 0], [1, 1, 1.5]]),
@@ -81,22 +80,6 @@ class PandaMoveitReachingEnv(ControlledEnv):
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                
-            # self._environmentController = MoveitRosController(jointsOrder = [("panda","panda_joint1"),
-            #                                                              ("panda","panda_joint2"),
-            #                                                              ("panda","panda_joint3"),
-            #                                                              ("panda","panda_joint4"),
-            #                                                              ("panda","panda_joint5"),
-            #                                                              ("panda","panda_joint6"),
-            #                                                              ("panda","panda_joint7")],
-            #                                               endEffectorLink  = ("panda", "panda_link8"),
-            #                                               referenceFrame   = "world",
-            #                                               initialJointPose = {("panda","panda_joint1") : 0,
-            #                                                                   ("panda","panda_joint2") : 0,
-            #                                                                   ("panda","panda_joint3") : 0,
-            #                                                                   ("panda","panda_joint4") :-1,
-            #                                                                   ("panda","panda_joint5") : 0,
-            #                                                                   ("panda","panda_joint6") : 2.570795,
-            #                                                                   ("panda","panda_joint7") : 0})
             raise AttributeError("You must specify environmentController")
         else:
             self._environmentController = environmentController
@@ -106,9 +89,8 @@ class PandaMoveitReachingEnv(ControlledEnv):
                             environmentController=self._environmentController,
                             simulationBackend=backend)
 
-        self._renderingEnabled = render
-        if self._renderingEnabled:
-            self._environmentController.setCamerasToObserve(["camera"]) #TODO: fix the camera topic
+        self._camera_name = "simple_camera"
+        self._environmentController.setCamerasToObserve([self._camera_name])
 
         self._environmentController.setJointsToObserve( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
@@ -133,7 +115,6 @@ class PandaMoveitReachingEnv(ControlledEnv):
         self._goalToleranceOrientation_rad = goalToleranceOrientation_rad
         self._lastMoveFailed = False
         self._maxPositionChange = 0.1
-        self._maxOrientationChange = 5.0/180*3.14159 # 5 degrees
 
         self._environmentController.startController()
 
@@ -142,37 +123,27 @@ class PandaMoveitReachingEnv(ControlledEnv):
 
 
 
-    def submitAction(self, action : NDArray[(6,), np.float32]) -> None:
+    def submitAction(self, action_joints : NDArray[(7,), np.float32]) -> None:
         """Plan and execute moveit movement without blocking.
 
         Parameters
         ----------
-        action : Tuple[float, float, float]
-            Relative end-effector movement in cartesian space. It is normalized to the max movement distance, i.e.
+        action : Tuple[float, float, float, float, float, float, float]
+            Relative end-effector movement in joint space. It is normalized to the max movement distance, i.e.
             this funciont shoult receive values in the [-1,1] range, which are then converted to the proper
             value range.
 
         """
-        super().submitAction(action)
+        super().submitAction(action_joints)
         #print("received action "+str(action))
-        clippedAction = np.clip(np.array(action, dtype=np.float32),-1,1)
-        action_xyz = clippedAction[0:3]*self._maxPositionChange
-        action_rpy  = clippedAction[3:6]*self._maxOrientationChange
-        action_quat = quaternion.from_euler_angles(action_rpy)
-        #print("dist action_quat "+str(quaternion.rotation_intrinsic_distance(action_quat,      quaternion.from_euler_angles(0,0,0))))
+        clippedAction = np.clip(np.array(action_joints, dtype=np.float32),-1,1)
+        rel_joint_move = clippedAction*self._maxPositionChange
+        
+        currentJointPose = self.getState()[6:6+7]
 
-        currentPose = self.getState()[0:6]
-        currentPose_xyz = currentPose[0:3]
-        currentPose_rpy = currentPose[3:6]
-        currentPose_quat = quaternion.from_euler_angles(currentPose_rpy)
+        absolute_req_jpose = currentJointPose + rel_joint_move
 
-        absolute_xyz = currentPose_xyz + action_xyz
-        absolute_quat = action_quat * currentPose_quat
-        absolute_quat_arr = np.array([absolute_quat.x, absolute_quat.y, absolute_quat.z, absolute_quat.w])
-        unnorm_action = np.concatenate([absolute_xyz, absolute_quat_arr])
-        #print("attempting action "+str(action))
-
-        self._environmentController.setCartesianPoseCommand(linkPoses = {("panda","panda_link8") : unnorm_action})
+        self._environmentController.setJointsPositionCommand(jointPositions = {("panda",f"panda_joint{i+1}") : absolute_req_jpose[i] for i in range(7)})
         #rospy.loginfo("Moving Ee of "+str(clippedAction))
 
 
@@ -223,12 +194,6 @@ class PandaMoveitReachingEnv(ControlledEnv):
         if super().checkEpisodeEnded(previousState, state):
             return True
 
-        #return bool(self._checkGoalReached(state))
-        #print("isdone = ",isdone)
-        # print("state[0:3] =",state[0:3])
-        # print("self._operatingArea =",self._operatingArea)
-        # print("out of bounds = ",np.all(state[0:3] < self._operatingArea[0]), np.all(state[0:3] > self._operatingArea[1]))
-
         if not(np.all(state[0:3] >= self._operatingArea[0]) and np.all(state[0:3] <= self._operatingArea[1])):
             return True
         return False
@@ -236,16 +201,9 @@ class PandaMoveitReachingEnv(ControlledEnv):
 
     def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int) -> float:
 
-        # if state[13] != 0:
-        #     return -1
-
         posDist, minAngleDist = self._getDist2goal(state)
-
         mixedDistance = np.linalg.norm([posDist,minAngleDist])
 
-        # reward = 100.0*(10**(-mixedDistance*20)) #Nope
-        # reward = 1/(1/100 + 20*mixedDistance) #Not really
-        # reward = 1-mixedDistance #Almost!
         reward = 1-mixedDistance + 1/(1/100 + mixedDistance)
         if np.isnan(reward):
             raise RuntimeError("Reward is nan! mixedDistance="+str(mixedDistance))
@@ -255,13 +213,7 @@ class PandaMoveitReachingEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        return
-
-
-    def performReset(self) -> None:
-        super().performReset()
-        self._environmentController.resetWorld()
-
+        pass
 
     def getObservation(self, state) -> np.ndarray:
         return state
@@ -324,11 +276,26 @@ class PandaMoveitReachingEnv(ControlledEnv):
                                                                             "control_mode":"position"},
                                                         basePort = 11311,
                                                         ros_master_ip = self._real_robot_pc_ip)
+        elif backend == "gz":
+            self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros2","/launch/gz_panda_cam.launch.xml"),
+                                                        launch_file_args={  "use_gui":"false"})
         else:
             raise NotImplementedError("Backend '"+backend+"' not supported")
 
     def _destroySimulation(self):
         self._environmentController.destroy_scenario()
 
-    def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvSimTimeFromStart()
+    def getInfo(self,state=None):
+        return {}
+
+    def getUiRendering(self):
+
+        img = self._environmentController.getRenderings([self._camera_name])[0]
+        if img is None:
+            npImg = None
+            time = -1
+            ggLog.warn("Could not get ui image, returning None")
+        else:
+            npImg = lr_gym.utils.utils.ros1_image_to_numpy(img)
+            time = img.header.stamp.to_sec()
+        return npImg, time
