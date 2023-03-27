@@ -50,6 +50,7 @@ class BaseEnv(ABC):
         self._backend = simulationBackend
         self._envSeed : int = 0
         self._is_time_limited = is_time_limited
+        self._closed = False
 
         if startSimulation:
             self.buildSimulation(backend=simulationBackend)
@@ -263,7 +264,9 @@ class BaseEnv(ABC):
         raise NotImplementedError()
 
     def close(self):
-        self._destroySimulation()
+        if not self._closed:
+            self._destroySimulation()
+            self._closed = True
 
     def seed(self, seed=None):
         if seed is not None:

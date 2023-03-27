@@ -618,3 +618,9 @@ def buildRos1PoseStamped(position_xyz, orientation_xyzw, frame_id):
     pose.pose.orientation.z = orientation_xyzw[2]
     pose.pose.orientation.w = orientation_xyzw[3]
     return pose
+
+
+
+class MoveFailError(Exception):
+    def __init__(self, message):            
+        super().__init__(message)
