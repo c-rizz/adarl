@@ -147,7 +147,7 @@ class HopperVisualEnv(HopperEnv):
         if not self._spawned and self._backend == "gazebo":
             simCamHeight = int(64*(self._obs_img_height/64))
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
-            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
+            self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=Pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":str(simCamWidth),"camera_height":str(simCamHeight)})
@@ -204,7 +204,7 @@ class HopperVisualEnv(HopperEnv):
             #ggLog.info(f"Stepping {i}")
             super(HopperEnv, self).performStep()
             self._environmentController.step()
-            img = self._environmentController.getRenderings(["camera"])[0]
+            img, t = self._environmentController.getRenderings(["camera"])[0]
             if img is None:
                 ggLog.error("No camera image received. Observation will contain and empty image.")
                 img = np.empty([self._obs_img_height, self._obs_img_width,3])
@@ -219,7 +219,7 @@ class HopperVisualEnv(HopperEnv):
         super().performReset()
         self._environmentController.resetWorld()
         self.initializeEpisode()
-        img = self._environmentController.getRenderings(["camera"])[0]
+        img, t = self._environmentController.getRenderings(["camera"])[0]
         if img is None:
             ggLog.error("No camera image received. Observation will contain and empty image.")
             img = np.empty([self._obs_img_height, self._obs_img_width,3])

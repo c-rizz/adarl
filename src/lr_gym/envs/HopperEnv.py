@@ -162,7 +162,7 @@ class HopperEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
         if not self._spawned and self._backend == "gazebo":
-            self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
+            self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=Pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":"213","camera_height":"120"})
@@ -242,9 +242,9 @@ class HopperEnv(ControlledEnv):
         return state
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
-        imgMsg = self._environmentController.getRenderings(["camera"])[0]
-        npArrImg = lr_gym.utils.utils.ros1_image_to_numpy(imgMsg)
-        t = imgMsg.header.stamp.to_sec()
+        npArrImg, t = self._environmentController.getRenderings(["camera"])[0]
+        # npArrImg = lr_gym.utils.utils.ros1_image_to_numpy(imgMsg)
+        # t = imgMsg.header.stamp.to_sec()
         return (npArrImg,t)
 
 

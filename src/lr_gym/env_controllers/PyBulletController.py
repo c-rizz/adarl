@@ -11,7 +11,7 @@ from lr_gym.utils.utils import JointState, LinkState
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
-
+import numpy
 class PyBulletController(EnvironmentController, JointEffortEnvController):
     """This class allows to control the execution of a PyBullet simulation.
 
@@ -108,7 +108,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController):
             p.stepSimulation()
         return simsteps*bullet_stepLength_sec
 
-    def getRenderings(self, requestedCameras : List[str]) -> List[sensor_msgs.msg.Image]:
+    def getRenderings(self, requestedCameras : List[str]) -> List[Tuple[np.ndarray, float]]:
         raise NotImplementedError("Rendering is not supported for PyBullet")
 
 

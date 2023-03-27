@@ -129,7 +129,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         return obs
 
     def _reshapeFrame(self, frame):
-        npArrImage = lr_gym.utils.utils.ros1_image_to_numpy(frame)
+        npArrImage = frame
         npArrImage = cv2.cvtColor(npArrImage, cv2.COLOR_BGR2GRAY)
         # assert npArrImage.shape[0] == 240, "Next few lines assume image size is 426x240"
         # assert npArrImage.shape[1] == 426, "Next few lines assume image size is 426x240"
@@ -205,7 +205,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
             #ggLog.info(f"Stepping {i}")
             super(CartpoleEnv, self).performStep()
             self._environmentController.step()
-            img = self._environmentController.getRenderings(["camera"])[0]
+            img, t = self._environmentController.getRenderings(["camera"])[0]
             if img is None:
                 ggLog.error("No camera image received. Observation will contain and empty image.")
                 img = np.zeros([self._obs_img_height, self._obs_img_width,3])
@@ -232,7 +232,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         camera_args = { "camera_width": sim_img_width,
                         "camera_height": sim_img_height}
                       
-        self._environmentController.spawn_model(model_definition=("lr_gym_ros","/models/camera.urdf.xacro"),
+        self._environmentController.spawn_model(model_file=("lr_gym_ros","/models/camera.urdf.xacro"),
                                                 pose=Pose(0,0,0,0,0,0,1),
                                                 model_name="camera",
                                                 model_kwargs=camera_args) 
@@ -254,7 +254,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         super().performReset()
         self._environmentController.resetWorld()
         self.initializeEpisode()
-        img = self._environmentController.getRenderings(["camera"])[0]
+        img, t = self._environmentController.getRenderings(["camera"])[0]
         if img is None:
             ggLog.error("No camera image received. Observation will contain and empty image.")
             img = np.empty([self._obs_img_height, self._obs_img_width,3])
@@ -312,7 +312,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         args.update(color_args)
 
 
-        self._environmentController.spawn_model(model_definition=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
+        self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
                                                 pose=Pose(0,0,0,0,0,0,1),
                                                 model_name=model_name,
                                                 model_kwargs=args)  

@@ -290,12 +290,12 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
     def getUiRendering(self):
 
-        img = self._environmentController.getRenderings([self._camera_name])[0]
+        img, t = self._environmentController.getRenderings([self._camera_name])[0]
         if img is None:
             npImg = None
             time = -1
             ggLog.warn("Could not get ui image, returning None")
         else:
-            npImg = lr_gym.utils.utils.ros1_image_to_numpy(img)
-            time = img.header.stamp.to_sec()
+            npImg = img
+            time = t
         return npImg, time

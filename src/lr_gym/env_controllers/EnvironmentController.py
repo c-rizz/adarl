@@ -8,6 +8,7 @@ from lr_gym.utils.utils import JointState
 from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
+import numpy as np
 
 class EnvironmentController(ABC):
     """This class allows to control the execution of a simulation.
@@ -85,7 +86,7 @@ class EnvironmentController(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]):
+    def getRenderings(self, requestedCameras : List[str]) -> List[Tuple[np.ndarray, float]]:
         """Get the images for the specified cameras.
 
         Parameters

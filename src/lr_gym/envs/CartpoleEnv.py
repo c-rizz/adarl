@@ -135,15 +135,14 @@ class CartpoleEnv(ControlledEnv):
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
         try:
-            cam_name = "simple_camera" #"box::simple_camera_link::simple_camera"
-            imgs = self._environmentController.getRenderings([cam_name])
-            return imgs[cam_name]
-            img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])[0]
-            npImg = lr_gym.utils.utils.ros1_image_to_numpy(img)
+            img, t = self._environmentController.getRenderings([self._rendering_cam_name])[0]
+            # return imgs[0]
+            # img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])[0]
+            npImg = img
             if img is None:
                 time = -1
             else:
-                time = img.header.stamp.to_sec()
+                time = t
             return npImg, time
         except Exception as e:
             ggLog.warn(f"Exception getting ui image: {lr_gym.utils.utils.exc_to_str(e)}")
@@ -199,6 +198,7 @@ class CartpoleEnv(ControlledEnv):
                                                                             "world_name":worldpath,
                                                                             "gazebo_seed":f"{self._envSeed}",
                                                                             "wall_sim_speed":f"{self._wall_sim_speed}"})
+            self._rendering_cam_name = "camera"
         elif envCtrlName == "GzRosController":
             self._environmentController.build_scenario(sdf_file = ("lr_gym_ros2","/worlds/empty_cams.sdf"))
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
@@ -207,6 +207,7 @@ class CartpoleEnv(ControlledEnv):
                                                     model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
                                                     model_format="sdf.xacro")
             self._environmentController.save_reset_state()
+            self._rendering_cam_name = "simple_camera"
         else:
             raise NotImplementedError("environmentController "+envCtrlName+" not supported")
 

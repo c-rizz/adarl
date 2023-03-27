@@ -27,9 +27,9 @@ def main() -> None:
     logFolder = lr_gym.utils.utils.lr_gym_startup(__file__,
                                                     inspect.currentframe(),
                                                     folderName = f"solve_cartpole_env/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}",
-                                                    seed = seed,
-                                                    experiment_name = experiment_name,
-                                                    run_id = run_id)
+                                                    seed = 0,
+                                                    experiment_name = None,
+                                                    run_id = None)
     #logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y-%m-%d,%H:%M:%S')
 
     #rospy.init_node('solve_dqn_stable_baselines', anonymous=True, log_level=rospy.WARN)
