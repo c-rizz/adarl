@@ -9,6 +9,8 @@ from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import numpy as np
+import lr_gym.utils.dbg.ggLog as ggLog
+
 
 class EnvironmentController(ABC):
     """This class allows to control the execution of a simulation.
@@ -169,9 +171,9 @@ class EnvironmentController(ABC):
 
 
     def freerun_async_loop(self):
-        # ggLog.info(f"Freerun async")
+        # ggLog.info(f"Freerun async loop")
         should_run = True
-        t_remaining =  self._freerun_async_timeout - self.getEnvTimeFromStartup()
+        t_remaining = 1 # Always do at least one step # self._freerun_async_timeout - self.getEnvTimeFromStartup()
         while should_run and t_remaining > 0:
             # ggLog.info(f"Freerunning")
             self.freerun(duration_sec = min(0.2,t_remaining))
@@ -182,7 +184,9 @@ class EnvironmentController(ABC):
             self._running_freerun_async = False
 
     def freerun_async(self, duration_sec : float = float("+inf")):
+        ggLog.info(f"Freerun async({duration_sec})")
         with self._running_freerun_async_lock:
+            ggLog.info(f"Freerun async acquired lock")
             self._freerun_async_duration_sec = duration_sec
             self._freerun_async_timeout = self.getEnvTimeFromStartup() + duration_sec
             self._running_freerun_async = True

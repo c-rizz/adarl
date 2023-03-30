@@ -25,10 +25,10 @@ class ControlledEnv(BaseEnv):
 
     def __init__(self,
                  maxStepsPerEpisode : int = 500,
-                 stepLength_sec : float = 0.05,
+                 stepLength_sec : float = -1,
                  environmentController = None,
                  startSimulation : bool = False,
-                 simulationBackend : str = "gazebo",
+                simulationBackend : str = None,
                  is_time_limited : bool = True):
         """Short summary.
 
@@ -72,8 +72,10 @@ class ControlledEnv(BaseEnv):
     def performStep(self) -> None:
         super().performStep()
         estimatedStepDuration_sec = 0
-        while estimatedStepDuration_sec < self._intendedStepLength_sec:
+        while True: # Do at least one step, then check if we need more
             estimatedStepDuration_sec += self._environmentController.step()
+            if estimatedStepDuration_sec >= self._intendedStepLength_sec:
+                break
         self._estimatedSimTime += estimatedStepDuration_sec
 
 

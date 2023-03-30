@@ -38,15 +38,15 @@ def main() -> None:
 
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--controller", required=False, default="GzRosController", type=str, help="label to put on y axis")
+    ap.add_argument("--controller", required=False, default="GzController", type=str, help="label to put on y axis")
     ap.add_argument("--saveimages", default=False, action='store_true', help="Do not center the window averaging")
     ap.set_defaults(feature=True)
     args = vars(ap.parse_args())
 
     stepLength_sec = 0.05
-    if args["controller"] == "GzRosController":
-        from lr_gym_ros2.env_controllers.GzRosController import GzRosController
-        env_controller = GzRosController(stepLength_sec=stepLength_sec)
+    if args["controller"] == "GzController":
+        from lr_gym_ros2.env_controllers.GzController import GzController
+        env_controller = GzController(stepLength_sec=stepLength_sec)
     elif args["controller"] == "GazeboController":
         from lr_gym_ros.envControllers.GazeboController import GazeboController
         env_controller = GazeboController(stepLength_sec=stepLength_sec)

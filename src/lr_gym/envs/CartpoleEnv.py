@@ -114,7 +114,7 @@ class CartpoleEnv(ControlledEnv):
     def initializeEpisode(self) -> None:
         # ggLog.info(f"Initializing isinstance(self._environmentController, SimulatedEnvController) = {isinstance(self._environmentController, SimulatedEnvController)}")
         if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
-            if type(self._environmentController).__name__ == "GzRosController":
+            if type(self._environmentController).__name__ == "GzController":
                 model_name = None
                 model_pose = None
             else:
@@ -199,7 +199,7 @@ class CartpoleEnv(ControlledEnv):
                                                                             "gazebo_seed":f"{self._envSeed}",
                                                                             "wall_sim_speed":f"{self._wall_sim_speed}"})
             self._rendering_cam_name = "camera"
-        elif envCtrlName == "GzRosController":
+        elif envCtrlName == "GzController":
             self._environmentController.build_scenario(sdf_file = ("lr_gym_ros2","/worlds/empty_cams.sdf"))
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
                                                     model_name=None,

@@ -23,7 +23,7 @@ import importlib
 import traceback
 
 import lr_gym.utils.dbg.ggLog as ggLog
-
+import traceback
 
 
 
@@ -207,33 +207,42 @@ sigint_counter = 0
 sigint_max = 10
 original_sigint_handler = None
 
+def sigint_handler(signal_num, stackframe):
+    global sigint_received
+    global sigint_counter
+    global sigint_max
+    global original_sigint_handler
+    sigint_received = True
+    sigint_counter += 1
+    print(f"\n"+
+            f"-----------------------------------------------------------------------------------------------------\n"+
+            f"-----------------------------------------------------------------------------------------------------\n"+
+            f"Received sigint, will halt at first opportunity. ({sigint_max-sigint_counter} presses to hard SIGINT)\n"+
+            f"-----------------------------------------------------------------------------------------------------\n"+
+            f"-----------------------------------------------------------------------------------------------------\n\n")
+    # print(f"current handler = {signal.getsignal(signal.SIGINT)}")
+    # print(f"stackframe = {stackframe}")
+    traceback.print_stack()
+    if sigint_counter>sigint_max:
+        try:
+            original_sigint_handler(signal_num,stackframe)
+        except KeyboardInterrupt:
+            pass #If it was the original one, doesn't do anything, if it was something else it got executed
+        raise KeyboardInterrupt
+        
 def setupSigintHandler():
     global original_sigint_handler
     global did_initialize_sigint_handling
+    currenthandler = signal.getsignal(signal.SIGINT)
     if original_sigint_handler is None:
-        original_sigint_handler = signal.getsignal(signal.SIGINT)
+        original_sigint_handler = currenthandler
 
-    def sigint_handler(signal, stackframe):
-        global sigint_received
-        global sigint_counter
-        global sigint_max
-        global original_sigint_handler
-        sigint_received = True
-        sigint_counter += 1
-        print(f"\n"+
-              f"-----------------------------------------------------------------------------------------------------\n"+
-              f"-----------------------------------------------------------------------------------------------------\n"+
-              f"Received sigint, will halt at first opportunity. ({sigint_max-sigint_counter} presses to hard SIGINT)\n"+
-              f"-----------------------------------------------------------------------------------------------------\n"+
-              f"-----------------------------------------------------------------------------------------------------\n\n")
-        if sigint_counter>sigint_max:
-            try:
-                original_sigint_handler(signal,stackframe)
-            except KeyboardInterrupt:
-                pass #If it was the original one, doesn't do anything, if it was something else it got executed
-            raise KeyboardInterrupt
-
+    if original_sigint_handler == sigint_handler:
+        ggLog.warn(f"Sigint handler already set")
+    else:
+        ggLog.info(f"Setting signal handler ")
     signal.signal(signal.SIGINT, sigint_handler)
+    # ggLog.info(f"Sigint handler was {currenthandler}, set to {signal.getsignal(signal.SIGINT)}")
     did_initialize_sigint_handling = True
 
 def haltOnSigintReceived():

@@ -30,7 +30,7 @@ class BaseEnv(ABC):
     def __init__(self,
                  maxStepsPerEpisode : int = 500,
                  startSimulation : bool = False,
-                 simulationBackend : str = "gazebo",
+                 simulationBackend : str = None,
                  verbose : bool = False,
                  quiet : bool = False,
                  is_time_limited : bool = True):
