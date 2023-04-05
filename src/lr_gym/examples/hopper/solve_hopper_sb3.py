@@ -9,13 +9,10 @@ from stable_baselines3.common import env_checker
 import numpy as np
 import argparse
 import datetime
-from pybullet_envs.gym_locomotion_envs import HopperBulletEnv
 
 
 from lr_gym.envs.HopperEnv import HopperEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-from lr_gym.envControllers.PyBulletController import PyBulletController
-from lr_gym_ros.envControllers.GazeboController import GazeboController
 
 def main(usePyBullet : bool = False,
         useMjcfFile : bool = False,
@@ -37,11 +34,14 @@ def main(usePyBullet : bool = False,
 
     print("Setting up environment...")
     if useHopperBullet:
+        from pybullet_envs.gym_locomotion_envs import HopperBulletEnv 
         env = HopperBulletEnv(render=True)
     else:
         if usePyBullet:
+            from lr_gym.env_controllers.PyBulletController import PyBulletController
             simulatorController = PyBulletController()
         else:
+            from lr_gym_ros.env_controllers.GazeboController import GazeboController
             simulatorController = GazeboController(stepLength_sec = stepLength_sec)
         if saveVideo:
             env = GymEnvWrapper(HopperEnv(  simulatorController = simulatorController,

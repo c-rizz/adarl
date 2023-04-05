@@ -1,7 +1,9 @@
 
 import pybullet as p
 import pybullet_data
+import lr_gym.utils.dbg.ggLog as ggLog
 
+client_id = None
 
 def start():
     """
@@ -10,7 +12,8 @@ def start():
     This ends up calling examples/SharedMemory/PhysicsServerCommandProcessor.cpp:createEmptyDynamicsWorld()
     This means it uses a MultiBodyDynamicsWorld
     """
-    p.connect(p.GUI)
+    global client_id
+    client_id = p.connect(p.GUI)
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
 def buildPlaneWorld():
@@ -22,7 +25,7 @@ def buildPlaneWorld():
                                 numSolverIterations=5,
                                 numSubSteps=4)
 
-    print("Physics engine parameters:"+str(p.getPhysicsEngineParameters()))
+    ggLog.info("Physics engine parameters:"+str(p.getPhysicsEngineParameters()))
 
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     planeObjId = p.loadURDF("plane.urdf")
@@ -48,7 +51,7 @@ def _setupBody(bodyId : int) -> None:
                                 positionGain=0.1,
                                 velocityGain=0.1,
                                 force=0)
-        print("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
+        ggLog.info("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
 
 
 def loadModel(modelFilePath : str, fileFormat : str = "urdf"):
@@ -60,11 +63,18 @@ def loadModel(modelFilePath : str, fileFormat : str = "urdf"):
         raise AttributeError("Invalid format "+str(fileFormat))
 
     _setupBody(objId)
+    return objId
 
-def buildSimpleEnv(modelFilePath : str, fileFormat : str = "urdf"):
+def unloadModel(object_id : int):
+    p.removeBody(object_id)
+
+def buildSimpleEnv():
     start()
-    print("Started pybullet")
+    ggLog.info("Started pybullet")
     buildPlaneWorld()
-    print("Loading model "+str(modelFilePath))
-    loadModel(modelFilePath, fileFormat)
-    print("Loaded model")
+
+def destroySimpleEnv():
+    p.resetSimulation()
+    p.disconnect(client_id)
+
+
