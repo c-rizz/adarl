@@ -50,6 +50,9 @@ def main() -> None:
     elif args["controller"] == "GazeboController":
         from lr_gym_ros.envControllers.GazeboController import GazeboController
         env_controller = GazeboController(stepLength_sec=stepLength_sec)
+    elif args["controller"] == "PyBulletController":
+        from lr_gym.env_controllers.PyBulletController import PyBulletController
+        env_controller = PyBulletController(stepLength_sec=stepLength_sec)
     else:
         print(f"Requested unknown controller '{args['controller']}'")
         exit(0)

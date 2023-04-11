@@ -113,20 +113,7 @@ class CartpoleEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
         # ggLog.info(f"Initializing isinstance(self._environmentController, SimulatedEnvController) = {isinstance(self._environmentController, SimulatedEnvController)}")
-        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
-            if type(self._environmentController).__name__ == "GzController":
-                model_name = None
-                model_pose = None
-            else:
-                model_name = "cartpole_v0"
-                model_pose = Pose(0,0,0,0,0,0,1)
-            name = self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
-                                                            model_name=model_name,
-                                                            pose=model_pose,
-                                                            # model_kwargs={"camera_width":"213","camera_height":"120"},
-                                                            model_format="urdf.xacro")
-            self._spawned = True
-            ggLog.info(f"Model spawned with name {name}")
+        
         if isinstance(self._environmentController, SimulatedEnvController):
             self._environmentController.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
                                                               ("cartpole_v0","cartpole_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0])})
@@ -190,7 +177,7 @@ class CartpoleEnv(ControlledEnv):
                 worldpath = "\"$(find lr_gym_ros)/worlds/ground_plane_world_plugin.world\""
             else:
                 worldpath = "\"$(find lr_gym_ros)/worlds/fixed_camera_world_plugin.world\""
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
+            self._environmentController.build_scenario( launch_file_pkg_and_path=("lr_gym_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "paused":"true",
                                                                             "physics_engine":"bullet",
@@ -201,16 +188,39 @@ class CartpoleEnv(ControlledEnv):
             self._rendering_cam_name = "camera"
         elif envCtrlName == "GzController":
             self._environmentController.build_scenario(sdf_file = ("lr_gym_ros2","/worlds/empty_cams.sdf"))
-            self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
-                                                    model_name=None,
-                                                    pose=Pose(0,2,0.5,0,0.0,-0.707,0.707),
-                                                    model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
-                                                    model_format="sdf.xacro")
-            self._environmentController.save_reset_state()
+            # self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
+            #                                         model_name=None,
+            #                                         pose=Pose(0,2,0.5,0,0.0,-0.707,0.707),
+            #                                         model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
+            #                                         model_format="sdf.xacro")
             self._rendering_cam_name = "simple_camera"
+        elif envCtrlName == "PyBulletController":
+            self._environmentController.build_scenario(None)
         else:
             raise NotImplementedError("environmentController "+envCtrlName+" not supported")
 
+        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
+            if type(self._environmentController).__name__ == "GzController":
+                cartpole_model_name = None
+                cam_model_name = None
+            else:
+                cartpole_model_name = "cartpole_v0"
+                cam_model_name = "simple_camera"
+            cartpole_pose = Pose(0,0,0,0,0,0,1)
+            name = self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
+                                                            model_name=cartpole_model_name,
+                                                            pose=cartpole_pose,
+                                                            # model_kwargs={"camera_width":"213","camera_height":"120"},
+                                                            model_format="urdf.xacro")
+            self._spawned = True
+            self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
+                                                    model_name=cam_model_name,
+                                                    pose=Pose(0,2,0.5, 0.0,0.0,-0.707,0.707),
+                                                    # pose=Pose(0,5,0.5, 0.0,0.0,0.0,1.0),
+                                                    model_kwargs={"camera_width":"256","camera_height":"144","frame_rate":1/self._intendedStepLength_sec},
+                                                    model_format="sdf.xacro")
+            self._rendering_cam_name = "simple_camera"
+            ggLog.info(f"Model spawned with name {name}")
 
 
 

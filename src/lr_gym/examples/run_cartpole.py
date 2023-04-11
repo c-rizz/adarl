@@ -15,6 +15,7 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--controller", required=False, default="GzController", type=str, help="label to put on y axis")
+    ap.add_argument("--episodes", required=False, default=10, type=int, help="label to put on y axis")
     ap.add_argument("--saveimages", default=False, action='store_true', help="Do not center the window averaging")
     ap.set_defaults(feature=True)
     args = vars(ap.parse_args())
@@ -27,11 +28,14 @@ def main():
     elif args["controller"] == "GazeboController":
         from lr_gym_ros.envControllers.GazeboController import GazeboController
         env_controller = GazeboController(stepLength_sec=stepLength_sec)
+    elif args["controller"] == "PyBulletController":
+        from lr_gym.env_controllers.PyBulletController import PyBulletController
+        env_controller = PyBulletController(stepLength_sec=stepLength_sec)
     else:
         print(f"Requested unknown controller '{args['controller']}'")
         exit(0)
 
-    render = True
+    render = args["saveimages"]
     env = GymEnvWrapper(CartpoleEnv(startSimulation=True,
                                     environmentController = env_controller,
                                     render=render))
@@ -41,7 +45,7 @@ def main():
     t0 = time.monotonic()
     def policy(obs):
         return 1 if obs[3] > 0 else 0, 0
-    res = lr_gym.utils.utils.evaluatePolicy(env = env, model = None, episodes = 10, predict_func=policy,
+    res = lr_gym.utils.utils.evaluatePolicy(env = env, model = None, episodes = args["episodes"], predict_func=policy,
                                             images_return = images, obs_return=obs)
     t1 = time.monotonic()
 
@@ -53,6 +57,7 @@ def main():
     if images is not None:
         print(f"images[0][0].shape = {images[0][0].shape}")
         print(f"images[0][0].dtype = {images[0][0].dtype}")
+        # print(f"images[0][0] = {images[0][0]}")
     newline = "\n"
     print(f"final obss = {newline.join([str(ep[-1]) for ep in obs])}")
 

@@ -10,7 +10,109 @@ from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
+import quaternion
+import xmltodict
+import lr_gym.utils.utils
+from pathlib import Path
+import time
 
+
+
+
+
+# def cvPose2BulletView(q, t):
+#     """
+#     cvPose2BulletView gets orientation and position as used 
+#     in ROS-TF and opencv and coverts it to the view matrix used 
+#     in openGL and pyBullet.
+    
+#     :param q: ROS orientation expressed as quaternion [qx, qy, qz, qw] 
+#     :param t: ROS postion expressed as [tx, ty, tz]
+#     :return:  4x4 view matrix as used in pybullet and openGL
+    
+#     """
+#     R = quaternion.as_rotation_matrix(q)
+
+#     T = np.vstack([np.hstack([R, np.array(t).reshape(3,1)]),
+#                               np.array([0, 0, 0, 1])])
+#     # Convert opencv convention to python convention
+#     # By a 180 degrees rotation along X
+#     Tc = np.array([[1,   0,    0,  0],
+#                    [0,  -1,    0,  0],
+#                    [0,   0,   -1,  0],
+#                    [0,   0,    0,  1]]).reshape(4,4)
+    
+#     # pybullet pse is the inverse of the pose from the ROS-TF
+#     T=Tc@np.linalg.inv(T)
+#     # The transpose is needed for respecting the array structure of the OpenGL
+#     viewMatrix = T.T.reshape(16)
+#     return viewMatrix
+
+class BulletCamera:
+    def __init__(self, pose : Pose, hfov : float, width : int, height : int, near : float, far : float, link_name : Tuple[str,str], camera_name : str):
+        self._width = width
+        self._height = height
+        self._pose   = pose if pose is not None else Pose(0,0,0,0,0,0,1)
+        self._hfov   = hfov
+        self._near   = near
+        self._far    = far
+        self.link_name = link_name
+        self.camera_name = camera_name
+        self._compute_matrixes()
+        
+    def _compute_matrixes(self):
+        # ztop_to_ytop = quaternion.from_float_array([0.707, -0.707, 0.0, 0.0])
+        # rot_matrix = quaternion.as_rotation_matrix(ztop_to_ytop*self._pose.orientation)
+        # pose_vec = np.matmul(quaternion.as_rotation_matrix(ztop_to_ytop),np.array(self._pose.position))
+        # extr_mat = np.zeros((4,4))
+        # extr_mat[3,3] = 1
+        # extr_mat[0:3,0:3] = rot_matrix
+        # extr_mat[0:3,3] = -pose_vec
+        # self._extrinsic_matrix = tuple(extr_mat.flatten(order = 'F'))
+        n = "\n"
+        # ggLog.info(f"em1 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
+        # self._extrinsic_matrix = p.computeViewMatrixFromYawPitchRoll(   cameraTargetPosition=[0, 0, 0],
+        #                                                                 distance=10,
+        #                                                                 yaw=0,
+        #                                                                 pitch=0,
+        #                                                                 roll=0,
+        #                                                                 upAxisIndex=2)
+        # ggLog.info(f"em2 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
+        
+        # self._extrinsic_matrix = cvPose2BulletView(self._pose.orientation, self._pose.position)
+        # ggLog.info(f"em3 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
+
+
+        target_position = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([1.0, 0.0, 0.0])) + self._pose.position
+        self._extrinsic_matrix = p.computeViewMatrix(cameraEyePosition = self._pose.position,
+                                                     cameraTargetPosition = target_position,
+                                                     cameraUpVector = [0,0,1])
+        ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
+
+        self._intrinsic_matrix = p.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
+        # ggLog.info(f"em = {self._extrinsic_matrix}")
+        ggLog.info(f"im = \n{n.join([str(self._intrinsic_matrix[i::4]) for i in range(4)])}")
+
+        # ggLog.info(f"im = {self._intrinsic_matrix}")
+
+    def get_matrixes(self):
+        return self._extrinsic_matrix, self._intrinsic_matrix
+
+    def set_pose(self, pose : Pose):
+        self._pose = pose
+        self._compute_matrixes()
+
+    def get_rendering(self):
+        # ggLog.info(f"Getting camera image ({self._width}x{self._height}), {self._pose}")
+        width, height, rgb, depth, segmentation = p.getCameraImage(width = self._width,
+                                                                   height = self._height,
+                                                                   viewMatrix = self._extrinsic_matrix,
+                                                                   projectionMatrix = self._intrinsic_matrix,
+                                                                   shadow=True,
+                                                                   lightDirection=[1, 1, 1])
+        img = np.array(rgb).reshape(height,width,4)[:,:,0:3]
+        # ggLog.info(f"Got camera image")
+        return img
 
 class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController):
     """This class allows to control the execution of a PyBullet simulation.
@@ -26,12 +128,10 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         super().__init__()
         self._stepLength_sec = stepLength_sec
         self._spawned_objects_ids = {}
+        self._cameras = {}
         
 
-    def startController(self):
-        if not p.isConnected():
-            raise ValueError("PyBullet is not connected")
-
+    def _refresh_entities_ids(self):
         bodyIds = []
         for i in range(p.getNumBodies()):
             bodyIds.append(p.getBodyUniqueId(i))
@@ -57,10 +157,17 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 self._linkNameToBodyAndLinkId[linkName] = body_and_joint_ids
 
 
-        ggLog.info("self._bodyAndJointIdToJointName = "+str(self._bodyAndJointIdToJointName))
-        ggLog.info("self._jointNamesToBodyAndJointId = "+str(self._jointNamesToBodyAndJointId))
-        ggLog.info("self._bodyAndLinkIdToLinkName = "+str(self._bodyAndLinkIdToLinkName))
-        ggLog.info("self._linkNameToBodyAndLinkId = "+str(self._linkNameToBodyAndLinkId))
+        # ggLog.info("self._bodyAndJointIdToJointName = "+str(self._bodyAndJointIdToJointName))
+        # ggLog.info("self._jointNamesToBodyAndJointId = "+str(self._jointNamesToBodyAndJointId))
+        # ggLog.info("self._bodyAndLinkIdToLinkName = "+str(self._bodyAndLinkIdToLinkName))
+        # ggLog.info("self._linkNameToBodyAndLinkId = "+str(self._linkNameToBodyAndLinkId))
+
+
+    def startController(self):
+        if not p.isConnected():
+            raise ValueError("PyBullet is not connected")
+
+        self._refresh_entities_ids()
         self._startStateId = p.saveState()
         self._simTime = 0
 
@@ -86,8 +193,12 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._linkNameToBodyAndLinkId[linkName]
 
     def resetWorld(self):
+        ggLog.info(f"Resetting...")
         p.restoreState(self._startStateId)
+        ggLog.info(f"Resetted")
+        self._refresh_entities_ids()
         self._simTime = 0
+        super().resetWorld()
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -121,7 +232,13 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return simsteps*bullet_stepLength_sec
 
     def getRenderings(self, requestedCameras : List[str]) -> List[Tuple[np.ndarray, float]]:
-        raise NotImplementedError("Rendering is not supported for PyBullet")
+        ret = []
+        for cam_name in requestedCameras:
+            camera = self._cameras[cam_name]
+            linkstate = self.getLinksState([camera.link_name])[camera.link_name]
+            camera.set_pose(linkstate.pose)
+            ret.append((camera.get_rendering(), self.getEnvTimeFromReset()))
+        return ret
 
 
 
@@ -180,20 +297,25 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                     raise NotImplementedError(f"Only 1-DOF joints are supported")
                 if len(s.rate) > 1:
                     raise NotImplementedError(f"Only 1-DOF joints are supported")
-                if len(s.effort) != 0:
-                    raise NotImplementedError(f"Direct effort setting is not supported")
+                if len(s.effort) != 0 and any([e!=0 for e in s.effort]):
+                    raise NotImplementedError(f"Direct effort setting is not supported, only zero effort setting is supported. Requested {s.effort}")
             p.resetJointStatesMultiDof(bodyId, ids, [s.position for s in states], [s.rate for s in states])
 
 
 
     def getLinksState(self, requestedLinks : List[Tuple[str,str]]) -> Dict[Tuple[str,str],LinkState]:
+        # ggLog.info(f"Getting link states for {requestedLinks}")
         #For each bodyId I submit a request for joint state
         requests = {} #for each body id we will have a list of joints
+        baserequests = []
         for ln in requestedLinks:
             bodyId, linkId = self._getBodyAndLinkId(ln)
-            if bodyId not in requests: #If we haven't created a request for this body yet
-                requests[bodyId] = []
-            requests[bodyId].append(linkId) #requested jont
+            if linkId != -1:
+                if bodyId not in requests: #If we haven't created a request for this body yet
+                    requests[bodyId] = []
+                requests[bodyId].append(linkId) #requested jont
+            else:
+                baserequests.append(bodyId) #requested jont
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request
@@ -207,8 +329,20 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                         ang_velocity_xyz = (bodyStates[i][7][0], bodyStates[i][7][1], bodyStates[i][7][2]))
             
                 allStates[self._getLinkName(bodyId,linkId)] = linkState
+        for bodyId in baserequests: #for each bodyId make a request
+            # ggLog.info(f"Getting pose of body {bodyId}")
+            bodyPose = p.getBasePositionAndOrientation(bodyId)
+            bodyVelocity = p.getBaseVelocity(bodyId)
+            
+            linkState = LinkState(  position_xyz = (bodyPose[0][0], bodyPose[0][1], bodyPose[0][2]),
+                                    orientation_xyzw = (bodyPose[1][0], bodyPose[1][1], bodyPose[1][2], bodyPose[1][3]),
+                                    pos_velocity_xyz = (bodyVelocity[0][0], bodyVelocity[0][1], bodyVelocity[0][2]),
+                                    ang_velocity_xyz = (bodyVelocity[1][0], bodyVelocity[1][1], bodyVelocity[1][2]))
+        
+            allStates[self._getLinkName(bodyId,-1)] = linkState
 
         #print("returning "+str(allStates))
+        # ggLog.info(f"Got link states for {allStates.keys()}")
 
         return allStates
 
@@ -229,14 +363,79 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._simTime
 
     def build_scenario(self, file_path, format = "urdf"):
-        PyBulletUtils.buildSimpleEnv()
-        self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
+        PyBulletUtils.startupPlaneWorld()
+        if file_path is not None:
+            self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
         
 
     def destroy_scenario(self):
         self._spawned_objects_ids = {}
         PyBulletUtils.destroySimpleEnv()
 
+    def _register_camera(self, camera : BulletCamera):
+        self._cameras[camera.camera_name] = camera
+
+    def _loadModel(self, modelFilePath : str, fileFormat : str = "urdf", model_kwargs = {}):
+        if fileFormat.split(".")[-1] == "xacro":
+            model_definition_string = lr_gym.utils.utils.compile_xacro_string(  model_definition_string=Path(modelFilePath).read_text(),
+                                                                                model_kwargs=model_kwargs)
+            compiled_file_path = f"/tmp/lr_gym_PyBulletUtils_xacrocompile_{int(time.time()*1000000)}_{hash(modelFilePath)}"
+            Path(compiled_file_path).write_text(model_definition_string)
+            modelFilePath = compiled_file_path
+            fileFormat = ".".join(fileFormat.split(".")[:-1])
+        
+        if fileFormat == "urdf":
+            bodyId = p.loadURDF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION)
+        elif fileFormat == "mjcf":
+            bodyId = p.loadMJCF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
+        elif fileFormat == "sdf":
+            bodyId = p.loadSDF(modelFilePath)[0]
+        else:
+            raise AttributeError("Invalid format "+str(fileFormat))
+
+        #p.changeDynamics(bodyId, -1, linearDamping=0, angularDamping=0)
+        for j in range(p.getNumJoints(bodyId)):
+            #p.changeDynamics(bodyId, j, linearDamping=0, angularDamping=0)
+            p.setJointMotorControl2(bodyId,
+                                    j,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition=0,
+                                    targetVelocity=0,
+                                    positionGain=0.1,
+                                    velocityGain=0.1,
+                                    force=0)
+            ggLog.info("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
+
+        if fileFormat == "sdf":
+            parsed_sdf = xmltodict.parse(Path(modelFilePath).read_text())
+            ggLog.info(f"{parsed_sdf}")
+            models = parsed_sdf["sdf"]["model"]
+            if type(models) != list:
+                models = [models]
+            for model in models:
+                model_name = model["@name"]
+                links = model["link"]
+                if type(links) != list:
+                    links = [links]
+                for link in links:
+                    sensors = link["sensor"]
+                    link_name = link["@name"]
+                    if type(sensors) != list:
+                        sensors = [sensors]
+                    for sensor in sensors:
+                        if sensor["@type"] == "camera":
+                            self._register_camera(BulletCamera(pose = None,
+                                                               hfov =   float(sensor["camera"]["horizontal_fov"]),
+                                                               width =  int(sensor["camera"]["image"]["width"]),
+                                                               height = int(sensor["camera"]["image"]["height"]),
+                                                               near =   float(sensor["camera"]["clip"]["near"]),
+                                                               far =    float(sensor["camera"]["clip"]["far"]),
+                                                               link_name=(model_name, link_name),
+                                                               camera_name=sensor["@name"]))
+
+
+        
+        return bodyId
 
     def spawn_model(self,   model_definition_string: str = None,
                             model_format: str = None,
@@ -246,16 +445,20 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                             model_kwargs: Dict[Any, Any] = {}) -> str:
         if model_definition_string is not None:
             raise AttributeError(f"Only file model descriptions are supported")
-        if model_kwargs is not None and len(model_kwargs)>0:
-            raise AttributeError(f"model_kwargs is not supported")
         if model_name in self._spawned_objects_ids:
             raise AttributeError(f"model name {model_name} is already present")
-        self._spawned_objects_ids[model_name] = PyBulletUtils.loadModel(modelFilePath=model_file, fileFormat=model_format)
+        self._spawned_objects_ids[model_name] = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs)
+        self._refresh_entities_ids()
         ggLog.info(f"Spawned '{model_name}': {p.getBodyInfo(self._spawned_objects_ids[model_name])}")
+        if pose is not None:
+            p.resetBasePositionAndOrientation(self._spawned_objects_ids[model_name],
+                                              pose.position, pose.getListXyzXyzw()[3:])
+        return model_name
 
     def delete_model(self, model_name: str):
         PyBulletUtils.unloadModel(self._spawned_objects_ids[model_name])
         self._spawned_objects_ids.pop(model_name)
+        self._refresh_entities_ids()
 
     def setupLight(self):
         raise NotImplementedError(f"Lighting setup is not supported in PyBullet")

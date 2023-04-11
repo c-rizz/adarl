@@ -24,6 +24,7 @@ import traceback
 
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
+import xacro
 
 
 
@@ -633,3 +634,17 @@ def buildRos1PoseStamped(position_xyz, orientation_xyzw, frame_id):
 class MoveFailError(Exception):
     def __init__(self, message):            
         super().__init__(message)
+
+
+def compile_xacro_string(model_definition_string, model_kwargs = None):
+    xacro_args = {"output":None, "just_deps":False, "xacro_ns":True, "verbosity":1}
+    mappings = {}
+    if model_kwargs is not None:
+        mappings.update(model_kwargs) #mappings should be in the form {'from':'to'}
+    mappings = {k:str(v) for k,v in mappings.items()}
+    # ggLog.info(f"Xacro args = {xacro_args}")
+    # ggLog.info(f"Input xacro: \n{model_definition_string}")
+    doc = xacro.parse(model_definition_string)
+    xacro.process_doc(doc, mappings = mappings, **xacro_args)
+    model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
+    return model_definition_string

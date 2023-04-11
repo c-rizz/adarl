@@ -29,6 +29,7 @@ class EnvironmentController(ABC):
         """
         self._running_freerun_async_lock = RLock()
         self._running_freerun_async = False
+        self.__lastResetTime = 0
         self.setJointsToObserve([])
         self.setLinksToObserve([])
         self.setCamerasToObserve([])

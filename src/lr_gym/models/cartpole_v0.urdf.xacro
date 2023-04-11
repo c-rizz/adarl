@@ -176,6 +176,7 @@
     	<child link="base_link"/>
 		<dynamics damping="0.0" friction="${rail_friction}"/>
        	<limit lower="-2.0" upper="2.0" effort="2000000" velocity="100000"/>
+        <axis xyz="1 0 0"/>
 	</joint>
 	<joint name="fixed" type="fixed">
         <parent link="world"/>

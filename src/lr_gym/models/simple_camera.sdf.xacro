@@ -27,7 +27,24 @@
           <visualize>true</visualize>
           <topic>simple_camera</topic>
         </sensor>
-
+        <inertial>
+          <inertia>
+            <ixx>0</ixx>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyy>0</iyy>
+            <iyz>0</iyz>
+            <izz>0</izz>
+          </inertia>
+          <mass>0.0</mass>
+        </inertial>
     </link>
+
+    <!-- <link name="world"/>
+    <joint name="fixed" type="fixed">
+      <parent link="world"/>
+      <child link="simple_camera_link"/>
+    </joint> -->
+
   </model>
 </sdf>

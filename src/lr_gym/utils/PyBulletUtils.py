@@ -2,6 +2,11 @@
 import pybullet as p
 import pybullet_data
 import lr_gym.utils.dbg.ggLog as ggLog
+from pathlib import Path
+import lr_gym.utils.utils
+import time
+import pkgutil
+egl = pkgutil.get_loader('eglRenderer')
 
 client_id = None
 
@@ -13,7 +18,8 @@ def start():
     This means it uses a MultiBodyDynamicsWorld
     """
     global client_id
-    client_id = p.connect(p.GUI)
+    client_id = p.connect(p.DIRECT)
+    plugin = p.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
 
 def buildPlaneWorld():
@@ -30,6 +36,21 @@ def buildPlaneWorld():
     p.setAdditionalSearchPath(pybullet_data.getDataPath())
     planeObjId = p.loadURDF("plane.urdf")
 
+
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [10,     0,0])
+    
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-10,    1,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-10,   -1,0])
+
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-1.5,   10,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [ 0,     10,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [ 1.5,   10,0])
+    
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-2,    -10,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-0.75, -10,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [ 0.75, -10,0])
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [ 2,    -10,0])
+
     # Taken from pybullet's scene_stadium.py
     p.changeDynamics(planeObjId, -1, lateralFriction=0.8, restitution=0.5)
 
@@ -38,37 +59,12 @@ def buildPlaneWorld():
 
     return planeObjId
 
-def _setupBody(bodyId : int) -> None:
-    #p.changeDynamics(bodyId, -1, linearDamping=0, angularDamping=0)
 
-    for j in range(p.getNumJoints(bodyId)):
-        #p.changeDynamics(bodyId, j, linearDamping=0, angularDamping=0)
-        p.setJointMotorControl2(bodyId,
-                                j,
-                                controlMode=p.POSITION_CONTROL,
-                                targetPosition=0,
-                                targetVelocity=0,
-                                positionGain=0.1,
-                                velocityGain=0.1,
-                                force=0)
-        ggLog.info("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
-
-
-def loadModel(modelFilePath : str, fileFormat : str = "urdf"):
-    if fileFormat == "urdf":
-        objId = p.loadURDF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION)
-    elif fileFormat == "mjcf":
-        objId = p.loadMJCF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
-    else:
-        raise AttributeError("Invalid format "+str(fileFormat))
-
-    _setupBody(objId)
-    return objId
 
 def unloadModel(object_id : int):
     p.removeBody(object_id)
 
-def buildSimpleEnv():
+def startupPlaneWorld():
     start()
     ggLog.info("Started pybullet")
     buildPlaneWorld()
