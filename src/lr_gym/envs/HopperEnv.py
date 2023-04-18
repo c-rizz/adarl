@@ -242,7 +242,7 @@ class HopperEnv(ControlledEnv):
         return state
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
-        npArrImg, t = self._environmentController.getRenderings(["camera"])[0]
+        npArrImg, t = self._environmentController.getRenderings(["camera"])["camera"]
         # npArrImg = lr_gym.utils.utils.ros1_image_to_numpy(imgMsg)
         # t = imgMsg.header.stamp.to_sec()
         return (npArrImg,t)

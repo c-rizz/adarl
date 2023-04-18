@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, List
 from nptyping import NDArray
 import numpy as np
 
@@ -24,4 +24,11 @@ class CartesianPositionEnvController(ABC):
             Nothing is returned
 
         """
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def moveToEePoseSync(self,  poses : Dict[Tuple[str,str],List[float]] = None, 
+                                do_cartesian = False, velocity_scaling :Optional[float] = None,
+                                acceleration_scaling : Optional[float] = None, ee_link : Optional[str] = None,
+                                reference_frame : Optional[str] = None):
         raise NotImplementedError()

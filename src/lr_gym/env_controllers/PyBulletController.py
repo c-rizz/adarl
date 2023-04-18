@@ -7,6 +7,7 @@ from lr_gym.utils.utils import JointState, LinkState, Pose
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
+from lr_gym.env_controllers.JointPositionEnvController import JointPositionEnvController
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -87,11 +88,11 @@ class BulletCamera:
         self._extrinsic_matrix = p.computeViewMatrix(cameraEyePosition = self._pose.position,
                                                      cameraTargetPosition = target_position,
                                                      cameraUpVector = [0,0,1])
-        ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
+        # ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
         self._intrinsic_matrix = p.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
         # ggLog.info(f"em = {self._extrinsic_matrix}")
-        ggLog.info(f"im = \n{n.join([str(self._intrinsic_matrix[i::4]) for i in range(4)])}")
+        # ggLog.info(f"im = \n{n.join([str(self._intrinsic_matrix[i::4]) for i in range(4)])}")
 
         # ggLog.info(f"im = {self._intrinsic_matrix}")
 
@@ -114,13 +115,14 @@ class BulletCamera:
         # ggLog.info(f"Got camera image")
         return img
 
-class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController):
+class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController, JointPositionEnvController):
     """This class allows to control the execution of a PyBullet simulation.
 
     For what is possible it is meant to be interchangeable with GazeboController.
     """
 
-    def __init__(self, stepLength_sec : float = 0.004166666666):
+    def __init__(self, stepLength_sec : float = 0.004166666666,
+                        restore_on_reset = True):
         """Initialize the Simulator controller.
 
 
@@ -129,7 +131,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._stepLength_sec = stepLength_sec
         self._spawned_objects_ids = {}
         self._cameras = {}
+        self._commanded_torques = {}
+        self._commanded_positions = {}
         
+        self._max_joint_velocities_pos_control = {}
+        self._max_joint_velocity_pos_control = 10
+        self._max_torques_pos_control = {}
+        self._max_torque_pos_control = 100
+        self._restore_on_reset = restore_on_reset
 
     def _refresh_entities_ids(self):
         bodyIds = []
@@ -193,9 +202,12 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._linkNameToBodyAndLinkId[linkName]
 
     def resetWorld(self):
-        ggLog.info(f"Resetting...")
-        p.restoreState(self._startStateId)
-        ggLog.info(f"Resetted")
+        self._commanded_torques = {}
+        self._commanded_positions = {}
+        # ggLog.info(f"Resetting...")
+        if self._restore_on_reset:
+            p.restoreState(self._startStateId)
+        # ggLog.info(f"Resetted")
         self._refresh_entities_ids()
         self._simTime = 0
         super().resetWorld()
@@ -220,7 +232,6 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         #p.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         stepLength = self.freerun(self._stepLength_sec)
-        self._simTime += stepLength
         return stepLength
 
     def freerun(self, duration_sec: float):
@@ -228,19 +239,28 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         simsteps = int(duration_sec/bullet_stepLength_sec)
         # ggLog.info(f"PyBullet doing {duration_sec}/{bullet_stepLength_sec}={simsteps} steps")
         for i in range(simsteps):
+            self._apply_commanded_torques()
+            self._apply_commanded_positions()
             p.stepSimulation()
+            self._simTime += bullet_stepLength_sec
+        self._commanded_torques = {}
         return simsteps*bullet_stepLength_sec
 
-    def getRenderings(self, requestedCameras : List[str]) -> List[Tuple[np.ndarray, float]]:
-        ret = []
+    def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
+        ret = {}
         for cam_name in requestedCameras:
             camera = self._cameras[cam_name]
             linkstate = self.getLinksState([camera.link_name])[camera.link_name]
             camera.set_pose(linkstate.pose)
-            ret.append((camera.get_rendering(), self.getEnvTimeFromReset()))
+            ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
         return ret
 
-
+    def _apply_commanded_torques(self):
+        for bodyId in self._commanded_torques.keys():
+            p.setJointMotorControlArray(bodyIndex=bodyId,
+                                        jointIndices=self._commanded_torques[bodyId][0],
+                                        controlMode=p.TORQUE_CONTROL,
+                                        forces=self._commanded_torques[bodyId][1])
 
     def setJointsEffortCommand(self, jointTorques : List[Tuple[str,str,float]]) -> None:
         #For each bodyId I submit a request for joint motor control
@@ -251,13 +271,29 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 requests[bodyId] = ([],[])
             requests[bodyId][0].append(jointId) #requested jont
             requests[bodyId][1].append(jt[2]) #requested torque
+        self._commanded_torques = requests
 
-        for bodyId in requests.keys():
+
+    def _apply_commanded_positions(self):
+        for bodyId in self._commanded_positions.keys():
             p.setJointMotorControlArray(bodyIndex=bodyId,
-                                        jointIndices=requests[bodyId][0],
-                                        controlMode=p.TORQUE_CONTROL,
-                                        forces=requests[bodyId][1])
-
+                                        jointIndices=self._commanded_positions[bodyId][0],
+                                        controlMode=p.POSITION_CONTROL,
+                                        targetPositions=self._commanded_positions[bodyId][1],
+                                        targetVelocities=self._commanded_positions[bodyId][2],
+                                        forces=self._commanded_positions[bodyId][3])
+            
+    def setJointsPositionCommand(self, jointPositions : Dict[Tuple[str,str],float]) -> None:
+        requests = {}
+        for joint, position in jointPositions.items():
+            bodyId, jointId = self._getBodyAndJointId(joint)
+            if bodyId not in requests: #If we haven't created a request for this body yet
+                requests[bodyId] = ([],[],[],[])
+            requests[bodyId][0].append(jointId) #requested joint
+            requests[bodyId][1].append(position) #requested position
+            requests[bodyId][2].append(self._max_joint_velocities_pos_control.get(joint,self._max_joint_velocity_pos_control)) #requested velocity
+            requests[bodyId][3].append(self._max_torques_pos_control.get(joint,self._max_torque_pos_control)) #requested max torque
+        self._commanded_positions = requests
 
 
     def getJointsState(self, requestedJoints : List[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
@@ -356,8 +392,9 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln}")
             requests[bodyId].append(ls)
 
-        for bodyId, state in requests.items():
-            p.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.getListXyzXyzw()[3:])
+        for bodyId, states in requests.items():
+            for state in states:
+                p.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.getListXyzXyzw()[3:])
 
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
@@ -374,6 +411,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def _register_camera(self, camera : BulletCamera):
         self._cameras[camera.camera_name] = camera
+        ggLog.info(f"Registered camera with name {camera.camera_name}")
 
     def _loadModel(self, modelFilePath : str, fileFormat : str = "urdf", model_kwargs = {}):
         if fileFormat.split(".")[-1] == "xacro":
@@ -403,22 +441,31 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                     targetVelocity=0,
                                     positionGain=0.1,
                                     velocityGain=0.1,
-                                    force=0)
+                                    force=0) # Disable any position control motor by setting its max torque to zero
+            p.setJointMotorControl2(bodyIndex=bodyId,
+                                    jointIndex=j,
+                                    controlMode=p.VELOCITY_CONTROL,
+                                    force=0) # Disable velocity motor by setting its max torque to zero
+            
             ggLog.info("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
 
         if fileFormat == "sdf":
             parsed_sdf = xmltodict.parse(Path(modelFilePath).read_text())
             ggLog.info(f"{parsed_sdf}")
-            models = parsed_sdf["sdf"]["model"]
+            if "world" in parsed_sdf["sdf"]:
+                world = parsed_sdf["sdf"]["world"]
+            else:
+                world = parsed_sdf["sdf"]
+            models = world["model"]
             if type(models) != list:
                 models = [models]
             for model in models:
                 model_name = model["@name"]
-                links = model["link"]
+                links = model.get("link", [])
                 if type(links) != list:
                     links = [links]
                 for link in links:
-                    sensors = link["sensor"]
+                    sensors = link.get("sensor", [])
                     link_name = link["@name"]
                     if type(sensors) != list:
                         sensors = [sensors]

@@ -204,7 +204,7 @@ class HopperVisualEnv(HopperEnv):
             #ggLog.info(f"Stepping {i}")
             super(HopperEnv, self).performStep()
             self._environmentController.step()
-            img, t = self._environmentController.getRenderings(["camera"])[0]
+            img, t = self._environmentController.getRenderings(["camera"])["camera"]
             if img is None:
                 ggLog.error("No camera image received. Observation will contain and empty image.")
                 img = np.empty([self._obs_img_height, self._obs_img_width,3])
@@ -219,7 +219,7 @@ class HopperVisualEnv(HopperEnv):
         super().performReset()
         self._environmentController.resetWorld()
         self.initializeEpisode()
-        img, t = self._environmentController.getRenderings(["camera"])[0]
+        img, t = self._environmentController.getRenderings(["camera"])["camera"]
         if img is None:
             ggLog.error("No camera image received. Observation will contain and empty image.")
             img = np.empty([self._obs_img_height, self._obs_img_width,3])

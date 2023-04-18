@@ -11,6 +11,8 @@ import argparse
 import lr_gym
 import inspect
 import datetime
+import os
+import cv2
 
 def main() -> None:
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
@@ -78,35 +80,67 @@ def main() -> None:
     ggLog.info("Learned. Took "+str(duration_learn)+" seconds.")
 
 
-    ggLog.info("Computing average reward...")
-    t_preVal = time.time()
-    rewards=[]
-    totFrames=0
-    totDuration=0
-    #frames = []
-    #do an average over a bunch of episodes
-    for episode in tqdm.tqdm(range(0,50)):
-        frame = 0
-        episodeReward = 0
-        done = False
-        obs = env.reset()
-        t0 = time.time()
-        while not done:
-            #ggLog.info("Episode "+str(episode)+" frame "+str(frame))
-            action, _states = model.predict(obs)
-            obs, stepReward, done, info = env.step(action)
-            #frames.append(env.render("rgb_array"))
-            #time.sleep(0.016)
-            frame+=1
-            episodeReward += stepReward
-        rewards.append(episodeReward)
-        totFrames +=frame
-        totDuration += time.time() - t0
-        #print("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
-    avgReward = sum(rewards)/len(rewards)
-    duration_val = time.time() - t_preVal
-    ggLog.info("Computed average reward. Took "+str(duration_val)+" seconds ("+str(totFrames/totDuration)+" fps).")
-    ggLog.info("Average rewar = "+str(avgReward))
+    # ggLog.info("Computing average reward...")
+    # t_preVal = time.time()
+    # rewards=[]
+    # totFrames=0
+    # totDuration=0
+    # #frames = []
+    # #do an average over a bunch of episodes
+    # for episode in tqdm.tqdm(range(0,50)):
+    #     frame = 0
+    #     episodeReward = 0
+    #     done = False
+    #     obs = env.reset()
+    #     t0 = time.time()
+    #     while not done:
+    #         #ggLog.info("Episode "+str(episode)+" frame "+str(frame))
+    #         action, _states = model.predict(obs)
+    #         obs, stepReward, done, info = env.step(action)
+    #         #frames.append(env.render("rgb_array"))
+    #         #time.sleep(0.016)
+    #         frame+=1
+    #         episodeReward += stepReward
+    #     rewards.append(episodeReward)
+    #     totFrames +=frame
+    #     totDuration += time.time() - t0
+    #     #print("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
+    # avgReward = sum(rewards)/len(rewards)
+    # duration_val = time.time() - t_preVal
+    # ggLog.info("Computed average reward. Took "+str(duration_val)+" seconds ("+str(totFrames/totDuration)+" fps).")
+    # ggLog.info("Average rewar = "+str(avgReward))
+
+
+
+    images = [] if args["saveimages"] else None
+    obs = []
+    t0 = time.monotonic()
+    res = lr_gym.utils.utils.evaluatePolicy(env = env, model = None, episodes = 10, predict_func=model.predict,
+                                            images_return = images, obs_return=obs)
+    t1 = time.monotonic()
+
+    eps = len(obs)
+    steps = sum([len(i) for i in obs])
+    print(f"Summary:\n{res}")
+    print(f"Got {eps} episodes, {steps} steps")
+    print(f"took {t1-t0}s, {steps/(t1-t0)} fps, sim/real = {stepLength_sec*steps/(t1-t0):.2f}x")
+
+    if args["saveimages"] and images is not None:
+        imagesOutFolder = "./solve_cartpole_sb3/"+str(int(time.time()))
+        print(f"Saving images to {imagesOutFolder}...")
+        os.makedirs(imagesOutFolder, exist_ok=True)
+        episode = -1
+        for ep in images:
+            episode+=1
+            frame = -1
+            for img in ep:
+                frame+=1
+                # img = img[:,:,0]
+                # img = np.transpose(img, (1,2,0))
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                r = cv2.imwrite(imagesOutFolder+"/frame-"+str(episode)+"-"+str(frame)+".png",img_bgr)
+                if not r:
+                    print("couldn't save image")
 
 if __name__ == "__main__":
     main()

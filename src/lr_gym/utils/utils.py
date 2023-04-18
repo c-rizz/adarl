@@ -108,14 +108,29 @@ class AverageKeeper:
 
     def addValue(self, newValue):
         self._buffer.append(newValue)
+        self._all_time_sum += newValue
+        self._all_time_count += 1
         self._avg = float(sum(self._buffer))/len(self._buffer)
+        self._all_time_avg = self._all_time_sum/self._all_time_count
 
-    def getAverage(self):
-        return self._avg
+    def getAverage(self, all_time : bool = False):
+        if all_time:
+            return self._all_time_avg
+        else:
+            return self._avg
 
     def reset(self):
         self._buffer = collections.deque(maxlen=self._bufferSize)
         self._avg = 0
+        self._all_time_sum = 0
+        self._all_time_count = 0
+        self._all_time_avg = 0
+
+    def __enter__(self):
+        self._t0 = time.monotonic()
+    
+    def __exit__(self, exc_type, exc_val, exc_t):
+        self.addValue(time.monotonic()-self._t0)
 
 
 def pyTorch_makeDeterministic(seed):
@@ -207,12 +222,17 @@ sigint_received = False
 sigint_counter = 0
 sigint_max = 10
 original_sigint_handler = None
+is_shutting_down = False
+
+def is_shutting_down():
+    return is_shutting_down
 
 def sigint_handler(signal_num, stackframe):
     global sigint_received
     global sigint_counter
     global sigint_max
     global original_sigint_handler
+    global is_shutting_down
     sigint_received = True
     sigint_counter += 1
     print(f"\n"+
@@ -225,6 +245,7 @@ def sigint_handler(signal_num, stackframe):
     # print(f"stackframe = {stackframe}")
     traceback.print_stack()
     if sigint_counter>sigint_max:
+        is_shutting_down = True
         try:
             original_sigint_handler(signal_num,stackframe)
         except KeyboardInterrupt:
@@ -239,7 +260,7 @@ def setupSigintHandler():
         original_sigint_handler = currenthandler
 
     if original_sigint_handler == sigint_handler:
-        ggLog.warn(f"Sigint handler already set")
+        ggLog.warn(f"Sigint handler already set. Setting anyway")
     else:
         ggLog.info(f"Setting signal handler ")
     signal.signal(signal.SIGINT, sigint_handler)
@@ -251,9 +272,11 @@ def haltOnSigintReceived():
         return
     global sigint_received
     global sigint_counter
+    global is_shutting_down
     if sigint_received:
         answer = input(f"SIGINT received. Press Enter to resume or type 'exit' to terminate:\n> ")
         if answer == "exit":
+            is_shutting_down = True
             original_sigint_handler(signal.SIGINT, None)
             raise KeyboardInterrupt
         print("Resuming...")
@@ -648,3 +671,33 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     xacro.process_doc(doc, mappings = mappings, **xacro_args)
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
     return model_definition_string
+
+def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : EnvironmentError, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
+    call_time = time.monotonic()
+    last_warn_time = call_time
+    while True:
+        gottenStuff, missingStuff = getterFunction()
+        if len(missingStuff)==0:
+            return gottenStuff
+        else:
+            t = time.monotonic()
+            if t-call_time >= blocking_timeout_sec:
+                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
+                                    partialResult=gottenStuff)
+            else:
+                if t - last_warn_time > 0.1:
+                    last_warn_time = t
+                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
+                env_controller.freerun(step_duration_sec)
+
+
+def ros_rpy_to_quaternion_xyzw(rpy):
+    roll  = quaternion.from_rotation_vector([rpy[0], 0,      0])
+    pitch = quaternion.from_rotation_vector([0,      rpy[1], 0])
+    yaw   = quaternion.from_rotation_vector([0,      0,      rpy[2 ]])
+    # On fixed axes:
+    # First rotate around x (roll)
+    # Then rotate around y (pitch)
+    # Then rotate around z (yaw)
+    q = yaw*pitch*roll
+    return q.x, q.y, q.z, q.w

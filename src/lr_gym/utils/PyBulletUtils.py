@@ -37,6 +37,8 @@ def buildPlaneWorld():
     planeObjId = p.loadURDF("plane.urdf")
 
 
+    # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [0,     0,0])
+    
     # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [10,     0,0])
     
     # planeObjId = p.loadURDF(lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cube.urdf"), basePosition = [-10,    1,0])
@@ -66,7 +68,7 @@ def unloadModel(object_id : int):
 
 def startupPlaneWorld():
     start()
-    ggLog.info("Started pybullet")
+    # ggLog.info("Started pybullet")
     buildPlaneWorld()
 
 def destroySimpleEnv():

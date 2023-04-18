@@ -1,16 +1,20 @@
 <?xml version="1.0" ?>
-<sdf version="1.5" xmlns:xacro="http://www.ros.org/wiki/xacro">
+<sdf version="1.10" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <xacro:arg name="camera_width" default="1920"/>
   <xacro:arg name="camera_height" default="1080"/>
   <xacro:arg name="frame_rate" default="30"/>
+  <xacro:arg name="camera_name"  default="simple_camera"/>
+  <xacro:arg name="camera_topic" default="$(arg camera_name)"/>
   <xacro:property name="camera_width" value="$(arg camera_width)" />
   <xacro:property name="camera_height" value="$(arg camera_height)" />
   <xacro:property name="frame_rate" value="$(arg frame_rate)" />
-  <model name="camera_model">
+  <xacro:property name="camera_topic" value="$(arg camera_topic)" />
+  <xacro:property name="camera_name" value="$(arg camera_name)" />
+  <model name="${camera_name}">
     <static>true</static>
     <link name="simple_camera_link">
-        <sensor type="camera" name="simple_camera">
+        <sensor type="camera" name="${camera_name}">
           <camera>
             <horizontal_fov>${69.4*3.14159/180}</horizontal_fov>
             <image>
@@ -25,7 +29,7 @@
           <always_on>1</always_on>
           <update_rate>${frame_rate}</update_rate>
           <visualize>true</visualize>
-          <topic>simple_camera</topic>
+          <topic>${camera_topic}</topic>
         </sensor>
         <inertial>
           <inertia>

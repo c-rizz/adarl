@@ -290,7 +290,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
     def getUiRendering(self):
 
-        img, t = self._environmentController.getRenderings([self._camera_name])[0]
+        img, t = self._environmentController.getRenderings([self._camera_name])[self._camera_name]
         if img is None:
             npImg = None
             time = -1

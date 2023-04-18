@@ -89,7 +89,7 @@ class EnvironmentController(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]) -> List[Tuple[np.ndarray, float]]:
+    def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
         """Get the images for the specified cameras.
 
         Parameters
@@ -185,9 +185,9 @@ class EnvironmentController(ABC):
             self._running_freerun_async = False
 
     def freerun_async(self, duration_sec : float = float("+inf")):
-        ggLog.info(f"Freerun async({duration_sec})")
+        # ggLog.info(f"Freerun async({duration_sec})")
         with self._running_freerun_async_lock:
-            ggLog.info(f"Freerun async acquired lock")
+            # ggLog.info(f"Freerun async acquired lock")
             self._freerun_async_duration_sec = duration_sec
             self._freerun_async_timeout = self.getEnvTimeFromStartup() + duration_sec
             self._running_freerun_async = True

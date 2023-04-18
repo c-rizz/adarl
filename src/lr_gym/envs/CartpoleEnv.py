@@ -122,9 +122,9 @@ class CartpoleEnv(ControlledEnv):
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
         try:
-            img, t = self._environmentController.getRenderings([self._rendering_cam_name])[0]
+            img, t = self._environmentController.getRenderings([self._rendering_cam_name])[self._rendering_cam_name]
             # return imgs[0]
-            # img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])[0]
+            # img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])["box::simple_camera_link::simple_camera"]
             npImg = img
             if img is None:
                 time = -1
@@ -196,6 +196,7 @@ class CartpoleEnv(ControlledEnv):
             self._rendering_cam_name = "simple_camera"
         elif envCtrlName == "PyBulletController":
             self._environmentController.build_scenario(None)
+            self._rendering_cam_name = "simple_camera"
         else:
             raise NotImplementedError("environmentController "+envCtrlName+" not supported")
 
@@ -219,7 +220,6 @@ class CartpoleEnv(ControlledEnv):
                                                     # pose=Pose(0,5,0.5, 0.0,0.0,0.0,1.0),
                                                     model_kwargs={"camera_width":"256","camera_height":"144","frame_rate":1/self._intendedStepLength_sec},
                                                     model_format="sdf.xacro")
-            self._rendering_cam_name = "simple_camera"
             ggLog.info(f"Model spawned with name {name}")
 
 

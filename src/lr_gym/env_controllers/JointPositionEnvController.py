@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 class JointPositionEnvController(ABC):
     @abstractmethod
@@ -21,4 +21,10 @@ class JointPositionEnvController(ABC):
             Nothing is returned
 
         """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def moveToJointPoseSync(self,   jointPositions : Dict[Tuple[str,str],float],
+                                    velocity_scaling : Optional[float] = None,
+                                    acceleration_scaling : Optional[float] = None) -> None:
         raise NotImplementedError()
