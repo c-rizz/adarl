@@ -27,7 +27,6 @@ import traceback
 import xacro
 
 
-
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
     "rgba8":   (np.uint8,  4),
@@ -217,71 +216,17 @@ class LinkState:
         return self.__str__()
 
 
-did_initialize_sigint_handling = False
-sigint_received = False
-sigint_counter = 0
-sigint_max = 10
-original_sigint_handler = None
-is_shutting_down = False
+
+_is_shutting_down = False
 
 def is_shutting_down():
-    return is_shutting_down
+    return _is_shutting_down
 
-def sigint_handler(signal_num, stackframe):
-    global sigint_received
-    global sigint_counter
-    global sigint_max
-    global original_sigint_handler
-    global is_shutting_down
-    sigint_received = True
-    sigint_counter += 1
-    print(f"\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
-            f"Received sigint, will halt at first opportunity. ({sigint_max-sigint_counter} presses to hard SIGINT)\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
-            f"-----------------------------------------------------------------------------------------------------\n\n")
-    # print(f"current handler = {signal.getsignal(signal.SIGINT)}")
-    # print(f"stackframe = {stackframe}")
-    traceback.print_stack()
-    if sigint_counter>sigint_max:
-        is_shutting_down = True
-        try:
-            original_sigint_handler(signal_num,stackframe)
-        except KeyboardInterrupt:
-            pass #If it was the original one, doesn't do anything, if it was something else it got executed
-        raise KeyboardInterrupt
-        
-def setupSigintHandler():
-    global original_sigint_handler
-    global did_initialize_sigint_handling
-    currenthandler = signal.getsignal(signal.SIGINT)
-    if original_sigint_handler is None:
-        original_sigint_handler = currenthandler
+def shutdown():
+    print(f"Shutting down")
+    global _is_shutting_down
+    _is_shutting_down = True
 
-    if original_sigint_handler == sigint_handler:
-        ggLog.warn(f"Sigint handler already set. Setting anyway")
-    else:
-        ggLog.info(f"Setting signal handler ")
-    signal.signal(signal.SIGINT, sigint_handler)
-    # ggLog.info(f"Sigint handler was {currenthandler}, set to {signal.getsignal(signal.SIGINT)}")
-    did_initialize_sigint_handling = True
-
-def haltOnSigintReceived():
-    if not did_initialize_sigint_handling:
-        return
-    global sigint_received
-    global sigint_counter
-    global is_shutting_down
-    if sigint_received:
-        answer = input(f"SIGINT received. Press Enter to resume or type 'exit' to terminate:\n> ")
-        if answer == "exit":
-            is_shutting_down = True
-            original_sigint_handler(signal.SIGINT, None)
-            raise KeyboardInterrupt
-        print("Resuming...")
-        sigint_received = False
-        sigint_counter = 0
 
 
 
@@ -295,6 +240,12 @@ def createSymlink(src, dst):
             os.symlink(src, dst)
         except:
             pass
+
+
+wandb_enabled = False
+
+def is_wandb_enabled():
+    return wandb_enabled
 
 def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None):
     """Sets up a logging output folder for a training run.
@@ -336,14 +287,23 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
         yaml.dump(values,input_args_yamlfile, default_flow_style=None)
 
     if use_wandb:
+        global wandb_enabled
+        wandb_enabled = True
         import wandb
         if experiment_name is None:
             experiment_name = os.path.basename(file)
-        wandb.init(project="lr_gym_"+experiment_name, config = values, name = run_id)
+        wandb.init( project="lr_gym_"+experiment_name,
+                    config = values,
+                    name = run_id,
+                    monitor_gym = False, # Do not save openai gym videos
+                    save_code = True, # Save run code
+                    sync_tensorboard = True # Save tensorboard stuff
+                    )
 
     return folderName
 
 
+from lr_gym.utils.sigint_handler import setupSigintHandler
     
 def lr_gym_startup( main_file_path : str,
                     currentframe = None,
@@ -701,3 +661,9 @@ def ros_rpy_to_quaternion_xyzw(rpy):
     # Then rotate around z (yaw)
     q = yaw*pitch*roll
     return q.x, q.y, q.z, q.w
+
+
+def isinstance_noimport(obj, class_names):
+    if isinstance(class_names, str):
+        class_names = [class_names]
+    return type(obj).__name__ in class_names

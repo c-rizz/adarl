@@ -5,7 +5,7 @@ import argparse
 import gym
 import importlib
 import lr_gym_ros
-import lr_gym_ros.utils.dbg.dbg_img as dbg_img
+import lr_gym.utils.dbg.dbg_img as dbg_img
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 import cv2
 import numpy as np

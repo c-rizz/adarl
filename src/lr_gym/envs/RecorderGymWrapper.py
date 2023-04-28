@@ -18,7 +18,6 @@ class RecorderGymWrapper(gym.Wrapper):
     def __init__(self, env : gym.Env, fps : float, outFolder : str,
                         saveBestEpisodes = False, 
                         saveFrequency_ep = 1,
-                        saveFrequency_step = -1,
                         vec_obs_key = None):
         super().__init__(env)
         self._outFps = fps
@@ -32,10 +31,8 @@ class RecorderGymWrapper(gym.Wrapper):
         self._outFolder = outFolder
         self._saveBestEpisodes = saveBestEpisodes
         self._saveFrequency_ep = saveFrequency_ep
-        self._saveFrequency_step = saveFrequency_step
         self._bestReward = float("-inf")
         self._epReward = 0
-        self._last_saved_ep_steps = -1
         self._vec_obs_key = vec_obs_key
         try:
             os.makedirs(self._outFolder)
@@ -48,15 +45,16 @@ class RecorderGymWrapper(gym.Wrapper):
 
     def step(self, action):
         stepRet =  self.env.step(action)
-        img = self.render(mode = "rgb_array")
-        if img is not None:
-            self._frameBuffer.append(img)
-        else:
-            self._frameBuffer.append(None)
-        if self._vec_obs_key is not None:
-            self._vecBuffer.append(stepRet[0][self._vec_obs_key])
-        else:
-            self._vecBuffer.append(stepRet[0])
+        if self._may_episode_be_saved(self._episodeCounter):
+            img = self.render(mode = "rgb_array")
+            if img is not None:
+                self._frameBuffer.append(img)
+            else:
+                self._frameBuffer.append(None)
+            if self._vec_obs_key is not None:
+                self._vecBuffer.append(stepRet[0][self._vec_obs_key])
+            else:
+                self._vecBuffer.append(stepRet[0])
         self._epReward += stepRet[1]
         return stepRet
 
@@ -94,7 +92,7 @@ class RecorderGymWrapper(gym.Wrapper):
                                 "-disable_force_termination" : True,
                                 "-level" : 3.0,
                                 "-pix_fmt" : "yuv420p"} 
-            writer = WriteGear(output_filename=outFilename, logging=False, **output_params)
+            writer = WriteGear(output=outFilename, logging=False, **output_params)
             for npimg in imgs:
                 if npimg is None:
                     npimg = np.zeros_like(goodImg)
@@ -131,8 +129,14 @@ class RecorderGymWrapper(gym.Wrapper):
         if img_hwc.shape[1]<256:
             shape_wh = (256,int(256/img_hwc.shape[0]*img_hwc.shape[1]))
             img_hwc = cv2.resize(img_hwc,dsize=shape_wh,interpolation=cv2.INTER_NEAREST)
+
+        # bgr -> rgb
+        img_hwc[:,:,[0,1,2]] = img_hwc[:,:,[2,1,0]]
+        
         return img_hwc
 
+    def _may_episode_be_saved(self, ep_count):
+        return self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0)
 
     def reset(self, **kwargs):
         if self._epReward > self._bestReward:
@@ -141,9 +145,6 @@ class RecorderGymWrapper(gym.Wrapper):
                 self._saveLastEpisode(self._outFolder+"/best/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")            
         if self._saveFrequency_ep>0 and self._episodeCounter % self._saveFrequency_ep == 0:
             self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
-        elif self._saveFrequency_step>0 and int(self.num_timesteps/self._saveFrequency_step) != int(self._last_saved_ep_steps/self._saveFrequency_step):
-            self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
-            self._last_saved_ep_steps = self.num_timesteps
 
 
         obs = self.env.reset(**kwargs)
@@ -153,9 +154,10 @@ class RecorderGymWrapper(gym.Wrapper):
         self._episodeCounter +=1
         self._frameBuffer = []
         self._vecBuffer = []
-        img = self.render(mode = "rgb_array")
-        if img is not None:
-            self._frameBuffer.append(img)
+        if self._may_episode_be_saved(self._episodeCounter):
+            img = self.render(mode = "rgb_array")
+            if img is not None:
+                self._frameBuffer.append(img)
         return obs
 
     def close(self):

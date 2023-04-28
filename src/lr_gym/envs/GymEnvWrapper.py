@@ -26,6 +26,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 
 import multiprocessing as mp
 import signal
+import lr_gym.utils.utils
 
 class GymEnvWrapper(gym.GoalEnv):
     """This class is a wrapper to convert lr_gym environments in OpenAI Gym environments.
@@ -124,6 +125,7 @@ class GymEnvWrapper(gym.GoalEnv):
         self._info["avg_obs_wall_duration"] = self._observationDurationAverage.getAverage()
         self._info["avg_step_sim_duration"] = avgSimTimeStepDuration
         self._info["tot_ep_wall_duration"] = totEpisodeWallDuration
+        self._info["tot_ep_sim_duration"] = self._lastStepEndSimTimeFromStart
         self._info["reset_wall_duration"] = resetWallDuration
         self._info["ep_frames_count"] = self._framesCounter
         self._info["ep_reward"] = self._totalEpisodeReward
@@ -169,7 +171,9 @@ class GymEnvWrapper(gym.GoalEnv):
         #print("writing csv")
         self._logFileCsvWriter.writerow(self._info.values())
         self._logFile.flush()
-
+        if lr_gym.utils.utils.is_wandb_enabled():
+            import wandb
+            wandb.log({k : v if type(v) is not bool else int(v) for k,v in self._info.items()})
 
     def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
         """Run one step of the environment's dynamics.
@@ -321,15 +325,16 @@ class GymEnvWrapper(gym.GoalEnv):
                 for k,v in self._info.items():
                     ggLog.info(k," = ",v)
             elif not self._quiet:
-                msg =  (f"ep_rwrd = {self._info['ep_reward']:.3f}"+
+                msg =  (f"ep = {self._info['reset_count']:d}"+
+                        f" rwrd = {self._info['ep_reward']:.3f}"+
                         " stps = {:d}".format(self._info["ep_frames_count"])+
-                        " wallFps = {:.3f}".format(self._info["wall_fps"])+
-                        " wallFpsFtl = {:.3f}".format(self._info["wall_fps_first_to_last"])+
-                        " avg_stpWallDur = {:f}".format(self._info["avg_env_step_wall_duration"])+
+                        " wHz = {:.3f}".format(self._info["wall_fps"])+
+                        " wHzFtl = {:.3f}".format(self._info["wall_fps_first_to_last"])+
+                        " avg_stpWDur = {:f}".format(self._info["avg_env_step_wall_duration"])+
                         " tstep/ttot_ftl = {:.2f}".format(self._info["ratio_time_spent_stepping_until_done"])+
                         " tstep/ttot = {:.2f}".format(self._info["ratio_time_spent_stepping"])+
-                        " ep = {:d}".format(self._info["reset_count"])+
-                        " wallEpDur = {:.2f}".format(self._info["tot_ep_wall_duration"]))
+                        " wEpDur = {:.2f}".format(self._info["tot_ep_wall_duration"])+
+                        " sEpDur = {:.2f}".format(self._info["tot_ep_sim_duration"]))
                 if "success_ratio" in self._info.keys():
                         msg += f" succ_ratio = {self._info['success_ratio']:.2f}"
                 ggLog.info(msg)

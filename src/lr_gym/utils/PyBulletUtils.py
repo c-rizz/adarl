@@ -66,6 +66,9 @@ def buildPlaneWorld():
 def unloadModel(object_id : int):
     p.removeBody(object_id)
 
+def startupWorld():
+    start()
+
 def startupPlaneWorld():
     start()
     # ggLog.info("Started pybullet")

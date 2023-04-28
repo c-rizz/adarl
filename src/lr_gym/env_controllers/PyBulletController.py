@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
-import pybullet as p
+import pybullet
 
 from lr_gym.utils.utils import JointState, LinkState, Pose
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
@@ -72,7 +72,7 @@ class BulletCamera:
         # self._extrinsic_matrix = tuple(extr_mat.flatten(order = 'F'))
         n = "\n"
         # ggLog.info(f"em1 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
-        # self._extrinsic_matrix = p.computeViewMatrixFromYawPitchRoll(   cameraTargetPosition=[0, 0, 0],
+        # self._extrinsic_matrix = pybullet.computeViewMatrixFromYawPitchRoll(   cameraTargetPosition=[0, 0, 0],
         #                                                                 distance=10,
         #                                                                 yaw=0,
         #                                                                 pitch=0,
@@ -85,12 +85,12 @@ class BulletCamera:
 
 
         target_position = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([1.0, 0.0, 0.0])) + self._pose.position
-        self._extrinsic_matrix = p.computeViewMatrix(cameraEyePosition = self._pose.position,
+        self._extrinsic_matrix = pybullet.computeViewMatrix(cameraEyePosition = self._pose.position,
                                                      cameraTargetPosition = target_position,
                                                      cameraUpVector = [0,0,1])
         # ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
-        self._intrinsic_matrix = p.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
+        self._intrinsic_matrix = pybullet.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
         # ggLog.info(f"em = {self._extrinsic_matrix}")
         # ggLog.info(f"im = \n{n.join([str(self._intrinsic_matrix[i::4]) for i in range(4)])}")
 
@@ -105,7 +105,7 @@ class BulletCamera:
 
     def get_rendering(self):
         # ggLog.info(f"Getting camera image ({self._width}x{self._height}), {self._pose}")
-        width, height, rgb, depth, segmentation = p.getCameraImage(width = self._width,
+        width, height, rgb, depth, segmentation = pybullet.getCameraImage(width = self._width,
                                                                    height = self._height,
                                                                    viewMatrix = self._extrinsic_matrix,
                                                                    projectionMatrix = self._intrinsic_matrix,
@@ -142,21 +142,21 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def _refresh_entities_ids(self):
         bodyIds = []
-        for i in range(p.getNumBodies()):
-            bodyIds.append(p.getBodyUniqueId(i))
+        for i in range(pybullet.getNumBodies()):
+            bodyIds.append(pybullet.getBodyUniqueId(i))
 
         self._bodyAndJointIdToJointName = {}
         self._jointNamesToBodyAndJointId = {}
         self._bodyAndLinkIdToLinkName = {}
         self._linkNameToBodyAndLinkId = {}
         for bodyId in bodyIds:
-            base_link_name, body_name = p.getBodyInfo(bodyId)
+            base_link_name, body_name = pybullet.getBodyInfo(bodyId)
             base_link_name = (body_name.decode("utf-8"), base_link_name.decode("utf-8"))
             base_body_and_link_id = (bodyId, -1)
             self._linkNameToBodyAndLinkId[base_link_name] = base_body_and_link_id
             self._bodyAndLinkIdToLinkName[base_body_and_link_id] = base_link_name
-            for jointId in range(p.getNumJoints(bodyId)):
-                jointInfo = p.getJointInfo(bodyId,jointId)
+            for jointId in range(pybullet.getNumJoints(bodyId)):
+                jointInfo = pybullet.getJointInfo(bodyId,jointId)
                 jointName = (body_name.decode("utf-8"), jointInfo[1].decode("utf-8"))
                 linkName = (body_name.decode("utf-8"), jointInfo[12].decode("utf-8"))
                 body_and_joint_ids = (bodyId,jointId)
@@ -173,18 +173,18 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
 
     def startController(self):
-        if not p.isConnected():
+        if not pybullet.isConnected():
             raise ValueError("PyBullet is not connected")
 
         self._refresh_entities_ids()
-        self._startStateId = p.saveState()
+        self._startStateId = pybullet.saveState()
         self._simTime = 0
 
-        if self._stepLength_sec % p.getPhysicsEngineParameters()["fixedTimeStep"] > 0.00001:
-            ggLog.warn(f"PyBulletController: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {p.getPhysicsEngineParameters()['fixedTimeStep']})")
+        if self._stepLength_sec % pybullet.getPhysicsEngineParameters()["fixedTimeStep"] > 0.00001:
+            ggLog.warn(f"PyBulletController: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {pybullet.getPhysicsEngineParameters()['fixedTimeStep']})")
 
-        if self._stepLength_sec<p.getPhysicsEngineParameters()["fixedTimeStep"]:
-            p.setTimeStep(self._stepLength_sec)
+        if self._stepLength_sec<pybullet.getPhysicsEngineParameters()["fixedTimeStep"]:
+            pybullet.setTimeStep(self._stepLength_sec)
 
 
     def _getJointName(self, bodyId, jointIndex):
@@ -206,7 +206,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._commanded_positions = {}
         # ggLog.info(f"Resetting...")
         if self._restore_on_reset:
-            p.restoreState(self._startStateId)
+            pybullet.restoreState(self._startStateId)
         # ggLog.info(f"Resetted")
         self._refresh_entities_ids()
         self._simTime = 0
@@ -230,23 +230,26 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         """
 
-        #p.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
+        #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         stepLength = self.freerun(self._stepLength_sec)
         return stepLength
 
     def freerun(self, duration_sec: float):
-        bullet_stepLength_sec = p.getPhysicsEngineParameters()["fixedTimeStep"]
-        simsteps = int(duration_sec/bullet_stepLength_sec)
+        bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
         # ggLog.info(f"PyBullet doing {duration_sec}/{bullet_stepLength_sec}={simsteps} steps")
-        for i in range(simsteps):
+        sim_duration = 0
+        while sim_duration < duration_sec:
             self._apply_commanded_torques()
             self._apply_commanded_positions()
-            p.stepSimulation()
-            self._simTime += bullet_stepLength_sec
+            pybullet.stepSimulation()
+            sim_duration += bullet_stepLength_sec
+        self._simTime += sim_duration
         self._commanded_torques = {}
-        return simsteps*bullet_stepLength_sec
+        self._commanded_positions = {}
+        return sim_duration
 
     def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
+        # ggLog.info(f"Rendering")
         ret = {}
         for cam_name in requestedCameras:
             camera = self._cameras[cam_name]
@@ -257,9 +260,9 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def _apply_commanded_torques(self):
         for bodyId in self._commanded_torques.keys():
-            p.setJointMotorControlArray(bodyIndex=bodyId,
+            pybullet.setJointMotorControlArray(bodyIndex=bodyId,
                                         jointIndices=self._commanded_torques[bodyId][0],
-                                        controlMode=p.TORQUE_CONTROL,
+                                        controlMode=pybullet.TORQUE_CONTROL,
                                         forces=self._commanded_torques[bodyId][1])
 
     def setJointsEffortCommand(self, jointTorques : List[Tuple[str,str,float]]) -> None:
@@ -276,14 +279,17 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def _apply_commanded_positions(self):
         for bodyId in self._commanded_positions.keys():
-            p.setJointMotorControlArray(bodyIndex=bodyId,
+            # ggLog.info(f"Setting joint control for {bodyId} {self._commanded_positions[bodyId]}")
+            pybullet.setJointMotorControlArray(bodyIndex=bodyId,
                                         jointIndices=self._commanded_positions[bodyId][0],
-                                        controlMode=p.POSITION_CONTROL,
+                                        controlMode=pybullet.POSITION_CONTROL,
                                         targetPositions=self._commanded_positions[bodyId][1],
                                         targetVelocities=self._commanded_positions[bodyId][2],
                                         forces=self._commanded_positions[bodyId][3])
             
-    def setJointsPositionCommand(self, jointPositions : Dict[Tuple[str,str],float]) -> None:
+    def setJointsPositionCommand(self,  jointPositions : Dict[Tuple[str,str],float],
+                                        velocity_scaling : Optional[float] = 1.0,
+                                        acceleration_scaling : Optional[float] = 1.0) -> None:
         requests = {}
         for joint, position in jointPositions.items():
             bodyId, jointId = self._getBodyAndJointId(joint)
@@ -291,10 +297,46 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 requests[bodyId] = ([],[],[],[])
             requests[bodyId][0].append(jointId) #requested joint
             requests[bodyId][1].append(position) #requested position
-            requests[bodyId][2].append(self._max_joint_velocities_pos_control.get(joint,self._max_joint_velocity_pos_control)) #requested velocity
-            requests[bodyId][3].append(self._max_torques_pos_control.get(joint,self._max_torque_pos_control)) #requested max torque
+            # max_velocity = min(self._max_joint_velocity_pos_control,
+            #                    self._max_joint_velocities_pos_control.get(joint,float("+inf")))
+            requests[bodyId][2].append(0) #requested velocity
+            max_torque = min(self._max_torque_pos_control,
+                             self._max_torques_pos_control.get(joint,float("+inf")))
+            requests[bodyId][3].append(max_torque*acceleration_scaling) # Scale with the acceleration, kinda the same... :)
+
         self._commanded_positions = requests
 
+
+    def moveToJointPoseSync(self,   jointPositions : Dict[Tuple[str,str],float],
+                                    velocity_scaling : Optional[float] = 1.0,
+                                    acceleration_scaling : Optional[float] = 1.0,
+                                    max_error : float = 0.001,
+                                    step_time : Optional[float] = 0.1,
+                                    wall_timeout_sec : float = 30,
+                                    sim_timeout_sec : float = 30) -> None:
+        if step_time is None:
+            step_time = self._stepLength_sec
+        joints = jointPositions.keys()
+        req_pos = np.array([jointPositions[k] for k in joints])
+        jstates = self.getJointsState(joints)
+        curr_pos = np.array([jstates[k].position[0] for k in joints])
+
+        t0_wall = time.monotonic()
+        t0_sim = self.getEnvTimeFromStartup()
+
+        while np.max(req_pos - curr_pos) > max_error:
+            self.setJointsPositionCommand(jointPositions=jointPositions,
+                                          velocity_scaling=velocity_scaling,
+                                          acceleration_scaling=acceleration_scaling)
+            self.freerun(duration_sec=step_time)
+            jstates = self.getJointsState(joints)
+            curr_pos = np.array([jstates[k].position[0] for k in joints])
+            wall_d = time.monotonic()-t0_wall
+            if wall_d > wall_timeout_sec:
+                raise TimeoutError(f"wall timeout: {wall_d} > {wall_timeout_sec}")
+            sim_d = time.monotonic()-t0_sim
+            if sim_d > sim_timeout_sec:
+                raise TimeoutError(f"sim tomeout: {sim_d} > {sim_timeout_sec}")
 
     def getJointsState(self, requestedJoints : List[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
         #For each bodyId I submit a request for joint state
@@ -307,7 +349,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request
-            bodyStates = p.getJointStates(bodyId,requests[bodyId])
+            bodyStates = pybullet.getJointStates(bodyId,requests[bodyId])
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 jointId = requests[bodyId][i]
                 jointState = JointState([bodyStates[i][0]], [bodyStates[i][1]], [bodyStates[i][3]]) #NOTE: effort may not be reported when using torque control
@@ -335,7 +377,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                     raise NotImplementedError(f"Only 1-DOF joints are supported")
                 if len(s.effort) != 0 and any([e!=0 for e in s.effort]):
                     raise NotImplementedError(f"Direct effort setting is not supported, only zero effort setting is supported. Requested {s.effort}")
-            p.resetJointStatesMultiDof(bodyId, ids, [s.position for s in states], [s.rate for s in states])
+            pybullet.resetJointStatesMultiDof(bodyId, ids, [s.position for s in states], [s.rate for s in states])
 
 
 
@@ -355,7 +397,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request
-            bodyStates = p.getLinkStates(bodyId,requests[bodyId],computeLinkVelocity=1)
+            bodyStates = pybullet.getLinkStates(bodyId,requests[bodyId],computeLinkVelocity=1)
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
@@ -367,8 +409,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 allStates[self._getLinkName(bodyId,linkId)] = linkState
         for bodyId in baserequests: #for each bodyId make a request
             # ggLog.info(f"Getting pose of body {bodyId}")
-            bodyPose = p.getBasePositionAndOrientation(bodyId)
-            bodyVelocity = p.getBaseVelocity(bodyId)
+            bodyPose = pybullet.getBasePositionAndOrientation(bodyId)
+            bodyVelocity = pybullet.getBaseVelocity(bodyId)
             
             linkState = LinkState(  position_xyz = (bodyPose[0][0], bodyPose[0][1], bodyPose[0][2]),
                                     orientation_xyzw = (bodyPose[1][0], bodyPose[1][1], bodyPose[1][2], bodyPose[1][3]),
@@ -389,12 +431,12 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = []
             if linkId != -1: # could also check if the base joint is a free-floating one, and use the joint to move the first link
-                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln}")
+                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln} (base link is {self._getLinkName(bodyId,-1)})")
             requests[bodyId].append(ls)
 
         for bodyId, states in requests.items():
             for state in states:
-                p.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.getListXyzXyzw()[3:])
+                pybullet.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.getListXyzXyzw()[3:])
 
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
@@ -423,31 +465,31 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             fileFormat = ".".join(fileFormat.split(".")[:-1])
         
         if fileFormat == "urdf":
-            bodyId = p.loadURDF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION)
+            bodyId = pybullet.loadURDF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION)
         elif fileFormat == "mjcf":
-            bodyId = p.loadMJCF(modelFilePath, flags=p.URDF_USE_SELF_COLLISION | p.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
+            bodyId = pybullet.loadMJCF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
         elif fileFormat == "sdf":
-            bodyId = p.loadSDF(modelFilePath)[0]
+            bodyId = pybullet.loadSDF(modelFilePath)[0]
         else:
             raise AttributeError("Invalid format "+str(fileFormat))
 
-        #p.changeDynamics(bodyId, -1, linearDamping=0, angularDamping=0)
-        for j in range(p.getNumJoints(bodyId)):
-            #p.changeDynamics(bodyId, j, linearDamping=0, angularDamping=0)
-            p.setJointMotorControl2(bodyId,
+        #pybullet.changeDynamics(bodyId, -1, linearDamping=0, angularDamping=0)
+        for j in range(pybullet.getNumJoints(bodyId)):
+            #pybullet.changeDynamics(bodyId, j, linearDamping=0, angularDamping=0)
+            pybullet.setJointMotorControl2(bodyId,
                                     j,
-                                    controlMode=p.POSITION_CONTROL,
+                                    controlMode=pybullet.POSITION_CONTROL,
                                     targetPosition=0,
                                     targetVelocity=0,
                                     positionGain=0.1,
                                     velocityGain=0.1,
                                     force=0) # Disable any position control motor by setting its max torque to zero
-            p.setJointMotorControl2(bodyIndex=bodyId,
+            pybullet.setJointMotorControl2(bodyIndex=bodyId,
                                     jointIndex=j,
-                                    controlMode=p.VELOCITY_CONTROL,
+                                    controlMode=pybullet.VELOCITY_CONTROL,
                                     force=0) # Disable velocity motor by setting its max torque to zero
             
-            ggLog.info("Joint "+str(j)+" dynamics info: "+str(p.getDynamicsInfo(bodyId,j)))
+            ggLog.info("Joint "+str(j)+" dynamics info: "+str(pybullet.getDynamicsInfo(bodyId,j)))
 
         if fileFormat == "sdf":
             parsed_sdf = xmltodict.parse(Path(modelFilePath).read_text())
@@ -496,10 +538,10 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             raise AttributeError(f"model name {model_name} is already present")
         self._spawned_objects_ids[model_name] = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs)
         self._refresh_entities_ids()
-        ggLog.info(f"Spawned '{model_name}': {p.getBodyInfo(self._spawned_objects_ids[model_name])}")
+        ggLog.info(f"Spawned model '{model_name}' with info {pybullet.getBodyInfo(self._spawned_objects_ids[model_name])}")
         if pose is not None:
-            p.resetBasePositionAndOrientation(self._spawned_objects_ids[model_name],
-                                              pose.position, pose.getListXyzXyzw()[3:])
+            pybullet.resetBasePositionAndOrientation(self._spawned_objects_ids[model_name],
+                                                    pose.position, pose.getListXyzXyzw()[3:])
         return model_name
 
     def delete_model(self, model_name: str):
