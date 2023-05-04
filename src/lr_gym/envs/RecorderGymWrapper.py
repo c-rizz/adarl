@@ -148,6 +148,7 @@ class RecorderGymWrapper(gym.Wrapper):
 
 
         obs = self.env.reset(**kwargs)
+
         if self._epReward>self._bestReward:
             self._bestReward = self._epReward
         self._epReward = 0

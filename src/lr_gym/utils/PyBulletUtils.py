@@ -7,8 +7,10 @@ import lr_gym.utils.utils
 import time
 import pkgutil
 egl = pkgutil.get_loader('eglRenderer')
+import threading
 
 client_id = None
+starter_thread = None
 
 def start():
     """
@@ -18,9 +20,11 @@ def start():
     This means it uses a MultiBodyDynamicsWorld
     """
     global client_id
+    global starter_thread
     client_id = p.connect(p.DIRECT)
     plugin = p.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
     p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+    starter_thread = threading.current_thread()
 
 def buildPlaneWorld():
     # Taken from pybullet's scene_abstract.py

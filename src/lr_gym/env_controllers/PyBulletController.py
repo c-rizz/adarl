@@ -16,7 +16,7 @@ import xmltodict
 import lr_gym.utils.utils
 from pathlib import Path
 import time
-
+import threading
 
 
 
@@ -70,7 +70,7 @@ class BulletCamera:
         # extr_mat[0:3,0:3] = rot_matrix
         # extr_mat[0:3,3] = -pose_vec
         # self._extrinsic_matrix = tuple(extr_mat.flatten(order = 'F'))
-        n = "\n"
+        # n = "\n"
         # ggLog.info(f"em1 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
         # self._extrinsic_matrix = pybullet.computeViewMatrixFromYawPitchRoll(   cameraTargetPosition=[0, 0, 0],
         #                                                                 distance=10,
@@ -83,11 +83,16 @@ class BulletCamera:
         # self._extrinsic_matrix = cvPose2BulletView(self._pose.orientation, self._pose.position)
         # ggLog.info(f"em3 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
-
-        target_position = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([1.0, 0.0, 0.0])) + self._pose.position
+        cameraAxis =     np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([1.0, 0.0, 0.0]))
+        cameraUpVector = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([0.0, 0.0, 1.0]))
+        # ggLog.info(f"cameraAxis = {cameraAxis}")
+        # ggLog.info(f"cameraUpVector = {cameraUpVector}")
+        target_position = cameraAxis + self._pose.position
+        # ggLog.info(f"Target = {target_position}")
+        # ggLog.info(f"Eye    = {self._pose.position}")
         self._extrinsic_matrix = pybullet.computeViewMatrix(cameraEyePosition = self._pose.position,
                                                      cameraTargetPosition = target_position,
-                                                     cameraUpVector = [0,0,1])
+                                                     cameraUpVector = cameraUpVector)
         # ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
         self._intrinsic_matrix = pybullet.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
@@ -104,7 +109,9 @@ class BulletCamera:
         self._compute_matrixes()
 
     def get_rendering(self):
-        # ggLog.info(f"Getting camera image ({self._width}x{self._height}), {self._pose}")
+        if threading.current_thread() != PyBulletUtils.starter_thread:
+             # Couldn't find info about this in the docs, but I feel like it could be an issue. And I actually did get some segfaults
+            ggLog.warn(f"Rendering on thread different from startup PyBullet thread. This may be a problem.")
         width, height, rgb, depth, segmentation = pybullet.getCameraImage(width = self._width,
                                                                    height = self._height,
                                                                    viewMatrix = self._extrinsic_matrix,
@@ -112,7 +119,6 @@ class BulletCamera:
                                                                    shadow=True,
                                                                    lightDirection=[1, 1, 1])
         img = np.array(rgb).reshape(height,width,4)[:,:,0:3]
-        # ggLog.info(f"Got camera image")
         return img
 
 class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController, JointPositionEnvController):
