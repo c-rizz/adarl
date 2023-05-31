@@ -247,7 +247,7 @@ class GymEnvWrapper(gym.GoalEnv):
 
         # Assess the situation
         done = self._ggEnv.checkEpisodeEnded(previousState, state)
-        reward = self._ggEnv.computeReward(previousState, state, action)
+        reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration())
         observation = self._ggEnv.getObservation(state)
         info = {"gz_gym_base_env_reached_state" : state,
                 "gz_gym_base_env_previous_state" : previousState,
@@ -519,11 +519,13 @@ class GymEnvWrapper(gym.GoalEnv):
                 self._compute_reward_pool = mp.Pool(min(mp.cpu_count()-1, 8))
                 signal.signal(signal.SIGINT, original_sigint_handler)
             # print(f"Starting map to compute {batch_size} rewards")
+            env_conf = self._ggEnv.get_configuration()
+            reward_func = lambda *args, **kwargs: self._ggEnv.computeReward(*args, **kwargs, env_conf=env_conf)
             inputs = zip(  achieved_goal,
                             desired_goal,
                             info,
                             [self._ggEnv.setGoalInState]*batch_size,
-                            [self._ggEnv.computeReward]*batch_size)
+                            [reward_func]*batch_size)
             # print(f"input[0] = {inpu  ts[0]}")
             rewards = self._compute_reward_pool.starmap(self._compute_reward_nonbatch, inputs)
             # for i in range(batch_size):

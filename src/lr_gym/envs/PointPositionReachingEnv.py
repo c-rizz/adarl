@@ -164,7 +164,7 @@ class PointPositionReachingEnv(BaseEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int) -> float:
+    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
 
         posDist_new, orientDist_new = self._getDist2goal(state)
         posDist_old, orientDist_old = self._getDist2goal(previousState)

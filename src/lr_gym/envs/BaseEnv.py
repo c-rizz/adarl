@@ -109,7 +109,7 @@ class BaseEnv(ABC):
         return self.reachedTimeout()
 
     @abstractmethod
-    def computeReward(self, previousState, state, action) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None) -> float:
         """To be implemented in subclass.
 
         This method is called during the stepping of the simulation. Just after the simulation has been stepped forward
@@ -275,3 +275,6 @@ class BaseEnv(ABC):
 
     def is_time_limited(self):
         return self._is_time_limited
+    
+    def get_configuration(self):
+        return None

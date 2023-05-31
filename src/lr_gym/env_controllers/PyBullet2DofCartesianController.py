@@ -20,13 +20,20 @@ class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvCo
                         yjoint : Tuple[str,str],
                         stepLength_sec : float = 0.0165,
                         start_position = np.array([0.0, 0.0]),
-                        restore_on_reset = True):
+                        restore_on_reset = True,
+                        step_timeout_sec = 10.0,
+                        debug_gui : bool = False,
+                        global_max_torque_position_control : float = 100,
+                        joints_max_torque_position_control : float = {}):
         super().__init__(stepLength_sec=stepLength_sec,
-                         restore_on_reset=restore_on_reset)
+                         restore_on_reset=restore_on_reset,
+                         debug_gui=debug_gui,
+                        global_max_torque_position_control = global_max_torque_position_control,
+                        joints_max_torque_position_control = joints_max_torque_position_control)
         self._xjoint = xjoint
         self._yjoint = yjoint
         self._end_effector_link = end_effector_link
-        self._step_timeout = 10
+        self._step_timeout = step_timeout_sec
         self._position_tolerance = 0.001
         self._blocking_movement = True
         self._start_position = np.array(start_position)
@@ -114,6 +121,7 @@ class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvCo
         if keep_going:
             # ggLog.warn(f"{type(self)}: move timed out (ee_pos = {ee_pos}, target_position = {self._target_position}, err = {err})")
             self._move_fails_in_last_step += 1
+        self._clear_commands()
         return elapsed_time
 
     def resetWorld(self):

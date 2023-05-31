@@ -111,7 +111,7 @@ class ImgStackWrapper(LrWrapper):
                 img = obs[self._img_dict_key]
             img = self._preproc_frame(img)
             self._pushFrame(img)
-            self._rewardSum += self.env.computeReward(previousState, state, self._actionToDo)
+            self._rewardSum += self.env.computeReward(previousState, state, self._actionToDo, env_conf=self.env.get_configuration())
             self.env.submitAction(self._actionToDo)
         self._previousState = self._lastState
         self._lastState = state
@@ -143,7 +143,7 @@ class ImgStackWrapper(LrWrapper):
         self._previousState = self.env.getState()
         self._lastState = self.env.getState()
 
-    def computeReward(self, previousState, state, action) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None) -> float:
         if not (state is self._lastState and action is self._actionToDo and previousState is self._previousState):
             raise RuntimeError("GymToLr.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
         return self._rewardSum

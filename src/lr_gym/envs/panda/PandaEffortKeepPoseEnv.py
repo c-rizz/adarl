@@ -92,7 +92,7 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
         return False # Only stops at the maximum frame number
 
 
-    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int) -> float:
+    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
 
         posDist_new, orientDist_new = self._getDist2goal(state, goalPoseQuat = self._goalPose)
         posDist_old, orientDist_old = self._getDist2goal(previousState, goalPoseQuat = self._goalPose)

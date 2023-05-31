@@ -90,12 +90,15 @@ def haltOnSigintReceived():
     global sigint_counter
     if os.getpid() == main_pid:
         if sigint_received:
-            answer = input(f"SIGINT received. Press Enter to resume or type 'exit' to terminate:\n> ")
-            if answer == "exit":
-                shutdown()
-                shared_memory_list[0] = "shutdown"
-                original_sigint_handler(signal.SIGINT, None)
-                raise KeyboardInterrupt
+            while True:
+                answer = input(f"SIGINT received. Enter 'c' to resume or type 'exit' to terminate:\n> ")
+                if answer == "exit":
+                    shutdown()
+                    shared_memory_list[0] = "shutdown"
+                    original_sigint_handler(signal.SIGINT, None)
+                    raise KeyboardInterrupt
+                elif answer == "c" or answer == "continue":
+                    break
             print("Resuming...")
             sigint_received = False
             sigint_counter = 0

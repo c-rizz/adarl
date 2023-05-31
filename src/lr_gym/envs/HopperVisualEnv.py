@@ -121,7 +121,8 @@ class HopperVisualEnv(HopperEnv):
     def computeReward(  self,
                         previousState : State,
                         state : State,
-                        action : Tuple[float,float,float]) -> float:
+                        action : Tuple[float,float,float],
+                        env_conf = None) -> float:
         robotState : RobotState = state[0]
         prevRobotState : RobotState = previousState[0]
 

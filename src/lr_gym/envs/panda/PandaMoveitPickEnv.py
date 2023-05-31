@@ -274,7 +274,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         return False
 
 
-    def computeReward(self, previousState : State, state : State, action : int) -> float:
+    def computeReward(self, previousState : State, state : State, action : int, env_conf = None) -> float:
 
         # if state[13] != 0:
         #     return -1

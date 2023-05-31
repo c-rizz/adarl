@@ -102,7 +102,7 @@ class DmEnvWrapper(dm_env.Environment):
         self._lr_env.performStep()
         state = self._lr_env.getState()
         done = self._lr_env.checkEpisodeEnded(previousState, state)
-        reward = self._lr_env.computeReward(previousState, state, action)
+        reward = self._lr_env.computeReward(previousState, state, action, env_conf=self._lr_env.get_configuration())
         observation = self._lr_env.getObservation(state)
         self._episode_ended = done
         self._episode_frames += 1

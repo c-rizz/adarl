@@ -12,7 +12,7 @@ import threading
 client_id = None
 starter_thread = None
 
-def start():
+def start(debug_gui : bool = False):
     """
     Start Pyullet simulation.
 
@@ -21,17 +21,21 @@ def start():
     """
     global client_id
     global starter_thread
-    client_id = p.connect(p.DIRECT)
-    plugin = p.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
-    p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
+    if debug_gui:
+        client_id = p.connect(p.GUI)
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 1)
+    else:
+        client_id = p.connect(p.DIRECT)
+        plugin = p.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
     starter_thread = threading.current_thread()
 
 def buildPlaneWorld():
     # Taken from pybullet's scene_abstract.py
     p.setGravity(0, 0, -9.8)
-    p.setDefaultContactERP(0.9)
+    # p.setDefaultContactERP(0.9)
     #print("self.numSolverIterations=",self.numSolverIterations)
-    p.setPhysicsEngineParameter(fixedTimeStep=0.0165 / 4 * 4,
+    p.setPhysicsEngineParameter( #fixedTimeStep=0.0165 / 4 * 4,
                                 numSolverIterations=5,
                                 numSubSteps=4)
 
@@ -70,11 +74,9 @@ def buildPlaneWorld():
 def unloadModel(object_id : int):
     p.removeBody(object_id)
 
-def startupWorld():
-    start()
 
-def startupPlaneWorld():
-    start()
+def startupPlaneWorld(debug_gui : bool = False):
+    start(debug_gui = debug_gui)
     # ggLog.info("Started pybullet")
     buildPlaneWorld()
 

@@ -53,7 +53,7 @@ class PandaEffortStayUpEnv(PandaEffortBaseEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int) -> float:
+    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
 
         position = state[0:3]
         prevPosition = previousState[0:3]

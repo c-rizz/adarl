@@ -78,7 +78,7 @@ class GymToLr(BaseEnv):
         return ended
 
 
-    def computeReward(self, previousState, state, action) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None) -> float:
         if not (state is self._lastObservation and action is self._actionToDo and previousState is self._previousObservation):
             raise RuntimeError("GymToLr.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
         return self._lastReward

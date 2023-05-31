@@ -324,7 +324,9 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
 
     if showLegend:
         # p.legend(loc='upper left')
-        p.legend(prop={'size': legendsize}) #, loc='lower right')
+        leg = p.legend(prop={'size': legendsize}) #, loc='lower right')
+        for line in leg.get_lines():
+            line.set_linewidth(legendsize)
     else:
         p.legend().remove()
     p.minorticks_on()

@@ -165,7 +165,7 @@ class PandaEffortKeepVarPoseEnv(PandaEffortKeepPoseEnv):
         return ret
 
 
-    def computeReward(self, previousState : NDArray[(26,), np.float32], state : NDArray[(26,), np.float32], action : int) -> float:
+    def computeReward(self, previousState : NDArray[(26,), np.float32], state : NDArray[(26,), np.float32], action : int, env_conf = None) -> float:
 
         goal = state[20:26]
 

@@ -128,7 +128,15 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
     """
 
     def __init__(self, stepLength_sec : float = 0.004166666666,
-                        restore_on_reset = True):
+                        restore_on_reset = True,
+                        debug_gui : bool = False,
+                        real_time_factor : Optional[float] = None,
+                        global_max_torque_position_control : float = 100,
+                        joints_max_torque_position_control : float = {},
+                        global_max_velocity_position_control : float = 1,
+                        joints_max_velocity_position_control : float = {},
+                        global_max_acceleration_position_control : float = 10,
+                        joints_max_acceleration_position_control : float = {}):
         """Initialize the Simulator controller.
 
 
@@ -138,12 +146,19 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._spawned_objects_ids = {}
         self._cameras = {}
         self._commanded_torques = {}
-        self._commanded_positions = {}
+        self._commanded_trajectories = {}
+        self._debug_gui = debug_gui
+        if real_time_factor is not None and real_time_factor>0:
+            self._real_time_factor = real_time_factor
+        else:
+            self._real_time_factor = None
         
-        self._max_joint_velocities_pos_control = {}
-        self._max_joint_velocity_pos_control = 10
-        self._max_torques_pos_control = {}
-        self._max_torque_pos_control = 100
+        self._max_joint_velocities_pos_control = joints_max_velocity_position_control
+        self._max_joint_velocity_pos_control = global_max_velocity_position_control
+        self._max_joint_accelerations_pos_control = joints_max_acceleration_position_control
+        self._max_joint_acceleration_pos_control = global_max_acceleration_position_control
+        self._max_torques_pos_control = joints_max_torque_position_control
+        self._max_torque_pos_control = global_max_torque_position_control
         self._restore_on_reset = restore_on_reset
 
     def _refresh_entities_ids(self):
@@ -209,13 +224,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def resetWorld(self):
         self._commanded_torques = {}
-        self._commanded_positions = {}
+        self._commanded_trajectories = {}
         # ggLog.info(f"Resetting...")
         if self._restore_on_reset:
             pybullet.restoreState(self._startStateId)
         # ggLog.info(f"Resetted")
         self._refresh_entities_ids()
         self._simTime = 0
+        self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
 
     def step(self) -> float:
@@ -238,21 +254,30 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         stepLength = self.freerun(self._stepLength_sec)
+        self._clear_commands()
         return stepLength
 
     def freerun(self, duration_sec: float):
         bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
         # ggLog.info(f"PyBullet doing {duration_sec}/{bullet_stepLength_sec}={simsteps} steps")
-        sim_duration = 0
-        while sim_duration < duration_sec:
+        t0 = self._simTime
+        while self._simTime-t0 < duration_sec:
             self._apply_commanded_torques()
             self._apply_commanded_positions()
             pybullet.stepSimulation()
-            sim_duration += bullet_stepLength_sec
-        self._simTime += sim_duration
+            self._simTime += bullet_stepLength_sec
+            if self._real_time_factor is not None and self._real_time_factor>0:
+                sleep_time = bullet_stepLength_sec - (time.monotonic()-self._prev_step_end_wall_time)
+                # print(f" sleep_time = {sleep_time}")
+                if sleep_time > 0:
+                    time.sleep(sleep_time*(1/self._real_time_factor))
+            self._prev_step_end_wall_time = time.monotonic()
+        return self._simTime-t0
+    
+    def _clear_commands(self):
         self._commanded_torques = {}
-        self._commanded_positions = {}
-        return sim_duration
+        self._commanded_trajectories = {}
+
 
     def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
         # ggLog.info(f"Rendering")
@@ -263,6 +288,56 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             camera.set_pose(linkstate.pose)
             ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
         return ret
+
+    def _build_trajectory(self, t0, p0, v0, pf, samples, max_vel, max_acc):
+
+        # TODO: implement v0 use
+
+        t_a = max_vel/max_acc # acceleration duration
+        x_a = max_vel*max_vel/(2*max_acc) # space to accelerate to max_vel
+        d = abs(pf-p0)
+        if d < 2*x_a:
+            x_a = d/2
+            t_a = np.sqrt(((2*x_a)/max_acc))
+            max_vel = t_a*max_acc
+        t_coast = (d-2*x_a)/max_vel # time spent at max speed
+        t_f = 2*t_a + t_coast # end time
+        t_d = t_f-t_a # time when deceleration starts
+        x_d = d-x_a # position where deceleration starts
+
+        # ggLog.info(f"{t0}, {p0}, {v0}, {pf}, {samples}, {max_vel}, {max_acc} : {t_a}, {x_a}, {t_coast}, {t_f}, {t_d}, {x_d}, {d}")
+
+        trajectory_tpva = [None] * samples
+        for i in range(samples-1):
+            t = t_f*(i/samples)
+            if t < t_a:
+                x = 0.5*max_acc*t*t
+                v = max_acc*t
+                a = max_acc
+            elif t>t_d:
+                td = t - t_d # time since deceleration start
+                x = x_d + (max_vel*td - 0.5*max_acc*td*td)
+                v = max_vel-max_acc*td
+                a = -max_acc
+            elif t >= t_a and t<=t_d:
+                x = x_a + (t-t_a)*max_vel
+                v = max_vel
+                a = 0
+            else:
+                RuntimeError(f"This should not happen")
+            trajectory_tpva[i] = (t, x, v, a)
+        trajectory_tpva[-1] = (0, 0, 0, 0)
+        if pf-p0<0:
+            trajectory_tpva = [[t,-p,-v,-a] for t,p,v,a in trajectory_tpva]
+        trajectory_tpva = [[t+t0,p+p0,v,a] for t,p,v,a in trajectory_tpva]
+        trajectory_tpva[-1] = (t_f+t0, pf, 0, 0)
+        return np.array(trajectory_tpva, dtype = np.float64)
+            
+
+        
+
+        
+        
 
     def _apply_commanded_torques(self):
         for bodyId in self._commanded_torques.keys():
@@ -284,33 +359,69 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
 
     def _apply_commanded_positions(self):
-        for bodyId in self._commanded_positions.keys():
-            # ggLog.info(f"Setting joint control for {bodyId} {self._commanded_positions[bodyId]}")
+        t = self.getEnvSimTimeFromStart()
+        for bodyId, joint_trajectories in self._commanded_trajectories.items():
+            body_commad = ([],[],[],[],[],[])
+            sample_time = None
+            for jointId, traj_tpva in joint_trajectories:
+                jointName = self._getJointName(bodyId, jointId)
+                max_torque = min(self._max_torque_pos_control,
+                                self._max_torques_pos_control.get(jointName,float("+inf")))
+                sample_idx = np.searchsorted(traj_tpva[:,0], t) # index of the next trajectory sample (the first with time higher of t)
+                if sample_idx>=traj_tpva.shape[0]:
+                    sample_idx = traj_tpva.shape[0]-1
+                sample = traj_tpva[sample_idx]
+                body_commad[0].append(jointId)
+                body_commad[1].append(sample[1])
+                body_commad[2].append(sample[2])
+                body_commad[3].append(max_torque)
+                body_commad[4].append(None)
+                body_commad[5].append(None)
+                sample_time = sample[0]
+            # ggLog.info(f"Setting joint control for {bodyId}, sample={sample_time}: {body_commad}")
             pybullet.setJointMotorControlArray(bodyIndex=bodyId,
-                                        jointIndices=self._commanded_positions[bodyId][0],
+                                        jointIndices=body_commad[0],
                                         controlMode=pybullet.POSITION_CONTROL,
-                                        targetPositions=self._commanded_positions[bodyId][1],
-                                        targetVelocities=self._commanded_positions[bodyId][2],
-                                        forces=self._commanded_positions[bodyId][3])
+                                        targetPositions=body_commad[1],
+                                        targetVelocities=body_commad[2],
+                                        forces=body_commad[3],
+                                        # positionGains=command[4],
+                                        # velocityGains=command[5]
+                                        )
             
     def setJointsPositionCommand(self,  jointPositions : Dict[Tuple[str,str],float],
                                         velocity_scaling : Optional[float] = 1.0,
                                         acceleration_scaling : Optional[float] = 1.0) -> None:
         requests = {}
-        for joint, position in jointPositions.items():
+        jointStates = self.getJointsState(requestedJoints=jointPositions.keys())
+        t0 = self.getEnvSimTimeFromStart()
+        for joint, req_position in jointPositions.items():
+            max_acceleration = min( self._max_joint_acceleration_pos_control,
+                                    self._max_joint_accelerations_pos_control.get(joint,float("+inf")))
+            max_velocity = min(self._max_joint_velocity_pos_control,
+                               self._max_joint_velocities_pos_control.get(joint,float("+inf")))
             bodyId, jointId = self._getBodyAndJointId(joint)
             if bodyId not in requests: #If we haven't created a request for this body yet
-                requests[bodyId] = ([],[],[],[])
-            requests[bodyId][0].append(jointId) #requested joint
-            requests[bodyId][1].append(position) #requested position
-            # max_velocity = min(self._max_joint_velocity_pos_control,
-            #                    self._max_joint_velocities_pos_control.get(joint,float("+inf")))
-            requests[bodyId][2].append(0) #requested velocity
-            max_torque = min(self._max_torque_pos_control,
-                             self._max_torques_pos_control.get(joint,float("+inf")))
-            requests[bodyId][3].append(max_torque*acceleration_scaling) # Scale with the acceleration, kinda the same... :)
+                requests[bodyId] = []
+            p0 = jointStates[joint].position[0]
+            traj_tpva = self._build_trajectory(t0 = t0,
+                                               p0 = p0,
+                                               v0 = jointStates[joint].rate[0],
+                                               pf = req_position,
+                                               samples = 100,
+                                               max_vel = max_velocity*velocity_scaling,
+                                               max_acc = max_acceleration*acceleration_scaling)
+            requests[bodyId].append((jointId, traj_tpva))
+            # requests[bodyId][0].append(jointId) #requested joint
+            # requests[bodyId][1].append(req_position) #requested position
+            # requests[bodyId][2].append(0) #requested velocity
+            # requests[bodyId][3].append(max_torque*acceleration_scaling) # Scale with the acceleration, kinda the same... :)
+            # requests[bodyId][4].append(positionGain)
+            # requests[bodyId][5].append(velocityGain)
+            np.set_printoptions(suppress=True, formatter={'float_kind':'{:f}'.format})
+            # ggLog.info(f"Built trajectory from {p0} to {req_position} for joint {joint} at t0={t0}:\n{traj_tpva}")
 
-        self._commanded_positions = requests
+        self._commanded_trajectories = requests
 
 
     def moveToJointPoseSync(self,   jointPositions : Dict[Tuple[str,str],float],
@@ -330,10 +441,10 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         t0_wall = time.monotonic()
         t0_sim = self.getEnvTimeFromStartup()
 
+        self.setJointsPositionCommand(jointPositions=jointPositions,
+                                        velocity_scaling=velocity_scaling,
+                                        acceleration_scaling=acceleration_scaling)
         while np.max(req_pos - curr_pos) > max_error:
-            self.setJointsPositionCommand(jointPositions=jointPositions,
-                                          velocity_scaling=velocity_scaling,
-                                          acceleration_scaling=acceleration_scaling)
             self.freerun(duration_sec=step_time)
             jstates = self.getJointsState(joints)
             curr_pos = np.array([jstates[k].position[0] for k in joints])
@@ -448,7 +559,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._simTime
 
     def build_scenario(self, file_path, format = "urdf"):
-        PyBulletUtils.startupPlaneWorld()
+        PyBulletUtils.startupPlaneWorld(debug_gui = self._debug_gui)
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
         
@@ -471,7 +582,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             fileFormat = ".".join(fileFormat.split(".")[:-1])
         
         if fileFormat == "urdf":
-            bodyId = pybullet.loadURDF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION)
+            bodyId = pybullet.loadURDF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION|pybullet.URDF_PRINT_URDF_INFO)
         elif fileFormat == "mjcf":
             bodyId = pybullet.loadMJCF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
         elif fileFormat == "sdf":

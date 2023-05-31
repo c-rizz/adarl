@@ -151,7 +151,8 @@ class HopperEnv(ControlledEnv):
     def computeReward( self,
                         previousState : Tuple[float,float,float,float,float,float,float,float,float,float],
                         state : Tuple[float,float,float,float,float,float,float,float,float,float],
-                        action : Tuple[float,float,float]) -> float:
+                        action : Tuple[float,float,float],
+                        env_conf = None) -> float:
         if not self.checkEpisodeEnded(previousState, state):
             speed = (state[15] - state[16])/self._stepLength_sec
             # print("Speed: "+str(speed))

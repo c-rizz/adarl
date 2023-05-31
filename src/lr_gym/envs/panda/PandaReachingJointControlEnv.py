@@ -199,7 +199,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int) -> float:
+    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
 
         posDist, minAngleDist = self._getDist2goal(state)
         mixedDistance = np.linalg.norm([posDist,minAngleDist])

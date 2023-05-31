@@ -60,7 +60,7 @@ class RandomEnv(BaseEnv):
             raise NotImplementedError(f"Unsupported space {space}")
 
 
-    def computeReward(self, previousState, state, action) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None) -> float:
         rew =  self._sample_space(self.reward_space)
         ggLog.info(f"reward = {rew}")
         return rew
