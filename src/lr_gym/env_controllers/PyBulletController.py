@@ -160,6 +160,11 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._max_torques_pos_control = joints_max_torque_position_control
         self._max_torque_pos_control = global_max_torque_position_control
         self._restore_on_reset = restore_on_reset
+        self._stepping_wtime_since_build = 0
+        self._stepping_stime_since_build = 0
+        self._freerun_time_since_build = 0
+        self._build_time = time.monotonic()
+        self._verbose = False
 
     def _refresh_entities_ids(self):
         bodyIds = []
@@ -233,6 +238,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._simTime = 0
         self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
+        if self._verbose:
+            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_freerun_wtime = {self._freerun_time_since_build}s")
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -258,13 +265,17 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return stepLength
 
     def freerun(self, duration_sec: float):
+        tf0 = time.monotonic()
         bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
         # ggLog.info(f"PyBullet doing {duration_sec}/{bullet_stepLength_sec}={simsteps} steps")
+        stepping_wtime = 0
         t0 = self._simTime
         while self._simTime-t0 < duration_sec:
             self._apply_commanded_torques()
             self._apply_commanded_positions()
+            wtps = time.monotonic()
             pybullet.stepSimulation()
+            stepping_wtime += time.monotonic()-wtps
             self._simTime += bullet_stepLength_sec
             if self._real_time_factor is not None and self._real_time_factor>0:
                 sleep_time = bullet_stepLength_sec - (time.monotonic()-self._prev_step_end_wall_time)
@@ -272,6 +283,9 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 if sleep_time > 0:
                     time.sleep(sleep_time*(1/self._real_time_factor))
             self._prev_step_end_wall_time = time.monotonic()
+        self._stepping_wtime_since_build += stepping_wtime
+        self._stepping_stime_since_build += self._simTime - t0
+        self._freerun_time_since_build += time.monotonic()-tf0
         return self._simTime-t0
     
     def _clear_commands(self):
@@ -296,25 +310,33 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         t_a = max_vel/max_acc # acceleration duration
         x_a = max_vel*max_vel/(2*max_acc) # space to accelerate to max_vel
         d = abs(pf-p0)
-        if d < 2*x_a:
+        if d < 0.0001:
+            trajectory_tpva = [(t0, pf, 0, 0)]
+            return np.array(trajectory_tpva, dtype = np.float64)
+        if d <= 2*x_a:
             x_a = d/2
             t_a = np.sqrt(((2*x_a)/max_acc))
             max_vel = t_a*max_acc
-        t_coast = (d-2*x_a)/max_vel # time spent at max speed
+            t_coast = 0
+        else:
+            t_coast = (d-2*x_a)/max_vel # time spent at max speed
         t_f = 2*t_a + t_coast # end time
         t_d = t_f-t_a # time when deceleration starts
         x_d = d-x_a # position where deceleration starts
-
+        if t_d<t_a: # may happen for numerical reasons
+            t_d = t_a
+        if np.isnan(t_f):
+            raise RuntimeError(f"t_f is nan: t_f={t_f}, t_a={t_a}, d={d}, x_a={x_a}, max_vel={max_vel}, max_acc={max_acc}")
         # ggLog.info(f"{t0}, {p0}, {v0}, {pf}, {samples}, {max_vel}, {max_acc} : {t_a}, {x_a}, {t_coast}, {t_f}, {t_d}, {x_d}, {d}")
-
+        samples = int(t_f*100)+1 #100Hz plus one final sample
         trajectory_tpva = [None] * samples
         for i in range(samples-1):
             t = t_f*(i/samples)
-            if t < t_a:
+            if t <= t_a:
                 x = 0.5*max_acc*t*t
                 v = max_acc*t
                 a = max_acc
-            elif t>t_d:
+            elif t>=t_d:
                 td = t - t_d # time since deceleration start
                 x = x_d + (max_vel*td - 0.5*max_acc*td*td)
                 v = max_vel-max_acc*td
@@ -324,7 +346,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 v = max_vel
                 a = 0
             else:
-                RuntimeError(f"This should not happen")
+                raise RuntimeError(f"This should not happen: t = {t}, t_a={t_a}, t_d={t_d}, p0={p0}, pf={pf}")
             trajectory_tpva[i] = (t, x, v, a)
         trajectory_tpva[-1] = (0, 0, 0, 0)
         if pf-p0<0:
