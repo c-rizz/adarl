@@ -45,7 +45,8 @@ class GymEnvWrapper(gym.GoalEnv):
                  env : BaseEnv,
                  verbose : bool = False,
                  quiet : bool = False,
-                 episodeInfoLogFile : str = None):
+                 episodeInfoLogFile : str = None,
+                 logs_id : str = ""):
         """Short summary.
 
         Parameters
@@ -53,6 +54,7 @@ class GymEnvWrapper(gym.GoalEnv):
 
         """
 
+        self._logs_id = logs_id
         self._ggEnv = env
         self.action_space = env.action_space
         self.observation_space = env.observation_space
@@ -173,7 +175,11 @@ class GymEnvWrapper(gym.GoalEnv):
         self._logFile.flush()
         if lr_gym.utils.utils.is_wandb_enabled():
             import wandb
-            wandb.log({k : v if type(v) is not bool else int(v) for k,v in self._info.items()})
+            if self._logs_id is not None and self._logs_id!= "":
+                prefix = self._logs_id+"/"
+            else:
+                prefix = ""
+            wandb.log({prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
 
     def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
         """Run one step of the environment's dynamics.
