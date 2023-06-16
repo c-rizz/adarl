@@ -66,7 +66,7 @@ class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvCo
                                 do_cartesian = False,
                                 velocity_scaling : Optional[float] = None,
                                 acceleration_scaling : Optional[float] = None,
-                                ee_link : Optional[str] = None,
+                                ee_link : Optional[Tuple[str,str]] = None,
                                 reference_frame : Optional[str] = None,
                                 max_error : float = 0.001,
                                 step_time : Optional[float] = 0.1,

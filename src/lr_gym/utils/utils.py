@@ -25,6 +25,7 @@ import traceback
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
+import faulthandler
 
 
 name_to_dtypes = {
@@ -312,6 +313,7 @@ def lr_gym_startup( main_file_path : str,
                     seed = None,
                     experiment_name : Optional[str] = None,
                     run_id : Optional[str] = None) -> str:
+    faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
     logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
     ggLog.addLogFile(logFolder+"/gglog.log")
     if seed is None:
@@ -332,6 +334,11 @@ def lr_gym_startup( main_file_path : str,
                         "Will continue in 10 sec...")
             time.sleep(10)
     return logFolder
+
+def lr_gym_shutdown():
+    if is_wandb_enabled():
+        import wandb
+        wandb.finish()
 
 def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None, predict_func : Callable[[Any], Tuple[Any,Any]] = None, progress_bar : bool = True, images_return = None, obs_return = None):
     if predict_func is None:
@@ -510,7 +517,7 @@ def pkgutil_get_path(package, resource):
     parts = resource.split('/')
     parts.insert(0, os.path.dirname(mod.__file__))
     resource_name = os.path.join(*parts)
-    return resource_name
+    return resource_name.replace("//","/")
 
 def exc_to_str(exception):
     # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))

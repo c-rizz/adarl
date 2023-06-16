@@ -28,7 +28,7 @@ class CartesianPositionEnvController(ABC):
     
     @abstractmethod
     def moveToEePoseSync(self,  poses : Dict[Tuple[str,str],List[float]] = None, 
-                                do_cartesian = False, velocity_scaling :Optional[float] = None,
-                                acceleration_scaling : Optional[float] = None, ee_link : Optional[str] = None,
+                                do_cartesian = False, velocity_scaling : Optional[float] = None,
+                                acceleration_scaling : Optional[float] = None, ee_link : Optional[Tuple[str,str]] = None,
                                 reference_frame : Optional[str] = None):
         raise NotImplementedError()
