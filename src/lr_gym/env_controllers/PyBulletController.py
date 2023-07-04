@@ -60,6 +60,13 @@ class BulletCamera:
         self.link_name = link_name
         self.camera_name = camera_name
         self._compute_matrixes()
+        self.setup_light(   lightDirection = [1,1,1],
+                            lightColor = [0.9,0.9,0.9],
+                            lightDistance = 100,
+                            enable_shadows = True,
+                            lightAmbientCoeff = 0.8,
+                            lightDiffuseCoeff = 0.5,
+                            lightSpecularCoeff = 0.1)
         
     def _compute_matrixes(self):
         # ztop_to_ytop = quaternion.from_float_array([0.707, -0.707, 0.0, 0.0])
@@ -108,16 +115,36 @@ class BulletCamera:
         self._pose = pose
         self._compute_matrixes()
 
+    def setup_light(self,   lightDirection,
+                            lightColor,
+                            lightDistance,
+                            enable_shadows,
+                            lightAmbientCoeff,
+                            lightDiffuseCoeff,
+                            lightSpecularCoeff):
+        self._lightDirection = lightDirection
+        self._lightColor = lightColor
+        self._lightDistance = lightDistance
+        self._enable_shadows = enable_shadows
+        self._lightAmbientCoeff = lightAmbientCoeff
+        self._lightDiffuseCoeff = lightDiffuseCoeff
+        self._lightSpecularCoeff = lightSpecularCoeff
+
     def get_rendering(self):
         if threading.current_thread() != PyBulletUtils.starter_thread:
              # Couldn't find info about this in the docs, but I feel like it could be an issue. And I actually did get some segfaults
             ggLog.warn(f"Rendering on thread different from startup PyBullet thread. This may be a problem.")
-        width, height, rgb, depth, segmentation = pybullet.getCameraImage(width = self._width,
-                                                                   height = self._height,
-                                                                   viewMatrix = self._extrinsic_matrix,
-                                                                   projectionMatrix = self._intrinsic_matrix,
-                                                                   shadow=True,
-                                                                   lightDirection=[1, 1, 1])
+        width, height, rgb, depth, segmentation = pybullet.getCameraImage(  width = self._width,
+                                                                            height = self._height,
+                                                                            viewMatrix = self._extrinsic_matrix,
+                                                                            projectionMatrix = self._intrinsic_matrix,
+                                                                            shadow=self._enable_shadows,
+                                                                            lightDirection=self._lightDirection,
+                                                                            lightColor = self._lightColor,
+                                                                            lightDistance = self._lightDistance,
+                                                                            lightAmbientCoeff = self._lightAmbientCoeff,
+                                                                            lightDiffuseCoeff = self._lightDiffuseCoeff,
+                                                                            lightSpecularCoeff = self._lightSpecularCoeff)
         img = np.array(rgb).reshape(height,width,4)[:,:,0:3]
         return img
 
@@ -300,6 +327,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             camera = self._cameras[cam_name]
             linkstate = self.getLinksState([camera.link_name])[camera.link_name]
             camera.set_pose(linkstate.pose)
+            camera.setup_light(
+                                lightDirection = self._lightDirection,
+                                lightColor = self._lightColor,
+                                lightDistance = self._lightDistance,
+                                enable_shadows = self._enable_shadows,
+                                lightAmbientCoeff = self._lightAmbientCoeff,
+                                lightDiffuseCoeff = self._lightDiffuseCoeff,
+                                lightSpecularCoeff = self._lightSpecularCoeff)
             ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
         return ret
 
@@ -688,7 +723,19 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._spawned_objects_ids.pop(model_name)
         self._refresh_entities_ids()
 
-    def setupLight(self):
-        raise NotImplementedError(f"Lighting setup is not supported in PyBullet")
+    def setupLight(self,    lightDirection,
+                            lightColor,
+                            lightDistance,
+                            enable_shadows,
+                            lightAmbientCoeff,
+                            lightDiffuseCoeff,
+                            lightSpecularCoeff):
+        self._lightDirection = lightDirection
+        self._lightColor = lightColor
+        self._lightDistance = lightDistance
+        self._enable_shadows = enable_shadows
+        self._lightAmbientCoeff = lightAmbientCoeff
+        self._lightDiffuseCoeff = lightDiffuseCoeff
+        self._lightSpecularCoeff = lightSpecularCoeff
     
     

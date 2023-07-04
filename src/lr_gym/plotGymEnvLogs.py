@@ -39,6 +39,10 @@ def prepData(csvfiles : List[str],
 
     out_dfs = {}
     file_labels = labelsFromFiles(csvfiles)
+
+    for i in range(len(in_dfs)):
+        print(f"file {csvfiles[i]} has columns {in_dfs[i].shape[0]} rows")
+        print(f"file {csvfiles[i]} has columns {in_dfs[i].columns}")
     i = 0
     for i in range(len(in_dfs)):
         df = in_dfs[i]
@@ -78,7 +82,7 @@ def prepData(csvfiles : List[str],
             rdf[yid_mean_cummax_idx] = rdf[yid_mean_idx].cummax()
             count = rdf[x_data_id].count()
             if count < 30:
-                print(f"file {csvfiles[i]} only has {count} samples")
+                print(f"file {csvfiles[i]} only has {count} '{x_data_id}' samples")
             print(f"{file_labels[i]} has {count} samples")
             out_dfs[file_labels[i]] = rdf
     else:

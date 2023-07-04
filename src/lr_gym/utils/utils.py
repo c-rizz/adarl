@@ -312,7 +312,15 @@ def lr_gym_startup( main_file_path : str,
                     folderName : Optional[str] = None,
                     seed = None,
                     experiment_name : Optional[str] = None,
-                    run_id : Optional[str] = None) -> str:
+                    run_id : Optional[str] = None,
+                    debug = False) -> str:
+    if isinstance(debug, bool):
+        if debug:
+            debug_level = 1
+        else:
+            debug_level = 0
+    else:
+        debug_level = debug
     faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
     logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
     ggLog.addLogFile(logFolder+"/gglog.log")
@@ -324,7 +332,8 @@ def lr_gym_startup( main_file_path : str,
     if using_pytorch:
         import torch as th
         pyTorch_makeDeterministic(seed)
-        # th.autograd.set_detect_anomaly(True) # Detect NaNs
+        th.autograd.set_detect_anomaly(debug_level >= 0) # Detect NaNs
+        th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
         if th.cuda.is_available():
             ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
         else:
@@ -496,7 +505,7 @@ class RequestFailError(Exception):
 
 
 
-def pkgutil_get_path(package, resource):
+def pkgutil_get_path(package, resource = None):
     """ Modified version from pkgutil.get_data """
 
     spec = importlib.util.find_spec(package)
@@ -510,6 +519,9 @@ def pkgutil_get_path(package, resource):
            importlib._bootstrap._load(spec))
     if mod is None or not hasattr(mod, '__file__'):
         return None
+    
+    if resource is None:
+        return os.path.dirname(mod.__file__)
 
     # Modify the resource name to be compatible with the loader.get_data
     # signature - an os.path format "filename" starting with the dirname of
