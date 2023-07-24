@@ -17,7 +17,7 @@ import lr_gym.utils.utils
 from pathlib import Path
 import time
 import threading
-
+import os
 
 
 
@@ -617,6 +617,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
     def build_scenario(self, file_path, format = "urdf"):
         PyBulletUtils.startupPlaneWorld(debug_gui = self._debug_gui)
+        lr_gym.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
         
@@ -633,7 +634,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         if fileFormat.split(".")[-1] == "xacro":
             model_definition_string = lr_gym.utils.utils.compile_xacro_string(  model_definition_string=Path(modelFilePath).read_text(),
                                                                                 model_kwargs=model_kwargs)
-            compiled_file_path = f"/tmp/lr_gym_PyBulletUtils_xacrocompile_{int(time.time()*1000000)}_{hash(modelFilePath)}"
+            compiled_file_path = f"/tmp/lr_gym_PyBulletUtils_xacrocompile_{int(time.time()*1000000)}_{os.getpid()}_{hash(modelFilePath)}"
             Path(compiled_file_path).write_text(model_definition_string)
             modelFilePath = compiled_file_path
             fileFormat = ".".join(fileFormat.split(".")[:-1])

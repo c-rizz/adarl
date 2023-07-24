@@ -18,7 +18,6 @@ import multiprocessing
 import csv
 import sys
 import yaml
-import torch as th
 import importlib
 import traceback
 
@@ -133,20 +132,6 @@ class AverageKeeper:
         self.addValue(time.monotonic()-self._t0)
 
 
-def pyTorch_makeDeterministic(seed):
-    """ Make pytorch as deterministic as possible.
-        Still, DOES NOT ENSURE REPRODUCIBILTY ACROSS DIFFERENT TORCH/CUDA BUILDS AND
-        HARDWARE ARCHITECTURES
-    """
-    import torch as th
-    th.manual_seed(seed)
-    np.random.seed(seed)
-    # print(f"Seed set to {seed}")
-    # time.sleep(10)
-    th.backends.cudnn.benchmark = False
-    th.use_deterministic_algorithms(True)
-    # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 def quaternionDistance(q1 : quaternion.quaternion ,q2 : quaternion.quaternion ):
@@ -293,7 +278,7 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
         import wandb
         if experiment_name is None:
             experiment_name = os.path.basename(file)
-        wandb.init( project="lr_gym_"+experiment_name,
+        wandb.init( project=experiment_name,
                     config = values,
                     name = run_id,
                     monitor_gym = False, # Do not save openai gym videos
@@ -306,43 +291,6 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
 
 from lr_gym.utils.sigint_handler import setupSigintHandler
     
-def lr_gym_startup( main_file_path : str,
-                    currentframe = None,
-                    using_pytorch : bool = True,
-                    folderName : Optional[str] = None,
-                    seed = None,
-                    experiment_name : Optional[str] = None,
-                    run_id : Optional[str] = None,
-                    debug = False) -> str:
-    if isinstance(debug, bool):
-        if debug:
-            debug_level = 1
-        else:
-            debug_level = 0
-    else:
-        debug_level = debug
-    faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
-    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
-    ggLog.addLogFile(logFolder+"/gglog.log")
-    if seed is None:
-        raise AttributeError("You must specify the run seed")
-    ggLog.setId(str(seed))
-    np.set_printoptions(edgeitems=10,linewidth=180)
-    setupSigintHandler()
-    if using_pytorch:
-        import torch as th
-        pyTorch_makeDeterministic(seed)
-        th.autograd.set_detect_anomaly(debug_level >= 0) # Detect NaNs
-        th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
-        if th.cuda.is_available():
-            ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
-        else:
-            ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                        "                  NO CUDA AVAILABLE!\n"+
-                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
-                        "Will continue in 10 sec...")
-            time.sleep(10)
-    return logFolder
 
 def lr_gym_shutdown():
     if is_wandb_enabled():
@@ -470,33 +418,6 @@ def evaluateSavedModels(files : List[str], evaluator : Callable[[str],Dict[str,U
             csvfile.flush()
 
 
-def getBestGpu():
-    gpus_mem_info = []
-    for i in range(th.cuda.device_count()):
-        prevDev = th.cuda.current_device()
-        th.cuda.set_device(th.device(type="cuda", index=i))
-        gpus_mem_info.append(th.cuda.mem_get_info()) #Returns [free, total]
-        th.cuda.set_device(prevDev)
-        # print(f"Got {gpus_mem_info[-1]}")
-
-    bestRatio = 0
-    bestGpu = None
-    for i in range(len(gpus_mem_info)):
-        tot = gpus_mem_info[i][1]
-        free = gpus_mem_info[i][0]
-        ratio = free/tot
-        if ratio > bestRatio:
-            bestRatio = ratio
-            bestGpu = i
-    ggLog.info(f"Choosing GPU {bestGpu} with {bestRatio*100}% free memory")
-    return bestGpu
-
-
-def torch_selectBestGpu():
-    import torch as th
-    bestGpu = getBestGpu()
-    th.cuda.set_device(bestGpu)
-    return th.device('cuda:'+str(bestGpu))
 
 class RequestFailError(Exception):
     def __init__(self, message, partialResult):            
@@ -686,3 +607,89 @@ def isinstance_noimport(obj, class_names):
     if isinstance(class_names, str):
         class_names = [class_names]
     return type(obj).__name__ in class_names
+
+
+
+
+
+def lr_gym_startup( main_file_path : str,
+                    currentframe = None,
+                    using_pytorch : bool = True,
+                    folderName : Optional[str] = None,
+                    seed = None,
+                    experiment_name : Optional[str] = None,
+                    run_id : Optional[str] = None,
+                    debug = False) -> str:
+    if isinstance(debug, bool):
+        if debug:
+            debug_level = 1
+        else:
+            debug_level = 0
+    else:
+        debug_level = debug
+    faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
+    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
+    ggLog.addLogFile(logFolder+"/gglog.log")
+    if seed is None:
+        raise AttributeError("You must specify the run seed")
+    ggLog.setId(str(seed))
+    np.set_printoptions(edgeitems=10,linewidth=180)
+    setupSigintHandler()
+    if using_pytorch:
+        import torch as th
+        pyTorch_makeDeterministic(seed)
+        th.autograd.set_detect_anomaly(debug_level >= 0) # Detect NaNs
+        th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
+        if th.cuda.is_available():
+            ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
+        else:
+            ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                        "                  NO CUDA AVAILABLE!\n"+
+                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
+                        "Will continue in 10 sec...")
+            time.sleep(10)
+    return logFolder
+
+def pyTorch_makeDeterministic(seed):
+    """ Make pytorch as deterministic as possible.
+        Still, DOES NOT ENSURE REPRODUCIBILTY ACROSS DIFFERENT TORCH/CUDA BUILDS AND
+        HARDWARE ARCHITECTURES
+    """
+    import torch as th
+    th.manual_seed(seed)
+    np.random.seed(seed)
+    # print(f"Seed set to {seed}")
+    # time.sleep(10)
+    th.backends.cudnn.benchmark = False
+    th.use_deterministic_algorithms(True)
+    # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+def getBestGpu():
+    import torch as th
+    gpus_mem_info = []
+    for i in range(th.cuda.device_count()):
+        prevDev = th.cuda.current_device()
+        th.cuda.set_device(th.device(type="cuda", index=i))
+        gpus_mem_info.append(th.cuda.mem_get_info()) #Returns [free, total]
+        th.cuda.set_device(prevDev)
+        # print(f"Got {gpus_mem_info[-1]}")
+
+    bestRatio = 0
+    bestGpu = None
+    for i in range(len(gpus_mem_info)):
+        tot = gpus_mem_info[i][1]
+        free = gpus_mem_info[i][0]
+        ratio = free/tot
+        if ratio > bestRatio:
+            bestRatio = ratio
+            bestGpu = i
+    ggLog.info(f"Choosing GPU {bestGpu} with {bestRatio*100}% free memory")
+    return bestGpu
+
+
+def torch_selectBestGpu():
+    import torch as th
+    bestGpu = getBestGpu()
+    th.cuda.set_device(bestGpu)
+    return th.device('cuda:'+str(bestGpu))

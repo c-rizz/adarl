@@ -16,6 +16,7 @@ import lr_gym.utils.utils
 
 from lr_gym.envs.GymToLr import GymToLr
 import dmc2gym.wrappers
+from lr_gym.envs.ObsToDict import ObsToDict
 
 
 
@@ -31,17 +32,17 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
 
     """
 
-    
-    folderName = lr_gym.utils.utils.lr_gym_startup(__file__, inspect.currentframe())
-
     RANDOM_SEED=0
+    
+    folderName = lr_gym.utils.utils.lr_gym_startup(__file__, inspect.currentframe(), seed=RANDOM_SEED)
+
     # dmenv = suite.load("cheetah",
     #                     "run",
     #                     task_kwargs={'random': RANDOM_SEED},
     #                     visualize_reward=False)
     ggLog.info("Building env...")
     env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
-    env = ObsDict2FlatBox(GymToLr(openaiGym_env = env, stepSimDuration_sec = 0.01))
+    env = ObsDict2FlatBox(ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 0.01), key="vec"))
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
     ggLog.info("Built")
 

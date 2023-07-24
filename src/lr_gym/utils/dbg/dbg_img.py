@@ -2,7 +2,6 @@ from typing import Callable
 import numpy as np
 
 
-from cv_bridge import CvBridge
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 
@@ -12,8 +11,9 @@ class DbgImg:
     def init(self):
         self._initialized = True
         self._publishers = {}
-        self._cv_bridge = CvBridge()
         try:
+            from cv_bridge import CvBridge
+            self._cv_bridge = CvBridge()
             import rospy
             import sensor_msgs.msg
             self._has_ros = True

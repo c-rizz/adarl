@@ -273,6 +273,9 @@ class BaseEnv(ABC):
             self._envSeed = seed
         return [self._envSeed]
 
+    def get_seed(self):
+        return self._envSeed
+
     def is_time_limited(self):
         return self._is_time_limited
     

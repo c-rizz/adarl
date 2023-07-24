@@ -46,14 +46,16 @@ class GymEnvWrapper(gym.GoalEnv):
                  verbose : bool = False,
                  quiet : bool = False,
                  episodeInfoLogFile : str = None,
-                 logs_id : str = ""):
+                 logs_id : str = "",
+                 use_wandb = True):
         """Short summary.
 
         Parameters
         ----------
 
         """
-
+        
+        self._use_wandb = use_wandb
         self._logs_id = logs_id
         self._ggEnv = env
         self.action_space = env.action_space
@@ -142,6 +144,7 @@ class GymEnvWrapper(gym.GoalEnv):
         self._info["ratio_time_spent_stepping_first_to_last"] = ratio_time_spent_stepping_first_to_last
         self._info["success_ratio"] = self._success_ratio
         self._info["success"] = self._last_ep_succeded
+        self._info["seed"] = self._ggEnv.get_seed()
 
         self._info.update(self._ggEnv.getInfo(self._getStateCached()))
 
@@ -158,7 +161,10 @@ class GymEnvWrapper(gym.GoalEnv):
             if existed:
                 with open(self._episodeInfoLogFile) as csvfile:
                     csvreader = csv.reader(csvfile, delimiter=',')
-                    columns = next(csvreader)
+                    try:
+                        columns = next(csvreader)
+                    except StopIteration:
+                        raise RuntimeError(f"A log file is already present but it is empty.")
                     lastRow = None
                     for row in csvreader:
                         lastRow = row
@@ -173,7 +179,7 @@ class GymEnvWrapper(gym.GoalEnv):
         #print("writing csv")
         self._logFileCsvWriter.writerow(self._info.values())
         self._logFile.flush()
-        if lr_gym.utils.utils.is_wandb_enabled():
+        if lr_gym.utils.utils.is_wandb_enabled() and self._use_wandb:
             import wandb
             if self._logs_id is not None and self._logs_id!= "":
                 prefix = self._logs_id+"/"

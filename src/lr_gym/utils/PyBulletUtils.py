@@ -37,7 +37,8 @@ def buildPlaneWorld():
     #print("self.numSolverIterations=",self.numSolverIterations)
     p.setPhysicsEngineParameter( #fixedTimeStep=0.0165 / 4 * 4,
                                 numSolverIterations=5,
-                                numSubSteps=4)
+                                numSubSteps=4,
+                                enableFileCaching=0)
 
     ggLog.info("Physics engine parameters:"+str(p.getPhysicsEngineParameters()))
 
