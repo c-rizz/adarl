@@ -288,17 +288,20 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
                 c = palette[color_ids[i]]
                 l = dfLabels[i]
                 print(f"Plotting {k}/{yid} mean, {len(df[x_data_id])} samples, max_avg = {df[yid+'_mean'].max()}, min_avg = {df[yid+'_mean'].min()}, max = {df[yid].max()}, min = {df[yid].min()}, last_avg = {df[yid+'_mean'].iloc[-1]}, last = {df[yid].iloc[-1]}")
-                p = sns.lineplot(x=df[x_data_id],y=df[yid+"_mean"], color=c, label=l, ci=None, linewidth=0.5) #, ax = ax) #
-                if not raw and yid+"_std" in df and not minmax:
-                    print(f"Plotting {k}/{yid} std")
-                    ci_widths = df[yid+"_ciw"] #1.96*df[yid+"_std"]/(math.sqrt(avglen*runs_number))
-                    cis = (df[yid+"_mean"] - ci_widths, df[yid+"_mean"] + ci_widths)
-                    c = [(e+1)/2 for e in c]
-                    p.fill_between(df[x_data_id],cis[0],cis[1], color=c, alpha = 0.5)
-                if minmax:
-                    c = [(e+1)/2 for e in c]
-                    p.fill_between(df[x_data_id],df[yid+"_min"],df[yid+"_max"], color=c, alpha = 0.5)
-                i+=1
+                try:
+                    p = sns.lineplot(x=df[x_data_id],y=df[yid+"_mean"], color=c, label=l, errorbar=None, linewidth=0.5) #, ax = ax) #
+                    if not raw and yid+"_std" in df and not minmax:
+                        print(f"Plotting {k}/{yid} std")
+                        ci_widths = df[yid+"_ciw"] #1.96*df[yid+"_std"]/(math.sqrt(avglen*runs_number))
+                        cis = (df[yid+"_mean"] - ci_widths, df[yid+"_mean"] + ci_widths)
+                        c = [(e+1)/2 for e in c]
+                        p.fill_between(df[x_data_id],cis[0],cis[1], color=c, alpha = 0.5)
+                    if minmax:
+                        c = [(e+1)/2 for e in c]
+                        p.fill_between(df[x_data_id],df[yid+"_min"],df[yid+"_max"], color=c, alpha = 0.5)
+                    i+=1
+                except Exception as e:
+                    print(f" !!! Plot for {k}/{yid} failed with exception {e}")
     i = 0
     if cummax:
         for k, df in dfs_dict.items():

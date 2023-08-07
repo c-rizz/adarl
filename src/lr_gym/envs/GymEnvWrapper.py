@@ -27,6 +27,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import multiprocessing as mp
 import signal
 import lr_gym.utils.utils
+from lr_gym.utils.wandb_wrapper import wandb_log
 
 class GymEnvWrapper(gym.GoalEnv):
     """This class is a wrapper to convert lr_gym environments in OpenAI Gym environments.
@@ -180,12 +181,11 @@ class GymEnvWrapper(gym.GoalEnv):
         self._logFileCsvWriter.writerow(self._info.values())
         self._logFile.flush()
         if lr_gym.utils.utils.is_wandb_enabled() and self._use_wandb:
-            import wandb
             if self._logs_id is not None and self._logs_id!= "":
                 prefix = self._logs_id+"/"
             else:
                 prefix = ""
-            wandb.log({prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
+            wandb_log({prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
 
     def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
         """Run one step of the environment's dynamics.

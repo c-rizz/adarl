@@ -34,6 +34,8 @@ class VecEnvLogger(VecEnvWrapper):
         self._current_infos = []
         self._tot_ep_count = 0
         self._use_wandb = use_wandb
+        self._logs_batch = {}
+        self._logs_batch_size = 0
 
     def reset(self) -> VecEnvObs:
         obs = self.venv.reset()
@@ -42,7 +44,7 @@ class VecEnvLogger(VecEnvWrapper):
     def step_wait(self) -> VecEnvStepReturn:
         obs, rewards, dones, infos = self.venv.step_wait()
         if self._use_wandb:
-            import wandb
+            from lr_gym.utils.wandb_wrapper import wandb_log
             for i in range(len(dones)):
                 if dones[i]:
                     self._tot_ep_count += 1
@@ -51,7 +53,19 @@ class VecEnvLogger(VecEnvWrapper):
                     # ggLog.info(f"logging {logs}")
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
                     logs["vec_ep_count"] = self._tot_ep_count # for compatibility, to be removed
-                    wandb.log(logs)
+                    for k in logs.keys():
+                        if k not in self._logs_batch:
+                            self._logs_batch[k] = []
+                        self._logs_batch[k].append(logs[k])
+                    self._logs_batch_size +=1
+            if self._logs_batch_size >= self.num_envs:
+                for k in self._logs_batch.keys():
+                    # ggLog.info(f"k = {k}")
+                    if isinstance(k,(int, float)):
+                        self._logs_batch[k] = sum(self._logs_batch[k])/len(self._logs_batch[k])
+                wandb_log(logs)
+                self._logs_batch = {}
+                self._logs_batch_size = 0
         return obs, rewards, dones, infos
 
     def close(self) -> None:
