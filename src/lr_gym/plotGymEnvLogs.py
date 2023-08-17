@@ -299,9 +299,9 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
                     if minmax:
                         c = [(e+1)/2 for e in c]
                         p.fill_between(df[x_data_id],df[yid+"_min"],df[yid+"_max"], color=c, alpha = 0.5)
-                    i+=1
                 except Exception as e:
                     print(f" !!! Plot for {k}/{yid} failed with exception {e}")
+                i+=1
     i = 0
     if cummax:
         for k, df in dfs_dict.items():
