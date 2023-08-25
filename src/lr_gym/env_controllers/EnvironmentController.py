@@ -2,7 +2,6 @@
 #!/usr/bin/env python3
 from typing import List, Tuple, Dict, Any
 
-import sensor_msgs
 
 from lr_gym.utils.utils import JointState
 from lr_gym.utils.utils import LinkState

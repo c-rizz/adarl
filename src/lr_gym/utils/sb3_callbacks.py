@@ -10,6 +10,8 @@ from typing import Union, Optional, Dict, Any
 from stable_baselines3.common.evaluation import evaluate_policy
 import warnings
 import lr_gym.utils.utils
+
+
 class CheckpointCallbackRB(BaseCallback):
     """
     Callback for saving a model every ``save_freq`` calls
@@ -114,6 +116,8 @@ class CheckpointCallbackRB(BaseCallback):
             self._save_model(is_best=False, count_ep=True)
         return True
     
+
+
 
 class SigintHaltCallback(BaseCallback):
 
