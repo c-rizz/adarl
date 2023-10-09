@@ -83,16 +83,28 @@ def setupSigintHandler():
     # ggLog.info(f"Sigint handler was {currenthandler}, set to {signal.getsignal(signal.SIGINT)}")
     did_initialize_sigint_handling = True
 
+import select
+import sys
+def check_stdin_halt():
+    if select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
+        instring = input()
+        if instring.lower() == "pause":
+            return True
+        else:
+            print(f"Got '{instring}', type 'pause' to halt")
+    return False
+
 def haltOnSigintReceived():
     if not did_initialize_sigint_handling:
         return
     global sigint_received
     global sigint_counter
     if os.getpid() == main_pid:
-        if sigint_received:
+        halt_string_received = check_stdin_halt()
+        if sigint_received or halt_string_received:
             while True:
-                answer = input(f"SIGINT received. Enter 'c' to resume or type 'exit' to terminate:\n> ")
-                if answer == "exit":
+                answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
+                if answer == "quit":
                     shutdown()
                     shared_memory_list[0] = "shutdown"
                     original_sigint_handler(signal.SIGINT, None)

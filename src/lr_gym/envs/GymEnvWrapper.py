@@ -343,12 +343,14 @@ class GymEnvWrapper(gym.GoalEnv):
                         " wHz = {:.3f}".format(self._info["wall_fps"])+
                         " wHzFtl = {:.3f}".format(self._info["wall_fps_first_to_last"])+
                         " avg_stpWDur = {:f}".format(self._info["avg_env_step_wall_duration"])+
-                        " tstep/ttot_ftl = {:.2f}".format(self._info["ratio_time_spent_stepping_until_done"])+
+                        # " tstep/ttot_ftl = {:.2f}".format(self._info["ratio_time_spent_stepping_until_done"])+
                         " tstep/ttot = {:.2f}".format(self._info["ratio_time_spent_stepping"])+
                         " wEpDur = {:.2f}".format(self._info["tot_ep_wall_duration"])+
                         " sEpDur = {:.2f}".format(self._info["tot_ep_sim_duration"]))
                 if "success_ratio" in self._info.keys():
                         msg += f" succ_ratio = {self._info['success_ratio']:.2f}"
+                if "success" in self._info.keys():
+                        msg += f" succ = {self._info['success']:.2f}"
                 ggLog.info(msg)
 
         self._lastPreResetTime = time.monotonic()

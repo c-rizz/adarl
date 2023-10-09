@@ -41,7 +41,7 @@ def main(usePyBullet : bool = False,
             from lr_gym.env_controllers.PyBulletController import PyBulletController
             simulatorController = PyBulletController()
         else:
-            from lr_gym_ros.env_controllers.GazeboController import GazeboController
+            from lr_gym_ros.envControllers.GazeboController import GazeboController
             simulatorController = GazeboController(stepLength_sec = stepLength_sec)
         if saveVideo:
             env = GymEnvWrapper(HopperEnv(  simulatorController = simulatorController,

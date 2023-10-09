@@ -233,7 +233,7 @@ wandb_enabled = False
 def is_wandb_enabled():
     return wandb_enabled
 
-def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None):
+def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None, comment = ""):
     """Sets up a logging output folder for a training run.
         It creates the folder, saves the current main script file for reference
 
@@ -283,7 +283,8 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
                     name = run_id,
                     monitor_gym = False, # Do not save openai gym videos
                     save_code = True, # Save run code
-                    sync_tensorboard = True # Save tensorboard stuff
+                    sync_tensorboard = True, # Save tensorboard stuff,
+                    notes = comment
                     )
 
     return folderName
@@ -619,7 +620,8 @@ def lr_gym_startup( main_file_path : str,
                     seed = None,
                     experiment_name : Optional[str] = None,
                     run_id : Optional[str] = None,
-                    debug = False) -> str:
+                    debug = False,
+                    run_comment = "") -> str:
     if isinstance(debug, bool):
         if debug:
             debug_level = 1
@@ -628,7 +630,7 @@ def lr_gym_startup( main_file_path : str,
     else:
         debug_level = debug
     faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
-    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id)
+    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment)
     ggLog.addLogFile(logFolder+"/gglog.log")
     if seed is None:
         raise AttributeError("You must specify the run seed")

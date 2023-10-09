@@ -54,7 +54,7 @@ class BulletCamera:
         self._width = width
         self._height = height
         self._pose   = pose if pose is not None else Pose(0,0,0,0,0,0,1)
-        self._hfov   = hfov
+        self._vfov   = hfov * height/width
         self._near   = near
         self._far    = far
         self.link_name = link_name
@@ -102,7 +102,7 @@ class BulletCamera:
                                                      cameraUpVector = cameraUpVector)
         # ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
-        self._intrinsic_matrix = pybullet.computeProjectionMatrixFOV(self._hfov*180/3.14159, self._width/self._height, self._near, self._far)
+        self._intrinsic_matrix = pybullet.computeProjectionMatrixFOV(self._vfov*180/3.14159, self._width/self._height, self._near, self._far)
         # ggLog.info(f"em = {self._extrinsic_matrix}")
         # ggLog.info(f"im = \n{n.join([str(self._intrinsic_matrix[i::4]) for i in range(4)])}")
 
