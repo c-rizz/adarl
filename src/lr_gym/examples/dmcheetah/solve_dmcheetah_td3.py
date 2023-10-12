@@ -44,7 +44,8 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     import dmc2gym.wrappers
     targetFps = 100
     env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
-    env = ObsDict2FlatBox(ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps), key="vec"))
+    env = ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps), key="vec")
+    # env = ObsDict2FlatBox(env)
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
     env = RecorderGymWrapper(env,
                              fps = targetFps, outFolder = folderName+"/videos/RecorderGymWrapper",
