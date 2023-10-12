@@ -15,10 +15,9 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.utils
 
 from lr_gym.envs.GymToLr import GymToLr
-import dmc2gym.wrappers
 from lr_gym.envs.ObsToDict import ObsToDict
-
-
+import os
+from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 
 def main(obsNoise : NDArray[(4,),np.float32]) -> None: 
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
@@ -41,9 +40,16 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     #                     task_kwargs={'random': RANDOM_SEED},
     #                     visualize_reward=False)
     ggLog.info("Building env...")
+    os.environ["MUJOCO_GL"] = "egl"
+    import dmc2gym.wrappers
+    targetFps = 100
     env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
-    env = ObsDict2FlatBox(ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 0.01), key="vec"))
+    env = ObsDict2FlatBox(ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps), key="vec"))
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
+    env = RecorderGymWrapper(env,
+                             fps = targetFps, outFolder = folderName+"/videos/RecorderGymWrapper",
+                             saveBestEpisodes = False,
+                             saveFrequency_ep = 50)
     ggLog.info("Built")
 
     #setup seeds for reproducibility
