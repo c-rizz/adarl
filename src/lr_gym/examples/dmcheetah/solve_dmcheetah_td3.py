@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
+import torch as th
 import time
 import tqdm
 import inspect
 import numpy as np
 from nptyping import NDArray
 
-from stable_baselines3.td3.policies import MlpPolicy
+from stable_baselines3.td3.policies import MlpPolicy, MultiInputPolicy
 from stable_baselines3 import TD3
 from stable_baselines3.common.noise import NormalActionNoise
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
@@ -18,6 +19,8 @@ from lr_gym.envs.GymToLr import GymToLr
 from lr_gym.envs.ObsToDict import ObsToDict
 import os
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
+from autoencoding_rl.buffers import GenericHerReplayBuffer, RandomHoldoutBuffer, ThDictReplayBuffer_updatable, ThDictReplayBuffer
+
 
 def main(obsNoise : NDArray[(4,),np.float32]) -> None: 
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
@@ -44,8 +47,9 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     import dmc2gym.wrappers
     targetFps = 100
     env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
-    env = ObsToDict(GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps), key="vec")
-    # env = ObsDict2FlatBox(env)
+    env = GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps)
+    #env = ObsToDict(env)
+    #env = ObsDict2FlatBox(env)
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
     env = RecorderGymWrapper(env,
                              fps = targetFps, outFolder = folderName+"/videos/RecorderGymWrapper",
@@ -66,10 +70,12 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
 
     n_actions = env.action_space.shape[-1]
     action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
-    model = TD3( MlpPolicy, env, action_noise=action_noise, verbose=1, batch_size=100,
+    model = TD3( MultiInputPolicy, env, action_noise=action_noise, verbose=1, batch_size=100,
                     buffer_size=1000000, gamma=0.99, gradient_steps=1000,
-                    learning_rate=0.0005, learning_starts=5000, policy_kwargs=dict(net_arch=[100, 200]), train_freq=1000,
-                    seed = RANDOM_SEED)
+                    learning_rate=0.0005, learning_starts=5000, policy_kwargs=dict(net_arch=[64,64]), train_freq=1000,
+                    seed = RANDOM_SEED, device = "cuda",
+                    replay_buffer_class = ThDictReplayBuffer,
+                    replay_buffer_kwargs = {"storage_torch_device":lr_gym.utils.utils.torch_selectBestGpu()})
 
     
     ggLog.info("Learning...")
