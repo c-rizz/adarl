@@ -621,7 +621,8 @@ def lr_gym_startup( main_file_path : str,
                     experiment_name : Optional[str] = None,
                     run_id : Optional[str] = None,
                     debug = False,
-                    run_comment = "") -> str:
+                    run_comment = "",
+                    use_wandb = True) -> str:
     if isinstance(debug, bool):
         if debug:
             debug_level = 1
@@ -630,7 +631,7 @@ def lr_gym_startup( main_file_path : str,
     else:
         debug_level = debug
     faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
-    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment)
+    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment, use_wandb=use_wandb)
     ggLog.addLogFile(logFolder+"/gglog.log")
     if seed is None:
         raise AttributeError("You must specify the run seed")
