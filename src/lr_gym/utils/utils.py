@@ -274,18 +274,21 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
 
     if use_wandb:
         global wandb_enabled
-        wandb_enabled = True
         import wandb
         if experiment_name is None:
             experiment_name = os.path.basename(file)
-        wandb.init( project=experiment_name,
-                    config = values,
-                    name = run_id,
-                    monitor_gym = False, # Do not save openai gym videos
-                    save_code = True, # Save run code
-                    sync_tensorboard = True, # Save tensorboard stuff,
-                    notes = comment
-                    )
+        try:
+            wandb.init( project=experiment_name,
+                        config = values,
+                        name = run_id,
+                        monitor_gym = False, # Do not save openai gym videos
+                        save_code = True, # Save run code
+                        sync_tensorboard = True, # Save tensorboard stuff,
+                        notes = comment
+                        )
+            wandb_enabled = True
+        except wandb.sdk.wandb_manager.ManagerConnectionError as e:
+            ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
 
     return folderName
 

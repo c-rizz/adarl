@@ -46,15 +46,17 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     os.environ["MUJOCO_GL"] = "egl"
     import dmc2gym.wrappers
     targetFps = 100
-    env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
+    env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2,
+                       from_pixels=True, height = 84, width = 84,
+                       visualize_reward=False) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
     env = GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps)
     env = ObsToDict(env)
     #env = ObsDict2FlatBox(env)
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
-    env = RecorderGymWrapper(env,
-                             fps = targetFps, outFolder = folderName+"/videos/RecorderGymWrapper",
-                             saveBestEpisodes = False,
-                             saveFrequency_ep = 50)
+#    env = RecorderGymWrapper(env,
+#                             fps = targetFps, outFolder = folderName+"/videos/RecorderGymWrapper",
+#                             saveBestEpisodes = False,
+#                             saveFrequency_ep = 50)
     ggLog.info("Built")
 
 
