@@ -361,7 +361,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         if t_d<t_a: # may happen for numerical reasons
             t_d = t_a
         if np.isnan(t_f):
-            raise RuntimeError(f"t_f is nan: t_f={t_f}, t_a={t_a}, d={d}, x_a={x_a}, max_vel={max_vel}, max_acc={max_acc}")
+            raise RuntimeError(f"t_f is nan: t_f={t_f}, t_a={t_a}, d={d}, x_a={x_a}, max_vel={max_vel}, max_acc={max_acc}, pf={pf}, p0={p0}")
         # ggLog.info(f"{t0}, {p0}, {v0}, {pf}, {samples}, {max_vel}, {max_acc} : {t_a}, {x_a}, {t_coast}, {t_f}, {t_d}, {x_d}, {d}")
         samples = int(t_f*100)+1 #100Hz plus one final sample
         trajectory_tpva = [None] * samples
@@ -475,7 +475,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             # requests[bodyId][3].append(max_torque*acceleration_scaling) # Scale with the acceleration, kinda the same... :)
             # requests[bodyId][4].append(positionGain)
             # requests[bodyId][5].append(velocityGain)
-            np.set_printoptions(suppress=True, formatter={'float_kind':'{:f}'.format})
+            # np.set_printoptions(suppress=True, formatter={'float_kind':'{:f}'.format})
             # ggLog.info(f"Built trajectory from {p0} to {req_position} for joint {joint} at t0={t0}:\n{traj_tpva}")
 
         self._commanded_trajectories = requests

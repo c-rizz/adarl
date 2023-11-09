@@ -185,7 +185,7 @@ class GymEnvWrapper(gym.GoalEnv):
                 prefix = self._logs_id+"/"
             else:
                 prefix = ""
-            wandb_log({prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
+            wandb_log(lambda: {prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
 
     def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
         """Run one step of the environment's dynamics.

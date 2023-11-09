@@ -535,11 +535,16 @@ def numpyImg_to_ros1(img : np.ndarray):
     rosMsg.data = img.tobytes()
     rosMsg.step = img.strides[0]
     rosMsg.is_bigendian = (img.dtype.byteorder == '>')
+    rosMsg.height = img.shape[0]
+    rosMsg.width = img.shape[1]
 
     if img.shape[2] == 3:
         rosMsg.encoding = "rgb8"
     elif img.shape[2] == 1:
         rosMsg.encoding = "mono8"
+    else:
+        raise RuntimeError(f"unable to determine image type, shape = {img.shape}")
+    return rosMsg
 
 
 def buildRos1PoseStamped(position_xyz, orientation_xyzw, frame_id):

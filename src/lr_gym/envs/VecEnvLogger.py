@@ -63,7 +63,7 @@ class VecEnvLogger(VecEnvWrapper):
                     # ggLog.info(f"k = {k}")
                     if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating)):
                         self._logs_batch[k] = sum(v)/len(v)
-                wandb_log(self._logs_batch)
+                wandb_log(lambda: self._logs_batch)
                 ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} success={self._logs_batch.get('VecEnvLogger/success',0):.2f} reward={self._logs_batch.get('VecEnvLogger/ep_reward',0):9g}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0

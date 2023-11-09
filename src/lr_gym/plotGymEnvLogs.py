@@ -50,7 +50,7 @@ def prepData(csvfiles : List[str],
         if "success" in df:
             df["success"].fillna(value=-1,inplace=True)
             df["success"] = df["success"].astype(float) # boolean to 0-1
-        df[x_data_id] = df[x_data_id] * xscaling + xoffsets[i]
+        # df[x_data_id] = df[x_data_id] * xscaling + xoffsets[i]
         df = df.loc[df[x_data_id] < max_x]
         # print(f"cutting {cutx}:\n{df[x_data_id] > cutx[0]}")
         df = df.loc[df[x_data_id] > cutx[0]]
@@ -110,6 +110,7 @@ def prepData(csvfiles : List[str],
         per_run_dfs = {}
         for i in range(len(in_dfs)):
             df = in_dfs[i]
+            print(f"df = {df.iloc[100:110][['reset_count','success']]}")
             rdf = pd.DataFrame()
             rdf[y_data_ids] = df[y_data_ids]
             rdf[yid_mean_idx] = df[y_data_ids].rolling(avglen, center=centeravg).mean()
@@ -188,10 +189,12 @@ def prepData(csvfiles : List[str],
         print(f"maximum mean performance: {rdf[yid_mean_idx].max()} at {rdf[yid_mean_idx].idxmax()}")
         out_dfs["all"] = rdf
         
-
+    c = 0
     for df in out_dfs.values():
         for yids in [y_data_ids , yid_mean_idx , yid_std_idx , yid_mean_cummax_idx]:
             df[yids] = df[yids]*yscalings
+        df[x_data_id] = df[x_data_id]*xscaling + xoffsets[c]
+        c+=1
     return out_dfs
 
 
@@ -220,7 +223,8 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
              runs_number : int = 1,
              palette : List[Tuple[float]] = None,
              legendsize : float = 4,
-             minmax = False):
+             minmax = False,
+             aspect = 2.0):
 
     plt.clf()
 
@@ -340,7 +344,7 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
     #p.tick_params(axis='x', which='minor', bottom=False)
     p.grid(linestyle='dotted',which="both")
 
-    p.set_aspect(1.0/p.get_data_ratio()*0.5)
+    p.set_aspect(1/aspect/p.get_data_ratio())
 
     if title is not None:
         plt.title(title)
@@ -419,6 +423,7 @@ def main():
     ap.add_argument("--nocenteravg", default=False, action='store_true', help="Do not center the window averaging")
     ap.add_argument("--legendsize", required=False, default=4, type=float, help="Size of the legend")
     ap.add_argument("--cutx", nargs=2, required=False, default=[float("-inf"),float("+inf")], type=float, help="Cut samples to be in this x interval")
+    ap.add_argument("--aspect", required=False, default=2.0, type=float, help="Aspect ratio of the plot (x/y)")
 
 
     ap.set_defaults(feature=True)
@@ -455,8 +460,6 @@ def main():
                 runs_num = len(csvfiles)
             else:
                 runs_num = None
-            commonPath = os.path.commonpath([os.path.abspath(os.path.dirname(cf)) for cf in csvfiles])
-            commonRealPath = os.path.realpath(commonPath) # absolute path without links
             if args["out"] is not None:
                 out_path = args["out"]
             else:
@@ -466,6 +469,8 @@ def main():
                     fname = args["outfname"]
                 if args["avgfiles"]:
                     fname+="_avg"
+                commonPath = os.path.commonpath([os.path.abspath(os.path.dirname(cf)) for cf in csvfiles])
+                commonRealPath = os.path.realpath(commonPath) # absolute path without links
                 out_path = commonPath+"/"+fname+"."+args["format"]
             title = args["title"]
             if title is None:
@@ -532,7 +537,8 @@ def main():
                         avglen = args["avglen"],
                         runs_number=runs_num,
                         palette = args["palette"],
-                        legendsize = args["legendsize"])
+                        legendsize = args["legendsize"],
+                        aspect = args["aspect"])
                 if args["format"] == "png":
                     plt.savefig(out_path, dpi=600,bbox_inches='tight')
                 else:
