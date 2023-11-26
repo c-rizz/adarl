@@ -25,7 +25,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
 import faulthandler
-
+import subprocess
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -269,8 +269,21 @@ def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[st
     # inputargs = [(i, values[i]) for i in args]
     # with open(folderName+"/input_args.txt", "w") as input_args_file:
     #     print(str(inputargs), file=input_args_file)
-    with open(folderName+"/input_args.yaml", "w") as input_args_yamlfile:
+    args_yaml_file = folderName+"/input_args.yaml"
+    with open(args_yaml_file, "w") as input_args_yamlfile:
         yaml.dump(values,input_args_yamlfile, default_flow_style=None)
+
+    ggLog.info(f"values = {values}")
+
+    if "modelFile" in values:
+        if values["modelFile"] is not None and type(values["modelFile"]) == str:
+            model_dir = os.path.dirname(values["modelFile"])
+            if os.path.isdir(model_dir):
+                parent = Path(model_dir).parent.absolute()
+                diff = subprocess.run(['diff', args_yaml_file, f"{parent}/input_args.yaml"], stdout=subprocess.PIPE).stdout.decode('utf-8')
+                ggLog.info(f"Args comparison with loaded model:\n{diff}")
+            else:
+                ggLog.info("modelFile is not a file")
 
     if use_wandb:
         global wandb_enabled
@@ -676,7 +689,7 @@ def pyTorch_makeDeterministic(seed):
     # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
-def getBestGpu():
+def getBestGpu(seed ):
     import torch as th
     gpus_mem_info = []
     for i in range(th.cuda.device_count()):
@@ -688,19 +701,30 @@ def getBestGpu():
 
     bestRatio = 0
     bestGpu = None
+    ratios = [None]*len(gpus_mem_info)
     for i in range(len(gpus_mem_info)):
         tot = gpus_mem_info[i][1]
         free = gpus_mem_info[i][0]
         ratio = free/tot
+        ratios[i] = ratio
         if ratio > bestRatio:
             bestRatio = ratio
             bestGpu = i
-    ggLog.info(f"Choosing GPU {bestGpu} with {bestRatio*100}% free memory")
-    return bestGpu
+
+    # Look for the gpus that are within 10% of the best one
+    candidates = [bestGpu]
+    for i in range(len(gpus_mem_info)):
+        if ratios[i] - bestRatio < 0.1:
+            candidates.append(i)
+    
+    chosen_one = candidates[seed%len(candidates)]
+
+    ggLog.info(f"Choosing GPU {chosen_one} with {ratios[chosen_one]*100}% free memory. Candidates where {[f'{i}:{ratios[i]*100}%' for i in candidates]}, seed was {seed}")
+    return chosen_one
 
 
-def torch_selectBestGpu():
+def torch_selectBestGpu(seed = 0):
     import torch as th
-    bestGpu = getBestGpu()
+    bestGpu = getBestGpu(seed = seed)
     th.cuda.set_device(bestGpu)
     return th.device('cuda:'+str(bestGpu))

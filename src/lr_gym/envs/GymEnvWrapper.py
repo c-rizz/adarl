@@ -144,6 +144,7 @@ class GymEnvWrapper(gym.GoalEnv):
         self._info["wall_fps_first_to_last"] = wall_fps_first_to_last
         self._info["ratio_time_spent_stepping_first_to_last"] = ratio_time_spent_stepping_first_to_last
         self._info["success_ratio"] = self._success_ratio
+        self._info["max_success_ratio"] = max(self._success_ratio, self._info.get("max_success_ratio",0))
         self._info["success"] = self._last_ep_succeded
         self._info["seed"] = self._ggEnv.get_seed()
 
@@ -185,7 +186,11 @@ class GymEnvWrapper(gym.GoalEnv):
                 prefix = self._logs_id+"/"
             else:
                 prefix = ""
-            wandb_log(lambda: {prefix+str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()})
+            d = {str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()}
+            wandb_dict = {}
+            wandb_dict.update({"lrg/"+k:v for k,v in d.items()})
+            wandb_dict.update({prefix+k:v for k,v in d.items()})
+            wandb_log(lambda: wandb_dict)
 
     def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
         """Run one step of the environment's dynamics.

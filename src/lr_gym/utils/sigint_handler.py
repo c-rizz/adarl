@@ -86,7 +86,7 @@ def setupSigintHandler():
 import select
 import sys
 def check_stdin_halt():
-    if not sys.__stdin__.isatty():
+    if sys.__stdin__.closed or not sys.__stdin__.isatty():
         return False
     if select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
         instring = input()
