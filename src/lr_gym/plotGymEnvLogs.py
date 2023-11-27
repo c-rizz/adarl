@@ -41,8 +41,10 @@ def prepData(csvfiles : List[str],
     file_labels = labelsFromFiles(csvfiles)
 
     for i in range(len(in_dfs)):
-        print(f"file {csvfiles[i]} has columns {in_dfs[i].shape[0]} rows")
-        print(f"file {csvfiles[i]} has columns {in_dfs[i].columns}")
+        if in_dfs[i].shape[0] < 200:
+            print(f"WARNING! file {csvfiles[i]} only has {in_dfs[i].shape[0]} '{x_data_id}' samples!")
+        # print(f"file {csvfiles[i]} has {in_dfs[i].shape[0]} rows")
+        # print(f"file {csvfiles[i]} has {in_dfs[i].columns} columns")
     i = 0
     for i in range(len(in_dfs)):
         df = in_dfs[i]
@@ -58,6 +60,10 @@ def prepData(csvfiles : List[str],
         # print(f"{df}")
         in_dfs[i] = df
         i+=1
+
+    # for i in range(len(in_dfs)):
+    #     print(f"file {csvfiles[i]} has {in_dfs[i].shape[0]} rows")
+    #     print(f"file {csvfiles[i]} has {in_dfs[i].columns} columns")
 
     yid_mean_idx = [yid+"_mean" for yid in y_data_ids]
     yid_min_idx = [yid+"_min" for yid in y_data_ids]
@@ -81,9 +87,7 @@ def prepData(csvfiles : List[str],
             rdf[x_data_id] = df[x_data_id]
             rdf[yid_mean_cummax_idx] = rdf[yid_mean_idx].cummax()
             count = rdf[x_data_id].count()
-            if count < 30:
-                print(f"file {csvfiles[i]} only has {count} '{x_data_id}' samples")
-            print(f"{file_labels[i]} has {count} samples")
+            # print(f"{file_labels[i]} has {count} samples")
             out_dfs[file_labels[i]] = rdf
     else:
         for df in in_dfs:
@@ -110,7 +114,7 @@ def prepData(csvfiles : List[str],
         per_run_dfs = {}
         for i in range(len(in_dfs)):
             df = in_dfs[i]
-            print(f"df = {df.iloc[100:110][['reset_count','success']]}")
+            # print(f"df = {df.iloc[100:110][['reset_count','success']]}")
             rdf = pd.DataFrame()
             rdf[y_data_ids] = df[y_data_ids]
             rdf[yid_mean_idx] = df[y_data_ids].rolling(avglen, center=centeravg).mean()
@@ -119,9 +123,7 @@ def prepData(csvfiles : List[str],
             rdf[x_data_id] = df[x_data_id]
             rdf[yid_mean_cummax_idx] = rdf[yid_mean_idx].cummax()
             count = rdf[x_data_id].count()
-            if count < 30:
-                print(f"file {csvfiles[i]} only has {count} samples")
-            print(f"{file_labels[i]} has {count} samples")
+            # print(f"{file_labels[i]} has {count} samples")
             per_run_dfs[file_labels[i]] = rdf
         
         concatdf = pd.concat(per_run_dfs)
@@ -159,10 +161,10 @@ def prepData(csvfiles : List[str],
             rdf[y_data_ids] = concatdf.groupby(x_data_id)[y_data_ids].mean()
             # rdf[y_data_ids] = concatdf.groupby(x_data_id)[y_data_ids].mean()
             rdf[x_data_id] = mean_df[x_data_id]
-            print(f"concatdf = {concatdf.iloc[800:810]}")
+            # print(f"concatdf = {concatdf.iloc[800:810]}")
             # print(f"concatdf = {concatdf.groupby(x_data_id)}")
-            print(f"mean_df = {mean_df.iloc[100:110]}")
-            print(f"rdf = {rdf.iloc[100:110]}")
+            # print(f"mean_df = {mean_df.iloc[100:110]}")
+            # print(f"rdf = {rdf.iloc[100:110]}")
             
         # print(f"means_std_df[yid_mean_idx] {means_std_df[yid_mean_idx].iloc[125]}")
         # print(f"rdf[yid_means_std_idx] {rdf[yid_means_std_idx].iloc[125]}")
@@ -227,6 +229,7 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
              aspect = 2.0):
 
     plt.clf()
+    p = None
 
     print(f"{title}")
     print(f"Plotting {len(dfs_dict.keys())} dfs")
@@ -320,7 +323,8 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
     #plt.legend(loc='lower right', labels=names)
     # pathSplitted = os.path.dirname(csvfile).split("/")
     # plt.title(pathSplitted[-2]+"/"+pathSplitted[-1]+"/"+os.path.basename(csvfile))
-
+    if p is None:
+        return
     p.set_xlim(min_x,max_x) # If None they leave the current limit
 
 
@@ -460,18 +464,25 @@ def main():
                 runs_num = len(csvfiles)
             else:
                 runs_num = None
+
+            if args["outfname"] is None:
+                fname = "_".join(y_data_ids)
+            else:
+                fname = args["outfname"]
             if args["out"] is not None:
                 out_path = args["out"]
+                fname = os.path.abspath(os.path.basename(out_path)) 
+                commonPath = os.path.abspath(os.path.dirname(out_path)) 
+            elif args["pklfiles"] is not None:
+                commonPath = os.path.commonpath([os.path.abspath(os.path.dirname(cf)) for cf in args["pklfiles"]])
+                commonRealPath = os.path.realpath(commonPath) # absolute path without links
             else:
-                if args["outfname"] is None:
-                    fname = "_".join(y_data_ids)
-                else:
-                    fname = args["outfname"]
                 if args["avgfiles"]:
                     fname+="_avg"
                 commonPath = os.path.commonpath([os.path.abspath(os.path.dirname(cf)) for cf in csvfiles])
                 commonRealPath = os.path.realpath(commonPath) # absolute path without links
-                out_path = commonPath+"/"+fname+"."+args["format"]
+            out_path = commonPath+"/"+fname+"."+args["format"]
+
             title = args["title"]
             if title is None:
                 crps = commonRealPath.split("/")

@@ -712,14 +712,14 @@ def getBestGpu(seed ):
             bestGpu = i
 
     # Look for the gpus that are within 10% of the best one
-    candidates = [bestGpu]
+    candidates = []
     for i in range(len(gpus_mem_info)):
         if ratios[i] - bestRatio < 0.1:
             candidates.append(i)
     
     chosen_one = candidates[seed%len(candidates)]
 
-    ggLog.info(f"Choosing GPU {chosen_one} with {ratios[chosen_one]*100}% free memory. Candidates where {[f'{i}:{ratios[i]*100}%' for i in candidates]}, seed was {seed}")
+    ggLog.info(f"Choosing GPU {chosen_one} with {ratios[chosen_one]*100}% free memory. Candidates were {[f'{i}:{ratios[i]*100}%' for i in candidates]}, seed was {seed}")
     return chosen_one
 
 
