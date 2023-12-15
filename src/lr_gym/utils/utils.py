@@ -26,6 +26,7 @@ import traceback
 import xacro
 import faulthandler
 import subprocess
+import threading
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -310,9 +311,35 @@ from lr_gym.utils.sigint_handler import setupSigintHandler
     
 
 def lr_gym_shutdown():
+    shutdown()
     if is_wandb_enabled():
         import wandb
         wandb.finish()
+    t0 = time.monotonic()
+    timeout = 60
+    if threading.current_thread() == threading.main_thread():
+        active_threads = threading.enumerate()
+
+        while len(active_threads)>1 and time.monotonic() - t0 < timeout:
+            ggLog.warn(f"lr_gym shutting down: waiting for active threads {active_threads}")
+            time.sleep(10)
+
+        # for t in threading.enumerate():
+        #     if t != threading.main_thread():
+        #         terminate the thread???
+
+        # if len(active_threads)>1: # If we just exit() the process will wait for subthreads and not terminate
+        #     ggLog.error(f"Trying to shutdown but there are still threads running after {timeout} seconds. Self-terminating")
+        #     ggLog.error("Sending SIGTERM to myself")
+        #     os.kill(os.getpid(), signal.SIGTERM)
+        #     time.sleep(60)
+        #     ggLog.error("Still alive, sending SIGKILL to myself")
+        #     os.kill(os.getpid(), signal.SIGKILL)
+        #     time.sleep(10)
+        #     ggLog.error("Still alive after SIGKILL!")
+
+
+
 
 def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None, predict_func : Callable[[Any], Tuple[Any,Any]] = None, progress_bar : bool = True, images_return = None, obs_return = None):
     if predict_func is None:

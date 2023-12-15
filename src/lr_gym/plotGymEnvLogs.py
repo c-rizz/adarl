@@ -27,8 +27,10 @@ def prepData(csvfiles : List[str],
              xoffsets : float = 0.0,
              centeravg : bool = True,
              cutx = [float("-inf"), float("+inf")]):
-
-    in_dfs = [pd.read_csv(csvfile) for csvfile in csvfiles]
+    in_dfs = []
+    for csvfile in csvfiles:
+        print(f"Reading {csvfile}")
+        in_dfs.append(pd.read_csv(csvfile))
     parallel_runs = int(len(in_dfs)/parallelsims)
     print(f"{len(in_dfs)} runs, {parallelsims} parallel sims")
 
@@ -40,14 +42,11 @@ def prepData(csvfiles : List[str],
     out_dfs = {}
     file_labels = labelsFromFiles(csvfiles)
 
-    for i in range(len(in_dfs)):
-        if in_dfs[i].shape[0] < 200:
-            print(f"WARNING! file {csvfiles[i]} only has {in_dfs[i].shape[0]} '{x_data_id}' samples!")
-        # print(f"file {csvfiles[i]} has {in_dfs[i].shape[0]} rows")
-        # print(f"file {csvfiles[i]} has {in_dfs[i].columns} columns")
     i = 0
     for i in range(len(in_dfs)):
         df = in_dfs[i]
+        if df.shape[0] < 200:
+            print(f"WARNING! file {csvfiles[i]} only has {in_dfs[i].shape[0]} '{x_data_id}' samples!")
         # df[y_data_ids] = df[y_data_ids]*yscalings
         if "success" in df:
             df["success"].fillna(value=-1,inplace=True)
@@ -122,13 +121,15 @@ def prepData(csvfiles : List[str],
             rdf[yid_var_idx] = df[y_data_ids].rolling(avglen, center=centeravg).std().pow(2)
             rdf[x_data_id] = df[x_data_id]
             rdf[yid_mean_cummax_idx] = rdf[yid_mean_idx].cummax()
-            count = rdf[x_data_id].count()
-            # print(f"{file_labels[i]} has {count} samples")
+            
+            print(f"{file_labels[i]} has {rdf[x_data_id].count()} samples")
             per_run_dfs[file_labels[i]] = rdf
-        
+        # print(f"Have {len(per_run_dfs)} run dfs")
         concatdf = pd.concat(per_run_dfs)
+        # print(f"concat has {concatdf.count()} elements")
         concatdf = concatdf.sort_values(x_data_id)
         mean_df = concatdf.groupby(x_data_id, as_index=False).mean()
+        # print(f"mean has {mean_df.count()} elements")
         # print(f"concatdf {concatdf.iloc[1000:1010]}")
         means_std_df = concatdf[yid_mean_idx+[x_data_id]].groupby(x_data_id, as_index=False).std()
         # print(f"means_std_df {means_std_df.iloc[125]}\n\n")
@@ -233,7 +234,7 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
 
     print(f"{title}")
     print(f"Plotting {len(dfs_dict.keys())} dfs")
-    dfs_count = dfs_dict.keys()
+    dfs_count = len(dfs_dict.keys())
     for k, df in dfs_dict.items():
         print(f"{k} cols = "+str(list(df.columns)))
     for k, df in dfs_dict.items():
@@ -252,18 +253,18 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
     sns.set_theme(style="ticks") #"darkgrid")
     sns.set_context("paper")
 
-    color_ids = [0]*len(y_data_ids)*len(dfs_count)
-    if len(dfs_count) == 1:
+    color_ids = [0]*len(y_data_ids)*dfs_count
+    if dfs_count == 1:
         colors_num = len(y_data_ids) # one color per y_data_id
         i = 0
-        for file_count in range(len(dfs_count)):
+        for file_count in range(dfs_count):
             for yid_count in range(len(y_data_ids)):
                 color_ids[i] = yid_count
                 i+=1
     else:
-        colors_num = len(dfs_count) # one color per file
+        colors_num = dfs_count # one color per file
         i = 0
-        for file_count in range(len(dfs_count)):
+        for file_count in range(dfs_count):
             for yid_count in range(len(y_data_ids)):
                 color_ids[i] = file_count
                 i+=1
@@ -273,11 +274,17 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
     # palette = sns.color_palette("tab10")#"husl", len(dfs))
     extended_palette = False
     if palette is None:
-        if colors_num < 10 or not extended_palette:
-            palette = sns.color_palette("husl", colors_num)
+        if colors_num < 10 and not extended_palette:
+            # pn = max(6,colors_num)
+            # palette = sns.color_palette("husl", pn)
+            palette = sns.color_palette("deep")
+            # print(f"Using husl({pn})")
         else:
             palette = sns.color_palette("hls", int((colors_num+1)/2))
             palette += [[e*0.7 for e in c] for c in sns.color_palette("hls", colors_num)]
+    print(f"len(palette) = {len(palette)}")
+    print(f"len(color_ids) = {len(color_ids)}")
+    print(f"color_ids = {color_ids}")
     # palette[-1] = [0 for e in palette[-1]]
     i = 0
     if raw:
@@ -292,19 +299,19 @@ def makePlot(dfs_dict : Dict[str, pd.DataFrame],
     if doAvg:                                
         for k, df in dfs_dict.items():
             for yid in y_data_ids:
+                print(f"{i}: Plotting {k}/{yid} mean, {len(df[x_data_id])} samples, max_avg = {df[yid+'_mean'].max()}, min_avg = {df[yid+'_mean'].min()}, max = {df[yid].max()}, min = {df[yid].min()}, last_avg = {df[yid+'_mean'].iloc[-1]}, last = {df[yid].iloc[-1]}")
                 c = palette[color_ids[i]]
                 l = dfLabels[i]
-                print(f"Plotting {k}/{yid} mean, {len(df[x_data_id])} samples, max_avg = {df[yid+'_mean'].max()}, min_avg = {df[yid+'_mean'].min()}, max = {df[yid].max()}, min = {df[yid].min()}, last_avg = {df[yid+'_mean'].iloc[-1]}, last = {df[yid].iloc[-1]}")
                 try:
                     p = sns.lineplot(x=df[x_data_id],y=df[yid+"_mean"], color=c, label=l, errorbar=None, linewidth=0.5) #, ax = ax) #
                     if not raw and yid+"_std" in df and not minmax:
                         print(f"Plotting {k}/{yid} std")
                         ci_widths = df[yid+"_ciw"] #1.96*df[yid+"_std"]/(math.sqrt(avglen*runs_number))
                         cis = (df[yid+"_mean"] - ci_widths, df[yid+"_mean"] + ci_widths)
-                        c = [(e+1)/2 for e in c]
+                        c = [0.75*e+0.25*1 for e in c]
                         p.fill_between(df[x_data_id],cis[0],cis[1], color=c, alpha = 0.5)
                     if minmax:
-                        c = [(e+1)/2 for e in c]
+                        c = [0.75*e+0.25*1 for e in c]
                         p.fill_between(df[x_data_id],df[yid+"_min"],df[yid+"_max"], color=c, alpha = 0.5)
                 except Exception as e:
                     print(f" !!! Plot for {k}/{yid} failed with exception {e}")
@@ -375,6 +382,8 @@ def labelsFromFiles(csvfiles : List[str]):
         for f in splitpath:
             if f.startswith("seed_"):
                 dfLabels[i] += "/"+f[5:]
+            if f.startswith("GymEnvWrapper_log"):
+                dfLabels[i] += "/"+f.split(".")[1]
         if dfLabels[i] is None:
             dfLabels[i] = chr(65+i)
         i+=1

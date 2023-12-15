@@ -53,8 +53,8 @@ class RecorderGymWrapper(gym.Wrapper):
                 self._frameBuffer.append(None)
             if self._vec_obs_key is not None:
                 self._vecBuffer.append([obs[self._vec_obs_key], rew, done, info])
-            else:
-                self._vecBuffer.append([obs, rew, done, info])
+            # else:
+            #     self._vecBuffer.append([obs, rew, done, info])
         self._epReward += rew
         return obs, rew, done, info
 
@@ -157,8 +157,8 @@ class RecorderGymWrapper(gym.Wrapper):
         self._vecBuffer = []
         if self._vec_obs_key is not None:
             self._vecBuffer.append([obs[self._vec_obs_key], None, None, None])
-        else:
-            self._vecBuffer.append([obs, None, None, None])
+        # else:
+        #     self._vecBuffer.append([obs, None, None, None])
         if self._may_episode_be_saved(self._episodeCounter):
             img = self.render(mode = "rgb_array")
             if img is not None:
