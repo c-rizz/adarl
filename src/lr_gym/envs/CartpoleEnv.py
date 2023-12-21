@@ -7,7 +7,7 @@ Based on ControlledEnv
 
 
 
-import gym
+import lr_gym.utils.spaces as spaces
 import numpy as np
 from typing import Tuple, Dict, Any
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -26,8 +26,8 @@ class CartpoleEnv(ControlledEnv):
                         0.7 * 2,
                         np.finfo(np.float32).max])
 
-    action_space = gym.spaces.Discrete(2)
-    observation_space = gym.spaces.Box(-high, high)
+    action_space = spaces.gym_spaces.Discrete(2)
+    observation_space = spaces.gym_spaces.Box(-high, high)
     metadata = {'render.modes': ['rgb_array']}
 
     def __init__(   self,

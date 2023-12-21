@@ -9,12 +9,9 @@ The provided class must be extended to define a specific environment
 
 import lr_gym.utils.dbg.ggLog as ggLog
 
-import gym
+import gymnasium as gym
 import numpy as np
-from typing import Tuple
-from typing import Dict
-from typing import Any
-from typing import Sequence
+from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional
 import time
 import csv
 
@@ -29,7 +26,9 @@ import signal
 import lr_gym.utils.utils
 from lr_gym.utils.wandb_wrapper import wandb_log
 
-class GymEnvWrapper(gym.GoalEnv):
+ObsType = TypeVar("ObsType")
+
+class GymEnvWrapper(gym.Env, Generic[ObsType]):
     """This class is a wrapper to convert lr_gym environments in OpenAI Gym environments.
 
     It also implements a simple cache for the state of the environment and keeps track
@@ -37,16 +36,16 @@ class GymEnvWrapper(gym.GoalEnv):
 
     """
 
-    action_space = None
-    observation_space = None
-    metadata = None # e.g. {'render.modes': ['rgb_array']}
+    # action_space = None
+    # observation_space = None
+    # metadata = None # e.g. {'render.modes': ['rgb_array']}
     spec = None
 
     def __init__(self,
                  env : BaseEnv,
                  verbose : bool = False,
                  quiet : bool = False,
-                 episodeInfoLogFile : str = None,
+                 episodeInfoLogFile : Optional[str] = None,
                  logs_id : str = "",
                  use_wandb = True):
         """Short summary.
@@ -62,14 +61,16 @@ class GymEnvWrapper(gym.GoalEnv):
         self.action_space = env.action_space
         self.observation_space = env.observation_space
         self.metadata = env.metadata
-        if self._ggEnv.is_time_limited:
-            self.spec = gym.envs.registration.EnvSpec(id=f"GymEnvWrapper-env-v0", max_episode_steps = self._ggEnv.getMaxStepsPerEpisode())
+        if self._ggEnv.is_timelimited:
+            reg_env_id = f"GymEnvWrapper-env-v0_{id(env)}_{int(time.monotonic()*1000)}"
+            gym.register(id=reg_env_id, entry_point=None, max_episode_steps = self._ggEnv.getMaxStepsPerEpisode())
+            self.spec = gym.spec(env_id=reg_env_id)
             self._max_episode_steps = self.spec.max_episode_steps # For compatibility, some libraries read this instead of spec
 
         self._verbose = verbose
         self._quiet = quiet
-        self._episodeInfoLogFile = episodeInfoLogFile
-        self._logEpisodeInfo = self._episodeInfoLogFile is not None
+        self._logEpisodeInfo = episodeInfoLogFile is not None
+        self._episodeInfoLogFile : str = episodeInfoLogFile if episodeInfoLogFile is not None else ""
 
         self._framesCounter = 0
         self._lastStepStartEnvTime = -1
@@ -86,7 +87,7 @@ class GymEnvWrapper(gym.GoalEnv):
 
 
         self._envStepDurationAverage =lr_gym.utils.utils.AverageKeeper(bufferSize = 100)
-        self._ggEnv.submitActionDurationAverage =lr_gym.utils.utils.AverageKeeper(bufferSize = 100)
+        self._submitActionDurationAverage =lr_gym.utils.utils.AverageKeeper(bufferSize = 100)
         self._observationDurationAverage =lr_gym.utils.utils.AverageKeeper(bufferSize = 100)
         self._wallStepDurationAverage =lr_gym.utils.utils.AverageKeeper(bufferSize = 100)
         self._lastStepEndSimTimeFromStart = 0
@@ -98,7 +99,7 @@ class GymEnvWrapper(gym.GoalEnv):
         self._logFileCsvWriter = None
         self._info = {}
 
-        self._done = False
+        self._terminated = False
 
 
     def _setInfo(self):
@@ -126,7 +127,7 @@ class GymEnvWrapper(gym.GoalEnv):
 
         self._info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
         self._info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
-        self._info["avg_act_wall_duration"] = self._ggEnv.submitActionDurationAverage.getAverage()
+        self._info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
         self._info["avg_obs_wall_duration"] = self._observationDurationAverage.getAverage()
         self._info["avg_step_sim_duration"] = avgSimTimeStepDuration
         self._info["tot_ep_wall_duration"] = totEpisodeWallDuration
@@ -167,7 +168,7 @@ class GymEnvWrapper(gym.GoalEnv):
                         columns = next(csvreader)
                     except StopIteration:
                         raise RuntimeError(f"A log file is already present but it is empty.")
-                    lastRow = None
+                    lastRow = ""
                     for row in csvreader:
                         lastRow = row
                     self._resetCount += int(lastRow[columns.index("reset_count")])
@@ -192,7 +193,24 @@ class GymEnvWrapper(gym.GoalEnv):
             wandb_dict.update({prefix+k:v for k,v in d.items()})
             wandb_log(lambda: wandb_dict)
 
-    def step(self, action) -> Tuple[Sequence, int, bool, Dict[str,Any]]:
+    def _build_info(self):
+        info = {}
+        state = self._getStateCached()
+        truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited() # If this env is time-limited this is not a truncation, it's the proper ending
+        info["TimeLimit.truncated"] = truncated
+        info["timed_out"] = self._ggEnv.reachedTimeout()
+        ggInfo = self._ggEnv.getInfo(state=state)
+        if self._terminated:
+            if "success" in ggInfo:
+                ggInfo["is_success"] = ggInfo["success"]
+                self._last_ep_succeded = ggInfo["success"]
+                self._successes[self._resetCount%len(self._successes)] = int(self._last_ep_succeded)
+                self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
+            info.update(ggInfo)
+        info.update(self._info)
+        return info
+
+    def step(self, action) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Run one step of the environment's dynamics.
 
         When end of episode is reached, you are responsible for calling `reset()`
@@ -221,22 +239,21 @@ class GymEnvWrapper(gym.GoalEnv):
         """
         #ggLog.info("step()")
 
-        if self._done:
+        if self._terminated:
             if self._verbose:
                 ggLog.warn("Episode already finished")
-            observation = self._ggEnv.getObservation(self._getStateCached())
+            observation : ObsType = self._ggEnv.getObservation(self._getStateCached())
             reward = 0
-            done = True
+            terminated = True
+            truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited() # If this env is time-limited this is not a truncation, it's the proper ending
+            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
             info = {}
             info.update(self._ggEnv.getInfo(state=self._getStateCached()))
-            if "success" in info:
-                info["is_success"] = info["success"]
-            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
+            info["is_success"] = info.get("success",None)
             info["simTime"] = self._lastStepEndSimTimeFromStart
-            if not self._ggEnv.is_time_limited():
-                info["TimeLimit.truncated"] = self._ggEnv.reachedTimeout()
+            info["TimeLimit.truncated"] = truncated
             info.update(self._info)
-            return (observation, reward, done, info)
+            return (observation, reward, terminated, truncated, info)
 
         self._totalSteps += 1
         # Get previous observation
@@ -246,7 +263,7 @@ class GymEnvWrapper(gym.GoalEnv):
         # Setup action to perform
         t_preAct = time.monotonic()
         self._ggEnv.submitAction(action)
-        self._ggEnv.submitActionDurationAverage.addValue(newValue = time.monotonic()-t_preAct)
+        self._submitActionDurationAverage.addValue(newValue = time.monotonic()-t_preAct)
 
         # Step the environment
 
@@ -263,43 +280,22 @@ class GymEnvWrapper(gym.GoalEnv):
         self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
 
         # Assess the situation
-        done = self._ggEnv.checkEpisodeEnded(previousState, state)
+        self._terminated = self._ggEnv.checkEpisodeEnded(previousState, state)
         reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration())
         observation = self._ggEnv.getObservation(state)
-        info = {"gz_gym_base_env_reached_state" : state,
-                "gz_gym_base_env_previous_state" : previousState,
-                "gz_gym_base_env_action" : action}
-        if not self._ggEnv.is_time_limited():
-            info["TimeLimit.truncated"] = self._ggEnv.reachedTimeout()
-            info["timed_out"] = self._ggEnv.reachedTimeout()
-        ggInfo = self._ggEnv.getInfo(state=state)
-        if done:
-            if "success" in ggInfo:
-                ggInfo["is_success"] = ggInfo["success"]
-                self._last_ep_succeded = ggInfo["success"]
-                self._successes[self._resetCount%len(self._successes)] = float(self._last_ep_succeded)
-                self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
-            info.update(ggInfo)
-        info.update(self._info)
+        truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
+        info = self._build_info()
+        info.update({"gz_gym_base_env_reached_state" : state,
+                    "gz_gym_base_env_previous_state" : previousState,
+                    "gz_gym_base_env_action" : action})
                 
-        # ggLog.debug(" s="+str(previousState)+"\n a="+str(action)+"\n s'="+str(state) +"\n r="+str(reward))
         self._totalEpisodeReward += reward
 
-        #ggLog.info("step() return, reward = "+str(reward))
-        ret = (observation, reward, done, info)
-
+        ret = (observation, reward, self._terminated, truncated, info)
 
         self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
 
-        # print(type(observation))
-
-        # for r in ret:
-        #     print(str(r))
-        # time.sleep(1)
-        # ggLog.warn("returning "+str(ret))
-        if not self._done:
-            self._lastValidStepWallTime = time.monotonic()
-        self._done = done
+        self._lastValidStepWallTime = time.monotonic()
 
         stepDuration = time.monotonic() - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)
@@ -317,7 +313,7 @@ class GymEnvWrapper(gym.GoalEnv):
 
 
 
-    def reset(self):
+    def reset(self, seed = None, options = {}):
         """Reset the state of the environment and return an initial observation.
 
         Returns
@@ -326,8 +322,10 @@ class GymEnvWrapper(gym.GoalEnv):
             the initial observation.
 
         """
-        # ggLog.info("reset()")
-        # traceback.print_stack()
+        if len(options) > 0:
+            raise NotImplementedError()
+        if seed is not None:
+            self._ggEnv.seed(seed)
         self._resetCount += 1
         if self._verbose:
             ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+")-------")
@@ -380,11 +378,11 @@ class GymEnvWrapper(gym.GoalEnv):
         #time.sleep(1)
 
 
-        self._done = False
+        self._terminated = False
 
 
         self._envStepDurationAverage.reset()
-        self._ggEnv.submitActionDurationAverage.reset()
+        self._submitActionDurationAverage.reset()
         self._observationDurationAverage.reset()
         self._wallStepDurationAverage.reset()
 
@@ -393,7 +391,7 @@ class GymEnvWrapper(gym.GoalEnv):
         # print("observation space = "+str(self.observation_space)+" high = "+str(self.observation_space.high)+" low = "+str(self.observation_space.low))
         # print("observation = "+str(observation))
         # ggLog.info("GymEnvWrapper.reset() done")
-        return observation
+        return observation, self._build_info()
 
 
 
@@ -464,21 +462,21 @@ class GymEnvWrapper(gym.GoalEnv):
 
 
 
-    def seed(self, seed=None):
-        """Set the seed for this env's random number generator(s).
+    # def seed(self, seed=None):
+    #     """Set the seed for this env's random number generator(s).
 
-        Note:
-            Some environments use multiple pseudorandom number generators.
-            We want to capture all such seeds used in order to ensure that
-            there aren't accidental correlations between multiple generators.
-        Returns:
-            list<bigint>: Returns the list of seeds used in this env's random
-              number generators. The first value in the list should be the
-              "main" seed, or the value which a reproducer should pass to
-              'seed'. Often, the main seed equals the provided 'seed', but
-              this won't be true if seed=None, for example.
-        """
-        return self._ggEnv.seed(seed)
+    #     Note:
+    #         Some environments use multiple pseudorandom number generators.
+    #         We want to capture all such seeds used in order to ensure that
+    #         there aren't accidental correlations between multiple generators.
+    #     Returns:
+    #         list<bigint>: Returns the list of seeds used in this env's random
+    #           number generators. The first value in the list should be the
+    #           "main" seed, or the value which a reproducer should pass to
+    #           'seed'. Often, the main seed equals the provided 'seed', but
+    #           this won't be true if seed=None, for example.
+    #     """
+    #     return self._ggEnv.seed(seed)
 
 
 
@@ -501,6 +499,13 @@ class GymEnvWrapper(gym.GoalEnv):
         return self._lastState
 
     def getBaseEnv(self) -> BaseEnv:
+        """Get the underlying lr_gym base environment
+
+        Returns
+        -------
+        BaseEnv
+            The lr_gym.BaseEnv object.
+        """
         return self._ggEnv
 
     def __del__(self):
@@ -523,7 +528,23 @@ class GymEnvWrapper(gym.GoalEnv):
         return reward
 
     def compute_reward(self, achieved_goal, desired_goal, info):
+        """Computes the reward for the provided inputs. This method must support batched inputs.
+            This method follows the deprecated gym.GoalEnv interface.
 
+        Parameters
+        ----------
+        achieved_goal : _type_
+            Goal that was achieved
+        desired_goal : _type_
+            Goal that was desired
+        info : _type_
+            Extra info data
+
+        Returns
+        -------
+        float, np.ndarray
+            Reward or batch of rewards
+        """
         if isinstance(info,dict):
             return self._compute_reward_nonbatch(achieved_goal,desired_goal,info)
         else:

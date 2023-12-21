@@ -8,7 +8,7 @@ Based on ControlledEnv
 
 from lr_gym.utils.utils import Pose
 
-import gym
+import lr_gym.utils.spaces as spaces
 import numpy as np
 from typing import Tuple
 
@@ -84,17 +84,17 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
                                             simulationBackend = "gazebo")
 
         self._stackedImg = np.zeros(shape=(self._frame_stacking_size,self._obs_img_height, self._obs_img_height), dtype=np.float32)
-        self.action_space = gym.spaces.Box(low=np.array([-1]),high=np.array([1]))
+        self.action_space = spaces.gym_spaces.Box(low=np.array([-1]),high=np.array([1]))
         self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         self._environmentController.setCamerasToObserve(["camera"])
 
 
         if imgEncoding == "float":
-            self.observation_space = gym.spaces.Box(low=0, high=1,
+            self.observation_space = spaces.gym_spaces.Box(low=0, high=1,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.float32)
         elif imgEncoding == "int":
-            self.observation_space = gym.spaces.Box(low=0, high=255,
+            self.observation_space = spaces.gym_spaces.Box(low=0, high=255,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.uint8)
         else:

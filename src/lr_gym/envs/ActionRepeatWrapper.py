@@ -1,12 +1,10 @@
-import gym
-import cv2
 import lr_gym.utils.dbg.ggLog as ggLog
-import numpy as np
 from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.BaseEnv import BaseEnv
 
 class ActionRepeatWrapper(LrWrapper):
 
-    def __init__(self,  env : gym.Env,
+    def __init__(self,  env : BaseEnv,
                         action_repeat : int):
         super().__init__(env)
         self._actionToDo = None

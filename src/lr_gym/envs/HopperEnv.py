@@ -5,7 +5,7 @@ Class implementing Gazebo-based gym cartpole environment.
 Based on ControlledEnv
 """
 
-import gym
+import lr_gym.utils.spaces as spaces
 import numpy as np
 from typing import Tuple, Dict, Any
 from nptyping import NDArray
@@ -23,11 +23,11 @@ class HopperEnv(ControlledEnv):
     """
 
     action_high = np.array([1, 1, 1])
-    action_space = gym.spaces.Box(low=-action_high, high=action_high, dtype=np.float32)
+    action_space = spaces.gym_spaces.Box(low=-action_high, high=action_high, dtype=np.float32)
     # Observations are:
     #  (pos_z, torso_thigh_joint_pos, thigh_leg_joint_pos, leg_foot_joint_pos, vel_x, vel_y, vel_z, torso_thigh_joint_vel, thigh_leg_joint_vel, leg_foot_joint_vel)
     obs_high = np.full((15), float('inf'), dtype=np.float32)
-    observation_space = gym.spaces.Box(-obs_high, obs_high)
+    observation_space = spaces.gym_spaces.Box(-obs_high, obs_high)
     metadata = {'render.modes': ['rgb_array']}
 
 

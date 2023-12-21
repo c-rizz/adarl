@@ -7,7 +7,7 @@ Based on ControlledEnv
 
 
 
-import gym
+import lr_gym.utils.spaces as spaces
 import numpy as np
 from typing import Tuple
 
@@ -67,7 +67,7 @@ class CartpoleContinuousVisualEnvDict(CartpoleContinuousVisualEnv):
                             seed = seed,
                             continuousActions = continuousActions)
 
-        self.observation_space = gym.spaces.Dict({"camera": self.observation_space})
+        self.observation_space = spaces.gym_spaces.Dict({"camera": self.observation_space})
 
 
 

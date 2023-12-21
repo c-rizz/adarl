@@ -3,26 +3,26 @@ import dm_env
 from lr_gym.envs.BaseEnv import BaseEnv
 from dm_env import TimeStep
 from dm_env import specs
-import gym
 import lr_gym.utils.dbg.ggLog as ggLog
+import lr_gym.utils.spaces as spaces
 
 # def spec_to_gym(spec : dm_env.specs.Array):
 #     if type(spec) == dm_env.specs.Array:
-#         return gym.spaces.Box(shape=spec.shape, dtype=spec.dtype, low=float("-inf"), high=float("+inf"))
+#         return spaces.gym_spaces.Box(shape=spec.shape, dtype=spec.dtype, low=float("-inf"), high=float("+inf"))
 #     elif type(spec) == dm_env.specs.BoundedArray:
-#         return gym.spaces.Box(shape=spec.shape, dtype=spec.dtype, low=spec.minimum, high=spec.maximum)
+#         return spaces.gym_spaces.Box(shape=spec.shape, dtype=spec.dtype, low=spec.minimum, high=spec.maximum)
 #     else:
 #         raise NotImplementedError("Unsupported spec type "+str(type(spec)))
 
 
-def gym_to_spec(space : gym.spaces.Space, name : str = None):
-    if type(space) == gym.spaces.Box:
+def gym_to_spec(space : spaces.gym_spaces.Space, name : str = None):
+    if type(space) == spaces.gym_spaces.Box:
         spec = dm_env.specs.BoundedArray(shape = space.shape,
                                          dtype = space.dtype,
                                          minimum = space.low,
                                          maximum = space.high,
                                          name = name)
-    elif type(space) == gym.spaces.Dict:
+    elif type(space) == spaces.gym_spaces.Dict:
         spec = OrderedDict()
         for subname, subspace in space.spaces.items():
             spec[subname] = gym_to_spec(subspace, subname)            

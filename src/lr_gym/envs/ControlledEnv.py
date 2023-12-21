@@ -29,7 +29,7 @@ class ControlledEnv(BaseEnv):
                  environmentController = None,
                  startSimulation : bool = False,
                 simulationBackend : str = None,
-                 is_time_limited : bool = True):
+                 is_timelimited : bool = True):
         """Short summary.
 
         Parameters
@@ -63,7 +63,7 @@ class ControlledEnv(BaseEnv):
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          startSimulation = startSimulation,
                          simulationBackend = simulationBackend,
-                         is_time_limited=is_time_limited)
+                         is_timelimited=is_timelimited)
 
 
 

@@ -1,16 +1,13 @@
-import gym
-import cv2
-import os
-import time
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
-import copy
 
 from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.BaseEnv import BaseEnv
+import lr_gym.utils.spaces as spaces
 
 class ImgFormatWrapper(LrWrapper):
     
-    def __init__(self,  env : gym.Env,
+    def __init__(self,  env : BaseEnv,
                         img_dict_key = None,
                         input_channel_order : str = "chw",
                         output_channel_order : str = "chw",
@@ -59,7 +56,7 @@ class ImgFormatWrapper(LrWrapper):
             high = 255
         else:
             raise RuntimeError(f"Unsupported env observation space dtype {sub_img_space.dtype}")
-        img_obs_space =  gym.spaces.Box(low=low, high=high,
+        img_obs_space =  spaces.gym_spaces.Box(low=low, high=high,
                                         shape=self._output_shape,
                                         dtype=self._output_dtype)
         if self._img_dict_key is None:
@@ -69,7 +66,7 @@ class ImgFormatWrapper(LrWrapper):
             for k in env.observation_space.spaces.keys():
                 obs_dict[k] = env.observation_space[k]
             obs_dict[self._img_dict_key] = img_obs_space
-            self.observation_space = gym.spaces.Dict(obs_dict)
+            self.observation_space = spaces.gym_spaces.Dict(obs_dict)
 
 
     def _convert_frame(self, obs):

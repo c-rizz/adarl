@@ -5,11 +5,11 @@ Base-class for cresting GAzebo-based gym environments.
 The provided class must be extended to define a specific environment
 """
 
-import gym
 import lr_gym.utils
 
 from lr_gym.envs.LrWrapper import LrWrapper
 from collections import OrderedDict
+import lr_gym.utils.spaces as spaces
 
 class ObsToGoalEnvObs(LrWrapper):
 
@@ -19,7 +19,7 @@ class ObsToGoalEnvObs(LrWrapper):
         self.action_space = env.action_space
         self.metadata = env.metadata
 
-        self.observation_space = gym.spaces.Dict({
+        self.observation_space = spaces.gym_spaces.Dict({
             'observation': self.env.pure_observation_space,
             'achieved_goal': self.env.goal_space,
             'desired_goal': self.env.goal_space

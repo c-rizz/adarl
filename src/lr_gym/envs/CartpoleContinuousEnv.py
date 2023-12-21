@@ -6,7 +6,7 @@ Based on ControlledEnv
 """
 
 
-import gym
+import lr_gym.utils.spaces as spaces
 import numpy as np
 from lr_gym.envs.CartpoleEnv import CartpoleEnv
 
@@ -15,7 +15,7 @@ class CartpoleContinuousEnv(CartpoleEnv):
     Still, the left and right pushes are of a fixed amount. Actions in [0,0.5] push to the left, acitons in [0.5,1] push right.
     """
 
-    action_space = gym.spaces.Box(low=np.array([0]),high=np.array([1]))
+    action_space = spaces.gym_spaces.Box(low=np.array([0]),high=np.array([1]))
 
     def submitAction(self, action : int) -> None:
         super(CartpoleEnv, self).submitAction(action) #skip CartpoleEnv's submitAction, call its parent one

@@ -2,12 +2,11 @@
 """This file implements PandaMoveitReachingEnv."""
 
 
-import gym
 import numpy as np
 from typing import Tuple
 from nptyping import NDArray
 import quaternion
-
+import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 
@@ -30,7 +29,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
                                     1,   # if > 0.5 then the gripper stays open, if not it closes
                                     1])  # grasp force
-    action_space = gym.spaces.Box(-action_space_high,action_space_high) # 3D translation vector, and grip width
+    action_space = spaces.gym_spaces.Box(-action_space_high,action_space_high) # 3D translation vector, and grip width
 
     observation_space_high = np.array([ np.finfo(np.float32).max, # end-effector x position
                                         np.finfo(np.float32).max, # end-effector y position
@@ -49,7 +48,7 @@ class PandaMoveitPickEnv(ControlledEnv):
                                         np.finfo(np.float32).max, # Current gripper width
                                         ])
 
-    observation_space = gym.spaces.Box(-observation_space_high, observation_space_high)
+    observation_space = spaces.gym_spaces.Box(-observation_space_high, observation_space_high)
     metadata = {'render.modes': ['rgb_array']}
 
     Action = NDArray[(8,), np.float32]

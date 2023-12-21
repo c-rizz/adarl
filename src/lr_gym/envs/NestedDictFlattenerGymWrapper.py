@@ -1,11 +1,11 @@
 import gym
-import gym.spaces
+import lr_gym.utils.spaces as spaces
 import lr_gym.utils.dbg.ggLog as ggLog
 
 class NestedDictFlattenerGymWrapper(gym.Wrapper):
     def __init__(self, env : gym.Env):
         super().__init__(env)
-        if not isinstance(env.observation_space, gym.spaces.Dict):
+        if not isinstance(env.observation_space, spaces.gym_spaces.Dict):
             self.already_flat = True
         else:
             self.already_flat = False
@@ -28,11 +28,11 @@ class NestedDictFlattenerGymWrapper(gym.Wrapper):
             return space
         flat_spaces = {}
         for k in space.spaces:
-            if isinstance(space.spaces[k], gym.spaces.Dict):
+            if isinstance(space.spaces[k], spaces.gym_spaces.Dict):
                 flat_spaces.update({k+"."+subkey : subspace for subkey, subspace in self._flatten_space(space.spaces[k]).spaces.items()})
             else:
                 flat_spaces[k] = space.spaces[k]
-        return gym.spaces.Dict(spaces = flat_spaces)
+        return spaces.gym_spaces.Dict(spaces = flat_spaces)
 
     def step(self, action):
         observation, reward, done, info =  self.env.step(action)

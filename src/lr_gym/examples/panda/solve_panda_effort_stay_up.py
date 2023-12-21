@@ -12,7 +12,6 @@ import stable_baselines
 import datetime
 import numpy as np
 
-import lr_gym_ros
 from lr_gym.envs.panda.PandaEffortStayUpEnv import PandaEffortStayUpEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 

@@ -1,12 +1,11 @@
 
-import gym
 import numpy as np
 import lr_gym.utils
 from collections import OrderedDict
 
 from lr_gym.envs.LrWrapper import LrWrapper
 import lr_gym.utils.dbg.ggLog as ggLog
-
+import lr_gym.utils.spaces as spaces
 
 def dict2box(dict_space):
     dtype_type = None
@@ -14,9 +13,9 @@ def dict2box(dict_space):
     high = []
     size = 0
     for subspace_name, subspace in dict_space.spaces.items():
-        if type(subspace) == gym.spaces.Dict:
+        if type(subspace) == spaces.gym_spaces.Dict:
             subspace = dict2box(subspace)
-        if type(subspace) == gym.spaces.Box:
+        if type(subspace) == spaces.gym_spaces.Box:
             low.extend(subspace.low.flatten())
             high.extend(subspace.high.flatten())
             size += np.prod(subspace.shape)
@@ -27,7 +26,7 @@ def dict2box(dict_space):
             
         else:
             raise AttributeError(f"Unsupported space {subspace_name}:{subspace}")
-    return gym.spaces.Box(low = np.array(low),
+    return spaces.gym_spaces.Box(low = np.array(low),
                           high = np.array(high),
                           dtype = dtype_type,
                           shape = (size,))
@@ -41,7 +40,7 @@ class ObsDict2FlatBox(LrWrapper):
                  key : str = "obs"):
         super().__init__(env=env)
 
-        if type(env.observation_space)!=gym.spaces.Dict:
+        if type(env.observation_space)!=spaces.gym_spaces.Dict:
             raise AttributeError("Input env observation_space is not a dict")
         
         self.observation_space = dict2box(env.observation_space)

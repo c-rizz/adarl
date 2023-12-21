@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-import gym
 import numpy as np
 from typing import Tuple
 from nptyping import NDArray
 import quaternion
-
+import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym
@@ -23,7 +22,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                     1,
                                     1,
                                     1])
-    action_space = gym.spaces.Box(-action_space_high,action_space_high) # 3D translatiomn vector, maximum 10cm
+    action_space = spaces.gym_spaces.Box(-action_space_high,action_space_high) # 3D translatiomn vector, maximum 10cm
 
 
     observation_space_high = np.array([ np.finfo(np.float32).max, # end-effector x position
@@ -42,7 +41,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                         np.finfo(np.float32).max, # flag indicating action fails (zero if there were no fails in last step)
                                         ])
 
-    observation_space = gym.spaces.Box(-observation_space_high, observation_space_high)
+    observation_space = spaces.gym_spaces.Box(-observation_space_high, observation_space_high)
     metadata = {'render.modes': ['rgb_array']}
 
     def __init__(   self,

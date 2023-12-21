@@ -3,10 +3,9 @@
 
 
 import numpy as np
-import gym
 import quaternion
 import math
-
+import lr_gym.utils.spaces as spaces
 from lr_gym.envs.panda.PandaEffortKeepPoseEnv import PandaEffortKeepPoseEnv
 import lr_gym
 from nptyping import NDArray
@@ -44,7 +43,7 @@ class PandaEffortKeepVarPoseEnv(PandaEffortKeepPoseEnv):
                                         np.finfo(np.float32).max, # goal pitch
                                         np.finfo(np.float32).max, # goal yaw
                                         ])
-    observation_space = gym.spaces.Box(-observation_space_high, observation_space_high)
+    observation_space = spaces.gym_spaces.Box(-observation_space_high, observation_space_high)
 
     def __init__(   self,
                     maxStepsPerEpisode : int = 500,
@@ -127,7 +126,7 @@ class PandaEffortKeepVarPoseEnv(PandaEffortKeepPoseEnv):
         # goal_pos_space_low  = np.array([  -0.8,
         #                                   -0.8,
         #                                   0.2])
-        # goal_pos_space = gym.spaces.Box(goal_pos_space_low,goal_pos_space_high).sample()
+        # goal_pos_space = spaces.gym_spaces.Box(goal_pos_space_low,goal_pos_space_high).sample()
         # self._goalPose = (goal_pos_space[0],goal_pos_space[1],goal_pos_space[2],1,0,0,0)
         #
         goalPoseStamped = PoseStamped()

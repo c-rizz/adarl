@@ -6,15 +6,11 @@ import gym
 import os
 
 from stable_baselines import SAC, HER
-from stable_baselines import TD3
-from stable_baselines.td3.policies import MlpPolicy
-from stable_baselines.ddpg.noise import NormalActionNoise
 
 from stable_baselines.common import env_checker
 import stable_baselines
 import datetime
 
-import lr_gym_ros
 from lr_gym.envs.PointPoseReachingEnv import PointPoseReachingEnv
 from lr_gym.envs.ToGoalEnvWrapper import ToGoalEnvWrapper
 from stable_baselines.common.callbacks import CheckpointCallback

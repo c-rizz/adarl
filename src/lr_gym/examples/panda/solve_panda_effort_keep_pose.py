@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import rospy
 import time
 import argparse
 import gym
@@ -14,7 +13,6 @@ import stable_baselines
 import datetime
 import numpy as np
 
-import lr_gym_ros
 from lr_gym.envs.panda.PandaEffortKeepPoseEnv import PandaEffortKeepPoseEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 from stable_baselines.common.callbacks import CheckpointCallback

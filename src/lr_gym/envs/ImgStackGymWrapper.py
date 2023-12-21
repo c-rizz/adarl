@@ -1,10 +1,8 @@
 import gym
 import cv2
-import os
-import time
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
-import copy
+import lr_gym.utils.spaces as spaces
 
 class ImgStackGymWrapper(gym.Wrapper):
     
@@ -64,7 +62,7 @@ class ImgStackGymWrapper(gym.Wrapper):
             high = 255
         else:
             raise RuntimeError(f"Unsupported env observation space dtype {sub_img_space.dtype}")
-        img_obs_space =  gym.spaces.Box(low=low, high=high,
+        img_obs_space =  spaces.gym_spaces.Box(low=low, high=high,
                                         shape=(self._output_img_channels*self._frame_stacking_size , self._output_img_height, self._output_img_width),
                                         dtype=sub_img_space.dtype)
         if self._img_dict_key is None:
@@ -74,7 +72,7 @@ class ImgStackGymWrapper(gym.Wrapper):
             for k in env.observation_space.spaces.keys():
                 obs_dict[k] = env.observation_space[k]
             obs_dict[self._img_dict_key] = img_obs_space
-            self.observation_space = gym.spaces.Dict(obs_dict)
+            self.observation_space = spaces.gym_spaces.Dict(obs_dict)
 
         stack_shape = [self._output_img_channels*self._frame_stacking_size, self._output_img_height, self._output_img_height]
         self._stackedImg = np.empty(shape=stack_shape, dtype=sub_img_space.dtype)

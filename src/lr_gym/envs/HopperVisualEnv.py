@@ -5,8 +5,6 @@ Class implementing Gazebo-based gym cartpole environment.
 Based on ControlledEnv
 """
 
-
-import gym
 import numpy as np
 from typing import Tuple, Any, Dict
 from nptyping import NDArray
@@ -84,11 +82,11 @@ class HopperVisualEnv(HopperEnv):
                          simulationBackend = simulationBackend)
 
         if imgEncoding == "float":
-            self.observation_space = gym.spaces.Box(low=0, high=1,
+            self.observation_space = spaces.gym_spaces.Box(low=0, high=1,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.float32)
         elif imgEncoding == "int":
-            self.observation_space = gym.spaces.Box(low=0, high=255,
+            self.observation_space = spaces.gym_spaces.Box(low=0, high=255,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.uint8)
         else:

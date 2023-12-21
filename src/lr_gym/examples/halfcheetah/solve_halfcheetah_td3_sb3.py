@@ -12,7 +12,6 @@ import gym
 import lr_gym.utils.utils
 from stable_baselines3.td3.policies import MlpPolicy
 
-import pybullet_envs
 
 def main(   learning_rate = 0.001,
             buffer_size = 200000,

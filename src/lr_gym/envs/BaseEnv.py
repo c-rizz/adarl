@@ -7,7 +7,7 @@ The provided class must be extended to define a specific environment
 
 
 import numpy as np
-import gym
+import lr_gym.utils.spaces as spaces
 from typing import Tuple, Dict, Any, Sequence
 from abc import ABC, abstractmethod
 
@@ -24,7 +24,7 @@ class BaseEnv(ABC):
     observation_space = None
     pure_observation_space = None
     goal_observation_space = None
-    reward_space = gym.spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32)
+    reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32)
     metadata = None # e.g. {'render.modes': ['rgb_array']}
 
     def __init__(self,
@@ -33,7 +33,7 @@ class BaseEnv(ABC):
                  simulationBackend : str = None,
                  verbose : bool = False,
                  quiet : bool = False,
-                 is_time_limited : bool = True):
+                 is_timelimited : bool = True):
         """Short summary.
 
         Parameters
@@ -49,7 +49,7 @@ class BaseEnv(ABC):
         self._maxStepsPerEpisode = maxStepsPerEpisode
         self._backend = simulationBackend
         self._envSeed : int = 0
-        self._is_time_limited = is_time_limited
+        self._is_timelimited = is_timelimited
         self._closed = False
 
         if startSimulation:
@@ -276,8 +276,8 @@ class BaseEnv(ABC):
     def get_seed(self):
         return self._envSeed
 
-    def is_time_limited(self):
-        return self._is_time_limited
+    def is_timelimited(self):
+        return self._is_timelimited
     
     def get_configuration(self):
         return None

@@ -2,12 +2,11 @@
 """This file implements PandaEffortKeepPoseEnvironment."""
 
 
-import gym
 import numpy as np
 from typing import Tuple
 from nptyping import NDArray
 import quaternion
-
+import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
 
@@ -23,7 +22,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                     1,
                                     1,
                                     1])
-    action_space = gym.spaces.Box(-action_space_high,action_space_high) # 7 joints, torque controlled, normalized
+    action_space = spaces.gym_spaces.Box(-action_space_high,action_space_high) # 7 joints, torque controlled, normalized
 
 
 
@@ -60,7 +59,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                         np.finfo(np.float32).max, # joint 6 velocity
                                         np.finfo(np.float32).max, # joint 7 velocity
                                         ])
-    observation_space = gym.spaces.Box(-observation_space_high, observation_space_high)
+    observation_space = spaces.gym_spaces.Box(-observation_space_high, observation_space_high)
     metadata = {'render.modes': ['rgb_array']}
 
     def __init__(   self,
