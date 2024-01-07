@@ -1,32 +1,23 @@
-import typing
 from nptyping import NDArray
 import numpy as np
 import time
 import cv2
 import collections
-from typing import List, Tuple, Callable, Dict, Union, Optional, Any
+from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional
 import os
 import quaternion
-import signal
 import datetime
-import inspect
-import shutil
 import tqdm
-from pathlib import Path
 import random
 import multiprocessing
 import csv
 import sys
-import yaml
 import importlib
 import traceback
 
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
-import faulthandler
-import subprocess
-import threading
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -204,18 +195,6 @@ class LinkState:
 
 
 
-_is_shutting_down = False
-
-def is_shutting_down():
-    return _is_shutting_down
-
-def shutdown():
-    print(f"Shutting down")
-    global _is_shutting_down
-    _is_shutting_down = True
-
-
-
 
 def createSymlink(src, dst):
     try:
@@ -229,121 +208,25 @@ def createSymlink(src, dst):
             pass
 
 
-wandb_enabled = False
 
-def is_wandb_enabled():
-    return wandb_enabled
-
-def setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None, comment = ""):
-    """Sets up a logging output folder for a training run.
-        It creates the folder, saves the current main script file for reference
-
-    Parameters
-    ----------
-    file : str
-        Path of the main script, the file wil be copied in the log folder
-    frame : [type]
-        Current frame from the main method, use inspect.currentframe() to get it. It will be used to save the
-        call parameters.
-
-    Returns
-    -------
-    str
-        The logging folder to be used
-    """
-    if folderName is None:
-        if run_id is None:
-            run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-        script_out_folder = os.getcwd()+"/"+os.path.basename(file)
-        folderName = script_out_folder+"/"+run_id
-        os.makedirs(folderName, exist_ok=True)
-    else:
-        os.makedirs(folderName, exist_ok=True)
-        script_out_folder = str(Path(folderName).parent.absolute())
-
-    createSymlink(src = folderName, dst = script_out_folder+"/latest")
-    shutil.copyfile(file, folderName+"/main_script")
-    if currentframe is not None:
-        args, _, _, values = inspect.getargvalues(currentframe)
-    else:
-        args, values = ([],{})
-    # inputargs = [(i, values[i]) for i in args]
-    # with open(folderName+"/input_args.txt", "w") as input_args_file:
-    #     print(str(inputargs), file=input_args_file)
-    args_yaml_file = folderName+"/input_args.yaml"
-    with open(args_yaml_file, "w") as input_args_yamlfile:
-        yaml.dump(values,input_args_yamlfile, default_flow_style=None)
-
-    ggLog.info(f"values = {values}")
-
-    if "modelFile" in values:
-        if values["modelFile"] is not None and type(values["modelFile"]) == str:
-            model_dir = os.path.dirname(values["modelFile"])
-            if os.path.isdir(model_dir):
-                parent = Path(model_dir).parent.absolute()
-                diff = subprocess.run(['diff', args_yaml_file, f"{parent}/input_args.yaml"], stdout=subprocess.PIPE).stdout.decode('utf-8')
-                ggLog.info(f"Args comparison with loaded model:\n{diff}")
-            else:
-                ggLog.info("modelFile is not a file")
-
-    if use_wandb:
-        global wandb_enabled
-        import wandb
-        if experiment_name is None:
-            experiment_name = os.path.basename(file)
-        try:
-            wandb.init( project=experiment_name,
-                        config = values,
-                        name = run_id,
-                        monitor_gym = False, # Do not save openai gym videos
-                        save_code = True, # Save run code
-                        sync_tensorboard = True, # Save tensorboard stuff,
-                        notes = comment
-                        )
-            wandb_enabled = True
-        except wandb.sdk.wandb_manager.ManagerConnectionError as e:
-            ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
-
-    return folderName
-
-
-from lr_gym.utils.sigint_handler import setupSigintHandler
     
 
-def lr_gym_shutdown():
-    shutdown()
-    if is_wandb_enabled():
-        import wandb
-        wandb.finish()
-    t0 = time.monotonic()
-    timeout = 60
-    if threading.current_thread() == threading.main_thread():
-        active_threads = threading.enumerate()
-
-        while len(active_threads)>1 and time.monotonic() - t0 < timeout:
-            ggLog.warn(f"lr_gym shutting down: waiting for active threads {active_threads}")
-            time.sleep(10)
-
-        # for t in threading.enumerate():
-        #     if t != threading.main_thread():
-        #         terminate the thread???
-
-        # if len(active_threads)>1: # If we just exit() the process will wait for subthreads and not terminate
-        #     ggLog.error(f"Trying to shutdown but there are still threads running after {timeout} seconds. Self-terminating")
-        #     ggLog.error("Sending SIGTERM to myself")
-        #     os.kill(os.getpid(), signal.SIGTERM)
-        #     time.sleep(60)
-        #     ggLog.error("Still alive, sending SIGKILL to myself")
-        #     os.kill(os.getpid(), signal.SIGKILL)
-        #     time.sleep(10)
-        #     ggLog.error("Still alive after SIGKILL!")
 
 
 
 
-def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None, predict_func : Callable[[Any], Tuple[Any,Any]] = None, progress_bar : bool = True, images_return = None, obs_return = None):
+
+def evaluatePolicy(env,
+                   model,
+                   episodes : int, on_ep_done_callback = None,
+                   predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
+                   progress_bar : bool = True,
+                   images_return = None,
+                   obs_return = None):
     if predict_func is None:
-        predict_func = model.predict
+        predict_func_ = model.predict
+    else:
+        predict_func_ = predict_func
     rewards = np.empty((episodes,), dtype = np.float32)
     steps = np.empty((episodes,), dtype = np.int32)
     wallDurations = np.empty((episodes,), dtype = np.float32)
@@ -359,27 +242,27 @@ def evaluatePolicy(env, model, episodes : int, on_ep_done_callback = None, predi
     for episode in maybe_tqdm(range(0,episodes)):
         frame = 0
         episodeReward = 0
-        done = False
+        terminated = False
         predDurations = []
         t0 = time.monotonic()
         # ggLog.info("Env resetting...")
-        obs = env.reset()
+        obs, info = env.reset()
         # ggLog.info("Env resetted")
         if images_return is not None:
             images_return.append([])
         if obs_return is not None:
             obs_return.append([])
-        while not done:
+        while not terminated:
             t0_pred = time.monotonic()
             # ggLog.info("Predicting")
             if images_return is not None:
                 images_return[-1].append(env.render())
             if obs_return is not None:
                 obs_return[-1].append(obs)
-            action, _states = predict_func(obs)
+            action, _states = predict_func_(obs)
             predDurations.append(time.monotonic()-t0_pred)
             # ggLog.info("Stepping")
-            obs, stepReward, done, info = env.step(action)
+            obs, stepReward, terminated, truncated, info = env.step(action)
             frame+=1
             episodeReward += stepReward
             # ggLog.info(f"Step reward = {stepReward}")
@@ -470,7 +353,7 @@ class RequestFailError(Exception):
 
 
 
-def pkgutil_get_path(package, resource = None):
+def pkgutil_get_path(package, resource = None)  -> str:
     """ Modified version from pkgutil.get_data """
 
     spec = importlib.util.find_spec(package)
@@ -660,46 +543,6 @@ def isinstance_noimport(obj, class_names):
 
 
 
-
-def lr_gym_startup( main_file_path : str,
-                    currentframe = None,
-                    using_pytorch : bool = True,
-                    folderName : Optional[str] = None,
-                    seed = None,
-                    experiment_name : Optional[str] = None,
-                    run_id : Optional[str] = None,
-                    debug = False,
-                    run_comment = "",
-                    use_wandb = True) -> str:
-    if isinstance(debug, bool):
-        if debug:
-            debug_level = 1
-        else:
-            debug_level = 0
-    else:
-        debug_level = debug
-    faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
-    logFolder = setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment, use_wandb=use_wandb)
-    ggLog.addLogFile(logFolder+"/gglog.log")
-    if seed is None:
-        raise AttributeError("You must specify the run seed")
-    ggLog.setId(str(seed))
-    np.set_printoptions(edgeitems=10,linewidth=180)
-    setupSigintHandler()
-    if using_pytorch:
-        import torch as th
-        pyTorch_makeDeterministic(seed)
-        th.autograd.set_detect_anomaly(debug_level >= 0) # Detect NaNs
-        th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
-        if th.cuda.is_available():
-            ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
-        else:
-            ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                        "                  NO CUDA AVAILABLE!\n"+
-                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
-                        "Will continue in 10 sec...")
-            time.sleep(10)
-    return logFolder
 
 def pyTorch_makeDeterministic(seed):
     """ Make pytorch as deterministic as possible.

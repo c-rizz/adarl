@@ -13,6 +13,8 @@ import inspect
 import datetime
 import os
 import cv2
+from lr_gym.envs.GymToLr import GymToLr
+from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 
 def main() -> None:
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
@@ -26,9 +28,9 @@ def main() -> None:
 
     """
 
-    logFolder = lr_gym.utils.utils.lr_gym_startup(__file__,
+    logFolder = lr_gym.utils.session.lr_gym_startup(__file__,
                                                     inspect.currentframe(),
-                                                    folderName = f"solve_cartpole_env/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                                                    folderName = os.path.basename(__file__)+f"/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}",
                                                     seed = 0,
                                                     experiment_name = None,
                                                     run_id = None)
@@ -40,35 +42,45 @@ def main() -> None:
 
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--controller", required=False, default="GzController", type=str, help="label to put on y axis")
+    ap.add_argument("--mode", required=False, default="gym", type=str, help="Cartpole environment to use")
     ap.add_argument("--saveimages", default=False, action='store_true', help="Do not center the window averaging")
+    ap.add_argument("--gymenv", default=True, action='store_true', help="Do not center the window averaging")
     ap.set_defaults(feature=True)
     args = vars(ap.parse_args())
 
-    stepLength_sec = 0.05
-    if args["controller"] == "GzController":
-        from lr_gym_ros2.env_controllers.GzController import GzController
-        env_controller = GzController(stepLength_sec=stepLength_sec)
-    elif args["controller"] == "GazeboController":
-        from lr_gym_ros.envControllers.GazeboController import GazeboController
-        env_controller = GazeboController(stepLength_sec=stepLength_sec)
-    elif args["controller"] == "PyBulletController":
-        from lr_gym.env_controllers.PyBulletController import PyBulletController
-        env_controller = PyBulletController(stepLength_sec=stepLength_sec)
-    else:
-        print(f"Requested unknown controller '{args['controller']}'")
-        exit(0)
+    mode = args["mode"].lower().strip()
 
-    env = GymEnvWrapper(CartpoleEnv(render=False,
-                                    startSimulation = True,
-                                    stepLength_sec = stepLength_sec,
-                                    environmentController = env_controller),
-                        episodeInfoLogFile = logFolder+"/GymEnvWrapper_log.csv")
+    if mode == "gymenv":
+        import gymnasium as gym
+        base_gym_env = gym.make('CartPole-v1', render_mode="rgb_array")
+        base_gym_env_step_len_sec = base_gym_env.tau
+        # TODO: what's the gym control frequency?
+        stepLength_sec = base_gym_env_step_len_sec
+        lrenv = GymToLr(openaiGym_env=base_gym_env, stepSimDuration_sec=stepLength_sec)
+    else:
+        if mode == "GzController":
+            from lr_gym_ros2.env_controllers.GzController import GzController
+            env_controller = GzController(stepLength_sec=stepLength_sec)
+        elif mode == "GazeboController":
+            from lr_gym_ros.envControllers.GazeboController import GazeboController
+            env_controller = GazeboController(stepLength_sec=stepLength_sec)
+        elif mode == "PyBulletController":
+            from lr_gym.env_controllers.PyBulletController import PyBulletController
+            env_controller = PyBulletController(stepLength_sec=stepLength_sec)
+        else:
+            print(f"Requested unknown controller '{args['controller']}'")
+            exit(0)
+        lrenv = CartpoleEnv(startSimulation=True,
+                            environmentController = env_controller,
+                            render=render)
+    gym_env = GymEnvWrapper(lrenv)
+    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
     #setup seeds for reproducibility
     RANDOM_SEED=20200401
-    env.seed(RANDOM_SEED)
+    # env.seed(RANDOM_SEED)
     env.action_space.seed(RANDOM_SEED)
-    env._max_episode_steps = 500 #limit episode length
+    env.reset(seed=RANDOM_SEED)
+    # env._max_episode_steps = 500 #limit episode length
 
     model = DQN(MlpPolicy, env, verbose=1, seed=RANDOM_SEED, learning_starts=100,
                 policy_kwargs=dict(net_arch=[64,64]), learning_rate = 0.0025, train_freq=1,
@@ -78,38 +90,6 @@ def main() -> None:
     model.learn(total_timesteps=25000)
     duration_learn = time.time() - t_preLearn
     ggLog.info("Learned. Took "+str(duration_learn)+" seconds.")
-
-
-    # ggLog.info("Computing average reward...")
-    # t_preVal = time.time()
-    # rewards=[]
-    # totFrames=0
-    # totDuration=0
-    # #frames = []
-    # #do an average over a bunch of episodes
-    # for episode in tqdm.tqdm(range(0,50)):
-    #     frame = 0
-    #     episodeReward = 0
-    #     done = False
-    #     obs = env.reset()
-    #     t0 = time.time()
-    #     while not done:
-    #         #ggLog.info("Episode "+str(episode)+" frame "+str(frame))
-    #         action, _states = model.predict(obs)
-    #         obs, stepReward, done, info = env.step(action)
-    #         #frames.append(env.render("rgb_array"))
-    #         #time.sleep(0.016)
-    #         frame+=1
-    #         episodeReward += stepReward
-    #     rewards.append(episodeReward)
-    #     totFrames +=frame
-    #     totDuration += time.time() - t0
-    #     #print("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
-    # avgReward = sum(rewards)/len(rewards)
-    # duration_val = time.time() - t_preVal
-    # ggLog.info("Computed average reward. Took "+str(duration_val)+" seconds ("+str(totFrames/totDuration)+" fps).")
-    # ggLog.info("Average rewar = "+str(avgReward))
-
 
 
     images = [] if args["saveimages"] else None
@@ -125,22 +105,6 @@ def main() -> None:
     print(f"Got {eps} episodes, {steps} steps")
     print(f"took {t1-t0}s, {steps/(t1-t0)} fps, sim/real = {stepLength_sec*steps/(t1-t0):.2f}x")
 
-    if args["saveimages"] and images is not None:
-        imagesOutFolder = "./solve_cartpole_sb3/"+str(int(time.time()))
-        print(f"Saving images to {imagesOutFolder}...")
-        os.makedirs(imagesOutFolder, exist_ok=True)
-        episode = -1
-        for ep in images:
-            episode+=1
-            frame = -1
-            for img in ep:
-                frame+=1
-                # img = img[:,:,0]
-                # img = np.transpose(img, (1,2,0))
-                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                r = cv2.imwrite(imagesOutFolder+"/frame-"+str(episode)+"-"+str(frame)+".png",img_bgr)
-                if not r:
-                    print("couldn't save image")
 
 if __name__ == "__main__":
     main()

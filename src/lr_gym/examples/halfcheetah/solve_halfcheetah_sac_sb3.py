@@ -37,7 +37,7 @@ def main(obsNoise : NDArray[(4,),np.float32],
     """
 
     
-    folderName = lr_gym.utils.utils.lr_gym_startup(__file__, inspect.currentframe())
+    folderName = lr_gym.utils.session.lr_gym_startup(__file__, inspect.currentframe())
     device = lr_gym.utils.utils.torch_selectBestGpu()
     RANDOM_SEED=0
     # dmenv = suite.load("cheetah",

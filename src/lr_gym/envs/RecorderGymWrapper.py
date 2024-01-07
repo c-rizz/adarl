@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 import cv2
 import os
 import time
@@ -32,7 +32,8 @@ class RecorderGymWrapper(gym.Wrapper):
         self._saveBestEpisodes = saveBestEpisodes
         self._saveFrequency_ep = saveFrequency_ep
         self._bestReward = float("-inf")
-        self._epReward = 0
+        self._epReward = 0.0
+        self._epStepCount = 0
         self._vec_obs_key = vec_obs_key
         try:
             os.makedirs(self._outFolder)
@@ -44,19 +45,20 @@ class RecorderGymWrapper(gym.Wrapper):
             pass
 
     def step(self, action):
-        obs, rew, done, info =  self.env.step(action)
+        obs, rew, terminated, truncated, info =  self.env.step(action)
         if self._may_episode_be_saved(self._episodeCounter):
-            img = self.render(mode = "rgb_array")
+            img = self.render()
             if img is not None:
                 self._frameBuffer.append(img)
             else:
                 self._frameBuffer.append(None)
             if self._vec_obs_key is not None:
-                self._vecBuffer.append([obs[self._vec_obs_key], rew, done, info])
+                self._vecBuffer.append([obs[self._vec_obs_key], rew, terminated, truncated, info])
             # else:
             #     self._vecBuffer.append([obs, rew, done, info])
         self._epReward += rew
-        return obs, rew, done, info
+        self._epStepCount += 1
+        return obs, rew, terminated, truncated, info
 
 
 
@@ -72,10 +74,10 @@ class RecorderGymWrapper(gym.Wrapper):
                 if npimg is not None:
                     goodImg = npimg
                     break
-            in_resolution_wh = (goodImg.shape[1], goodImg.shape[0]) # npimgs are hwc
-            if in_resolution_wh is None:
+            if goodImg is None:
                 ggLog.warn("RecorderGymWrapper: No valid images in framebuffer, will not write video")
                 return
+            in_resolution_wh = (goodImg.shape[1], goodImg.shape[0]) # npimgs are hwc
             height = in_resolution_wh[1]
             minheight = 360
             if height<minheight:
@@ -115,7 +117,7 @@ class RecorderGymWrapper(gym.Wrapper):
     def _preproc_frame(self, img_hwc):
         # ggLog.info(f"raw frame shape = {img_whc.shape}")
         if img_hwc.dtype == np.float32:
-            img_hwc = np.uint8(img_hwc*255)
+            img_hwc = (img_hwc*255).astype(dtype=np.uint8, copy=False)
 
         if len(img_hwc.shape) == 2:
             img_hwc = np.expand_dims(img_hwc,axis=2)
@@ -139,20 +141,23 @@ class RecorderGymWrapper(gym.Wrapper):
         return self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0)
 
     def reset(self, **kwargs):
-        if self._epReward > self._bestReward:
-            self._bestReward = self._epReward
-            if self._saveBestEpisodes:
-                self._saveLastEpisode(self._outFolder+"/best/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")            
-        if self._saveFrequency_ep>0 and self._episodeCounter % self._saveFrequency_ep == 0:
-            self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
+        if self._epStepCount > 0:
+            if self._epReward > self._bestReward:
+                self._bestReward = self._epReward
+                if self._saveBestEpisodes:
+                    self._saveLastEpisode(self._outFolder+"/best/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")            
+            if self._saveFrequency_ep>0 and self._episodeCounter % self._saveFrequency_ep == 0:
+                self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
 
 
         obs = self.env.reset(**kwargs)
 
         if self._epReward>self._bestReward:
             self._bestReward = self._epReward
+        if self._epStepCount>0:
+            self._episodeCounter += 1
         self._epReward = 0
-        self._episodeCounter +=1
+        self._epStepCount = 0        
         self._frameBuffer = []
         self._vecBuffer = []
         if self._vec_obs_key is not None:
@@ -160,7 +165,7 @@ class RecorderGymWrapper(gym.Wrapper):
         # else:
         #     self._vecBuffer.append([obs, None, None, None])
         if self._may_episode_be_saved(self._episodeCounter):
-            img = self.render(mode = "rgb_array")
+            img = self.render()
             if img is not None:
                 self._frameBuffer.append(img)
         return obs

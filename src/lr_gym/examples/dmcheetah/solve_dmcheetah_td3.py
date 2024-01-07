@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 
-import torch as th
 import time
-import tqdm
 import inspect
 import numpy as np
-from nptyping import NDArray
 
 from stable_baselines3.td3.policies import MlpPolicy, MultiInputPolicy
 from stable_baselines3 import TD3
 from stable_baselines3.common.noise import NormalActionNoise
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-from lr_gym.envs.ObsDict2FlatBox import ObsDict2FlatBox
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.utils
 
@@ -19,10 +15,11 @@ from lr_gym.envs.GymToLr import GymToLr
 from lr_gym.envs.ObsToDict import ObsToDict
 import os
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
-from autoencoding_rl.buffers import GenericHerReplayBuffer, RandomHoldoutBuffer, ThDictReplayBuffer_updatable, ThDictReplayBuffer
+from lr_gym.utils.sb3_buffers import ThDictReplayBuffer
+from lr_gym.envs.NestedDictFlattenerGymWrapper import NestedDictFlattenerGymWrapper
+from lr_gym.envs.ObsToImgVecDict import ObsToImgVecDict
 
-
-def main(obsNoise : NDArray[(4,),np.float32]) -> None: 
+def runFunction(seed, folderName, resumeModelFile, run_id, args):
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
 
     It does not use the rendering at all, it learns from the joint states.
@@ -33,10 +30,8 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     None
 
     """
-
-    RANDOM_SEED=0
-    
-    folderName = lr_gym.utils.utils.lr_gym_startup(__file__, inspect.currentframe(), seed=RANDOM_SEED)
+   
+    folderName = lr_gym.utils.session.lr_gym_startup(__file__, inspect.currentframe(), seed=seed)
 
     # dmenv = suite.load("cheetah",
     #                     "run",
@@ -46,9 +41,12 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     os.environ["MUJOCO_GL"] = "egl"
     import dmc2gym.wrappers
     targetFps = 100
-    env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=RANDOM_SEED, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
+    env = dmc2gym.make(domain_name='cheetah', task_name='run', seed=seed, frame_skip = 2) # dmc2gym.wrappers.DMCWrapper(env=dmenv,task_kwargs = {'random' : RANDOM_SEED})
+    print(f"dmc2gym gave {env}")
+    # env = EnvCompatibility(old_env=env, render_mode="rgb_array")
     env = GymToLr(openaiGym_env = env, stepSimDuration_sec = 1/targetFps)
-    env = ObsToDict(env)
+    # env = ObsToDict(env)
+    env = ObsToImgVecDict(env)
     #env = ObsDict2FlatBox(env)
     env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
     env = RecorderGymWrapper(env,
@@ -58,8 +56,8 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     ggLog.info("Built")
 
     #setup seeds for reproducibility
-    env.seed(RANDOM_SEED)
-    env.action_space.seed(RANDOM_SEED)
+    env.reset(seed=seed)
+    env.action_space.seed(seed)
 
     # model = SAC(MlpPolicy, env, verbose=1,
     #             buffer_size=20000,
@@ -73,7 +71,7 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     model = TD3( MultiInputPolicy, env, action_noise=action_noise, verbose=1, batch_size=100,
                     buffer_size=1000000, gamma=0.99, gradient_steps=1000,
                     learning_rate=0.0005, learning_starts=5000, policy_kwargs=dict(net_arch=[64,64]), train_freq=1000,
-                    seed = RANDOM_SEED, device = "cuda",
+                    seed = seed, device = "cuda",
                     replay_buffer_class = ThDictReplayBuffer,
                     replay_buffer_kwargs = {"storage_torch_device":lr_gym.utils.utils.torch_selectBestGpu()})
 
@@ -85,36 +83,61 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
     ggLog.info("Learned. Took "+str(duration_learn)+" seconds.")
 
 
-    ggLog.info("Computing average reward...")
-    t_preVal = time.time()
-    rewards=[]
-    totFrames=0
-    totDuration=0
-    #frames = []
-    #do an average over a bunch of episodes
-    for episode in tqdm.tqdm(range(0,50)):
-        frame = 0
-        episodeReward = 0
-        done = False
-        obs = env.reset()
-        t0 = time.time()
-        while not done:
-            #ggLog.info("Episode "+str(episode)+" frame "+str(frame))
-            action, _states = model.predict(obs)
-            obs, stepReward, done, info = env.step(action)
-            #frames.append(env.render("rgb_array"))
-            #time.sleep(0.016)
-            frame+=1
-            episodeReward += stepReward
-        rewards.append(episodeReward)
-        totFrames +=frame
-        totDuration += time.time() - t0
-        #print("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
-    avgReward = sum(rewards)/len(rewards)
-    duration_val = time.time() - t_preVal
-    ggLog.info("Computed average reward. Took "+str(duration_val)+" seconds ("+str(totFrames/totDuration)+" fps).")
-    ggLog.info("Average reward = "+str(avgReward))
+    # res = lr_gym.utils.utils.evaluatePolicy(env = eval_env, model = None, episodes = 10, predict_func=model.predict)
+    # print(f"Summary:\n{res}")
 
 if __name__ == "__main__":
-    n = None    
-    main(n)
+
+    import os
+    import argparse
+    import multiprocessing
+    from lr_gym.utils.session import launchRun
+
+    ap = argparse.ArgumentParser()
+    # ap.add_argument("--evaluate", default=None, type=str, help="Load and evaluate model file")
+    ap.add_argument("--resumeFolder", default=None, type=str, help="Resume an entire run composed of multiple seeds")
+    ap.add_argument("--seedsNum", default=1, type=int, help="Number of seeds to test with")
+    # ap.add_argument("--seeds", nargs="+", required=False, type=int, help="Seeds to use")
+    # ap.add_argument("--no_rb_checkpoint", default=False, action='store_true', help="Do not save replay buffer checkpoints")
+    # ap.add_argument("--robot_pc_ip", default=None, type=str, help="Ip of the pc connected to the robot (which runs the control, using its rt kernel)")
+    ap.add_argument("--seedsOffset", default=0, type=int, help="Offset the used seeds by this amount")
+    # ap.add_argument("--xvfb", default=False, action='store_true', help="Run with xvfb")
+    ap.add_argument("--maxProcs", default=int(multiprocessing.cpu_count()/2), type=int, help="Maximum number of parallel runs")
+    # ap.add_argument("--offline", default=False, action='store_true', help="Train offline")
+    # group = ap.add_mutually_exclusive_group()
+    # group.add_argument("--gazebo",     default=False, action='store_true',     help="Use gazebo classic env")
+    # group.add_argument("--gz",         default=False, action='store_true',         help="Use ignition gazebo env")
+    # group.add_argument("--simplified", default=False, action='store_true', help="Use simplified pybullet env")
+    # group.add_argument("--real", default=False, action='store_true', help="Run on real robot")
+    ap.add_argument("--comment", required = True, type=str, help="Comment explaining what this run is about")
+
+    ap.set_defaults(feature=True)
+    args = vars(ap.parse_args())
+
+    # if args["real"] and args["maxProcs"]>0:
+    #     raise AttributeError("Cannot run multiple processes in the real")
+
+
+    # if args["simplified"]:
+    #     mode = "simplified"
+    # elif args["gz"]:
+    #     mode = "gz"
+    # elif args["gazebo"]:
+    #     mode = "gazebo_classic"
+    # else:
+    #     raise RuntimeError("No mode was specified, use either --gazebo --gz or --simplified")
+
+    action_repeat = 4
+    ep_duration = int(1000/action_repeat)
+    parallel_envs = 1
+
+
+    
+    launchRun(  seedsNum=args["seedsNum"],
+                seedsOffset=args["seedsOffset"],
+                runFunction=runFunction,
+                maxProcs=args["maxProcs"],
+                launchFilePath=__file__,
+                resumeFolder = args["resumeFolder"],
+                args = args,
+                debug_level = -10)

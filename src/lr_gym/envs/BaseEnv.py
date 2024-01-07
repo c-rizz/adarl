@@ -8,8 +8,9 @@ The provided class must be extended to define a specific environment
 
 import numpy as np
 import lr_gym.utils.spaces as spaces
-from typing import Tuple, Dict, Any, Sequence
+from typing import Tuple, Dict, Any, Sequence, Dict, Union
 from abc import ABC, abstractmethod
+import torch as th
 
 class BaseEnv(ABC):
     """This is a base-class for implementing lr_gym environments.
@@ -20,14 +21,15 @@ class BaseEnv(ABC):
     """
     #TODO: This should be an abstract class, defined via python's ABC
 
-    action_space = None
-    observation_space = None
-    pure_observation_space = None
-    goal_observation_space = None
-    reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32)
-    metadata = None # e.g. {'render.modes': ['rgb_array']}
+     # e.g. {'render.modes': ['rgb_array']}
 
     def __init__(self,
+                 action_space : spaces.gym_spaces.Space = None,
+                 observation_space : spaces.gym_spaces.Space = None,
+                 pure_observation_space : spaces.gym_spaces.Space = None,
+                 goal_observation_space : spaces.gym_spaces.Space = None,
+                 reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
+                 metadata = {},
                  maxStepsPerEpisode : int = 500,
                  startSimulation : bool = False,
                  simulationBackend : str = None,
@@ -43,13 +45,19 @@ class BaseEnv(ABC):
             done=True after being called this number of times
 
         """
+        self.action_space = action_space
+        self.observation_space = observation_space
+        self.pure_observation_space = pure_observation_space
+        self.goal_observation_space = goal_observation_space
+        self.reward_space = reward_space
+        self.metadata = metadata
 
         self._actionsCounter = 0
         self._stepCounter = 0
-        self._maxStepsPerEpisode = maxStepsPerEpisode
+        self._maxStepsPerEpisode = th.as_tensor(maxStepsPerEpisode)
         self._backend = simulationBackend
         self._envSeed : int = 0
-        self._is_timelimited = is_timelimited
+        self._is_timelimited = th.as_tensor(is_timelimited)
         self._closed = False
 
         if startSimulation:
@@ -58,7 +66,7 @@ class BaseEnv(ABC):
 
 
     @abstractmethod
-    def submitAction(self, action) -> None:
+    def submitAction(self, action : th.Tensor) -> None:
         """To be implemented in subclass.
 
         This method is called during the stepping of the simulation. It is called while the simulation is paused and
@@ -81,14 +89,14 @@ class BaseEnv(ABC):
         """
         self._actionsCounter += 1
 
-    def reachedTimeout(self):
+    def reachedTimeout(self) -> th.Tensor:
         """
         If maxStepsPerEpisode is reached. Usually not supposed to be subclassed.
         """
         return self.getMaxStepsPerEpisode()>0 and self._stepCounter >= self.getMaxStepsPerEpisode()
 
     
-    def checkEpisodeEnded(self, previousState, state) -> bool:
+    def checkEpisodeEnded(self, previousState, state) -> th.Tensor:
         """To be implemented in subclass.
 
         If the episode has finished. In the subclass you should OR this with your own conditions.
@@ -109,7 +117,7 @@ class BaseEnv(ABC):
         return self.reachedTimeout()
 
     @abstractmethod
-    def computeReward(self, previousState, state, action, env_conf = None) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None) -> th.Tensor:
         """To be implemented in subclass.
 
         This method is called during the stepping of the simulation. Just after the simulation has been stepped forward
@@ -124,14 +132,14 @@ class BaseEnv(ABC):
 
         Returns
         -------
-        float
-            The reward for this step
+        th.Tensor
+            The reward for this step 
 
         """
         raise NotImplementedError()
 
     @abstractmethod
-    def getObservation(self, state) -> np.ndarray:
+    def getObservation(self, state) -> Dict[Any, th.Tensor]:
         """To be implemented in subclass.
 
         Get an observation of the environment.
@@ -145,7 +153,7 @@ class BaseEnv(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getState(self) -> Sequence:
+    def getState(self) -> Dict[Any, th.Tensor]:
         """To be implemented in subclass.
 
         Get the state of the environment form the simulation
@@ -208,42 +216,12 @@ class BaseEnv(ABC):
         return {"timed_out" : self.reachedTimeout()}
 
 
-    def getMaxStepsPerEpisode(self):
-        """Get the maximum number of frames of one episode, as set by the constructor."""
+    def getMaxStepsPerEpisode(self) -> th.Tensor:
+        """Get the maximum number of frames of one episode, as set by the constructor (1-element tensor)."""
         return self._maxStepsPerEpisode
 
-    def setGoalInState(self, state_batch, goal_batch):
-        """To be implemented in subclass.
-
-        Update the provided state with the provided goal. Useful for goal-oriented environments, especially when using HER.
-        """
-        raise NotImplementedError()
-
-    @staticmethod
-    def getGoalFromState(state_batch):
-        """To be implemented in subclass.
-
-        Get the goal for the provided state. Useful for goal-oriented environments, especially when using HER.
-        """
-        raise NotImplementedError()
-
-    def getAchievedGoalFromState(self, state_batch):
-        """To be implemented in subclass.
-
-        Get the currently achieved goal from the provided state. Useful for goal-oriented environments, especially when using HER.
-        """
-        raise NotImplementedError()
-
-    def getPureObservationFromState(self, state_batch):
-        """To be implemented in subclass.
-
-        Get the pure observation from the provided state. Pure observation means the observation without goal and achieved goal.
-        Useful for goal-oriented environments, especially when using HER.
-        """
-        raise NotImplementedError()
-
     @abstractmethod
-    def buildSimulation(self, backend : str = "gazebo"):
+    def buildSimulation(self, backend : str = "gazebo") -> None:
         """To be implemented in subclass.
 
         Build a simulation for the environment.
@@ -251,7 +229,7 @@ class BaseEnv(ABC):
         raise NotImplementedError() #TODO: Move this into the environmentControllers
 
     @abstractmethod
-    def _destroySimulation(self):
+    def _destroySimulation(self) -> None:
         """To be implemented in subclass.
 
         Destroy a simulation built by buildSimulation.
@@ -259,24 +237,23 @@ class BaseEnv(ABC):
         pass
 
     @abstractmethod
-    def getSimTimeFromEpStart(self):
+    def getSimTimeFromEpStart(self) -> th.Tensor:
         """Get the elapsed time since the episode start."""
         raise NotImplementedError()
 
-    def close(self):
+    def close(self) -> None:
         if not self._closed:
             self._destroySimulation()
             self._closed = True
 
-    def seed(self, seed=None):
+    def seed(self, seed : int) -> None:
         if seed is not None:
             self._envSeed = seed
-        return [self._envSeed]
 
     def get_seed(self):
         return self._envSeed
 
-    def is_timelimited(self):
+    def is_timelimited(self) -> th.Tensor:
         return self._is_timelimited
     
     def get_configuration(self):

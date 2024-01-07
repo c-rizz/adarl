@@ -49,7 +49,7 @@ def worker(child_connection, pickledFunc):
         except EOFError:
             break
 
-class SubProcGazeboEnvWrapper():
+class SubProcEnvWrapper():
 
     action_space = None
     observation_space = None

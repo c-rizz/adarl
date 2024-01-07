@@ -1,0 +1,487 @@
+from cmath import inf
+from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
+import numpy as np
+from gymnasium import spaces
+from typing import Union, List, Dict, Any, Optional, Callable
+import torch as th
+import random
+from stable_baselines3.common.vec_env import VecNormalize, VecEnv
+from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
+from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
+import psutil
+import warnings
+import time
+import lr_gym.utils.dbg.ggLog as ggLog
+
+
+# class ReplayBuffer_updatable(ReplayBuffer):
+#     def update(self, buffer : ReplayBuffer):
+
+#         if (self.optimize_memory_usage or buffer.optimize_memory_usage):
+#             raise RuntimeError("Memory optimizatio is not supported")
+        
+#         copied = 0
+#         while copied < buffer.size():
+#             space_to_end = self.buffer_size - self.pos
+#             to_copy = min(space_to_end, buffer.size()-copied)
+
+#             self.actions[self.pos:self.pos + to_copy] = buffer.actions[copied:copied+to_copy]
+#             self.rewards[self.pos:self.pos + to_copy] = buffer.rewards[copied:copied+to_copy]
+#             self.dones[self.pos:self.pos + to_copy]   = buffer.dones[copied:copied+to_copy]
+#             self.observations[self.pos:self.pos + to_copy] = buffer.observations[copied:copied+to_copy]
+#             self.next_observations[self.pos:self.pos + to_copy] = buffer.next_observations[copied:copied+to_copy]
+#             if self.handle_timeout_termination:
+#                 self.timeouts[self.pos:self.pos + to_copy] = buffer.timeouts[copied:copied+to_copy]
+                
+#             self.pos += to_copy
+#             if self.pos == self.buffer_size:
+#                 self.full = True
+#                 self.pos = 0
+#             copied += to_copy
+
+
+
+class RandomHoldoutBuffer(DictReplayBuffer):
+    def __init__(self,
+                buffer_size: int,
+                observation_space: spaces.Space,
+                action_space: spaces.Space,
+                device: Union[th.device, str] = "cpu",
+                n_envs: int = 1,
+                optimize_memory_usage: bool = False,
+                handle_timeout_termination: bool = True,
+                storage_torch_device: str = "cpu",
+                buffer_class : type = None,
+                validation_ratio : float = 0.1,
+                disable : bool = False):
+        super().__init__(buffer_size = buffer_size,
+                         observation_space = observation_space,
+                         action_space = action_space,
+                         device = device,
+                         n_envs = n_envs,
+                         optimize_memory_usage = optimize_memory_usage,
+                         handle_timeout_termination = handle_timeout_termination)
+        self._storage_torch_device = storage_torch_device
+        self._validation_ratio = validation_ratio
+        self._train_buffer = buffer_class(buffer_size=buffer_size,
+                                            observation_space = observation_space,
+                                            action_space = action_space,
+                                            device = device,
+                                            n_envs = n_envs,
+                                            optimize_memory_usage = optimize_memory_usage,
+                                            handle_timeout_termination = handle_timeout_termination,
+                                            storage_torch_device = storage_torch_device)
+        self._disable = disable
+        if disable:
+            self._validation_buffer = None
+        else:                                            
+            self._validation_buffer = buffer_class( buffer_size=int(buffer_size),
+                                                    observation_space = observation_space,
+                                                    action_space = action_space,
+                                                    device = device,
+                                                    n_envs = n_envs,
+                                                    optimize_memory_usage = optimize_memory_usage,
+                                                    handle_timeout_termination = handle_timeout_termination,
+                                                    storage_torch_device = storage_torch_device)
+
+    def size(self):
+        if self._disable:
+            return self._train_buffer.size()
+        else:
+            return self._train_buffer.size() + self._validation_buffer.size()
+
+
+    def memory_size(self):
+        if self._disable:
+            return self._train_buffer.memory_size()
+        else:
+            return self._train_buffer.memory_size() + self._validation_buffer.memory_size()
+
+    def add(self,
+            obs: np.ndarray,
+            next_obs: np.ndarray,
+            action: np.ndarray,
+            reward: np.ndarray,
+            done: np.ndarray,
+            infos: List[Dict[str, Any]]) -> None:
+        if random.random() > self._validation_ratio or self._disable:
+            buffer_to_use = self._train_buffer
+        else:
+            buffer_to_use = self._validation_buffer
+
+        buffer_to_use.add(obs,next_obs, action, reward, done, infos)
+
+    def update(self, buffer : DictReplayBuffer):
+        self._train_buffer.update(buffer._train_buffer)
+        if not self._disable: # if not disabled
+            self._validation_buffer.update(buffer._validation_buffer)
+    
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> DictReplayBufferSamples:
+        if validation_set and not self._disable:
+            buffer_to_use = self._validation_buffer
+        else:
+            buffer_to_use = self._train_buffer
+
+        return buffer_to_use.sample(batch_size=batch_size, env=env)
+
+    def storage_torch_device(self):
+        return self._storage_torch_device
+
+
+# from https://github.com/pytorch/pytorch/blob/ac79c874cefee2f8bc1605eed9a924d80c0b3542/torch/testing/_internal/common_utils.py#L349
+numpy_to_torch_dtype_dict = {
+        np.bool       : th.bool,
+        np.uint8      : th.uint8,
+        np.int8       : th.int8,
+        np.int16      : th.int16,
+        np.int32      : th.int32,
+        np.int64      : th.int64,
+        np.float16    : th.float16,
+        np.float32    : th.float32,
+        np.float64    : th.float64,
+        np.complex64  : th.complex64,
+        np.complex128 : th.complex128
+    }
+
+def numpy_to_torch_dtype(dtype):
+    if isinstance(dtype, np.dtype):
+        dtype_type = dtype.type
+    else:
+        dtype_type = dtype
+    return numpy_to_torch_dtype_dict[dtype_type]
+
+
+class ThDictReplayBuffer(ReplayBuffer):
+    """
+    Dict Replay buffer used in off-policy algorithms like SAC/TD3.
+    Extends the ReplayBuffer to use dictionary observations
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device:
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Enable a memory efficient variant
+        Disabled for now (see https://github.com/DLR-RM/stable-baselines3/pull/243#discussion_r531535702)
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Dict,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "cpu",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        storage_torch_device: Union[str,th.device] = "cpu",
+        fallback_to_cpu_storage: bool = True
+    ):
+        super(ReplayBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+
+        assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
+        self.buffer_size = max(buffer_size // n_envs, 1)
+        self._observation_space = observation_space
+        self._action_space = action_space
+        # Handle timeouts termination properly if needed
+        # see https://github.com/DLR-RM/stable-baselines3/issues/284
+        self.handle_timeout_termination = handle_timeout_termination
+
+        storage_torch_device = th.device(storage_torch_device)
+        self._storage_torch_device = storage_torch_device
+        if storage_torch_device == "cuda" and device == "cpu":
+            raise AttributeError(f"Storage device is gpu, and output device is cpu. This doesn't make much sense. Use either [gpu,gpu], [cpu,gpu], or [cpu,cpu]")
+
+        assert optimize_memory_usage is False, "DictReplayBuffer does not support optimize_memory_usage"
+        # disabling as this adds quite a bit of complexity
+        # https://github.com/DLR-RM/stable-baselines3/pull/243#discussion_r531535702
+        self.optimize_memory_usage = optimize_memory_usage
+        
+        self.obs_shape : Dict
+        self.observations : Dict[Any, th.Tensor] = {}
+        self.next_observations : Dict[Any, th.Tensor] = {}
+        self.actions : th.Tensor = th.empty(size=(0,))
+        self.rewards : th.Tensor = th.empty(size=(0,))
+        self.dones : th.Tensor = th.empty(size=(0,))
+        self.timeouts : th.Tensor = th.empty(size=(0,))
+
+        if self._storage_torch_device.type == "cuda" and fallback_to_cpu_storage:
+            pred_avail = self.predict_memory_consumption()
+            consumptionRatio = pred_avail[0]/pred_avail[1]
+            if consumptionRatio>0.5:
+                warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                                f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB)\n"
+                                 "Falling back to CPU memory\n"
+                                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+                time.sleep(3)
+                self._storage_torch_device = th.device("cpu")
+        pred_avail = self.predict_memory_consumption()
+        consumptionRatio = pred_avail[0]/pred_avail[1]
+        if consumptionRatio>0.5:
+            warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                            f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
+                             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+            time.sleep(3)
+
+        self._allocate_buffers(self.buffer_size)
+        self._addcount = 0
+        
+
+    def predict_memory_consumption(self):
+        testRatio = 0.01
+        self._allocate_buffers(buffer_size=int(self.buffer_size*testRatio))
+        predicted_mem_usage = self.memory_size()/testRatio
+
+        mem_available = float("+inf")
+        if self._storage_torch_device.type == "cpu":
+            mem_available = psutil.virtual_memory().available
+        elif self._storage_torch_device.type == "cuda":
+            mem_available = th.cuda.mem_get_info(self._storage_torch_device)[0]
+
+        return predicted_mem_usage, mem_available
+
+    def memory_size(self):
+        obs_nbytes = 0
+        for _, obs in self.observations.items():
+            obs_nbytes += obs.element_size()*obs.nelement()
+
+        action_nbytes = self.actions.element_size()*self.actions.nelement()
+        rewards_nbytes = self.rewards.element_size()*self.rewards.nelement()
+        dones_nbytes = self.dones.element_size()*self.dones.nelement()
+
+        total_memory_usage = obs_nbytes + action_nbytes + rewards_nbytes + dones_nbytes
+        if self.next_observations is not None:
+            next_obs_nbytes = 0
+            for _, obs in self.observations.items():
+                next_obs_nbytes += obs.element_size()*obs.nelement()
+            total_memory_usage += next_obs_nbytes
+        return total_memory_usage
+
+    def _allocate_buffers(self, buffer_size):
+
+        self.observations = {
+            key: th.zeros(  (buffer_size, self.n_envs) + _obs_shape,
+                            dtype=numpy_to_torch_dtype(self._observation_space[key].dtype),
+                            device = self._storage_torch_device)
+            for key, _obs_shape in self.obs_shape.items()
+        }
+        self.next_observations = {
+            key: th.zeros(  (buffer_size, self.n_envs) + _obs_shape,
+                            dtype=numpy_to_torch_dtype(self._observation_space[key].dtype),
+                            device = self._storage_torch_device)
+            for key, _obs_shape in self.obs_shape.items()
+        }
+
+        self.actions = th.zeros((buffer_size, self.n_envs, self.action_dim),
+                                dtype=numpy_to_torch_dtype(self._action_space.dtype),
+                                device = self._storage_torch_device)
+        self.rewards = th.zeros((buffer_size, self.n_envs),
+                                dtype=th.float32,
+                                device = self._storage_torch_device)
+        self.dones = th.zeros((buffer_size, self.n_envs), dtype=th.float32,
+                              device = self._storage_torch_device)
+
+        self.timeouts = th.zeros((buffer_size, self.n_envs), dtype=th.float32,  device = self._storage_torch_device)
+
+        if self._storage_torch_device.type == "cpu":
+            for k in self.observations.keys():
+                self.observations[k] = self.observations[k].pin_memory()
+            for k in self.next_observations.keys():
+                self.next_observations[k] = self.next_observations[k].pin_memory()
+            self.actions = self.actions.pin_memory()
+            self.rewards = self.rewards.pin_memory()
+            self.dones = self.dones.pin_memory()
+            self.timeouts = self.timeouts.pin_memory()
+
+
+        
+
+    def add(
+        self,
+        obs: Dict[str, np.ndarray],
+        next_obs: Dict[str, np.ndarray],
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        infos: List[Dict[str, Any]],
+    ) -> None:
+        # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
+        self._addcount+=1
+        # Copy to avoid modification by reference
+        for key in self.observations.keys():
+            # Reshape needed when using multiple envs with discrete observations
+            # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+            if isinstance(self._observation_space.spaces[key], spaces.Discrete):
+                obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
+            self.observations[key][self.pos] = th.as_tensor(obs[key]).to(self._storage_torch_device, non_blocking=True)
+
+        for key in self.next_observations.keys():
+            if isinstance(self._observation_space.spaces[key], spaces.Discrete):
+                next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
+            self.next_observations[key][self.pos] = th.as_tensor(next_obs[key]).to(self._storage_torch_device, non_blocking=True)
+
+        # Same reshape, for actions
+        if isinstance(self.action_space, spaces.Discrete):
+            action = action.reshape((self.n_envs, self.action_dim))
+
+        self.actions[self.pos] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
+        self.rewards[self.pos] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
+        self.dones[self.pos]   = th.as_tensor(done).to(self._storage_torch_device, non_blocking=True)
+
+        if self.handle_timeout_termination:
+            truncated = [info.get("TimeLimit.truncated", False) for info in infos]
+            self.timeouts[self.pos] = th.as_tensor(truncated).to(self._storage_torch_device, non_blocking=True)
+            # print([info.get("TimeLimit.truncated",None) for info in infos])
+
+        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
+
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+            self.pos = 0
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:
+        """
+        Sample elements from the replay buffer.
+        :param batch_size: Number of element to sample
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return:
+        """
+        if (self.optimize_memory_usage):
+            raise RuntimeError("Memory optimization is not supported")
+        
+        upper_bound = self.buffer_size if self.full else self.pos
+        batch_inds = th.randint(0, upper_bound, size=(batch_size,), device = self._storage_torch_device)
+        return self._get_samples(batch_inds, env=env)
+        # return super(ReplayBuffer, self).sample(batch_size=batch_size, env=env)
+
+    def _get_samples(self, batch_inds: th.Tensor, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:
+        # Sample randomly the env idx
+        # env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+        if not isinstance(batch_inds, th.Tensor):
+            batch_inds = th.tensor(batch_inds, device = self._storage_torch_device) # cuda sync point (if not already a cuda tensor)
+        else:
+            batch_inds.to(self._storage_torch_device) # ensure it is on cuda if it should (avoids synchronizations when indexing later on)
+        env_indices = th.randint(low = 0, high=self.n_envs, size=(len(batch_inds),), device = self._storage_torch_device)
+
+        # Normalize if needed and remove extra dimension (we are using only one env for now)
+        obs_ = self._normalize_obs({key: obs[batch_inds, env_indices, :] for key, obs in self.observations.items()}, env)
+        next_obs_ = self._normalize_obs(
+            {key: obs[batch_inds, env_indices, :] for key, obs in self.next_observations.items()}, env
+        )
+
+        # Convert to torch tensor
+        observations =      {key: self.to_out(obs) for key, obs in obs_.items()}
+        next_observations = {key: self.to_out(obs) for key, obs in next_obs_.items()}
+        # Only use dones that are not due to timeouts deactivated by default (timeouts is initialized as an array of False)
+        dones = self.to_out(self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1)
+        actions = self.to_out(self.actions[batch_inds, env_indices])
+        rewards = self.to_out(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env))
+
+        return DictReplayBufferSamples(
+            observations=observations,
+            actions=actions,
+            next_observations=next_observations,
+            dones=dones,
+            rewards=rewards,
+        )
+
+    def to_out(self, tensor, copy: bool = True) -> th.Tensor:
+        """
+        Convert a numpy array to a PyTorch tensor.
+        Note: it copies the data by default
+        :param array:
+        :param copy: Whether to copy or not the data
+            (may be useful to avoid changing things be reference)
+        :return:
+        """
+        if copy:
+            return tensor.to(self.device).clone().detach()
+        else:
+            return tensor.to(self.device)
+
+    def storage_torch_device(self):
+        return self._storage_torch_device
+
+class ThDictReplayBuffer_updatable(ThDictReplayBuffer):
+    def update(self, buffer : DictReplayBuffer):
+
+        if (self.optimize_memory_usage or buffer.optimize_memory_usage):
+            raise RuntimeError("Memory optimization is not supported")
+        prev_size = self.size()
+        copied = 0
+        while copied < buffer.size():
+            space_to_end = self.buffer_size - self.pos
+            to_copy = min(space_to_end, buffer.size()-copied)
+
+            self.actions[self.pos:self.pos + to_copy] = buffer.actions[copied:copied+to_copy]
+            self.rewards[self.pos:self.pos + to_copy] = buffer.rewards[copied:copied+to_copy]
+            self.dones[self.pos:self.pos + to_copy]   = buffer.dones[copied:copied+to_copy]
+
+            for key in self.observations.keys():
+                self.observations[key][self.pos:self.pos + to_copy] = buffer.observations[key][copied:copied+to_copy]
+            for key in self.next_observations.keys():
+                self.next_observations[key][self.pos:self.pos + to_copy] = buffer.next_observations[key][copied:copied+to_copy]
+                
+            if self.handle_timeout_termination:
+                self.timeouts[self.pos:self.pos + to_copy] = buffer.timeouts[copied:copied+to_copy]
+                
+            self.pos += to_copy
+            if self.pos == self.buffer_size:
+                self.full = True
+                self.pos = 0
+            copied += to_copy     
+        new_size = self.size()
+        if new_size-prev_size != buffer.size() and not self.full: raise RuntimeError(f"Error updating buffer {new_size}-{prev_size}!={buffer.size()}")       
+
+
+
+class GenericHerReplayBuffer(HerReplayBuffer):
+    def __init__(self,
+                    buffer_size : int,
+                    observation_space: spaces.Space,
+                    action_space: spaces.Space,
+                    device: Union[th.device, str] = "cpu",
+                    n_envs: int = 1,
+                    optimize_memory_usage: bool = False,
+                    env: VecEnv = None,
+                    buffer_class = None,
+                    buffer_kwargs = None,
+                    max_episode_length: Optional[int] = None,
+                    n_sampled_goal: int = 4,
+                    goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
+                    online_sampling: bool = True,
+                    handle_timeout_termination: bool = True):
+
+        if online_sampling:
+            if buffer_class is not None:
+                raise AttributeError("Cannot specify replay_buffer_class with online_sampling")
+            replay_buffer = None
+        else:
+            replay_buffer = buffer_class(   buffer_size,
+                                            observation_space,
+                                            action_space,
+                                            device = device,
+                                            n_envs = n_envs,
+                                            optimize_memory_usage = optimize_memory_usage,
+                                            **buffer_kwargs)
+        super().__init__(env = env,
+                         buffer_size = buffer_size,
+                         device = device,
+                         replay_buffer = replay_buffer,
+                         max_episode_length = max_episode_length,
+                         n_sampled_goal = n_sampled_goal,
+                         goal_selection_strategy = goal_selection_strategy,
+                         online_sampling = online_sampling,
+                         handle_timeout_termination = handle_timeout_termination)
+
+    
+    def memory_size(self):
+        return self.replay_buffer.memory_size()
+
+    
+    def storage_torch_device(self):
+        return self.replay_buffer.storage_torch_device()

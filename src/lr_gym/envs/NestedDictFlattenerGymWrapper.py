@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 import lr_gym.utils.spaces as spaces
 import lr_gym.utils.dbg.ggLog as ggLog
 
@@ -35,11 +35,11 @@ class NestedDictFlattenerGymWrapper(gym.Wrapper):
         return spaces.gym_spaces.Dict(spaces = flat_spaces)
 
     def step(self, action):
-        observation, reward, done, info =  self.env.step(action)
+        observation, reward, terminated, truncated, info =  self.env.step(action)
         observation = self._flatten_obs(observation)
-        return observation, reward, done, info
+        return observation, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
-        observation =  self.env.reset(**kwargs)
+        observation ,info =  self.env.reset(**kwargs)
         observation = self._flatten_obs(observation)
-        return observation
+        return observation, info

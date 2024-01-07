@@ -10,6 +10,7 @@ The provided class must be extended to define a specific environment
 import lr_gym.utils.dbg.ggLog as ggLog
 
 import gymnasium as gym
+from gymnasium.envs.registration import EnvSpec
 import numpy as np
 from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional
 import time
@@ -23,6 +24,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 
 import multiprocessing as mp
 import signal
+import lr_gym.utils.session
 import lr_gym.utils.utils
 from lr_gym.utils.wandb_wrapper import wandb_log
 
@@ -63,8 +65,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self.metadata = env.metadata
         if self._ggEnv.is_timelimited:
             reg_env_id = f"GymEnvWrapper-env-v0_{id(env)}_{int(time.monotonic()*1000)}"
-            gym.register(id=reg_env_id, entry_point=None, max_episode_steps = self._ggEnv.getMaxStepsPerEpisode())
-            self.spec = gym.spec(env_id=reg_env_id)
+            # gym.register(id=reg_env_id, entry_point=None, max_episode_steps = self._ggEnv.getMaxStepsPerEpisode())
+            # self.spec = gym.spec(env_id=reg_env_id)
+            self.spec = EnvSpec(id=reg_env_id, entry_point=None, max_episode_steps=self._ggEnv.getMaxStepsPerEpisode())
             self._max_episode_steps = self.spec.max_episode_steps # For compatibility, some libraries read this instead of spec
 
         self._verbose = verbose
@@ -182,7 +185,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         #print("writing csv")
         self._logFileCsvWriter.writerow(self._info.values())
         self._logFile.flush()
-        if lr_gym.utils.utils.is_wandb_enabled() and self._use_wandb:
+        if lr_gym.utils.session.is_wandb_enabled() and self._use_wandb:
             if self._logs_id is not None and self._logs_id!= "":
                 prefix = self._logs_id+"/"
             else:

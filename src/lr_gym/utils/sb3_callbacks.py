@@ -1,12 +1,11 @@
 
-import stable_baselines3
 import os
 from stable_baselines3.common.callbacks import BaseCallback, EventCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 import time
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
-import gym
+import gymnasium as gym
 from typing import Union, Optional, Dict, Any
 from stable_baselines3.common.evaluation import evaluate_policy
 import warnings

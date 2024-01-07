@@ -8,7 +8,7 @@ import cv2
 import os
 
 import argparse
-
+import gymnasium as gym
 
 
 def main():
@@ -17,28 +17,33 @@ def main():
     ap.add_argument("--controller", required=False, default="GzController", type=str, help="label to put on y axis")
     ap.add_argument("--episodes", required=False, default=10, type=int, help="label to put on y axis")
     ap.add_argument("--saveimages", default=False, action='store_true', help="Do not center the window averaging")
+    ap.add_argument("--gymenv", default=False, action='store_true', help="Use directly the Gymnasium env")
     ap.set_defaults(feature=True)
     args = vars(ap.parse_args())
 
     stepLength_sec = 0.05
-
-    if args["controller"] == "GzController":
-        from lr_gym_ros2.env_controllers.GzController import GzController
-        env_controller = GzController(stepLength_sec=stepLength_sec)
-    elif args["controller"] == "GazeboController":
-        from lr_gym_ros.envControllers.GazeboController import GazeboController
-        env_controller = GazeboController(stepLength_sec=stepLength_sec)
-    elif args["controller"] == "PyBulletController":
-        from lr_gym.env_controllers.PyBulletController import PyBulletController
-        env_controller = PyBulletController(stepLength_sec=stepLength_sec)
-    else:
-        print(f"Requested unknown controller '{args['controller']}'")
-        exit(0)
-
     render = args["saveimages"]
-    env = GymEnvWrapper(CartpoleEnv(startSimulation=True,
-                                    environmentController = env_controller,
-                                    render=render))
+
+    if args["gymenv"]:
+        import gymnasium as gym
+        env = gym.make('CartPole-v1')
+    else:
+        if args["controller"] == "GzController":
+            from lr_gym_ros2.env_controllers.GzController import GzController
+            env_controller = GzController(stepLength_sec=stepLength_sec)
+        elif args["controller"] == "GazeboController":
+            from lr_gym_ros.envControllers.GazeboController import GazeboController
+            env_controller = GazeboController(stepLength_sec=stepLength_sec)
+        elif args["controller"] == "PyBulletController":
+            from lr_gym.env_controllers.PyBulletController import PyBulletController
+            env_controller = PyBulletController(stepLength_sec=stepLength_sec)
+        else:
+            print(f"Requested unknown controller '{args['controller']}'")
+            exit(0)
+
+        env = GymEnvWrapper(CartpoleEnv(startSimulation=True,
+                                        environmentController = env_controller,
+                                        render=render))
 
     images = [] if render else None
     obs = []

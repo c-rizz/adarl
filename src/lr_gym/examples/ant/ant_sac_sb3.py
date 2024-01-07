@@ -9,22 +9,25 @@ import os
 os.environ["MUJOCO_GL"]="egl"
 
 
-from stable_baselines3 import TD3
-from stable_baselines3.common.noise import NormalActionNoise
 import lr_gym.utils.dbg.ggLog as ggLog
 import gymnasium as gym
 import lr_gym.utils.utils
-from stable_baselines3.td3.policies import MultiInputPolicy
 from lr_gym.envs.GymToLr import GymToLr
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-import datetime
 from lr_gym.utils.sb3_buffers import ThDictReplayBuffer
 from lr_gym.envs.ObsToDict import ObsToDict
 import torch as th
 import lr_gym.utils.session
+from typing import Tuple
+from stable_baselines3.common.vec_env import SubprocVecEnv
+from lr_gym.envs.VecEnvLogger import VecEnvLogger
+from stable_baselines3 import SAC
+from lr_gym.utils.sb3_callbacks import EvalCallback_ep
+from wandb.integration.sb3 import WandbCallback
+from lr_gym.utils.sb3_callbacks import SigintHaltCallback
 
-def build_hafcheetah(seed,logFolder) -> gym.Env:
+def build_ant(seed,logFolder) -> Tuple[gym.Env, float]:
 
     
     #logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y-%m-%d,%H:%M:%S')
@@ -33,71 +36,76 @@ def build_hafcheetah(seed,logFolder) -> gym.Env:
     #env = gym.make('CartPoleStayUp-v0')
     stepLength_sec = 0.05
     
-    base_gym_env = gym.make('HalfCheetah-v4', render_mode="rgb_array")
+    base_gym_env = gym.make('Ant-v4', render_mode="rgb_array", terminate_when_unhealthy=False)
     base_gym_env_step_len_sec = base_gym_env.unwrapped.dt
     # TODO: what's the gym control frequency?
     stepLength_sec = base_gym_env_step_len_sec
     lrenv = GymToLr(openaiGym_env=base_gym_env, stepSimDuration_sec=stepLength_sec)
     lrenv = ObsToDict(env=lrenv)
     gym_env = GymEnvWrapper(lrenv)
-    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
+    # env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
     #setup seeds for reproducibility
     # env.seed(RANDOM_SEED)
-    env.action_space.seed(seed)
-    env.reset(seed=seed)
-    return env
+    gym_env.action_space.seed(seed)
+    gym_env.reset(seed=seed)
+    return gym_env, 1/stepLength_sec
 
 
 def runFunction(seed, folderName, resumeModelFile, run_id, args):
-    learning_rate = 0.001
-    buffer_size = 200000
-    learning_starts = 10000
-    batch_size = 100
-    tau = 0.005
-    gamma = 0.98
-    train_freq = (1, "episode")
-    gradient_steps = -1
-    policy_kwargs = {"net_arch":[400,300]}
-    noise_std = 0.0
+   
     device = th.device("cuda:0")
     
     seed = 20200401
-    env = build_hafcheetah(seed = seed, logFolder=folderName)
+    parallel_envs = 4
 
-
-    n_actions = env.action_space.shape[-1]
-    action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=noise_std * np.ones(n_actions))
-
-
-    # replay_buffer_class = ThDictReplayBuffer
-    # replay_buffer_kwargs = {"storage_torch_device" : th.device("cuda:0")}
-    model = TD3(policy=MultiInputPolicy,
-                env=env,
-                verbose=1,
-                batch_size=batch_size,
-                buffer_size=buffer_size,
-                gamma=gamma,
-                gradient_steps=gradient_steps,
-                tau=tau,
-                learning_rate=learning_rate,
-                learning_starts=learning_starts,
-                policy_kwargs=policy_kwargs,
-                train_freq=train_freq,
-                seed = seed,
-                device=device,
-                action_noise=action_noise) #,
-                # replay_buffer_class=replay_buffer_class,
-                # replay_buffer_kwargs=replay_buffer_kwargs)
-
+    builders = [(lambda i: (lambda: build_ant(seed = seed*100000+i, logFolder=folderName)[0]))(i) for i in range(parallel_envs)]
+    env = SubprocVecEnv(builders, start_method = "forkserver")
+    env = VecEnvLogger(env)
     
+    eval_env, targetFps = build_ant(seed = seed*100000000, logFolder=folderName+"/eval")
+    eval_recEnv = RecorderGymWrapper(eval_env,
+                                fps = targetFps, outFolder = folderName+"/eval/videos/RecorderGymWrapper",
+                                saveBestEpisodes = True,
+                                saveFrequency_ep = 1)
+    eval_env = eval_recEnv
+    
+
+    model = SAC("MultiInputPolicy", env, verbose=1,
+                    batch_size=8192,
+                    buffer_size=10_000_000,
+                    gamma=0.99,
+                    learning_rate=0.005,
+                    ent_coef="auto",
+                    learning_starts=10000,
+                    tau=0.005,
+                    gradient_steps=100,
+                    train_freq=(1000,"step"),
+                    target_entropy="auto",
+                    seed = seed,
+                    device=device,
+                    policy_kwargs=dict(net_arch=[256,256]),
+                    replay_buffer_class = ThDictReplayBuffer,
+                    replay_buffer_kwargs = {"storage_torch_device" : device},
+                    tensorboard_log=folderName+f"/tensorboard")
+
+    callbacks = []
+    callbacks.append(EvalCallback_ep(eval_env, best_model_save_path=folderName+"/eval/EvalCallback",
+                                    log_path=folderName+"/eval/EvalCallback", eval_freq_ep=50,
+                                    deterministic=False, render=False, verbose=True,
+                                    n_eval_episodes = 1))
+    callbacks += [WandbCallback( gradient_save_freq=100,
+                                            model_save_path=None,
+                                            verbose=2),
+                            SigintHaltCallback()]
     ggLog.info("Learning...")
     t_preLearn = time.time()
-    model.learn(total_timesteps=1_000_000)
+    model.learn(total_timesteps=1_000_000,
+                callback=callbacks)
     duration_learn = time.time() - t_preLearn
     ggLog.info("Learned. Took "+str(duration_learn)+" seconds.")
 
 
-    res = lr_gym.utils.utils.evaluatePolicy(env = env, model = None, episodes = 10, predict_func=model.predict)
+    res = lr_gym.utils.utils.evaluatePolicy(env = eval_env, model = None, episodes = 10, predict_func=model.predict)
     print(f"Summary:\n{res}")
 
 

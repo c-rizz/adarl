@@ -1,7 +1,7 @@
 import signal
 import traceback
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym.utils.utils import shutdown, is_shutting_down
+from lr_gym.utils.session import shutdown, is_shutting_down
 import os
 import time
 from multiprocessing import shared_memory

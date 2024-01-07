@@ -69,8 +69,3 @@ class ObsDict2FlatBox(LrWrapper):
         obs = self.env.getObservation(state)
         obs =  self._dict2box_obs(obs, self.observation_space)
         return obs
-
-    def getPureObservationFromState(self, state):
-        obs = self.env.getPureObservationFromState(state)
-        obs =  self._dict2box_obs(obs, self.pure_observation_space)
-        return obs

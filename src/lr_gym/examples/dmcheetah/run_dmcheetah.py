@@ -36,7 +36,7 @@ def main(obsNoise : NDArray[(4,),np.float32]) -> None:
 
     RANDOM_SEED=0
     
-    folderName = lr_gym.utils.utils.lr_gym_startup(__file__, inspect.currentframe(), seed=RANDOM_SEED, use_wandb=False)
+    folderName = lr_gym.utils.session.lr_gym_startup(__file__, inspect.currentframe(), seed=RANDOM_SEED, use_wandb=False)
 
     # dmenv = suite.load("cheetah",
     #                     "run",
