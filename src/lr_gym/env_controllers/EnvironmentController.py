@@ -17,7 +17,7 @@ class EnvironmentController(ABC):
     It is an abstract class, it is meant to be extended with sub-classes for specific simulators
     """
 
-    def __init__(   self):
+    def __init__(self):
         """Initialize the Simulator controller.
 
         Raises

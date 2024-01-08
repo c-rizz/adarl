@@ -9,12 +9,13 @@ from lr_gym.envs.BaseEnv import BaseEnv
 
 import gymnasium as gym
 import numpy as np
-from typing import Tuple, Dict, Any, Sequence, SupportsFloat
+from typing import Tuple, Dict, Any, Sequence, SupportsFloat, TypeVar, Generic
 import torch as th
+import lr_gym.utils.utils
 
+ObsType = TypeVar("ObsType")
 
-
-class GymToLr(BaseEnv):
+class GymToLr(BaseEnv, Generic[ObsType]):
 
     action_space = None
     observation_space = None
@@ -49,7 +50,8 @@ class GymToLr(BaseEnv):
 
         self._actionToDo = None # This will be set by submitAction an then used in step()
         self._prev_observation = None #Observation before the last
-        self._last_observation, self._last_reward, self._last_terminated, self._last_truncated, self._last_info = (None,)*5
+        self._last_observation : ObsType
+        self._last_reward, self._last_terminated, self._last_truncated, self._last_info = (None,)*4
         self._stepCount = 0
         self._stepSimDuration_sec = stepSimDuration_sec
         self._envSeed = 0
@@ -73,15 +75,15 @@ class GymToLr(BaseEnv):
         return ended
 
 
-    def computeReward(self, previousState, state, action, env_conf = None) -> SupportsFloat:
+    def computeReward(self, previousState, state, action, env_conf = None) -> th.Tensor:
         if not (state is self._last_observation and action is self._actionToDo and previousState is self._prev_observation):
             raise RuntimeError("GymToLr.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
         return self._last_reward
 
-    def getObservation(self, state) -> Dict[Any,th.Tensor]:
-        return th.as_tensor(state)
+    def getObservation(self, state : ObsType) -> ObsType:
+        return state
 
-    def getState(self) -> Sequence:
+    def getState(self) -> ObsType:
         return self._last_observation
 
 
@@ -99,13 +101,13 @@ class GymToLr(BaseEnv):
         # convert  to dict obs and pytorch tensors
         if not isinstance(obs, Dict):
             obs = {"obs": obs}
-        obs = {k:th.as_tensor(v) for k,v in obs.items()}
+        obs_th = lr_gym.utils.utils.obs_to_tensor(obs)
         rew = th.as_tensor(rew)
         term = th.as_tensor(term)
         trunc = th.as_tensor(trunc)
         info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
         
-        self._last_observation = obs
+        self._last_observation = obs_th
         self._last_reward = rew
         self._last_terminated = term
         self._last_truncated = trunc
@@ -124,7 +126,7 @@ class GymToLr(BaseEnv):
 
         if not isinstance(obs, Dict):
             obs = {"obs": obs}
-        obs = {k:th.as_tensor(v) for k,v in obs.items()}
+        obs = lr_gym.utils.utils.obs_to_tensor(obs)
         info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}        
         self._last_observation = obs
         self._last_info = info
@@ -148,13 +150,13 @@ class GymToLr(BaseEnv):
         """Get the maximum number of frames of one episode, as set by the constructor."""
         return self._maxStepsPerEpisode
 
-    def setGoalInState(self, state, goal):
-        """To be implemented in subclass.
+    # def setGoalInState(self, state, goal):
+    #     """To be implemented in subclass.
 
-        Update the provided state with the provided goal. Useful for goal-oriented environments, especially when using HER.
-        It's used by ToGoalEnvWrapper.
-        """
-        raise NotImplementedError()
+    #     Update the provided state with the provided goal. Useful for goal-oriented environments, especially when using HER.
+    #     It's used by ToGoalEnvWrapper.
+    #     """
+    #     raise NotImplementedError()
 
     def buildSimulation(self, backend : str = "gazebo"):
         """To be implemented in subclass.

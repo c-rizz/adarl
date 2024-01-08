@@ -18,6 +18,7 @@ import traceback
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
+import torch as th
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -598,3 +599,10 @@ def torch_selectBestGpu(seed = 0):
     bestGpu = getBestGpu(seed = seed)
     th.cuda.set_device(bestGpu)
     return th.device('cuda:'+str(bestGpu))
+
+
+def obs_to_tensor(obs) -> Union[th.Tensor, th.Dict[Any, th.Tensor]]):
+    if isinstance(obs, dict):
+        return {k:obs_to_tensor(v) for k,v in obs.items()}
+    else:
+        return th.as_tensor(obs)
