@@ -6,7 +6,7 @@ The provided class must be extended to define a specific environment
 """
 
 
-from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.spaces as spaces
 

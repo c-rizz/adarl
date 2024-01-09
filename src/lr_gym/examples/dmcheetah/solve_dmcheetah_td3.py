@@ -12,12 +12,13 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.utils
 
 from lr_gym.envs.GymToLr import GymToLr
-from lr_gym.envs.LrWrappers.ObsToDict import ObsToDict
+from lr_gym.envs.lr_wrappers.ObsToDict import ObsToDict
 import os
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 from lr_gym.utils.sb3_buffers import ThDictReplayBuffer
 from lr_gym.envs.NestedDictFlattenerGymWrapper import NestedDictFlattenerGymWrapper
-from lr_gym.envs.LrWrappers.ObsToImgVecDict import ObsToImgVecDict
+from lr_gym.envs.lr_wrappers.ObsToImgVecDict import ObsToImgVecDict
+import torch as th
 
 def runFunction(seed, folderName, resumeModelFile, run_id, args):
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
@@ -32,6 +33,7 @@ def runFunction(seed, folderName, resumeModelFile, run_id, args):
     """
    
     folderName = lr_gym.utils.session.lr_gym_startup(__file__, inspect.currentframe(), seed=seed)
+    th.cuda.set_sync_debug_mode("warn")
 
     # dmenv = suite.load("cheetah",
     #                     "run",

@@ -1,5 +1,5 @@
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 from lr_gym.envs.BaseEnv import BaseEnv
 
 class ActionRepeatWrapper(LrWrapper):

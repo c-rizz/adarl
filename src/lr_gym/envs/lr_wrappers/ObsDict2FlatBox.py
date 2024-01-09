@@ -3,7 +3,7 @@ import numpy as np
 import lr_gym.utils
 from collections import OrderedDict
 
-from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.spaces as spaces
 

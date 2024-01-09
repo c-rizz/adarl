@@ -155,7 +155,7 @@ class ObsConverter:
         return (self._image_channels, self._image_height, self._image_width)
 
     def hasImagePart(self):
-        return self._img_part_indexes is None
+        return self._img_part_indexes is not None
 
     def hasVectorPart(self):
         return self._vectorPartSize > 0

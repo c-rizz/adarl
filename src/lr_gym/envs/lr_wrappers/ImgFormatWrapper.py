@@ -1,7 +1,7 @@
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
 
-from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.spaces as spaces
 

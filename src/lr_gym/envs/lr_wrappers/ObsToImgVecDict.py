@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 
-from lr_gym.envs.LrWrapper import LrWrapper
+from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.spaces as spaces
 from lr_gym.utils.ObsConverter import ObsConverter
 import torch as th
 import numpy as np
+import lr_gym.utils.dbg.ggLog as ggLog
+
+
 class ObsToImgVecDict(LrWrapper):
 
     def __init__(self,
@@ -27,12 +30,13 @@ class ObsToImgVecDict(LrWrapper):
         if self._obs_converter.hasImagePart():
             img_shape = self._obs_converter.imageSizeCHW()
             l,h = self._obs_converter.getImgPixelRange()
-            obss[self._vec_key] = spaces.gym_spaces.Box(low=l,high=h,
+            obss[self._img_key] = spaces.gym_spaces.Box(low=l,high=h,
                                                         shape=img_shape,
                                                         dtype=self._obs_converter.getImgDtype()) # Can I use a torch dtype?
         self.observation_space = spaces.gym_spaces.Dict(obss)
         self.action_space = env.action_space
         self.metadata = env.metadata
+        ggLog.info(f"ObsToImgVecDict.observation_space: {self.observation_space}")
 
     def getObservation(self, state):
         obs = self.env.getObservation(state)

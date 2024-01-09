@@ -156,7 +156,7 @@ class RecorderGymWrapper(gym.Wrapper):
             self._bestReward = self._epReward
         if self._epStepCount>0:
             self._episodeCounter += 1
-        self._epReward = 0
+        self._epReward = 0.0
         self._epStepCount = 0        
         self._frameBuffer = []
         self._vecBuffer = []

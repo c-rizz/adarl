@@ -81,7 +81,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._cumulativeImagesAge = 0
         self._lastStepGotState = -1
         self._lastState = None
-        self._totalEpisodeReward = 0
+        self._totalEpisodeReward = 0.0
         self._resetCount = 0
         self._init_time = time.monotonic()
         self._totalSteps = 0
@@ -291,7 +291,6 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         info.update({"gz_gym_base_env_reached_state" : state,
                     "gz_gym_base_env_previous_state" : previousState,
                     "gz_gym_base_env_action" : action})
-                
         self._totalEpisodeReward += reward
 
         ret = (observation, reward, self._terminated, truncated, info)
@@ -374,7 +373,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepEndEnvTime = 0
         self._lastStepGotState = -1
         self._lastState = None
-        self._totalEpisodeReward = 0
+        self._totalEpisodeReward = 0.0
         self._lastValidStepWallTime = -1
         self._timeSpentStepping_ep = 0
 

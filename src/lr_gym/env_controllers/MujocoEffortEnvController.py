@@ -5,6 +5,7 @@ from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 from typing import List, Tuple, Dict
+import torch as th
 
 class MujocoEffortEnvController(EnvironmentController, JointEffortEnvController, SimulatedEnvController):
     def __init__(self):
