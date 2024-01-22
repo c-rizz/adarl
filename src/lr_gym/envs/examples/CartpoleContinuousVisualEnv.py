@@ -158,7 +158,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
         Returns
         -------
-        NDArray[(4,), np.float32]
+        np.typing.NDArray[(4,), np.float32]
             A tuple containing: (cart position in meters, carts speed in meters/second, pole angle in radiants, pole speed in rad/s)
 
         """

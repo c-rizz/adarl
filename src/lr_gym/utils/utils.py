@@ -1,4 +1,3 @@
-from nptyping import NDArray
 import numpy as np
 import time
 import cv2
@@ -158,11 +157,13 @@ def buildQuaternion(x,y,z,w):
     return quaternion.quaternion(w,x,y,z)
 
 class Pose:
-    position : NDArray[(3,), np.float32]
-    orientation : np.quaternion
+    position : th.Tensor
+    orientation_xyzw : th.Tensor
+    orientation : np.quaternion 
 
-    def __init__(self, x,y,z, qx,qy,qz,qw):
-        self.position = np.array([x,y,z])
+    def __init__(self, x,y,z, qx,qy,qz,qw, th_device=None):
+        self.position = th.tensor([x,y,z], device=th_device)
+        self.orientation_xyzw = th.tensor([qx,qy,qz,qw], device=th_device)
         self.orientation = buildQuaternion(x=qx,y=qy,z=qz,w=qw)
 
     def __str__(self):
@@ -179,11 +180,11 @@ class Pose:
 
 class LinkState:
     pose : Pose = None
-    pos_velocity_xyz : Tuple[float, float, float] = None
-    ang_velocity_xyz : Tuple[float, float, float] = None
+    pos_velocity_xyz : th.Tensor = None
+    ang_velocity_xyz : th.Tensor = None
 
-    def __init__(self, position_xyz : Tuple[float, float, float], orientation_xyzw : Tuple[float, float, float, float],
-                    pos_velocity_xyz : Tuple[float, float, float], ang_velocity_xyz : Tuple[float, float, float]):
+    def __init__(self, position_xyz : th.Tensor, orientation_xyzw : th.Tensor,
+                    pos_velocity_xyz : th.Tensor, ang_velocity_xyz : th.Tensor):
         self.pose = Pose(position_xyz[0],position_xyz[1],position_xyz[2], orientation_xyzw[0],orientation_xyzw[1],orientation_xyzw[2],orientation_xyzw[3])
         self.pos_velocity_xyz = pos_velocity_xyz
         self.ang_velocity_xyz = ang_velocity_xyz

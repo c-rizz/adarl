@@ -4,7 +4,6 @@ import time
 import tqdm
 import inspect
 import numpy as np
-from nptyping import NDArray
 
 from stable_baselines3 import SAC
 from stable_baselines3.sac import MlpPolicy
@@ -14,7 +13,7 @@ import lr_gym.utils.utils
 
 
 
-def main(obsNoise : NDArray[(4,),np.float32],
+def main(obsNoise : np.typing.NDArray[(4,),np.float32],
                     batch_size=1024,
                     buffer_size=200000,
                     learning_starts=5000,

@@ -4,7 +4,6 @@
 
 import numpy as np
 from typing import Tuple
-from nptyping import NDArray
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
@@ -176,12 +175,12 @@ class PandaEffortBaseEnv(ControlledEnv):
     def getObservation(self, state) -> np.ndarray:
         return state
 
-    def getState(self) -> NDArray[(20,), np.float32]:
+    def getState(self) -> np.typing.NDArray[(20,), np.float32]:
         """Get an observation of the environment.
 
         Returns
         -------
-        NDArray[(20,), np.float32]
+        np.typing.NDArray[(20,), np.float32]
             numpy ndarray. The content of each field is specified at the self.observation_space_high definition
 
         """

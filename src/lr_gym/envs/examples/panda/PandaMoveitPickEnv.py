@@ -4,7 +4,6 @@
 
 import numpy as np
 from typing import Tuple
-from nptyping import NDArray
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
@@ -51,8 +50,8 @@ class PandaMoveitPickEnv(ControlledEnv):
     observation_space = spaces.gym_spaces.Box(-observation_space_high, observation_space_high)
     metadata = {'render.modes': ['rgb_array']}
 
-    Action = NDArray[(8,), np.float32]
-    State = NDArray[(16,), np.float32]
+    Action = np.typing.NDArray[(8,), np.float32]
+    State = np.typing.NDArray[(16,), np.float32]
     Observation = State
 
     def __init__(   self,
@@ -258,7 +257,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
 
@@ -347,7 +346,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
         Returns
         -------
-        NDArray[(15,), np.float32]
+        np.typing.NDArray[(15,), np.float32]
             numpy ndarray. The content of each field is specified at the self.observation_space_high definition
 
         """

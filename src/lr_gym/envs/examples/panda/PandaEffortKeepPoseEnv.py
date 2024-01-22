@@ -5,7 +5,6 @@ import lr_gym.utils.dbg.ggLog as ggLog
 
 import numpy as np
 from typing import Tuple
-from nptyping import NDArray
 import quaternion
 import math
 
@@ -63,7 +62,7 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
 
 
 
-    def _getDist2goal(self, state : NDArray[(20,), np.float32], goalPoseRpy : NDArray[(6,), np.float32] = None, goalPoseQuat : NDArray[(7,), np.float32] = None):
+    def _getDist2goal(self, state : np.typing.NDArray[(20,), np.float32], goalPoseRpy : np.typing.NDArray[(6,), np.float32] = None, goalPoseQuat : np.typing.NDArray[(7,), np.float32] = None):
 
         if (goalPoseQuat is not None) and (goalPoseRpy is not None):
             raise AttributeError("Only one betwee goalPoseRpy and goalPoseQuat")
@@ -86,13 +85,13 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
         return position_dist2goal, orientation_dist2goal
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
         return False # Only stops at the maximum frame number
 
 
-    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
 
         posDist_new, orientDist_new = self._getDist2goal(state, goalPoseQuat = self._goalPose)
         posDist_old, orientDist_old = self._getDist2goal(previousState, goalPoseQuat = self._goalPose)

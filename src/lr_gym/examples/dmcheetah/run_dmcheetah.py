@@ -5,7 +5,6 @@ import time
 import tqdm
 import inspect
 import numpy as np
-from nptyping import NDArray
 
 from stable_baselines3.td3.policies import MlpPolicy, MultiInputPolicy
 from stable_baselines3 import TD3
@@ -22,7 +21,7 @@ from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 from autoencoding_rl.buffers import GenericHerReplayBuffer, RandomHoldoutBuffer, ThDictReplayBuffer_updatable, ThDictReplayBuffer
 
 
-def main(obsNoise : NDArray[(4,),np.float32]) -> None: 
+def main(obsNoise : np.ndarray) -> None: 
     """Solves the gazebo cartpole environment using the DQN implementation by stable-baselines.
 
     It does not use the rendering at all, it learns from the joint states.

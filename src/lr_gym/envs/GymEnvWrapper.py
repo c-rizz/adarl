@@ -27,6 +27,7 @@ import signal
 import lr_gym.utils.session
 import lr_gym.utils.utils
 from lr_gym.utils.wandb_wrapper import wandb_log
+import torch as th
 
 ObsType = TypeVar("ObsType")
 
@@ -82,6 +83,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
+        self._total_sub_rewards = {}
         self._resetCount = 0
         self._init_time = time.monotonic()
         self._totalSteps = 0
@@ -138,6 +140,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._info["reset_wall_duration"] = resetWallDuration
         self._info["ep_frames_count"] = self._framesCounter
         self._info["ep_reward"] = self._totalEpisodeReward
+        self._info["ep_sub_rewards"] = self._total_sub_rewards
         self._info["wall_fps"] = wallFps
         self._info["wall_fps_until_done"] = wall_fps_until_done
         self._info["reset_count"] = self._resetCount
@@ -284,7 +287,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         # Assess the situation
         self._terminated = self._ggEnv.checkEpisodeEnded(previousState, state)
-        reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration())
+        sub_rewards : Dict[str,th.Tensor] = {}
+        reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration(), sub_rewards = sub_rewards)
         observation = self._ggEnv.getObservation(state)
         truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
         info = self._build_info()
@@ -292,7 +296,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                     "gz_gym_base_env_previous_state" : previousState,
                     "gz_gym_base_env_action" : action})
         self._totalEpisodeReward += reward
-
+        for k,v in sub_rewards.items():
+            self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
+        
         ret = (observation, reward, self._terminated, truncated, info)
 
         self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
@@ -374,6 +380,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
+        self._total_sub_rewards = {}
         self._lastValidStepWallTime = -1
         self._timeSpentStepping_ep = 0
 

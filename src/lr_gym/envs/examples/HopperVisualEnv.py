@@ -7,7 +7,6 @@ Based on ControlledEnv
 
 import numpy as np
 from typing import Tuple, Any, Dict
-from nptyping import NDArray
 import cv2
 
 from lr_gym.envs.HopperEnv import HopperEnv
@@ -22,8 +21,8 @@ class HopperVisualEnv(HopperEnv):
 
     """
 
-    RobotState = NDArray[(15,), np.float32]
-    ImgObservation = NDArray[(Any,Any,Any),np.float32]
+    RobotState = np.typing.NDArray[(15,), np.float32]
+    ImgObservation = np.typing.NDArray[(Any,Any,Any),np.float32]
     State = Tuple[RobotState, ImgObservation]
     
     def __init__(   self,

@@ -8,7 +8,6 @@ Based on ControlledEnv
 import lr_gym.utils.spaces as spaces
 import numpy as np
 from typing import Tuple, Dict, Any
-from nptyping import NDArray
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
@@ -116,7 +115,7 @@ class HopperEnv(ControlledEnv):
 
         self._environmentController.startController()
 
-    def submitAction(self, action : NDArray[(3,), np.float32]) -> None:
+    def submitAction(self, action : np.typing.NDArray[(3,), np.float32]) -> None:
         super().submitAction(action)
 
         if action.size!=3:

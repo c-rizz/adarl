@@ -94,10 +94,10 @@ class BulletCamera:
         cameraUpVector = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([0.0, 0.0, 1.0]))
         # ggLog.info(f"cameraAxis = {cameraAxis}")
         # ggLog.info(f"cameraUpVector = {cameraUpVector}")
-        target_position = cameraAxis + self._pose.position
+        target_position = cameraAxis + np.array(self._pose.position)
         # ggLog.info(f"Target = {target_position}")
         # ggLog.info(f"Eye    = {self._pose.position}")
-        self._extrinsic_matrix = pybullet.computeViewMatrix(cameraEyePosition = self._pose.position,
+        self._extrinsic_matrix = pybullet.computeViewMatrix(cameraEyePosition = np.array(self._pose.position),
                                                      cameraTargetPosition = target_position,
                                                      cameraUpVector = cameraUpVector)
         # ggLog.info(f"em = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
@@ -170,9 +170,15 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         """
         super().__init__()
         self._stepLength_sec = stepLength_sec
-        self._spawned_objects_ids = {}
+        # Model names are the ones we use to uniquely identify bodies and links as (model_name, link_name)
+        # Body ids are the ones pybullet uses to uniquely identify bodies
+        # Body names are the names used by pybullet, I think they just come from the URDF, they can be the same for different bodies
+        self._modelName_to_bodyId = {"0":0} 
+        self._bodyId_to_modelName = {0:"0"}
         self._cameras = {}
-        self._commanded_torques = {}
+        self._commanded_torques_by_body = {}
+        self._commanded_torques_by_name = {}
+        self._last_step_commanded_torques_by_name = {}
         self._commanded_trajectories = {}
         self._debug_gui = debug_gui
         if real_time_factor is not None and real_time_factor>0:
@@ -193,6 +199,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._build_time = time.monotonic()
         self._verbose = False
 
+        self.setupLight(    lightDirection = [1,1,1],
+                            lightColor = [0.9,0.9,0.9],
+                            lightDistance = 100,
+                            enable_shadows = True,
+                            lightAmbientCoeff = 0.8,
+                            lightDiffuseCoeff = 0.5,
+                            lightSpecularCoeff = 0.1)
+
     def _refresh_entities_ids(self):
         bodyIds = []
         for i in range(pybullet.getNumBodies()):
@@ -200,23 +214,24 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         self._bodyAndJointIdToJointName = {}
         self._jointNamesToBodyAndJointId = {}
-        self._bodyAndLinkIdToLinkName = {}
-        self._linkNameToBodyAndLinkId = {}
+        self._bodyLinkIds_to_linkName = {}
+        self._linkName_to_bodyLinkIds = {}
         for bodyId in bodyIds:
-            base_link_name, body_name = pybullet.getBodyInfo(bodyId)
-            base_link_name = (body_name.decode("utf-8"), base_link_name.decode("utf-8"))
+            base_link_name, _ = pybullet.getBodyInfo(bodyId)
+            model_name = self._bodyId_to_modelName[bodyId]
+            base_link_name = (model_name, base_link_name.decode("utf-8"))
             base_body_and_link_id = (bodyId, -1)
-            self._linkNameToBodyAndLinkId[base_link_name] = base_body_and_link_id
-            self._bodyAndLinkIdToLinkName[base_body_and_link_id] = base_link_name
+            self._linkName_to_bodyLinkIds[base_link_name] = base_body_and_link_id
+            self._bodyLinkIds_to_linkName[base_body_and_link_id] = base_link_name
             for jointId in range(pybullet.getNumJoints(bodyId)):
                 jointInfo = pybullet.getJointInfo(bodyId,jointId)
-                jointName = (body_name.decode("utf-8"), jointInfo[1].decode("utf-8"))
-                linkName = (body_name.decode("utf-8"), jointInfo[12].decode("utf-8"))
+                jointName = (model_name, jointInfo[1].decode("utf-8"))
+                linkName = (model_name, jointInfo[12].decode("utf-8"))
                 body_and_joint_ids = (bodyId,jointId)
                 self._bodyAndJointIdToJointName[body_and_joint_ids] = jointName
                 self._jointNamesToBodyAndJointId[jointName] = body_and_joint_ids
-                self._bodyAndLinkIdToLinkName[body_and_joint_ids] = linkName
-                self._linkNameToBodyAndLinkId[linkName] = body_and_joint_ids
+                self._bodyLinkIds_to_linkName[body_and_joint_ids] = linkName
+                self._linkName_to_bodyLinkIds[linkName] = body_and_joint_ids
 
 
         # ggLog.info("self._bodyAndJointIdToJointName = "+str(self._bodyAndJointIdToJointName))
@@ -248,14 +263,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._jointNamesToBodyAndJointId[jointName] # TODO: this ignores the model name, should use it
 
     def _getLinkName(self, bodyId, linkIndex):
-        linkName = self._bodyAndLinkIdToLinkName[(bodyId,linkIndex)]
-        return linkName
+        return self._bodyLinkIds_to_linkName[(bodyId,linkIndex)]
 
     def _getBodyAndLinkId(self, linkName):
-        return self._linkNameToBodyAndLinkId[linkName]
+        return self._linkName_to_bodyLinkIds[linkName]
 
     def resetWorld(self):
-        self._commanded_torques = {}
+        self._commanded_torques_by_body = {}
+        self._commanded_torques_by_name = {}
         self._commanded_trajectories = {}
         # ggLog.info(f"Resetting...")
         if self._restore_on_reset:
@@ -288,6 +303,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         stepLength = self.freerun(self._stepLength_sec)
+        self._last_step_commanded_torques_by_name = self._commanded_torques_by_name
         self._clear_commands()
         return stepLength
 
@@ -316,7 +332,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._simTime-t0
     
     def _clear_commands(self):
-        self._commanded_torques = {}
+        self._commanded_torques_by_body = {}
+        self._commanded_torques_by_name = {}
         self._commanded_trajectories = {}
 
 
@@ -397,22 +414,23 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         
 
     def _apply_commanded_torques(self):
-        for bodyId in self._commanded_torques.keys():
+        for bodyId in self._commanded_torques_by_body.keys():
             pybullet.setJointMotorControlArray(bodyIndex=bodyId,
-                                        jointIndices=self._commanded_torques[bodyId][0],
+                                        jointIndices=self._commanded_torques_by_body[bodyId][0],
                                         controlMode=pybullet.TORQUE_CONTROL,
-                                        forces=self._commanded_torques[bodyId][1])
+                                        forces=self._commanded_torques_by_body[bodyId][1])
 
-    def setJointsEffortCommand(self, jointTorques : List[Tuple[str,str,float]]) -> None:
+    def setJointsEffortCommand(self, jointTorques : List[Tuple[Tuple[str,str],float]]) -> None:
         #For each bodyId I submit a request for joint motor control
         requests = {}
-        for jt in jointTorques:
-            bodyId, jointId = self._getBodyAndJointId(jt[0:2])
+        for joint_name, torque in jointTorques:
+            bodyId, jointId = self._getBodyAndJointId(joint_name)
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = ([],[])
             requests[bodyId][0].append(jointId) #requested jont
-            requests[bodyId][1].append(jt[2]) #requested torque
-        self._commanded_torques = requests
+            requests[bodyId][1].append(torque) #requested torque
+        self._commanded_torques_by_name = {jn:t for jn,t in jointTorques}
+        self._commanded_torques_by_body = requests
 
 
     def _apply_commanded_positions(self):
@@ -490,7 +508,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                     sim_timeout_sec : float = 30) -> None:
         if step_time is None:
             step_time = self._stepLength_sec
-        joints = jointPositions.keys()
+        joints = list(jointPositions.keys())
         req_pos = np.array([jointPositions[k] for k in joints])
         jstates = self.getJointsState(joints)
         curr_pos = np.array([jstates[k].position[0] for k in joints])
@@ -519,15 +537,19 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             bodyId, jointId = self._getBodyAndJointId(jn)
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = []
-            requests[bodyId].append(jointId) #requested jont
+            requests[bodyId].append((jointId, jn)) #requested jont
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request
-            bodyStates = pybullet.getJointStates(bodyId,requests[bodyId])
+            jids = [r[0] for r in requests[bodyId]]
+            jointStates = pybullet.getJointStates(bodyId,jids)
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
-                jointId = requests[bodyId][i]
-                jointState = JointState([bodyStates[i][0]], [bodyStates[i][1]], [bodyStates[i][3]]) #NOTE: effort may not be reported when using torque control
-                allStates[self._getJointName(bodyId,jointId)] = jointState
+                jointId, joint_name = requests[bodyId][i]
+                pos, vel, effort = jointStates[i][0], jointStates[i][1], jointStates[i][3]
+                # if the joint is commanded in torque the jointStates effort will be zero. But the actual effort is by definition the comanded one
+                if joint_name in self._last_step_commanded_torques_by_name:
+                    effort = self._last_step_commanded_torques_by_name[joint_name]
+                allStates[self._getJointName(bodyId,jointId)] = JointState([pos], [vel], [effort])
 
 
         return allStates
@@ -623,14 +645,15 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         
 
     def destroy_scenario(self):
-        self._spawned_objects_ids = {}
+        self._modelName_to_bodyId = {}
         PyBulletUtils.destroySimpleEnv()
 
     def _register_camera(self, camera : BulletCamera):
         self._cameras[camera.camera_name] = camera
-        ggLog.info(f"Registered camera with name {camera.camera_name}")
+        ggLog.info(f"Registered camera with name {camera.camera_name} at link {camera.link_name}")
 
-    def _loadModel(self, modelFilePath : str, fileFormat : str = "urdf", model_kwargs = {}):
+    def _loadModel(self, modelFilePath : str, fileFormat : str = "urdf", model_kwargs = {}, model_name = None):
+        compiled_file_path = None
         if fileFormat.split(".")[-1] == "xacro":
             model_definition_string = lr_gym.utils.utils.compile_xacro_string(  model_definition_string=Path(modelFilePath).read_text(),
                                                                                 model_kwargs=model_kwargs)
@@ -676,8 +699,10 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             models = world["model"]
             if type(models) != list:
                 models = [models]
+            if len(models)>1:
+                raise RuntimeError(f"sdf fiels with more than one model are not supported right now, maybe it's easy to fix, maybe not.")
             for model in models:
-                model_name = model["@name"]
+                # model_name = model["@name"]
                 links = model.get("link", [])
                 if type(links) != list:
                     links = [links]
@@ -697,8 +722,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                                                link_name=(model_name, link_name),
                                                                camera_name=sensor["@name"]))
 
-
-        
+        if compiled_file_path is not None:
+            Path(compiled_file_path).unlink() # delete the compiled file
         return bodyId
 
     def spawn_model(self,   model_definition_string: str = None,
@@ -709,19 +734,21 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                             model_kwargs: Dict[Any, Any] = {}) -> str:
         if model_definition_string is not None:
             raise AttributeError(f"Only file model descriptions are supported")
-        if model_name in self._spawned_objects_ids:
+        if model_name in self._modelName_to_bodyId:
             raise AttributeError(f"model name {model_name} is already present")
-        self._spawned_objects_ids[model_name] = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs)
+        body_id = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs, model_name = model_name)
+        self._modelName_to_bodyId[model_name] = body_id
+        self._bodyId_to_modelName[body_id] = model_name
         self._refresh_entities_ids()
-        ggLog.info(f"Spawned model '{model_name}' with info {pybullet.getBodyInfo(self._spawned_objects_ids[model_name])}")
+        ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
-            pybullet.resetBasePositionAndOrientation(self._spawned_objects_ids[model_name],
+            pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],
                                                     pose.position, pose.getListXyzXyzw()[3:])
         return model_name
 
     def delete_model(self, model_name: str):
-        PyBulletUtils.unloadModel(self._spawned_objects_ids[model_name])
-        self._spawned_objects_ids.pop(model_name)
+        PyBulletUtils.unloadModel(self._modelName_to_bodyId[model_name])
+        self._modelName_to_bodyId.pop(model_name)
         self._refresh_entities_ids()
 
     def setupLight(self,    lightDirection,

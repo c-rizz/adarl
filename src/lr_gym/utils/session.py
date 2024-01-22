@@ -98,6 +98,7 @@ def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[s
         if experiment_name is None:
             experiment_name = os.path.basename(file)
         try:
+            ggLog.info(f"Staring run with experiment name '{experiment_name}', run id {run_id}")
             wandb.init( project=experiment_name,
                         config = values,
                         name = run_id,
@@ -212,12 +213,13 @@ def runFunction_wrapper(seed,
                         debug_level):
     try:
         seedFolder = folderName+f"/seed_{seed}"
+        experiment_name = os.path.basename(launch_file_path)
         if start_lr_gym:
             folderName = lr_gym_startup(launch_file_path,
                                         inspect.currentframe(),
                                         folderName = seedFolder,
                                         seed = seed,
-                                        experiment_name = run_args["launch_id"],
+                                        experiment_name = experiment_name,
                                         run_id = run_id,
                                         debug = debug_level,
                                         run_comment=run_args["comment"])
@@ -300,8 +302,8 @@ def launchRun(runFunction,
             pkgs_to_save = ["lr_gym"],
             start_lr_gym : bool = True,
             debug_level = 0):
-   
-    script_out_folder = os.getcwd()+"/lrg_exps/"+os.path.basename(launchFilePath)
+    experiment_name = os.path.basename(launchFilePath)
+    script_out_folder = os.getcwd()+"/lrg_exps/"+experiment_name
     done = False
     tries = 0
     folderName = ""
@@ -321,7 +323,7 @@ def launchRun(runFunction,
                 raise e
     for pkg in pkgs_to_save:
         shutil.copytree(lr_gym.utils.utils.pkgutil_get_path(pkg,""), folderName+"/"+pkg)
-    args["launch_id"] = launch_id
+    args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 
     num_processes = maxProcs

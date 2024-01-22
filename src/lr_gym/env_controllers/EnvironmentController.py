@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
+import torch as th
 
 
 class EnvironmentController(ABC):
@@ -88,7 +89,7 @@ class EnvironmentController(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
+    def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[th.Tensor, float]]:
         """Get the images for the specified cameras.
 
         Parameters

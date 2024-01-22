@@ -6,7 +6,7 @@ import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
 
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn, VecEnvWrapper
-
+import torch as th
 
 class VecEnvLogger(VecEnvWrapper):
     """
@@ -49,7 +49,17 @@ class VecEnvLogger(VecEnvWrapper):
                 if dones[i]:
                     self._tot_ep_count += 1
                     info = infos[i]
-                    logs = {"VecEnvLogger/"+str(k) : v if type(v) is not bool else int(v) for k,v in info.items()}
+                    logs = {}
+                    for k,v in info.items():
+                        k = "VecEnvLogger/"+k
+                        if isinstance(v,dict):
+                            # ggLog.info(f"flattening {k}:{v}")
+                            for k1,v1 in v.items():
+                                logs[k+"."+k1] = v1
+                        else:
+                            if type(v) is bool:
+                                v = int(v)
+                            logs[k] = v
                     # ggLog.info(f"logging {logs}")
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
                     logs["vec_ep_count"] = self._tot_ep_count # for compatibility, to be removed
@@ -61,10 +71,12 @@ class VecEnvLogger(VecEnvWrapper):
             if self._logs_batch_size >= self.num_envs:
                 for k,v in self._logs_batch.items():
                     # ggLog.info(f"k = {k}")
-                    if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating)):
+                    if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating, th.Tensor)):
                         self._logs_batch[k] = sum(v)/len(v)
-                wandb_log(lambda: self._logs_batch)
-                ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} success={self._logs_batch.get('VecEnvLogger/success',0):.2f} reward={self._logs_batch.get('VecEnvLogger/ep_reward',0):9g}")
+                wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
+                # ggLog.info(f"wdblog = {wdblog}")
+                wandb_log(lambda: wdblog)
+                ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} success={self._logs_batch.get('VecEnvLogger/success',0):.2f} reward={self._logs_batch.get('VecEnvLogger/ep_reward',0)}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
         return obs, rewards, dones, infos

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
 from lr_gym.utils.utils import JointState, LinkState, Pose
 
 
@@ -43,12 +43,12 @@ class SimulatedEnvController(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def spawn_model(self,   model_definition_string : str,
-                            model_format : str,
-                            model_file,
-                            model_name : str,
-                            pose : Pose,
-                            model_kwargs : Dict[Any,Any]) -> str:
+    def spawn_model(self,   model_name : str,
+                            model_definition_string : Optional[str] = None,
+                            model_format : Optional[str] = None,
+                            model_file : Optional[str] = None,
+                            pose : Pose = Pose(0,0,0,0,0,0,1),
+                            model_kwargs : Dict[Any,Any] = {}) -> str:
         """Spawn a model in the simulation
 
         Parameters

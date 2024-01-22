@@ -2,7 +2,6 @@
 
 import numpy as np
 from typing import Tuple
-from nptyping import NDArray
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
@@ -121,7 +120,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
 
 
-    def submitAction(self, action_joints : NDArray[(7,), np.float32]) -> None:
+    def submitAction(self, action_joints : np.typing.NDArray[(7,), np.float32]) -> None:
         """Plan and execute moveit movement without blocking.
 
         Parameters
@@ -165,7 +164,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
             ggLog.info("Goal Reached")
 
 
-    def _getDist2goal(self, state : NDArray[(15,), np.float32]):
+    def _getDist2goal(self, state : np.typing.NDArray[(15,), np.float32]):
         position = state[0:3]
         orientation_quat = quaternion.from_euler_angles(state[3:6])
 
@@ -188,7 +187,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
 
@@ -197,7 +196,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
 
         posDist, minAngleDist = self._getDist2goal(state)
         mixedDistance = np.linalg.norm([posDist,minAngleDist])
@@ -216,12 +215,12 @@ class PandaReachingJointControlEnv(ControlledEnv):
     def getObservation(self, state) -> np.ndarray:
         return state
 
-    def getState(self) -> NDArray[(15,), np.float32]:
+    def getState(self) -> np.typing.NDArray[(15,), np.float32]:
         """Get an observation of the environment.
 
         Returns
         -------
-        NDArray[(15,), np.float32]
+        np.typing.NDArray[(15,), np.float32]
             numpy ndarray. The content of each field is specified at the self.observation_space_high definition
 
         """

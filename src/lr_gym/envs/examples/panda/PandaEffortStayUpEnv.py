@@ -3,7 +3,6 @@
 
 
 import numpy as np
-from nptyping import NDArray
 
 from lr_gym.envs.panda.PandaEffortBaseEnv import PandaEffortBaseEnv
 import lr_gym
@@ -47,13 +46,13 @@ class PandaEffortStayUpEnv(PandaEffortBaseEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
         return False
 
 
-    def computeReward(self, previousState : NDArray[(20,), np.float32], state : NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
 
         position = state[0:3]
         prevPosition = previousState[0:3]

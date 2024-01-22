@@ -3,7 +3,6 @@
 
 import numpy as np
 from typing import Callable
-from nptyping import NDArray
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.BaseEnv import BaseEnv
@@ -38,12 +37,12 @@ class PointPositionReachingEnv(BaseEnv):
     metadata = {'render.modes': ['rgb_array']}
 
     def __init__(   self,
-                    goalPoseSamplFunc : Callable[[],NDArray[(7,), np.float32]],
+                    goalPoseSamplFunc : Callable[[],np.typing.NDArray[(7,), np.float32]],
                     maxStepsPerEpisode : int = 500,
                     goalTolerancePosition : float = 0.05,
                     goalToleranceOrientation_rad : float = 0.0175*5,
                     operatingArea = np.array([[-1, -1, 0], [1, 1, 1.5]]),
-                    startPose : NDArray[(7,), np.float32] = np.array([0,0,0,0,0,0,1])):
+                    startPose : np.typing.NDArray[(7,), np.float32] = np.array([0,0,0,0,0,0,1])):
         """Short summary.
 
         Parameters
@@ -77,7 +76,7 @@ class PointPositionReachingEnv(BaseEnv):
         self._startPose = startPose
 
 
-    def submitAction(self, action : NDArray[(3,), np.float32]) -> None:
+    def submitAction(self, action : np.typing.NDArray[(3,), np.float32]) -> None:
         """Plan and execute moveit movement without blocking.
 
         Parameters
@@ -122,7 +121,7 @@ class PointPositionReachingEnv(BaseEnv):
             ggLog.info("Goal Reached")
 
 
-    def _getDist2goal(self, state : NDArray[(12,), np.float32]):
+    def _getDist2goal(self, state : np.typing.NDArray[(12,), np.float32]):
         position = state[0:3]
         orientation_quat = quaternion.from_euler_angles(state[3:6])
 
@@ -148,7 +147,7 @@ class PointPositionReachingEnv(BaseEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(12,), np.float32], state : NDArray[(12,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(12,), np.float32], state : np.typing.NDArray[(12,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
 
@@ -163,7 +162,7 @@ class PointPositionReachingEnv(BaseEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
 
         posDist_new, orientDist_new = self._getDist2goal(state)
         posDist_old, orientDist_old = self._getDist2goal(previousState)
@@ -211,12 +210,12 @@ class PointPositionReachingEnv(BaseEnv):
     def getObservation(self, state) -> np.ndarray:
         return state
 
-    def getState(self) -> NDArray[(15,), np.float32]:
+    def getState(self) -> np.typing.NDArray[(15,), np.float32]:
         """Get an observation of the environment.
 
         Returns
         -------
-        NDArray[(15,), np.float32]
+        np.typing.NDArray[(15,), np.float32]
             numpy ndarray. The content of each field is specified at the self.observation_space_high definition
 
         """

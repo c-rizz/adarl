@@ -27,6 +27,7 @@ class RecorderGymWrapper(gym.Wrapper):
             self._outFps = fps*self._frameRepeat
         self._frameBuffer = []
         self._vecBuffer = []
+        self._infoBuffer = []
         self._episodeCounter = 0
         self._outFolder = outFolder
         self._saveBestEpisodes = saveBestEpisodes
@@ -53,7 +54,12 @@ class RecorderGymWrapper(gym.Wrapper):
             else:
                 self._frameBuffer.append(None)
             if self._vec_obs_key is not None:
-                self._vecBuffer.append([obs[self._vec_obs_key], rew, terminated, truncated, info])
+                vecobs = np.array(obs[self._vec_obs_key])
+            else:
+                vecobs = None
+            action = np.array(action)
+            self._vecBuffer.append([vecobs, action, rew, terminated, truncated])
+            self._infoBuffer.append([info])
             # else:
             #     self._vecBuffer.append([obs, rew, done, info])
         self._epReward += rew
@@ -66,8 +72,8 @@ class RecorderGymWrapper(gym.Wrapper):
         if len(imgs)>0:
             ggLog.info(f"RecorderGymWrapper saving {len(imgs)} frames video to "+outFilename)
             #outFile = self._outVideoFile+str(self._episodeCounter).zfill(9)
-            if not outFilename.endswith(".avi"):
-                outFilename+=".avi"
+            if not outFilename.endswith(".mp4"):
+                outFilename+=".mp4"
             in_resolution_wh = None
             goodImg = None
             for npimg in imgs:
@@ -112,6 +118,7 @@ class RecorderGymWrapper(gym.Wrapper):
     def _saveLastEpisode(self, filename : str):
         self._writeVideo(filename,self._frameBuffer)
         self._writeVecs(filename,self._vecBuffer)
+        self._writeVecs(filename+"_info",self._infoBuffer)
         
 
     def _preproc_frame(self, img_hwc):
@@ -150,7 +157,7 @@ class RecorderGymWrapper(gym.Wrapper):
                 self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
 
 
-        obs = self.env.reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
 
         if self._epReward>self._bestReward:
             self._bestReward = self._epReward
@@ -160,15 +167,21 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epStepCount = 0        
         self._frameBuffer = []
         self._vecBuffer = []
+        self._infoBuffer = []
         if self._vec_obs_key is not None:
-            self._vecBuffer.append([obs[self._vec_obs_key], None, None, None])
+            vecobs = obs[self._vec_obs_key]
+        else:
+            vecobs = None
+        self._vecBuffer.append([vecobs, None, None, None, None])
+        self._infoBuffer.append([info])
+        
         # else:
         #     self._vecBuffer.append([obs, None, None, None])
         if self._may_episode_be_saved(self._episodeCounter):
             img = self.render()
             if img is not None:
                 self._frameBuffer.append(img)
-        return obs
+        return obs, info
 
     def close(self):
         self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")

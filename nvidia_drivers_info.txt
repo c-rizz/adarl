@@ -1,0 +1,27 @@
+# Useful infos about Nvidia drivers
+
+Depending on your configuration and what you may want to do you could have to play around with Nvidia drivers.
+For example to install drivers and compatible cuda/torch/jax versiosn you may want to try different versions with versions.
+
+## Installing specific torch versions
+For example when 3000-generation gpus were new torch had to be installed from a specific repo to support them:
+
+```pip install --upgrade torch==1.11.0+cu113 torchvision==0.12.0+cu113 --extra-index-url https://download.pytorch.org/whl/cu113```
+
+
+## Installing very new nvidia drivers
+
+Also, as of January 2024, to install jax and have it work properly I had to install the newest gpu driver (version 545), which is only available on the cuda repositories.
+As such I had to add the cuda ppa with:
+
+```
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+```
+
+and then install:
+
+```
+sudo apt update
+sudo apt install nvidia-driver-545
+```

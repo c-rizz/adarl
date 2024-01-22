@@ -8,7 +8,6 @@ from lr_gym.env_controllers.CartesianPositionEnvController import CartesianPosit
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
-from nptyping import NDArray
 from lr_gym.utils.utils import JointState
 import time
 
@@ -44,7 +43,7 @@ class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvCo
         pos_base_frame = np.array(pos_xy) # Assumes the two joints directly control world x and y
         return pos_base_frame
 
-    def setCartesianPoseCommand(self,   linkPoses : Dict[Tuple[str,str],NDArray[(7,), np.float32]],
+    def setCartesianPoseCommand(self,   linkPoses : Dict[Tuple[str,str],np.typing.NDArray[(7,), np.float32]],
                                         do_cartesian : bool = True,
                                         velocity_scaling : float = 1.0,
                                         acceleration_scaling : float = 1.0) -> None:

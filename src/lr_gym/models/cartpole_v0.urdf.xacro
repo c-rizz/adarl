@@ -66,13 +66,13 @@
   	<!-- * * * Define World Link to fix the foot rail to the world * * * -->
     <link name="world"/>
 	<link name="bar_link">
-		<visual>
+		<visual name = "bar_link_v">
 			<origin xyz="0 0 ${bar_height/2}" rpy="0 0 0"/>
 			<geometry>
 				<box size="${bar_width} ${bar_length} ${bar_height}"/>
 			</geometry>
 	   </visual>
-		<collision>
+		<collision name = "bar_link_c">
 			<origin xyz="0 0 ${bar_height/2}" rpy="0 0 0"/>
 			<geometry>
 				<box size="${bar_width} ${bar_length} ${bar_height}"/>
@@ -81,7 +81,7 @@
 		<xacro:box_inertial mass="${bar_mass}" x="${bar_width}" y="${bar_length}" z="${bar_height}" pose_xyz="0 0 ${bar_height/2}" pose_rpy="0 0 0"/>
 	</link>
 	<gazebo reference="bar_link">
-		<visual name="visual">
+		<visual name="bar_link_v">
 			<material>
 			<ambient>$(arg bar_color)</ambient>
 			<diffuse>$(arg bar_color)</diffuse>
@@ -129,13 +129,13 @@
 
 	<link name="foot_link">
 		<origin xyz="${rail_x} ${rail_y} ${rail_z}" rpy="${rail_roll} ${rail_pitch} ${rail_yaw}"/>
-		<visual>
+		<visual name = "foot_link_v">
 			<origin xyz="0 0 ${rail_height/2}" rpy="0 0 0"/>
 			<geometry>
 				<box size="${rail_width} ${rail_length} ${rail_height}"/>
 			</geometry>
 	   </visual>
-  		<collision>
+  		<collision name = "foot_link_c">
 			<origin xyz="0 0 ${rail_height/2}" rpy="0 0 0"/>
 			<geometry>
 				<box size="${rail_width} ${rail_length} ${rail_height}"/>

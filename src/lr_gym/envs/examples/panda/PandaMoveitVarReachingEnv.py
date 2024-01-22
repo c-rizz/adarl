@@ -3,7 +3,6 @@
 
 import numpy as np
 from typing import Callable, List
-from nptyping import NDArray
 import quaternion
 import lr_gym.utils.spaces as spaces
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -59,7 +58,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
         Parameters
         ----------
-        goalPoseSamplFunc : Callable[[],Tuple[NDArray[(3,), np.float32], np.quaternion]]
+        goalPoseSamplFunc : Callable[[],Tuple[np.typing.NDArray[(3,), np.float32], np.quaternion]]
             function that samples an end-effector pose to reach ([x,y,z], quaternion)
         maxStepsPerEpisode : int
             maximum number of frames per episode. The step() function will return
@@ -140,7 +139,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._environmentController.startController()
 
 
-    def submitAction(self, action : NDArray[(6,), np.float32]) -> None:
+    def submitAction(self, action : np.typing.NDArray[(6,), np.float32]) -> None:
         """Plan and execute moveit movement without blocking.
 
         Parameters
@@ -206,7 +205,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         if self._checkGoalReached(self.getState()):
             ggLog.info("Goal Reached")
 
-    def _getDist2goal(self, state : NDArray[(6,), np.float32]):
+    def _getDist2goal(self, state : np.typing.NDArray[(6,), np.float32]):
         position = state[0:3]
         orientation_quat = quaternion.from_euler_angles(state[3:6])
 
@@ -234,7 +233,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : NDArray[(6,), np.float32], state : NDArray[(6,), np.float32]) -> bool:
+    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(6,), np.float32], state : np.typing.NDArray[(6,), np.float32]) -> bool:
         if super().checkEpisodeEnded(previousState, state):
             return True
 
@@ -249,7 +248,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         return False
 
 
-    def computeReward(self, previousState : NDArray[(15,), np.float32], state : NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32], action : int, env_conf = None) -> float:
 
         posDist, minAngleDist = self._getDist2goal(state)
         #posDist_old, orientDist_old = self._getDist2goal(previousState)
@@ -304,12 +303,12 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
     def getObservation(self, state) -> np.ndarray:
         return state
 
-    def getState(self) -> NDArray[(6,), np.float32]:
+    def getState(self) -> np.typing.NDArray[(6,), np.float32]:
         """Get an observation of the environment.
 
         Returns
         -------
-        NDArray[(15,), np.float32]
+        np.typing.NDArray[(15,), np.float32]
             numpy ndarray. The content of each field is specified at the self.observation_space_high definition
 
         """

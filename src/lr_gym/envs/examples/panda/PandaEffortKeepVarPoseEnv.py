@@ -8,7 +8,6 @@ import math
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.panda.PandaEffortKeepPoseEnv import PandaEffortKeepPoseEnv
 import lr_gym
-from nptyping import NDArray
 import random
 from geometry_msgs.msg import PoseStamped
 
@@ -141,7 +140,7 @@ class PandaEffortKeepVarPoseEnv(PandaEffortKeepPoseEnv):
         # self._dbgGoalpublisher.publish(goalPoseStamped)
         print("Setting goal to: "+str(self._goalPose))
 
-    def getState(self) -> NDArray[(26,), np.float32]:
+    def getState(self) -> np.typing.NDArray[(26,), np.float32]:
         state_noGoal = super().getState()
 
         goalOrientation_rpy = quaternion.as_euler_angles(quaternion.from_float_array([self._goalPose[6], self._goalPose[3], self._goalPose[4], self._goalPose[5]]))
@@ -164,7 +163,7 @@ class PandaEffortKeepVarPoseEnv(PandaEffortKeepPoseEnv):
         return ret
 
 
-    def computeReward(self, previousState : NDArray[(26,), np.float32], state : NDArray[(26,), np.float32], action : int, env_conf = None) -> float:
+    def computeReward(self, previousState : np.typing.NDArray[(26,), np.float32], state : np.typing.NDArray[(26,), np.float32], action : int, env_conf = None) -> float:
 
         goal = state[20:26]
 

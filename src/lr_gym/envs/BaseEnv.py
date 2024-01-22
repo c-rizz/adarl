@@ -8,7 +8,7 @@ The provided class must be extended to define a specific environment
 
 import numpy as np
 import lr_gym.utils.spaces as spaces
-from typing import Tuple, Dict, Any, Sequence, Dict, Union
+from typing import Tuple, Dict, Any, Sequence, Dict, Union, Optional
 from abc import ABC, abstractmethod
 import torch as th
 
@@ -117,7 +117,7 @@ class BaseEnv(ABC):
         return self.reachedTimeout()
 
     @abstractmethod
-    def computeReward(self, previousState, state, action, env_conf = None) -> th.Tensor:
+    def computeReward(self, previousState, state, action, env_conf = None, sub_rewards : Optional[Dict[str,th.Tensor]] = None) -> th.Tensor:
         """To be implemented in subclass.
 
         This method is called during the stepping of the simulation. Just after the simulation has been stepped forward
@@ -198,7 +198,7 @@ class BaseEnv(ABC):
 
 
     @abstractmethod
-    def getUiRendering(self) -> Tuple[np.ndarray, float]:
+    def getUiRendering(self) -> Tuple[Union[np.ndarray, th.Tensor], float]:
         """To be implemented in subclass.
 
         This method is called by the render method to get the environment rendering

@@ -130,7 +130,7 @@ class RandomHoldoutBuffer(DictReplayBuffer):
 
 # from https://github.com/pytorch/pytorch/blob/ac79c874cefee2f8bc1605eed9a924d80c0b3542/torch/testing/_internal/common_utils.py#L349
 numpy_to_torch_dtype_dict = {
-        np.bool       : th.bool,
+        bool       : th.bool,
         np.uint8      : th.uint8,
         np.int8       : th.int8,
         np.int16      : th.int16,
