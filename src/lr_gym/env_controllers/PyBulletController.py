@@ -207,7 +207,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                             lightDiffuseCoeff = 0.5,
                             lightSpecularCoeff = 0.1)
 
-    def _refresh_entities_ids(self):
+    def _refresh_entities_ids(self, print_info = False):
         bodyIds = []
         for i in range(pybullet.getNumBodies()):
             bodyIds.append(pybullet.getBodyUniqueId(i))
@@ -221,6 +221,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             model_name = self._bodyId_to_modelName[bodyId]
             base_link_name = (model_name, base_link_name.decode("utf-8"))
             base_body_and_link_id = (bodyId, -1)
+            if print_info:
+                ggLog.info(f"Found base link {base_link_name}, with bodyid,link_id {base_body_and_link_id}")
             self._linkName_to_bodyLinkIds[base_link_name] = base_body_and_link_id
             self._bodyLinkIds_to_linkName[base_body_and_link_id] = base_link_name
             for jointId in range(pybullet.getNumJoints(bodyId)):
@@ -228,6 +230,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 jointName = (model_name, jointInfo[1].decode("utf-8"))
                 linkName = (model_name, jointInfo[12].decode("utf-8"))
                 body_and_joint_ids = (bodyId,jointId)
+                if print_info:
+                    ggLog.info(f"  Found regular link {linkName}, with bodyid,link_id/joint_id {body_and_joint_ids}")
                 self._bodyAndJointIdToJointName[body_and_joint_ids] = jointName
                 self._jointNamesToBodyAndJointId[jointName] = body_and_joint_ids
                 self._bodyLinkIds_to_linkName[body_and_joint_ids] = linkName
@@ -597,8 +601,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
-                linkState = LinkState(  position_xyz = (bodyStates[i][0][0], bodyStates[i][0][1], bodyStates[i][0][2]),
-                                        orientation_xyzw = (bodyStates[i][1][0], bodyStates[i][1][1], bodyStates[i][1][2], bodyStates[i][1][3]),
+                linkState = LinkState(  position_xyz =     (bodyStates[i][4][0], bodyStates[i][4][1], bodyStates[i][4][2]),
+                                        orientation_xyzw = (bodyStates[i][5][0], bodyStates[i][5][1], bodyStates[i][5][2], bodyStates[i][5][3]),
                                         pos_velocity_xyz = (bodyStates[i][6][0], bodyStates[i][6][1], bodyStates[i][6][2]),
                                         ang_velocity_xyz = (bodyStates[i][7][0], bodyStates[i][7][1], bodyStates[i][7][2]))
             
@@ -607,6 +611,10 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             # ggLog.info(f"Getting pose of body {bodyId}")
             bodyPose = pybullet.getBasePositionAndOrientation(bodyId)
             bodyVelocity = pybullet.getBaseVelocity(bodyId)
+            # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame
+            local_inertia_pos, local_inertia_orient = pybullet.getDynamicsInfo(bodyId,-1)[3:5]
+            # pybullet.multiplyTransform
+
             
             linkState = LinkState(  position_xyz = (bodyPose[0][0], bodyPose[0][1], bodyPose[0][2]),
                                     orientation_xyzw = (bodyPose[1][0], bodyPose[1][1], bodyPose[1][2], bodyPose[1][3]),
@@ -739,7 +747,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         body_id = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs, model_name = model_name)
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
-        self._refresh_entities_ids()
+        self._refresh_entities_ids(print_info=True)
         ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],

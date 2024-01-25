@@ -102,9 +102,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._successes = [0]*50
         self._last_ep_succeded = False
         self._logFileCsvWriter = None
-        self._info = {}
+        self._dbg_info = {}
 
         self._terminated = False
+        self._alltime_stepping_time = 0
 
 
     def _setInfo(self):
@@ -130,32 +131,33 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             wall_fps_first_to_last = float("NaN")
             ratio_time_spent_stepping_first_to_last = 0
 
-        self._info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
-        self._info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
-        self._info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
-        self._info["avg_obs_wall_duration"] = self._observationDurationAverage.getAverage()
-        self._info["avg_step_sim_duration"] = avgSimTimeStepDuration
-        self._info["tot_ep_wall_duration"] = totEpisodeWallDuration
-        self._info["tot_ep_sim_duration"] = self._lastStepEndSimTimeFromStart
-        self._info["reset_wall_duration"] = resetWallDuration
-        self._info["ep_frames_count"] = self._framesCounter
-        self._info["ep_reward"] = self._totalEpisodeReward
-        self._info["ep_sub_rewards"] = self._total_sub_rewards
-        self._info["wall_fps"] = wallFps
-        self._info["wall_fps_until_done"] = wall_fps_until_done
-        self._info["reset_count"] = self._resetCount
-        self._info["ratio_time_spent_stepping_until_done"] = ratio_time_spent_stepping_until_done
-        self._info["ratio_time_spent_stepping"] = ratio_time_spent_stepping
-        self._info["time_from_start"] = time.monotonic() - self._init_time
-        self._info["total_steps"] = self._totalSteps
-        self._info["wall_fps_first_to_last"] = wall_fps_first_to_last
-        self._info["ratio_time_spent_stepping_first_to_last"] = ratio_time_spent_stepping_first_to_last
-        self._info["success_ratio"] = self._success_ratio
-        self._info["max_success_ratio"] = max(self._success_ratio, self._info.get("max_success_ratio",0))
-        self._info["success"] = self._last_ep_succeded
-        self._info["seed"] = self._ggEnv.get_seed()
+        self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
+        self._dbg_info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
+        self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
+        self._dbg_info["avg_obs_wall_duration"] = self._observationDurationAverage.getAverage()
+        self._dbg_info["avg_step_sim_duration"] = avgSimTimeStepDuration
+        self._dbg_info["tot_ep_wall_duration"] = totEpisodeWallDuration
+        self._dbg_info["tot_ep_sim_duration"] = self._lastStepEndSimTimeFromStart
+        self._dbg_info["reset_wall_duration"] = resetWallDuration
+        self._dbg_info["ep_frames_count"] = self._framesCounter
+        self._dbg_info["ep_reward"] = self._totalEpisodeReward
+        self._dbg_info["ep_sub_rewards"] = self._total_sub_rewards
+        self._dbg_info["wall_fps"] = wallFps
+        self._dbg_info["wall_fps_until_done"] = wall_fps_until_done
+        self._dbg_info["reset_count"] = self._resetCount
+        self._dbg_info["ratio_time_spent_stepping_until_done"] = ratio_time_spent_stepping_until_done
+        self._dbg_info["ratio_time_spent_stepping"] = ratio_time_spent_stepping
+        self._dbg_info["time_from_start"] = time.monotonic() - self._init_time
+        self._dbg_info["total_steps"] = self._totalSteps
+        self._dbg_info["wall_fps_first_to_last"] = wall_fps_first_to_last
+        self._dbg_info["ratio_time_spent_stepping_first_to_last"] = ratio_time_spent_stepping_first_to_last
+        self._dbg_info["success_ratio"] = self._success_ratio
+        self._dbg_info["max_success_ratio"] = max(self._success_ratio, self._dbg_info.get("max_success_ratio",0))
+        self._dbg_info["success"] = self._last_ep_succeded
+        self._dbg_info["seed"] = self._ggEnv.get_seed()
+        self._dbg_info["alltime_stepping_time"] = self._alltime_stepping_time
 
-        self._info.update(self._ggEnv.getInfo(self._getStateCached()))
+        self._dbg_info.update(self._ggEnv.getInfo(self._getStateCached()))
 
 
     def _logInfoCsv(self):
@@ -184,16 +186,16 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             self._logFile = open(self._episodeInfoLogFile, "a")
             self._logFileCsvWriter = csv.writer(self._logFile, delimiter = ",")
             if not existed:
-                self._logFileCsvWriter.writerow(self._info.keys())
+                self._logFileCsvWriter.writerow(self._dbg_info.keys())
         #print("writing csv")
-        self._logFileCsvWriter.writerow(self._info.values())
+        self._logFileCsvWriter.writerow(self._dbg_info.values())
         self._logFile.flush()
         if lr_gym.utils.session.is_wandb_enabled() and self._use_wandb:
             if self._logs_id is not None and self._logs_id!= "":
                 prefix = self._logs_id+"/"
             else:
                 prefix = ""
-            d = {str(k) : v if type(v) is not bool else int(v) for k,v in self._info.items()}
+            d = {str(k) : v if type(v) is not bool else int(v) for k,v in self._dbg_info.items()}
             wandb_dict = {}
             wandb_dict.update({"lrg/"+k:v for k,v in d.items()})
             wandb_dict.update({prefix+k:v for k,v in d.items()})
@@ -212,8 +214,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                 self._last_ep_succeded = ggInfo["success"]
                 self._successes[self._resetCount%len(self._successes)] = int(self._last_ep_succeded)
                 self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
-            info.update(ggInfo)
-        info.update(self._info)
+        info.update(ggInfo)
+        info.update(self._dbg_info)
         return info
 
     def step(self, action) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
@@ -245,6 +247,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         """
         #ggLog.info("step()")
 
+        t0 = time.monotonic()
         if self._terminated:
             if self._verbose:
                 ggLog.warn("Episode already finished")
@@ -258,12 +261,12 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             info["is_success"] = info.get("success",None)
             info["simTime"] = self._lastStepEndSimTimeFromStart
             info["TimeLimit.truncated"] = truncated
-            info.update(self._info)
+            self._alltime_stepping_time += time.monotonic() - t0
+            info.update(self._dbg_info)
             return (observation, reward, terminated, truncated, info)
 
         self._totalSteps += 1
         # Get previous observation
-        t0 = time.monotonic()
         previousState = self._getStateCached()
 
         # Setup action to perform
@@ -292,9 +295,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         observation = self._ggEnv.getObservation(state)
         truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
         info = self._build_info()
-        info.update({"gz_gym_base_env_reached_state" : state,
-                    "gz_gym_base_env_previous_state" : previousState,
-                    "gz_gym_base_env_action" : action})
+        # info.update({"gz_gym_base_env_reached_state" : state,
+        #             "gz_gym_base_env_previous_state" : previousState,
+        #             "gz_gym_base_env_action" : action})
         self._totalEpisodeReward += reward
         for k,v in sub_rewards.items():
             self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
@@ -314,6 +317,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         else:
             self._last_step_finish_time = time.monotonic()
         #ggLog.info("stepped")
+        self._alltime_stepping_time += time.monotonic() - t0
         return ret
 
 
@@ -345,23 +349,23 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             if self._logEpisodeInfo:
                 self._logInfoCsv()
             if self._verbose:
-                for k,v in self._info.items():
+                for k,v in self._dbg_info.items():
                     ggLog.info(k," = ",v)
             elif not self._quiet:
-                msg =  (f"ep = {self._info['reset_count']:d}"+
-                        f" rwrd = {self._info['ep_reward']:.3f}"+
-                        " stps = {:d}".format(self._info["ep_frames_count"])+
-                        " wHz = {:.3f}".format(self._info["wall_fps"])+
-                        " wHzFtl = {:.3f}".format(self._info["wall_fps_first_to_last"])+
-                        " avg_stpWDur = {:f}".format(self._info["avg_env_step_wall_duration"])+
-                        # " tstep/ttot_ftl = {:.2f}".format(self._info["ratio_time_spent_stepping_until_done"])+
-                        " tstep/ttot = {:.2f}".format(self._info["ratio_time_spent_stepping"])+
-                        " wEpDur = {:.2f}".format(self._info["tot_ep_wall_duration"])+
-                        " sEpDur = {:.2f}".format(self._info["tot_ep_sim_duration"]))
-                if "success_ratio" in self._info.keys():
-                        msg += f" succ_ratio = {self._info['success_ratio']:.2f}"
-                if "success" in self._info.keys():
-                        msg += f" succ = {self._info['success']:.2f}"
+                msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
+                        f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
+                        f" stps = {self._dbg_info['ep_frames_count']:d}"+
+                        f" wHz = {self._dbg_info['wall_fps']:.3f}"+
+                        f" wHzFtl = {self._dbg_info['wall_fps_first_to_last']:.3f}"+
+                        f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
+                        f" tstep%ftl = {self._dbg_info['ratio_time_spent_stepping_first_to_last']:.2f}"+
+                        f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
+                        f" wEpDur = {self._dbg_info['tot_ep_wall_duration']:.2f}"+
+                        f" sEpDur = {self._dbg_info['tot_ep_sim_duration']:.2f}")
+                if "success_ratio" in self._dbg_info.keys():
+                        msg += f" succ_ratio = {self._dbg_info['success_ratio']:.2f}"
+                if "success" in self._dbg_info.keys():
+                        msg += f" succ = {self._dbg_info['success']:.2f}"
                 ggLog.info(msg)
 
         self._lastPreResetTime = time.monotonic()
