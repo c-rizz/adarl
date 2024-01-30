@@ -346,7 +346,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         ret = {}
         for cam_name in requestedCameras:
             camera = self._cameras[cam_name]
-            linkstate = self.getLinksState([camera.link_name])[camera.link_name]
+            linkstate = self.getLinksState([camera.link_name], use_com_frame=True)[camera.link_name]
             camera.set_pose(linkstate.pose)
             camera.setup_light(
                                 lightDirection = self._lightDirection,
@@ -581,7 +581,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
 
 
-    def getLinksState(self, requestedLinks : List[Tuple[str,str]]) -> Dict[Tuple[str,str],LinkState]:
+    def getLinksState(self, requestedLinks : List[Tuple[str,str]], use_com_frame : bool = False) -> Dict[Tuple[str,str],LinkState]:
         # ggLog.info(f"Getting link states for {requestedLinks}")
         #For each bodyId I submit a request for joint state
         requests = {} #for each body id we will have a list of joints
@@ -601,25 +601,32 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
-                linkState = LinkState(  position_xyz =     (bodyStates[i][4][0], bodyStates[i][4][1], bodyStates[i][4][2]),
-                                        orientation_xyzw = (bodyStates[i][5][0], bodyStates[i][5][1], bodyStates[i][5][2], bodyStates[i][5][3]),
-                                        pos_velocity_xyz = (bodyStates[i][6][0], bodyStates[i][6][1], bodyStates[i][6][2]),
-                                        ang_velocity_xyz = (bodyStates[i][7][0], bodyStates[i][7][1], bodyStates[i][7][2]))
-            
+                if use_com_frame:
+                    linkState = LinkState(  position_xyz =     bodyStates[i][0][:3],
+                                            orientation_xyzw = bodyStates[i][1][:4],
+                                            pos_velocity_xyz = bodyStates[i][6][:3],
+                                            ang_velocity_xyz = bodyStates[i][7][:3])
+                else:
+                    # raise NotImplementedError()
+                    linkState = LinkState(  position_xyz =     bodyStates[i][4][:3],
+                                            orientation_xyzw = bodyStates[i][5][:4],
+                                            pos_velocity_xyz = bodyStates[i][6][:3], # this is the com velocity!
+                                            ang_velocity_xyz = bodyStates[i][7][:3]) # this is the com velocity!
                 allStates[self._getLinkName(bodyId,linkId)] = linkState
         for bodyId in baserequests: #for each bodyId make a request
             # ggLog.info(f"Getting pose of body {bodyId}")
             bodyPose = pybullet.getBasePositionAndOrientation(bodyId)
             bodyVelocity = pybullet.getBaseVelocity(bodyId)
-            # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame
-            local_inertia_pos, local_inertia_orient = pybullet.getDynamicsInfo(bodyId,-1)[3:5]
-            # pybullet.multiplyTransform
-
-            
-            linkState = LinkState(  position_xyz = (bodyPose[0][0], bodyPose[0][1], bodyPose[0][2]),
-                                    orientation_xyzw = (bodyPose[1][0], bodyPose[1][1], bodyPose[1][2], bodyPose[1][3]),
-                                    pos_velocity_xyz = (bodyVelocity[0][0], bodyVelocity[0][1], bodyVelocity[0][2]),
-                                    ang_velocity_xyz = (bodyVelocity[1][0], bodyVelocity[1][1], bodyVelocity[1][2]))
+            if use_com_frame:
+                linkState = LinkState(  position_xyz = bodyPose[0][:3],
+                                        orientation_xyzw = bodyPose[1][:4],
+                                        pos_velocity_xyz = bodyVelocity[0][:3],
+                                        ang_velocity_xyz = bodyVelocity[1][:3])
+            else:
+                # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame
+                local_inertia_pos, local_inertia_orient = pybullet.getDynamicsInfo(bodyId,-1)[3:5]
+                # pybullet.multiplyTransform
+                raise NotImplementedError()
         
             allStates[self._getLinkName(bodyId,-1)] = linkState
 
@@ -708,7 +715,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             if type(models) != list:
                 models = [models]
             if len(models)>1:
-                raise RuntimeError(f"sdf fiels with more than one model are not supported right now, maybe it's easy to fix, maybe not.")
+                raise RuntimeError(f"sdf files with more than one model are not supported right now, maybe it's easy to fix, maybe not.")
             for model in models:
                 # model_name = model["@name"]
                 links = model.get("link", [])

@@ -87,6 +87,8 @@ numpy_to_torch_dtype_dict = {
     np.complex128 : th.complex128
 }
 
+torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
+
 class JointState:
     # These are lists because the joint may have multiple DOF
     # position = []
