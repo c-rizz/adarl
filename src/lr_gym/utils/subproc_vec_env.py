@@ -16,7 +16,7 @@ from stable_baselines3.common.vec_env.base_vec_env import (
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 import time
-from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, space_from_tree
+from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, space_from_tree, SharedData, unstack_tensor_tree, map_tensor_tree
 import torch as th
 import copy
 
@@ -25,6 +25,7 @@ def _worker(
     parent_remote: mp.connection.Connection,
     env_fn_wrapper: CloudpickleWrapper,
     simple_commander : SimpleCommander,
+    shared_env_data : SharedEnvData,
     env_idx : int
 ) -> None:
     # Import here to avoid a circular import
@@ -32,11 +33,12 @@ def _worker(
 
     parent_remote.close()
     env = _patch_env(env_fn_wrapper.var())
-    reset_info: Optional[Dict[str, Any]] = None
     reset_observation = None
     observation, reset_info = env.reset()
+    reset_info["terminal_observation"] = observation # make it as if we always have terminal_observation
+    print(f"reset_info = {reset_info}")
     info_space = space_from_tree(reset_info)
-    shared_env_data : SharedEnvData = None
+    reset_info = None
     while True:
         try:
             cmd = simple_commander.wait_command()
@@ -52,9 +54,13 @@ def _worker(
                     # save final observation where user can get it, then reset
                     reset_observation, reset_info = env.reset()
                     observation = reset_observation # To follow VecEnv's behaviour
+                    reset_info["terminal_observation"] = reset_observation  # always put last observation in info
                 # To be compatible with VecEnvs the worker in case of reset will
                 # put the reset observation in obs and the last step observation in info
                 # the reset info is always in reset_info (only updated at each reset)
+                info = map_tensor_tree(info, func=lambda x: th.as_tensor(x))
+                if reset_info is not None:
+                    reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
                 shared_env_data.fill_data(env_idx = env_idx,
                                           observation=observation,
                                           reward=reward,
@@ -64,11 +70,13 @@ def _worker(
                                           info = info,
                                           reset_info = reset_info,
                                           reset_observation = reset_observation)
+                reset_info = None
             elif cmd == b"reset":
                 data = remote.recv()
                 maybe_options = {"options": data[1]} if data[1] else {}
                 reset_observation, reset_info = env.reset(seed=data[0], **maybe_options)
                 remote.send((reset_observation, reset_info))
+                reset_info = None
             elif cmd == b"render":
                 remote.send(env.render())
             elif cmd == b"close":
@@ -91,11 +99,12 @@ def _worker(
             elif cmd == b"is_wrapped":
                 data = remote.recv()
                 remote.send(is_wrapped(env, data))
-            elif cmd == b"set_shared_env_data":
+            elif cmd == b"set_data_struct":
                 data = remote.recv()
-                shared_env_data = data
+                shared_env_data.set_data_struct(data)
             else:
                 raise NotImplementedError(f"`{cmd}` is not implemented in the worker")
+            simple_commander.mark_done()
         except EOFError:
             break
 
@@ -136,13 +145,14 @@ class SubprocVecEnv(VecEnv):
             forkserver_available = "forkserver" in mp.get_all_start_methods()
             start_method = "forkserver" if forkserver_available else "spawn"
         ctx = mp.get_context(start_method)
-        self._simple_commander = SimpleCommander(ctx)
+        self._simple_commander = SimpleCommander(ctx, n_envs=n_envs)
+        self._shared_env_data = SharedEnvData(n_envs=n_envs, mp_context=ctx, timeout_s=60)
 
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
         self.processes = []
         for i in range(n_envs):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
-            args = (work_remote, remote, CloudpickleWrapper(env_fn), self._simple_commander, i)
+            args = (work_remote, remote, CloudpickleWrapper(env_fn), self._simple_commander, self._shared_env_data, i)
             # daemon=True: if the main process crashes, we should not cause things to hang
             process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
             process.start()
@@ -154,16 +164,15 @@ class SubprocVecEnv(VecEnv):
             observation_space, action_space, info_space = remote.recv()
         print(f"got spaces")
 
-        self._shared_env_data = SharedEnvData(observation_space=observation_space,
+        self._shared_data = SharedData(observation_space=observation_space,
                                         action_space=action_space,
                                         info_space = info_space,
                                         n_envs=n_envs,
-                                        device=th.device("cpu"),
-                                        mp_context=ctx,
-                                        timeout_s=60)
-        self._simple_commander.set_command("set_shared_env_data")
-        for remote in self.remotes:
-            remote.send(self._shared_env_data)
+                                        device=th.device("cpu"))
+        self._shared_env_data.set_data_struct(self._shared_data)
+        self._simple_commander.set_command("set_data_struct")
+        for remote in self.remotes: remote.send(self._shared_data)
+        self._simple_commander.wait_done()
 
         super().__init__(len(env_fns), observation_space, action_space)
 
@@ -178,6 +187,7 @@ class SubprocVecEnv(VecEnv):
         # put the reset observation in obs and the last step observation in info
         # the reset info is always in reset_info (only updated at each reset)
         # So reset_obss is not used as it is already in obss
+        self._simple_commander.wait_done()
         obss, rews, terminateds, truncateds, infos, reset_obss, reset_infos = copy.deepcopy(self._shared_env_data.wait_data())
         self.reset_infos = reset_infos
         dones = th.logical_or(truncateds, terminateds)
@@ -186,6 +196,8 @@ class SubprocVecEnv(VecEnv):
         self.waiting = False
         # obss, rews, dones, infos, self.reset_infos, tsend = zip(*results)  # type: ignore[assignment]
         # print(f"twait = {[t-ts for ts in tsend]}")
+        obss = unstack_tensor_tree(obss)
+        infos = unstack_tensor_tree(infos)
         return _flatten_obs(obss, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
 
     def reset(self) -> VecEnvObs:
@@ -193,6 +205,7 @@ class SubprocVecEnv(VecEnv):
         for env_idx, remote in enumerate(self.remotes):
             remote.send((self._seeds[env_idx], self._options[env_idx]))
         results = [remote.recv() for remote in self.remotes]
+        self._simple_commander.wait_done()
         obs, self.reset_infos = zip(*results)  # type: ignore[assignment]
         # Seeds and options are only used once
         self._reset_seeds()
@@ -205,6 +218,7 @@ class SubprocVecEnv(VecEnv):
         if self.waiting:
             self.step_wait()
         self._simple_commander.set_command("close")
+        self._simple_commander.wait_done()
         for process in self.processes:
             process.join()
         self.closed = True
@@ -217,15 +231,17 @@ class SubprocVecEnv(VecEnv):
             return [None for _ in self.remotes]
         self._simple_commander.set_command("render")
         outputs = [remote.recv() for remote in self.remotes]
+        self._simple_commander.wait_done()
         return outputs
 
     def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
         """Return attribute from vectorized environment (see base class)."""
         target_remotes = self._get_target_remotes(indices)
         self._simple_commander.set_command("get_attr")
-        for remote in target_remotes:
-            remote.send((attr_name))
-        return [remote.recv() for remote in target_remotes]
+        for remote in target_remotes: remote.send((attr_name))
+        ret = [remote.recv() for remote in target_remotes]
+        self._simple_commander.wait_done()
+        return ret
 
     def set_attr(self, attr_name: str, value: Any, indices: VecEnvIndices = None) -> None:
         """Set attribute inside vectorized environments (see base class)."""
@@ -235,6 +251,7 @@ class SubprocVecEnv(VecEnv):
             remote.send((attr_name, value))
         for remote in target_remotes:
             remote.recv()
+        self._simple_commander.wait_done()
 
     def env_method(self, method_name: str, *method_args, indices: VecEnvIndices = None, **method_kwargs) -> List[Any]:
         """Call instance methods of vectorized environments."""
@@ -242,15 +259,18 @@ class SubprocVecEnv(VecEnv):
         self._simple_commander.set_command("env_method")
         for remote in target_remotes:
             remote.send((method_name, method_args, method_kwargs))
-        return [remote.recv() for remote in target_remotes]
+        ret = [remote.recv() for remote in target_remotes]
+        self._simple_commander.wait_done()
+        return ret
 
     def env_is_wrapped(self, wrapper_class: Type[gym.Wrapper], indices: VecEnvIndices = None) -> List[bool]:
         """Check if worker environments are wrapped with a given wrapper"""
         target_remotes = self._get_target_remotes(indices)
         self._simple_commander.set_command("is_wrapped")
-        for remote in target_remotes:
-            remote.send(wrapper_class)
-        return [remote.recv() for remote in target_remotes]
+        for remote in target_remotes: remote.send(wrapper_class)
+        ret = [remote.recv() for remote in target_remotes]
+        self._simple_commander.wait_done()
+        return ret
 
     def _get_target_remotes(self, indices: VecEnvIndices) -> List[Any]:
         """

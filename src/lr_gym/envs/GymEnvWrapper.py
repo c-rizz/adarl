@@ -28,6 +28,7 @@ import lr_gym.utils.session
 import lr_gym.utils.utils
 from lr_gym.utils.wandb_wrapper import wandb_log
 import torch as th
+from lr_gym.utils.shared_env_data import map_tensor_tree
 
 ObsType = TypeVar("ObsType")
 
@@ -83,7 +84,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
-        self._total_sub_rewards = {}
+        self._total_sub_rewards = None
         self._resetCount = 0
         self._init_time = time.monotonic()
         self._totalSteps = 0
@@ -120,6 +121,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             ratio_time_spent_stepping = self._timeSpentStepping_ep/totEpisodeWallDuration
             wall_fps_first_to_last = self._framesCounter/(self._last_step_finish_time - self._first_step_finish_time)
             ratio_time_spent_stepping_first_to_last = self._timeSpentStepping_ep/(self._last_step_finish_time - self._first_step_finish_time)
+            state = self._getStateCached()
         else:
             avgSimTimeStepDuration = float("NaN")
             totEpisodeWallDuration = 0
@@ -130,6 +132,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             ratio_time_spent_stepping = 0
             wall_fps_first_to_last = float("NaN")
             ratio_time_spent_stepping_first_to_last = 0
+            state = info = map_tensor_tree(self._ggEnv.state_space.sample(), func=lambda x: th.as_tensor(x))
 
         self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
         self._dbg_info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
@@ -157,7 +160,12 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info["seed"] = self._ggEnv.get_seed()
         self._dbg_info["alltime_stepping_time"] = self._alltime_stepping_time
 
-        self._dbg_info.update(self._ggEnv.getInfo(self._getStateCached()))
+        self._dbg_info.update(self._ggEnv.getInfo(state))
+        if self._dbg_info["ep_sub_rewards"] is None:
+            sub_rewards = {}
+            reward = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards)
+            self._dbg_info["ep_sub_rewards"] = {k: v*0 for k,v in sub_rewards.items()}
+            # ggLog.info(f'self._dbg_info["ep_sub_rewards"] = {self._dbg_info["ep_sub_rewards"]}')
 
 
     def _logInfoCsv(self):
@@ -208,12 +216,11 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         info["TimeLimit.truncated"] = truncated
         info["timed_out"] = self._ggEnv.reachedTimeout()
         ggInfo = self._ggEnv.getInfo(state=state)
+        ggInfo["is_success"] = ggInfo.get("success", False)
+        self._last_ep_succeded = ggInfo.get("success", False)
         if self._terminated:
-            if "success" in ggInfo:
-                ggInfo["is_success"] = ggInfo["success"]
-                self._last_ep_succeded = ggInfo["success"]
-                self._successes[self._resetCount%len(self._successes)] = int(self._last_ep_succeded)
-                self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
+            self._successes[self._resetCount%len(self._successes)] = int(self._last_ep_succeded)
+            self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
         info.update(ggInfo)
         info.update(self._dbg_info)
         return info
@@ -256,13 +263,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             terminated = True
             truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited() # If this env is time-limited this is not a truncation, it's the proper ending
             self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
-            info = {}
-            info.update(self._ggEnv.getInfo(state=self._getStateCached()))
-            info["is_success"] = info.get("success",None)
-            info["simTime"] = self._lastStepEndSimTimeFromStart
-            info["TimeLimit.truncated"] = truncated
             self._alltime_stepping_time += time.monotonic() - t0
-            info.update(self._dbg_info)
+            info = self._build_info()
             return (observation, reward, terminated, truncated, info)
 
         self._totalSteps += 1
@@ -299,6 +301,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         #             "gz_gym_base_env_previous_state" : previousState,
         #             "gz_gym_base_env_action" : action})
         self._totalEpisodeReward += reward
+        if not self._total_sub_rewards:
+            self._total_sub_rewards = {}
         for k,v in sub_rewards.items():
             self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
         
@@ -342,10 +346,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if self._verbose:
             ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+")-------")
 
+        self._setInfo()
         if self._framesCounter == 0:
             ggLog.info("No step executed in this episode")
         else:
-            self._setInfo()
             if self._logEpisodeInfo:
                 self._logInfoCsv()
             if self._verbose:
@@ -384,7 +388,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
-        self._total_sub_rewards = {}
+        self._total_sub_rewards = None
         self._lastValidStepWallTime = -1
         self._timeSpentStepping_ep = 0
 

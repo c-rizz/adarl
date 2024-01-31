@@ -4,6 +4,7 @@ from lr_gym.utils.spaces import gym_spaces
 from lr_gym.utils.utils import numpy_to_torch_dtype_dict, torch_to_numpy_dtype_dict
 import ctypes
 from typing import Optional, Any
+import numpy as np
 
 def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> th.Tensor | dict[Any, th.Tensor]:
     if isinstance(space, gym_spaces.Dict):
@@ -38,7 +39,36 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : dict | th.Tensor, dst_t
         else:
             dst_tree.copy_(src_tree, non_blocking=True)
     else:
-        raise RuntimeError(f"Unexpected tree element type {src_tree}")
+        raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
+
+def map_tensor_tree(src_tree : dict | th.Tensor, func):
+    if isinstance(src_tree, dict):
+        r = {}
+        for k in src_tree.keys():
+            r[k] = map_tensor_tree(src_tree[k], func = func)
+        return r
+    else:
+        return func(src_tree)
+
+def unstack_tensor_tree(src_tree : dict | th.Tensor) -> list:
+    if isinstance(src_tree, dict):
+        # print(f"src_tree = {src_tree}")
+        dictlist = None
+        for k in src_tree.keys():
+            unstacked_subtree = unstack_tensor_tree(src_tree[k])
+            stack_size = len(unstacked_subtree)
+            if dictlist is None:
+                dictlist = [{} for _ in range(stack_size)]
+            for i in range(stack_size):
+                dictlist[i][k] = unstacked_subtree[i]
+        # print(f"src_tree = {src_tree}, unstacked = {dictlist}")
+        return dictlist
+    elif isinstance(src_tree, th.Tensor):
+        ret = src_tree.unbind()
+        # print(f"src_tree = {src_tree}, unstacked = {ret}")
+        return ret
+    else:
+        raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
 
 def space_from_tree(tensor_tree):
     if isinstance(tensor_tree, dict):
@@ -46,7 +76,11 @@ def space_from_tree(tensor_tree):
         for k in tensor_tree.keys():
             subspaces[k] = space_from_tree(tensor_tree[k])
         return gym_spaces.Dict(subspaces)
-    elif isinstance(tensor_tree, th.Tensor):
+    if isinstance(tensor_tree, np.ndarray):
+        tensor_tree = th.as_tensor(tensor_tree)
+    if isinstance(tensor_tree, (float, int)):
+        tensor_tree = th.as_tensor(tensor_tree)
+    if isinstance(tensor_tree, th.Tensor):
         return gym_spaces.Box(high=(th.ones_like(tensor_tree)*float("+inf")).cpu().numpy(),
                               low=(th.ones_like(tensor_tree)*float("-inf")).cpu().numpy(),
                               dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype])
@@ -54,32 +88,50 @@ def space_from_tree(tensor_tree):
         raise RuntimeError(f"Unexpected tree element type {tensor_tree}")
 
 class SimpleCommander():
-    def __init__(self, mp_context):
-        self._cmd_count = mp_context.Value(ctypes.c_int64, lock=False)
-        self._cmd_count.value = -1
-        self._command = mp_context.Array(ctypes.c_char, 128, lock = False)
-        self._command.value = b""
-        self._command_cond = mp_context.Condition()
-        self._received_cmds_count = None
+    def __init__(self, mp_context, n_envs):
+        self._n_envs = n_envs
+        self._cmds_sent_count = mp_context.Value(ctypes.c_uint64, lock=False)
+        self._cmds_sent_count.value = 0
+        self._current_command = mp_context.Array(ctypes.c_char, 128, lock = False)
+        self._current_command.value = b""
+        self._cmds_done_count = mp_context.Value(ctypes.c_uint64, lock=False)
+        self._cmds_done_count.value = 0
+        self._new_cmd_cond = mp_context.Condition()
+        self._cmd_done_cond = mp_context.Condition()
+        self._received_cmds_count = None # non-shared received commands counter
         self._last_received_cmd = None
 
     def wait_command(self, timeout_s = None) -> bytearray | None:
         if self._received_cmds_count is None:
-            self._received_cmds_count = ctypes.c_int64(0)
-        with self._command_cond:
-            got_command = self._command_cond.wait_for(lambda: self._cmd_count.value==self._received_cmds_count.value, timeout=timeout_s)
-            self._last_received_cmd = self._command.value
+            self._received_cmds_count = ctypes.c_uint64(1)
+        with self._new_cmd_cond:
+            # print(f"waiting for command {self._received_cmds_count}")
+            got_command = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=timeout_s)
+            # print(f"got command {self._received_cmds_count}")
+            self._last_received_cmd = self._current_command.value
             self._received_cmds_count.value += 1
         if got_command:
             return self._last_received_cmd
         else:
             return None
         
+    def mark_done(self):
+        with self._cmd_done_cond:
+            self._cmds_done_count.value += 1
+            self._cmd_done_cond.notify_all()
+
+    def wait_done(self):
+        with self._cmd_done_cond:
+            done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs)
+        if not done:
+            raise TimeoutError(f"Timed out witing for cmd {self._current_command} completion")
+        
     def set_command(self, command : str):
-        with self._command_cond:
-            self._command.value = command.encode()
-            self._cmd_count.value += 1
-            self._command_cond.notify_all()
+        with self._new_cmd_cond:
+            self._current_command.value = command.encode()
+            self._cmds_sent_count.value += 1
+            # print(f"Sent command {self._cmds_sent_count}")
+            self._new_cmd_cond.notify_all()
 
 class SharedData():
     def __init__(self, observation_space : gym_spaces.Space,
@@ -100,13 +152,14 @@ class SharedData():
         self._terms : th.Tensor = None
         self._truncs : th.Tensor = None
         self._rews : th.Tensor = None
+        self.build_data()
 
     def build_data(self):
-        self._obss = create_tensor_tree(n_envs, self._observation_space, True, device=self._device)
-        self._acts = create_tensor_tree(n_envs, self._action_space, True, device=self._device)
-        self._infos : dict[Any,th.Tensor] = create_tensor_tree(n_envs, self._info_space, True, device=self._device)
-        self._reset_infos : dict[Any,th.Tensor] = create_tensor_tree(n_envs, self._info_space, True, device=self._device)
-        self._reset_obss = create_tensor_tree(n_envs, self._observation_space, True, device=self._device)
+        self._obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
+        self._acts = create_tensor_tree(self._n_envs, self._action_space, True, device=self._device)
+        self._infos : dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
+        self._reset_infos : dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
+        self._reset_obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
         self._terms : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
         self._truncs : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
         self._rews : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.float32).share_memory_()
@@ -132,7 +185,7 @@ class SharedEnvData():
 
         self._shared_data : SharedData = None
 
-    def set_backend_data(self, shared_data : SharedData):
+    def set_data_struct(self, shared_data : SharedData):
         self._shared_data = shared_data
 
     def fill_data(self, env_idx, observation, action, terminated, truncated, reward, info, reset_info, reset_observation):
@@ -207,14 +260,17 @@ class SharedEnvData():
 
 
 
-def worker_func(sh : SharedEnvData, sc, worker_id):
+def worker_func(sh : SharedEnvData, sc, worker_id, receiver):
     # print(f"worker starting with {sh} and {steps}")
     import time
     i = 0
-    while True:
+    running = True
+    while running:
         if i%100 == 0:
             print(f"worker step {i}")
+        # print(f"waiting command...")
         cmd = sc.wait_command()
+        # print(f"got command {cmd}")
         i += 1
         if cmd == b"step":
             with th.no_grad():
@@ -239,9 +295,14 @@ def worker_func(sh : SharedEnvData, sc, worker_id):
                             reset_info={"boh":th.tensor([1,1])},
                             reset_observation={"obs": th.tensor([1,1])})
         elif cmd == b"close":
-            break
+            running = False
         elif cmd == b"set_backend_data":
-            sh.set_backend_data
+            # print(f"[{worker_id}] setting backend data")
+            data : SharedData = receiver.recv()
+            sh.set_data_struct(data)
+            # print(f"[{worker_id}] set backend data")
+        sc.mark_done()
+
 
         # print(f"worker step {i} end")
 
@@ -256,15 +317,25 @@ if __name__ == "__main__":
     info_example = {"boh":th.tensor([0.0,0])}
     info_space = space_from_tree(info_example)
     print(f"info_space = {info_space}")
-    sc = SimpleCommander(ctx)
-    sh = SharedEnvData(observation_space=gym_spaces.Dict({"obs":gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0]))}),
-                       action_space=gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0])),
-                       info_space=info_space,
-                    n_envs=n_envs,timeout_s=60, device=th.device("cpu"),
-                    mp_context=ctx)
-    workers = [ctx.Process(target=worker_func, args=(sh,sc,idx)) for idx in range(n_envs)]
+    sc = SimpleCommander(ctx, n_envs=n_envs)
+    sh = SharedEnvData(n_envs=n_envs,timeout_s=5, mp_context=ctx)
+    receivers, senders = pipe = zip(*[ctx.Pipe(duplex=False) for _ in range(n_envs)])
+    workers = [ctx.Process(target=worker_func, args=(sh,sc,idx, receivers[idx])) for idx in range(n_envs)]
     for worker in workers:
         worker.start()
+
+    data = SharedData(observation_space=gym_spaces.Dict({"obs":gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0]))}),
+                       action_space=gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0])),
+                       info_space=info_space,
+                    n_envs=n_envs, device=th.device("cpu"))
+    
+    sh.set_data_struct(data)
+    sc.set_command("set_backend_data")
+    for idx in range(n_envs): senders[idx].send(data)
+    print("sent backend data")
+    sc.wait_done()
+    print("backend data set")
+
     t0 = time.monotonic()
     for i in range(steps):
         if i%100 == 0:
@@ -272,6 +343,8 @@ if __name__ == "__main__":
         sc.set_command("step")
         sh.mark_waiting_data()
         sh.fill_actions(th.tensor([1,1]))
+        sc.wait_done()
+
         data = sh.wait_data()
         # print(f"main step {i} end")
     tf = time.monotonic()

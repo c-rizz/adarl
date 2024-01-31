@@ -35,7 +35,8 @@ class BaseEnv(ABC):
                  simulationBackend : str = None,
                  verbose : bool = False,
                  quiet : bool = False,
-                 is_timelimited : bool = True):
+                 is_timelimited : bool = True,
+                 state_space : spaces.gym_spaces.Space = None):
         """Short summary.
 
         Parameters
@@ -47,6 +48,7 @@ class BaseEnv(ABC):
         """
         self.action_space = action_space
         self.observation_space = observation_space
+        self.state_space = state_space
         self.pure_observation_space = pure_observation_space
         self.goal_observation_space = goal_observation_space
         self.reward_space = reward_space
