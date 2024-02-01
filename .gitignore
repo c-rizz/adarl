@@ -1,3 +1,4 @@
-src/lr_gym.egg-info/*
+*.egg-info
 *__pycache__*
 *.gch
+build

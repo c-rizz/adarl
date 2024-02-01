@@ -19,3 +19,16 @@ classifiers = [
 
 [project.scripts]
 lr_gym = "lr_gym:launcher"
+
+# [tool.setuptools]
+# # ...
+# # By default, include-package-data is true in pyproject.toml, so you do
+# # NOT have to specify this line.
+# include-package-data = true
+# 
+# [tool.setuptools.packages.find]
+# where = ["src","src/lr_gym/models","src/lr_gym/assets"]
+
+[tool.setuptools.package-data]
+"lr_gym.models" = ["*.urdf", "*.xacro"]
+"lr_gym.assets.audio" = ["*.ogg"]
