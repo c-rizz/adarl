@@ -170,7 +170,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         """
         super().__init__()
         self._stepLength_sec = stepLength_sec
-        # Model names are the ones we use to uniquely identify bodies and links as (model_name, link_name)
+        # Model names are the ones we use to uniquely identify bodies and links as (model_id, link_id)
         # Body ids are the ones pybullet uses to uniquely identify bodies
         # Body names are the names used by pybullet, I think they just come from the URDF, they can be the same for different bodies
         self._modelName_to_bodyId = {"0":0} 
@@ -181,6 +181,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._last_step_commanded_torques_by_name = {}
         self._commanded_trajectories = {}
         self._debug_gui = debug_gui
+        self._reset_detected_contacts()
+
         if real_time_factor is not None and real_time_factor>0:
             self._real_time_factor = real_time_factor
         else:
@@ -321,7 +323,9 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
             self._apply_commanded_torques()
             self._apply_commanded_positions()
             wtps = time.monotonic()
+            self._reset_detected_contacts()
             pybullet.stepSimulation()
+            self._read_new_contacts()
             stepping_wtime += time.monotonic()-wtps
             self._simTime += bullet_stepLength_sec
             if self._real_time_factor is not None and self._real_time_factor>0:
@@ -781,4 +785,62 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._lightDiffuseCoeff = lightDiffuseCoeff
         self._lightSpecularCoeff = lightSpecularCoeff
     
-    
+    def monitor_contacts(self, monitored_contacts : List[Tuple[Optional[str],
+                                                            Optional[str],
+                                                            Optional[tuple[str,str]],
+                                                            Optional[tuple[str,str]]]]):
+        self._monitored_contacts = monitored_contacts
+
+    def get_contacts(self):
+        return self._detected_contacts
+
+    def _reset_detected_contacts(self):
+        self._detected_contacts = []
+
+    def _read_new_contacts(self):
+        for allowed_contacts in self._monitored_contacts:
+            contacts = self._get_contacts(*allowed_contacts)
+            self._detected_contacts += contacts
+
+    def _get_contacts(self, 
+                     model_a : Optional[str],
+                     model_b : Optional[str],
+                     link_a : Optional[tuple[str,str]],
+                     link_b : Optional[tuple[str,str]]):
+        if model_b and not model_a:
+            raise ValueError(f"model_b should only be set if model_a is set")
+        if link_b and not (link_a or model_a):
+            raise ValueError(f"link_b should only be set if link_a or model_a are set")
+        if link_a and model_a:
+            raise ValueError(f"can only set one of model_a or link_a")
+        if link_b and model_b:
+            raise ValueError(f"can only set one of model_b or link_b")
+        link_a_id, link_b_id = None, None
+        if link_a:
+            model_a = link_a[0]
+            link_a_id = self._linkName_to_bodyLinkIds[link_a]
+        if link_b:
+            model_b = link_b[0]
+            link_b_id = self._linkName_to_bodyLinkIds[link_b]
+
+        body_a_id = self._modelName_to_bodyId[model_a] if model_a is not None else None
+        body_b_id = self._modelName_to_bodyId[model_b] if model_b is not None else None
+        # ggLog.info(f"bodyA = {body_a_id}, bodyB = {body_b_id}, linkIndexA = {link_a_id}, linkIndexB = {link_b_id}")
+        kwargs = {}
+        if body_a_id is not None: kwargs["bodyA"] = body_a_id
+        if body_b_id is not None: kwargs["bodyB"] = body_b_id
+        if link_a_id is not None: kwargs["linkIndexA"] = link_a_id
+        if link_b_id is not None: kwargs["linkIndexB"] = link_b_id
+        cpoints = pybullet.getContactPoints(**kwargs)
+        ret = []
+        for cp in cpoints:
+            link1 = self._bodyLinkIds_to_linkName[(cp[1], cp[3])]
+            link2 = self._bodyLinkIds_to_linkName[(cp[2], cp[4])]
+            normal_2to1_xyz = cp[7]
+            force = cp[9]
+            ret.append((link1,
+                        link2,
+                        normal_2to1_xyz,
+                        force))
+        return ret
+

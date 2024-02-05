@@ -109,7 +109,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._alltime_stepping_time = 0
 
 
-    def _setInfo(self):
+    def _set_dbg_info(self):
         if self._framesCounter>0:
             avgSimTimeStepDuration = self._lastStepEndSimTimeFromStart/self._framesCounter
             totEpisodeWallDuration = time.monotonic() - self._lastPostResetTime
@@ -163,7 +163,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info.update(self._ggEnv.getInfo(state))
         if self._dbg_info["ep_sub_rewards"] is None:
             sub_rewards = {}
-            reward = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards)
+            reward = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
             self._dbg_info["ep_sub_rewards"] = {k: v*0 for k,v in sub_rewards.items()}
             # ggLog.info(f'self._dbg_info["ep_sub_rewards"] = {self._dbg_info["ep_sub_rewards"]}')
 
@@ -190,7 +190,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                     self._resetCount += int(lastRow[columns.index("reset_count")])
                     self._totalSteps += int(lastRow[columns.index("total_steps")])
                     self._success_ratio += float(lastRow[columns.index("success_ratio")])
-                    self._setInfo()
+                    self._set_dbg_info()
             self._logFile = open(self._episodeInfoLogFile, "a")
             self._logFileCsvWriter = csv.writer(self._logFile, delimiter = ",")
             if not existed:
@@ -221,8 +221,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if self._terminated:
             self._successes[self._resetCount%len(self._successes)] = int(self._last_ep_succeded)
             self._success_ratio = sum(self._successes)/min(len(self._successes), self._resetCount)
-        info.update(ggInfo)
         info.update(self._dbg_info)
+        info.update(ggInfo)
         return info
 
     def step(self, action) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
@@ -346,7 +346,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if self._verbose:
             ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+")-------")
 
-        self._setInfo()
+        self._set_dbg_info()
         if self._framesCounter == 0:
             ggLog.info("No step executed in this episode")
         else:

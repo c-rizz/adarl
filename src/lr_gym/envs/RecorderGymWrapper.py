@@ -6,6 +6,8 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
 from vidgear.gears import WriteGear
 import math
+from lr_gym.utils.utils import puttext_cv
+from typing import Callable, Optional, Any
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.
@@ -18,7 +20,8 @@ class RecorderGymWrapper(gym.Wrapper):
     def __init__(self, env : gym.Env, fps : float, outFolder : str,
                         saveBestEpisodes = False, 
                         saveFrequency_ep = 1,
-                        vec_obs_key = None):
+                        vec_obs_key = None,
+                        overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,Any],str]] = None):
         super().__init__(env)
         self._outFps = fps
         self._frameRepeat = 1
@@ -36,6 +39,7 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epReward = 0.0
         self._epStepCount = 0
         self._vec_obs_key = vec_obs_key
+        self._overlay_text_func = overlay_text_func
         try:
             os.makedirs(self._outFolder)
         except FileExistsError:
@@ -59,7 +63,7 @@ class RecorderGymWrapper(gym.Wrapper):
                 vecobs = None
             action = np.array(action)
             self._vecBuffer.append([vecobs, action, rew, terminated, truncated])
-            self._infoBuffer.append([info])
+            self._infoBuffer.append(info)
             # else:
             #     self._vecBuffer.append([obs, rew, done, info])
         self._epReward += rew
@@ -68,7 +72,7 @@ class RecorderGymWrapper(gym.Wrapper):
 
 
 
-    def _writeVideo(self, outFilename : str, imgs):
+    def _writeVideo(self, outFilename : str, imgs, vecs, infos):
         if len(imgs)>0:
             ggLog.info(f"RecorderGymWrapper saving {len(imgs)} frames video to "+outFilename)
             #outFile = self._outVideoFile+str(self._episodeCounter).zfill(9)
@@ -101,11 +105,20 @@ class RecorderGymWrapper(gym.Wrapper):
                                 "-level" : 3.0,
                                 "-pix_fmt" : "yuv420p"} 
             writer = WriteGear(output=outFilename, logging=False, **output_params)
-            for npimg in imgs:
+            for i in range(len(imgs)):
+                npimg = imgs[i]
+                vec, info = vecs[i], infos[i]
                 if npimg is None:
                     npimg = np.zeros_like(goodImg)
                 npimg = cv2.resize(npimg,dsize=out_resolution_wh,interpolation=cv2.INTER_NEAREST)
                 npimg = self._preproc_frame(npimg)
+                if self._overlay_text_func is not None:
+                    vecobs, action, rew, terminated, truncated = vec
+                    text = self._overlay_text_func(vecobs, action, rew, terminated, truncated, info)
+                    puttext_cv(npimg, text,
+                                origin = (int(npimg.shape[1]*0.1), int(npimg.shape[0]*0.1)),
+                                rowheight = int(npimg.shape[0]*0.05),
+                                fontScale = 1.0)
                 for _ in range(self._frameRepeat):
                     writer.write(npimg)
             writer.close()
@@ -116,7 +129,7 @@ class RecorderGymWrapper(gym.Wrapper):
                 f.write(f"{vec}\n")
 
     def _saveLastEpisode(self, filename : str):
-        self._writeVideo(filename,self._frameBuffer)
+        self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
         self._writeVecs(filename,self._vecBuffer)
         self._writeVecs(filename+"_info",self._infoBuffer)
         
@@ -173,7 +186,7 @@ class RecorderGymWrapper(gym.Wrapper):
         else:
             vecobs = None
         self._vecBuffer.append([vecobs, None, None, None, None])
-        self._infoBuffer.append([info])
+        self._infoBuffer.append(info)
         
         # else:
         #     self._vecBuffer.append([obs, None, None, None])

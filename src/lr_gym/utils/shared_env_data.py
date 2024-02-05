@@ -88,7 +88,7 @@ def space_from_tree(tensor_tree):
         raise RuntimeError(f"Unexpected tree element type {tensor_tree}")
 
 class SimpleCommander():
-    def __init__(self, mp_context, n_envs):
+    def __init__(self, mp_context, n_envs, timeout_s):
         self._n_envs = n_envs
         self._cmds_sent_count = mp_context.Value(ctypes.c_uint64, lock=False)
         self._cmds_sent_count.value = 0
@@ -100,13 +100,14 @@ class SimpleCommander():
         self._cmd_done_cond = mp_context.Condition()
         self._received_cmds_count = None # non-shared received commands counter
         self._last_received_cmd = None
+        self._timeout_s = timeout_s
 
-    def wait_command(self, timeout_s = None) -> bytearray | None:
+    def wait_command(self) -> bytearray | None:
         if self._received_cmds_count is None:
             self._received_cmds_count = ctypes.c_uint64(1)
         with self._new_cmd_cond:
             # print(f"waiting for command {self._received_cmds_count}")
-            got_command = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=timeout_s)
+            got_command = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=self._timeout_s)
             # print(f"got command {self._received_cmds_count}")
             self._last_received_cmd = self._current_command.value
             self._received_cmds_count.value += 1
@@ -122,7 +123,7 @@ class SimpleCommander():
 
     def wait_done(self):
         with self._cmd_done_cond:
-            done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs)
+            done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs, timeout=self._timeout_s)
         if not done:
             raise TimeoutError(f"Timed out witing for cmd {self._current_command} completion")
         
@@ -305,7 +306,7 @@ def worker_func(sh : SharedEnvData, sc, worker_id, receiver):
 
 
         # print(f"worker step {i} end")
-
+    receiver.close()
     # print(f"worker finished")
 
 if __name__ == "__main__":
@@ -319,7 +320,7 @@ if __name__ == "__main__":
     print(f"info_space = {info_space}")
     sc = SimpleCommander(ctx, n_envs=n_envs)
     sh = SharedEnvData(n_envs=n_envs,timeout_s=5, mp_context=ctx)
-    receivers, senders = pipe = zip(*[ctx.Pipe(duplex=False) for _ in range(n_envs)])
+    receivers, senders = zip(*[ctx.Pipe(duplex=False) for _ in range(n_envs)])
     workers = [ctx.Process(target=worker_func, args=(sh,sc,idx, receivers[idx])) for idx in range(n_envs)]
     for worker in workers:
         worker.start()
@@ -355,6 +356,7 @@ if __name__ == "__main__":
     sh.wait_data()
     print(f"resetted")
     print(" # \n".join([str(d) for d in data]))
+    for idx in range(n_envs): senders[idx].close()
 
 
 

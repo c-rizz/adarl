@@ -227,6 +227,14 @@ def createSymlink(src, dst):
 
     
 
+def puttext_cv(img, string, origin, rowheight, fontScale = 0.5):
+    for i, line in enumerate(string.split('\n')):
+        cv2.putText(img,
+                    text = line,
+                    org=(origin[0],int(origin[1]+rowheight*i)),
+                    fontFace=cv2.FONT_HERSHEY_PLAIN,
+                    fontScale = fontScale,
+                    color = (255,255,255))
 
 
 

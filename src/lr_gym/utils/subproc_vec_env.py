@@ -103,7 +103,8 @@ def _worker(
                 data = remote.recv()
                 shared_env_data.set_data_struct(data)
             else:
-                raise NotImplementedError(f"`{cmd}` is not implemented in the worker")
+                pass
+                # print(f"`{cmd}` is not implemented in the worker"))
             simple_commander.mark_done()
         except EOFError:
             break
@@ -145,7 +146,7 @@ class SubprocVecEnv(VecEnv):
             forkserver_available = "forkserver" in mp.get_all_start_methods()
             start_method = "forkserver" if forkserver_available else "spawn"
         ctx = mp.get_context(start_method)
-        self._simple_commander = SimpleCommander(ctx, n_envs=n_envs)
+        self._simple_commander = SimpleCommander(ctx, n_envs=n_envs, timeout_s=60)
         self._shared_env_data = SharedEnvData(n_envs=n_envs, mp_context=ctx, timeout_s=60)
 
         self.remotes, self.work_remotes = zip(*[ctx.Pipe() for _ in range(n_envs)])
@@ -222,6 +223,7 @@ class SubprocVecEnv(VecEnv):
         for process in self.processes:
             process.join()
         self.closed = True
+        for remote in self.remotes : remote.close()
 
     def get_images(self) -> Sequence[Optional[np.ndarray]]:
         if self.render_mode != "rgb_array":
