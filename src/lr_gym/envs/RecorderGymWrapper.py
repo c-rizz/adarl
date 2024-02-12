@@ -118,7 +118,8 @@ class RecorderGymWrapper(gym.Wrapper):
                     puttext_cv(npimg, text,
                                 origin = (int(npimg.shape[1]*0.1), int(npimg.shape[0]*0.1)),
                                 rowheight = int(npimg.shape[0]*0.05),
-                                fontScale = 1.0)
+                                fontScale = 1.0,
+                                color = (20,20,255))
                 for _ in range(self._frameRepeat):
                     writer.write(npimg)
             writer.close()

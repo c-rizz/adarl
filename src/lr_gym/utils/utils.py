@@ -189,6 +189,10 @@ class Pose:
     def getListXyzXyzw(self):
         return [self.position[0],self.position[1],self.position[2],self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]
         
+    @property
+    def orientation_wxyz(self):
+        return th.concat([self.orientation_xyzw[3].unsqueeze(0),self.orientation_xyzw[0:3]])
+    
     def __repr__(self):
         return self.__str__()
 
@@ -227,14 +231,14 @@ def createSymlink(src, dst):
 
     
 
-def puttext_cv(img, string, origin, rowheight, fontScale = 0.5):
+def puttext_cv(img, string, origin, rowheight, fontScale = 0.5, color = (255,255,255)):
     for i, line in enumerate(string.split('\n')):
         cv2.putText(img,
                     text = line,
                     org=(origin[0],int(origin[1]+rowheight*i)),
                     fontFace=cv2.FONT_HERSHEY_PLAIN,
                     fontScale = fontScale,
-                    color = (255,255,255))
+                    color = color)
 
 
 
@@ -629,3 +633,61 @@ def obs_to_tensor(obs) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
         return {k:obs_to_tensor(v) for k,v in obs.items()}
     else:
         return th.as_tensor(obs)
+    
+@th.jit.script
+def vector_projection(v1,v2):
+    """Project v1 onto the direction of v2
+    """
+    return th.dot(v1,v2/v2.norm())*v2/v2.norm()
+
+@th.jit.script
+def quat_mul(q1_wxyz, q2_wxyz):
+    r1 = q1_wxyz[0]
+    v1 = q1_wxyz[1:4]
+    r2 = q2_wxyz[0]
+    v2 = q2_wxyz[1:4]
+    q = th.empty((4,), device = q1_wxyz.device)
+    q[0] = r1*r2 - th.dot(v1,v2)
+    q[1:4] = r1*v2 + r2*v1 + th.cross(v1,v2)
+    return q
+
+@th.jit.script
+def quat_swing_twist_decomposition(quat_wxyz : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
+    """Decomposes the quaternion into a rotation around
+    the axis (twist), and a rotation perpendicular to
+    the axis (swing).
+
+    Parameters
+    ----------
+    quat_wxyz : th.Tensor
+        Quaternion rotation
+    axis_xyz : th.Tensor
+        Axis
+
+    Returns
+    -------
+    Tuple[th.Tensor, th.Tensor]
+        swing, twist
+    """
+    quat_axis = quat_wxyz[1:4]
+    twist = th.empty(size=(4,), device=quat_axis.device)
+    twist[1:4] = vector_projection(quat_axis, axis_xyz)
+    twist[0] = quat_wxyz[0]
+    twist = twist/twist.norm()
+    swing = quat_mul(quat_wxyz,(twist*th.tensor([1.0,-1.0,-1.0,-1.0])))
+    return swing, twist
+
+def quat_angle(q_wxyz : th.Tensor) -> th.Tensor:
+    """Angle of the angle-axis representation of the quaternion
+
+    Parameters
+    ----------
+    q_wxyz : th.Tensor
+        _description_
+
+    Returns
+    -------
+    th.Tensor
+        _description_
+    """
+    return 2*th.atan2(th.norm(q_wxyz[1:4]),q_wxyz[0])

@@ -10,6 +10,7 @@ from typing import Union, Optional, Dict, Any
 from stable_baselines3.common.evaluation import evaluate_policy
 import warnings
 import lr_gym.utils.utils
+import lr_gym.utils.session
 import torch as th
 
 class CheckpointCallbackRB(BaseCallback):
@@ -127,6 +128,19 @@ class SigintHaltCallback(BaseCallback):
     def _on_rollout_end(self) -> bool:
         lr_gym.utils.sigint_handler.haltOnSigintReceived()
         return True
+    
+
+
+class PrintLrRunInfo(BaseCallback):
+    def _on_step(self):
+        return True
+    
+    def _on_rollout_end(self) -> bool:
+        i = lr_gym.utils.session.run_info
+        ggLog.info(f"{i['experiment_name']}:{i['run_id']} '{i['comment']}'")
+        return True
+
+    
 
 
 

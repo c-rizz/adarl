@@ -143,6 +143,8 @@ def lr_gym_shutdown():
     #     ggLog.error("Still alive after SIGKILL!")
 
 
+run_info = {}
+
 def lr_gym_startup( main_file_path : str,
                     currentframe = None,
                     using_pytorch : bool = True,
@@ -160,6 +162,9 @@ def lr_gym_startup( main_file_path : str,
             debug_level = 0
     else:
         debug_level = debug
+    run_info["comment"] = run_comment
+    run_info["experiment_name"] = experiment_name
+    run_info["run_id"] = run_id
     faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
     logFolder = _setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment, use_wandb=use_wandb)
     ggLog.addLogFile(logFolder+"/gglog.log")
@@ -332,15 +337,15 @@ def launchRun(runFunction,
             seeds = [x+seedsOffset for x in range(seedsNum)]
         if pretrainedModelFile is not None:
             pretrainedModelFile = os.path.abspath(pretrainedModelFile)
-        argss = [(seed,
-                  folderName,
-                  runFunction,
-                  pretrainedModelFile,
-                  launch_id+"_"+str(seed),
-                  args,
-                  start_lr_gym,
-                  launchFilePath,
-                  debug_level) for seed in seeds]
+        argss = [{"seed" : seed,
+                  "folderName" : folderName,
+                  "runFunction" : runFunction,
+                  "resumeModelFile" : pretrainedModelFile,
+                  "run_id" : launch_id+"_"+str(seed),
+                  "run_args" : args,
+                  "start_lr_gym" : start_lr_gym,
+                  "launch_file_path" : launchFilePath,
+                  "debug_level" : debug_level} for seed in seeds]
     else:
         resumeFolder = os.path.abspath(resumeFolder)
         ggLog.info(f"Resuming run from folder {resumeFolder}")
@@ -351,15 +356,15 @@ def launchRun(runFunction,
         detected_args = detectFolderArgs(resumeFolder)
         # for seed in det_args.keys():
         #     rebuild_run_folder(folderName, seed, resumeFolder)
-        argss = [(seed,
-                  folderName,
-                  runFunction,
-                  detected_args[seed]["modelToLoad"],
-                  launch_id+"_"+str(seed),
-                  args,
-                  start_lr_gym,
-                  launchFilePath,
-                  debug_level) for seed in detected_args]
+        argss = [{"seed" : seed,
+                  "folderName" : folderName,
+                  "runFunction" : runFunction,
+                  "resumeModelFile" : detected_args[seed]["modelToLoad"],
+                  "run_id" : launch_id+"_"+str(seed),
+                  "run_args" : args,
+                  "start_lr_gym" : start_lr_gym,
+                  "launch_file_path" : launchFilePath,
+                  "debug_level" : debug_level} for seed in detected_args]
 
     ggLog.info(f"Will launch {argss} using {num_processes} processes") 
 
@@ -368,14 +373,15 @@ def launchRun(runFunction,
     if len(argss) == 1 or num_processes==1:
         run_results = []
         for args in argss:
-            r = runFunction_wrapper(*args)
+            r = runFunction_wrapper(**args)
             run_results.append(r)
     else:
         from lr_gym.utils.sigint_handler import setupSigintHandler, launch_halt_waiter
         setupSigintHandler()
         launch_halt_waiter()
         with multiprocessing.Pool(num_processes, maxtasksperchild=1) as p:
-            run_results = p.starmap(runFunction_wrapper, argss)
+            # run_results = p.starmap(runFunction_wrapper, argss)
+            run_results = p.starmap(lambda f,kwargs: f(**kwargs), [(runFunction_wrapper,kwargs) for kwargs in argss])
     
     ggLog.info(f"All runs finished. Results:\n"+"\n".join(str(run_results)))
             

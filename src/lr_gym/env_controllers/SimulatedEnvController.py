@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
 from lr_gym.utils.utils import JointState, LinkState, Pose
-
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 
 
 class SimulatedEnvController(ABC):

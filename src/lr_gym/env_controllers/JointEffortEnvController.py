@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Tuple
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 
 class JointEffortEnvController(ABC):
     @abstractmethod

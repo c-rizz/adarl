@@ -6,8 +6,12 @@ The provided class must be extended to define a specific environment
 """
 
 from lr_gym.envs.BaseEnv import BaseEnv
+from typing import TypeVar, Generic
+from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 
-class ControlledEnv(BaseEnv):
+EnvControllerType = TypeVar("EnvControllerType", bound=EnvironmentController)
+
+class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
     """This is a base-class for implementing OpenAI-gym environments using environment controllers derived from EnvironmentController.
 
     It implements part of the methods defined in BaseEnv relying on an EnvironmentController
@@ -24,11 +28,11 @@ class ControlledEnv(BaseEnv):
     metadata = None # e.g. {'render.modes': ['rgb_array']}
 
     def __init__(self,
-                 maxStepsPerEpisode : int = 500,
-                 stepLength_sec : float = -1,
-                 environmentController = None,
+                 maxStepsPerEpisode,
+                 stepLength_sec,
+                 environmentController : EnvControllerType,
                  startSimulation : bool = False,
-                simulationBackend : str = None,
+                 simulationBackend : str = None,
                  is_timelimited : bool = True):
         """Short summary.
 
