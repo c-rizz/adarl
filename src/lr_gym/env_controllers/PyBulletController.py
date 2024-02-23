@@ -628,7 +628,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request
-            bodyStates = pybullet.getLinkStates(bodyId,requests[bodyId],computeLinkVelocity=1)
+            bodyStates = pybullet.getLinkStates(bodyId,requests[bodyId],computeLinkVelocity=1, computeForwardKinematics=1)
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
@@ -642,7 +642,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                     linkState = LinkState(  position_xyz =     bodyStates[i][4][:3],
                                             orientation_xyzw = bodyStates[i][5][:4],
                                             pos_velocity_xyz = bodyStates[i][6][:3], # this is the com velocity!
-                                            ang_velocity_xyz = bodyStates[i][7][:3]) # this is the com velocity!
+                                            ang_velocity_xyz = bodyStates[i][7][:3])
                 allStates[self._getLinkName(bodyId,linkId)] = linkState
         for bodyId in baserequests: #for each bodyId make a request
             # ggLog.info(f"Getting pose of body {bodyId}")

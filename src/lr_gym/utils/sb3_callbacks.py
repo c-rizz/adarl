@@ -207,7 +207,7 @@ class EvalCallback_ep(EventCallback):
         self._is_success_buffer = []
         self.evaluations_successes = []
         self._episode_counter = 0
-        self._last_evaluation_episode = -1
+        self._last_evaluation_episode = float("-inf")
 
 
     def _init_callback(self) -> None:
@@ -243,7 +243,7 @@ class EvalCallback_ep(EventCallback):
                 self._is_success_buffer.append(maybe_is_success)
 
     def _on_rollout_end(self) -> bool:
-        if self.eval_freq_ep > 0 and self._episode_counter % self.eval_freq_ep == 0 and self._last_evaluation_episode != self._episode_counter:
+        if self.eval_freq_ep > 0 and self._episode_counter - self._last_evaluation_episode >= self.eval_freq_ep and self._last_evaluation_episode != self._episode_counter:
 
             cuda_sync_debug_state = th.cuda.get_sync_debug_mode()
             th.cuda.set_sync_debug_mode("default")

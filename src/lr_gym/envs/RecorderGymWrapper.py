@@ -40,6 +40,7 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epStepCount = 0
         self._vec_obs_key = vec_obs_key
         self._overlay_text_func = overlay_text_func
+        self._last_saved_ep = float("-inf")
         try:
             os.makedirs(self._outFolder)
         except FileExistsError:
@@ -167,8 +168,9 @@ class RecorderGymWrapper(gym.Wrapper):
                 self._bestReward = self._epReward
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(self._outFolder+"/best/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")            
-            if self._saveFrequency_ep>0 and self._episodeCounter % self._saveFrequency_ep == 0:
+            if self._saveFrequency_ep>0 and self._episodeCounter - self._last_saved_ep >= self._saveFrequency_ep:
                 self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
+                self._last_saved_ep = self._episodeCounter
 
 
         obs, info = self.env.reset(**kwargs)
