@@ -109,8 +109,9 @@ class SimpleCommander():
             # print(f"waiting for command {self._received_cmds_count}")
             got_command = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=self._timeout_s)
             # print(f"got command {self._received_cmds_count}")
-            self._last_received_cmd = self._current_command.value
-            self._received_cmds_count.value += 1
+            if got_command:
+                self._last_received_cmd = self._current_command.value
+                self._received_cmds_count.value += 1
         if got_command:
             return self._last_received_cmd
         else:
@@ -122,10 +123,11 @@ class SimpleCommander():
             self._cmd_done_cond.notify_all()
 
     def wait_done(self):
+        done = False
         with self._cmd_done_cond:
             done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs, timeout=self._timeout_s)
-        if not done:
-            raise TimeoutError(f"Timed out witing for cmd {self._current_command} completion")
+        if not done:      
+            raise TimeoutError(f"Timed out waiting for cmd {self._current_command.value} completion")
         
     def set_command(self, command : str):
         with self._new_cmd_cond:
@@ -302,7 +304,8 @@ def worker_func(sh : SharedEnvData, sc, worker_id, receiver):
             data : SharedData = receiver.recv()
             sh.set_data_struct(data)
             # print(f"[{worker_id}] set backend data")
-        sc.mark_done()
+        if cmd is not None:
+            sc.mark_done()
 
 
         # print(f"worker step {i} end")

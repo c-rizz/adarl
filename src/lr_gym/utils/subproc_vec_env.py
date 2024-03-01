@@ -36,7 +36,7 @@ def _worker(
     reset_observation = None
     observation, reset_info = env.reset()
     reset_info["terminal_observation"] = observation # make it as if we always have terminal_observation
-    print(f"reset_info = {reset_info}")
+    # print(f"reset_info = {reset_info}")
     info_space = space_from_tree(reset_info)
     reset_info = None
     while True:
@@ -61,6 +61,7 @@ def _worker(
                 info = map_tensor_tree(info, func=lambda x: th.as_tensor(x))
                 if reset_info is not None:
                     reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
+                # print(f"observation['vec'].size() = {observation['vec'].size()}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           observation=observation,
                                           reward=reward,
@@ -105,7 +106,8 @@ def _worker(
             else:
                 pass
                 # print(f"`{cmd}` is not implemented in the worker"))
-            simple_commander.mark_done()
+            if cmd is not None:
+                simple_commander.mark_done()
         except EOFError:
             break
 

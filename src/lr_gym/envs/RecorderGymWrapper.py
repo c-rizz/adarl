@@ -21,7 +21,10 @@ class RecorderGymWrapper(gym.Wrapper):
                         saveBestEpisodes = False, 
                         saveFrequency_ep = 1,
                         vec_obs_key = None,
-                        overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,Any],str]] = None):
+                        overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,Any],str]] = None,
+                        overlay_text_xy = (0.05,0.05),
+                        overlay_text_height = 0.04,
+                        overlay_text_color_rgb = (20,20,255)):
         super().__init__(env)
         self._outFps = fps
         self._frameRepeat = 1
@@ -40,6 +43,9 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epStepCount = 0
         self._vec_obs_key = vec_obs_key
         self._overlay_text_func = overlay_text_func
+        self._overlay_text_xy = overlay_text_xy
+        self._overlay_text_height = overlay_text_height
+        self._overlay_text_color_bgr = overlay_text_color_rgb[2],overlay_text_color_rgb[1],overlay_text_color_rgb[0]
         self._last_saved_ep = float("-inf")
         try:
             os.makedirs(self._outFolder)
@@ -117,18 +123,19 @@ class RecorderGymWrapper(gym.Wrapper):
                     vecobs, action, rew, terminated, truncated = vec
                     text = self._overlay_text_func(vecobs, action, rew, terminated, truncated, info)
                     puttext_cv(npimg, text,
-                                origin = (int(npimg.shape[1]*0.1), int(npimg.shape[0]*0.1)),
-                                rowheight = int(npimg.shape[0]*0.05),
+                                origin = (int(npimg.shape[1]*self._overlay_text_xy[0]), int(npimg.shape[0]*self._overlay_text_xy[1])),
+                                rowheight = int(npimg.shape[0]*self._overlay_text_height),
                                 fontScale = 1.0,
-                                color = (20,20,255))
+                                color = self._overlay_text_color_bgr)
                 for _ in range(self._frameRepeat):
                     writer.write(npimg)
             writer.close()
 
     def _writeVecs(self, outFilename : str, vecs):
-        with open(outFilename+".txt", 'a') as f:
-            for vec in vecs:
-                f.write(f"{vec}\n")
+        with np.printoptions(linewidth=100000):
+            with open(outFilename+".txt", 'a') as f:
+                for vec in vecs:
+                    f.write(f"{vec}\n")
 
     def _saveLastEpisode(self, filename : str):
         self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
@@ -185,7 +192,7 @@ class RecorderGymWrapper(gym.Wrapper):
         self._vecBuffer = []
         self._infoBuffer = []
         if self._vec_obs_key is not None:
-            vecobs = obs[self._vec_obs_key]
+            vecobs = np.array(obs[self._vec_obs_key])
         else:
             vecobs = None
         self._vecBuffer.append([vecobs, None, None, None, None])

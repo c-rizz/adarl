@@ -163,6 +163,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info.update(self._ggEnv.getInfo(state))
         if self._dbg_info["ep_sub_rewards"] is None:
             sub_rewards = {}
+            # Not really setting the rewards, just populating the fields with zeros
             reward = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
             self._dbg_info["ep_sub_rewards"] = {k: v*0 for k,v in sub_rewards.items()}
             # ggLog.info(f'self._dbg_info["ep_sub_rewards"] = {self._dbg_info["ep_sub_rewards"]}')

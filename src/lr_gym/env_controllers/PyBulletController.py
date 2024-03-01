@@ -235,13 +235,14 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                 jointName = (model_name, jointInfo[1].decode("utf-8"))
                 linkName = (model_name, jointInfo[12].decode("utf-8"))
                 body_and_joint_ids = (bodyId,jointId)
-                if print_info:
-                    ggLog.info(f"  Found regular link {linkName}, with bodyid,link_id/joint_id {body_and_joint_ids}")
-                    ggLog.info(f"  DynamicsInfo: {list(zip(dynamics_infos,pybullet.getDynamicsInfo(bodyId,jointId)))}")
                 self._bodyAndJointIdToJointName[body_and_joint_ids] = jointName
                 self._jointNamesToBodyAndJointId[jointName] = body_and_joint_ids
                 self._bodyLinkIds_to_linkName[body_and_joint_ids] = linkName
                 self._linkName_to_bodyLinkIds[linkName] = body_and_joint_ids
+                if print_info:
+                    ggLog.info(f"  Found regular link {linkName}, with bodyid,link_id/joint_id {body_and_joint_ids}")
+                    ggLog.info(f"    DynamicsInfo: {list(zip(dynamics_infos,pybullet.getDynamicsInfo(bodyId,jointId)))}")
+                    ggLog.info(f"    JointInfo of {jointName} : "+str(pybullet.getJointInfo(bodyId,jointId)))
 
 
         # ggLog.info("self._bodyAndJointIdToJointName = "+str(self._bodyAndJointIdToJointName))
@@ -734,7 +735,6 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                     controlMode=pybullet.VELOCITY_CONTROL,
                                     force=0) # Disable velocity motor by setting its max torque to zero
             
-            ggLog.info("Joint "+str(j)+" dynamics info: "+str(pybullet.getDynamicsInfo(bodyId,j)))
 
         if fileFormat == "sdf":
             parsed_sdf = xmltodict.parse(Path(modelFilePath).read_text())

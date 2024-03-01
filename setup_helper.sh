@@ -19,3 +19,4 @@ git clone https://gitlab.com/crzz/lr_gym.git
 echo "Installing dependencies"
 cd ..
 pip install -r src/lr_gym/requirements.txt
+pip install -e src/lr_gym
