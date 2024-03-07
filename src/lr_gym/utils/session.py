@@ -165,6 +165,10 @@ def lr_gym_startup( main_file_path : str,
     run_info["comment"] = run_comment
     run_info["experiment_name"] = experiment_name
     run_info["run_id"] = run_id
+    run_info["start_time_monotonic"] = time.monotonic()
+    run_info["start_time"] = time.time()
+    run_info["collected_episodes"] = 0
+    run_info["collected_steps"] = 0
     faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
     logFolder = _setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment, use_wandb=use_wandb)
     ggLog.addLogFile(logFolder+"/gglog.log")

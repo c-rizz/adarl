@@ -8,7 +8,7 @@ from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 from lr_gym.env_controllers.JointPositionEnvController import JointPositionEnvController
-import lr_gym.utils.PyBulletUtils as PyBulletUtils
+from lr_gym.env_controllers.JointVelocityEnvController import JointVelocityEnvController
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
 import quaternion
@@ -18,6 +18,9 @@ from pathlib import Path
 import time
 import threading
 import os
+import pkgutil
+egl = pkgutil.get_loader('eglRenderer')
+import pybullet_data
 
 
 
@@ -50,7 +53,8 @@ import os
 #     return viewMatrix
 
 class BulletCamera:
-    def __init__(self, pose : Pose, hfov : float, width : int, height : int, near : float, far : float, link_name : Tuple[str,str], camera_name : str):
+    def __init__(self, pose : Pose, hfov : float, width : int, height : int, near : float, far : float, link_name : Tuple[str,str], camera_name : str,
+                 pybullet_controller):
         self._width = width
         self._height = height
         self._pose   = pose if pose is not None else Pose(0,0,0,0,0,0,1)
@@ -59,6 +63,7 @@ class BulletCamera:
         self._far    = far
         self.link_name = link_name
         self.camera_name = camera_name
+        self._pybullet_controller = pybullet_controller
         self._compute_matrixes()
         self.setup_light(   lightDirection = [1,1,1],
                             lightColor = [0.9,0.9,0.9],
@@ -131,7 +136,7 @@ class BulletCamera:
         self._lightSpecularCoeff = lightSpecularCoeff
 
     def get_rendering(self):
-        if threading.current_thread() != PyBulletUtils.starter_thread:
+        if threading.current_thread() != self._pybullet_controller._pybullet_thread:
              # Couldn't find info about this in the docs, but I feel like it could be an issue. And I actually did get some segfaults
             ggLog.warn(f"Rendering on thread different from startup PyBullet thread. This may be a problem.")
         width, height, rgb, depth, segmentation = pybullet.getCameraImage(  width = self._width,
@@ -148,10 +153,20 @@ class BulletCamera:
         img = np.array(rgb).reshape(height,width,4)[:,:,0:3]
         return img
 
-class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController, JointPositionEnvController):
+
+
+
+
+
+
+
+
+
+
+
+class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController, JointPositionEnvController, JointVelocityEnvController):
     """This class allows to control the execution of a PyBullet simulation.
 
-    For what is possible it is meant to be interchangeable with GazeboController.
     """
 
     def __init__(self, stepLength_sec : float = 0.004166666666,
@@ -163,7 +178,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                         global_max_velocity_position_control : float = 1,
                         joints_max_velocity_position_control : Dict[Tuple[str,str],float] = {},
                         global_max_acceleration_position_control : float = 10,
-                        joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {}):
+                        joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
+                        simulation_step = 1/960):
         """Initialize the Simulator controller.
 
 
@@ -183,6 +199,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._commanded_trajectories = {}
         self._debug_gui = debug_gui
         self._reset_detected_contacts()
+        self._simulation_step = simulation_step
 
         if real_time_factor is not None and real_time_factor>0:
             self._real_time_factor = real_time_factor
@@ -209,6 +226,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                             lightAmbientCoeff = 0.8,
                             lightDiffuseCoeff = 0.5,
                             lightSpecularCoeff = 0.1)
+
+        self._clear_commands()
 
     def _refresh_entities_ids(self, print_info = False):
         bodyIds = []
@@ -259,12 +278,6 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._startStateId = pybullet.saveState()
         self._simTime = 0
 
-        if self._stepLength_sec % pybullet.getPhysicsEngineParameters()["fixedTimeStep"] > 0.00001:
-            ggLog.warn(f"PyBulletController: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {pybullet.getPhysicsEngineParameters()['fixedTimeStep']})")
-
-        if self._stepLength_sec<pybullet.getPhysicsEngineParameters()["fixedTimeStep"]:
-            pybullet.setTimeStep(self._stepLength_sec)
-
 
     def _getJointName(self, bodyId, jointIndex):
         jointName = self._bodyAndJointIdToJointName[(bodyId,jointIndex)]
@@ -310,22 +323,22 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         """
 
-        self._reset_detected_contacts()
-        #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         stepLength = self.freerun(self._stepLength_sec)
-        self._last_step_commanded_torques_by_name = self._commanded_torques_by_name
-        self._clear_commands()
+        
         return stepLength
 
     def freerun(self, duration_sec: float):
         tf0 = time.monotonic()
+
+        self._reset_detected_contacts()
+        #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
+        self._last_step_commanded_torques = []
+
         # ggLog.info(f"PyBullet doing {duration_sec}/{self._bullet_stepLength_sec}={simsteps} steps")
         stepping_wtime = 0
         t0 = self._simTime
         while self._simTime-t0 < duration_sec:
-            self._apply_commanded_torques()
-            self._apply_commanded_velocities()
-            self._apply_commanded_positions()
+            self._apply_controls()
             wtps = time.monotonic()
             pybullet.stepSimulation()
             self._read_new_contacts()
@@ -340,6 +353,17 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         self._stepping_wtime_since_build += stepping_wtime
         self._stepping_stime_since_build += self._simTime - t0
         self._freerun_time_since_build += time.monotonic()-tf0
+
+        self._last_step_commanded_torques_by_name = {}
+        for jn, t in self._last_step_commanded_torques:
+            # ggLog.info(f"self._last_step_commanded_torques: {jn}, {t}")
+            if jn not in self._last_step_commanded_torques_by_name:
+                self._last_step_commanded_torques_by_name[jn] = []
+            self._last_step_commanded_torques_by_name[jn].append(t)
+        # ggLog.info(f"self._last_step_commanded_torques_by_name: {self._last_step_commanded_torques_by_name}")
+        self._last_step_commanded_torques_by_name = {jn:sum(torque_list)/len(torque_list) for jn, torque_list in self._last_step_commanded_torques_by_name.items()}    
+        self._last_step_commanded_torques_by_name.update(self._commanded_torques_by_name) # direct torque commands override other applied torques
+        self._clear_commands()
         return self._simTime-t0
     
     def _clear_commands(self):
@@ -420,10 +444,11 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return np.array(trajectory_tpva, dtype = np.float64)
             
 
-        
 
-        
-        
+    def _apply_controls(self):
+        self._apply_commanded_torques()
+        self._apply_commanded_velocities()
+        self._apply_commanded_positions()
 
     def _apply_commanded_torques(self):
         for bodyId in self._commanded_torques_by_body.keys():
@@ -685,16 +710,45 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return self._simTime
 
     def build_scenario(self, file_path, format = "urdf"):
-        PyBulletUtils.startupPlaneWorld(debug_gui = self._debug_gui)
+        if self._debug_gui:
+            self._client_id = pybullet.connect(pybullet.GUI)
+            pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 1)
+        else:
+            self._client_id = pybullet.connect(pybullet.DIRECT)
+            plugin = pybullet.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
+            pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 0)
+        self._pybullet_thread = threading.current_thread()
+        # ggLog.info("Started pybullet")
+        pybullet.setGravity(0, 0, -9.8)
+        # p.setDefaultContactERP(0.9)
+        #print("self.numSolverIterations=",self.numSolverIterations)
+        pybullet.setPhysicsEngineParameter( fixedTimeStep=self._simulation_step, # Originally it was 1/240, with numSubSteps = 4
+                                    numSolverIterations=5,
+                                    numSubSteps=1, # using substeps breakks contacts detection (as the funciton only returns the last substep information)
+                                    enableFileCaching=0)
+
+        ggLog.info("Physics engine parameters:"+str(pybullet.getPhysicsEngineParameters()))
+
+        pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
+        planeObjId = pybullet.loadURDF("plane.urdf")
+        pybullet.changeDynamics(planeObjId, -1, lateralFriction=0.8, restitution=0.5)
         lr_gym.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
         self._bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
+
+
+        if self._stepLength_sec % pybullet.getPhysicsEngineParameters()["fixedTimeStep"] > 0.00001:
+            ggLog.warn(f"PyBulletController: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {pybullet.getPhysicsEngineParameters()['fixedTimeStep']})")
+
+        if self._stepLength_sec<pybullet.getPhysicsEngineParameters()["fixedTimeStep"]:
+            raise RuntimeError(f"Requested stepLength_sec {self._stepLength_sec} is less than requested simulation_step {self._simulation_step}")
         
 
     def destroy_scenario(self):
         self._modelName_to_bodyId = {}
-        PyBulletUtils.destroySimpleEnv()
+        pybullet.resetSimulation()
+        pybullet.disconnect(self._client_id)
 
     def _register_camera(self, camera : BulletCamera):
         self._cameras[camera.camera_name] = camera
@@ -767,7 +821,8 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
                                                                near =   float(sensor["camera"]["clip"]["near"]),
                                                                far =    float(sensor["camera"]["clip"]["far"]),
                                                                link_name=(model_name, link_name),
-                                                               camera_name=sensor["@name"]))
+                                                               camera_name=sensor["@name"],
+                                                               pybullet_controller=self))
 
         if compiled_file_path is not None:
             Path(compiled_file_path).unlink() # delete the compiled file
@@ -794,7 +849,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         return model_name
 
     def delete_model(self, model_name: str):
-        PyBulletUtils.unloadModel(self._modelName_to_bodyId[model_name])
+        pybullet.removeBody(self._modelName_to_bodyId[model_name])
         self._modelName_to_bodyId.pop(model_name)
         self._refresh_entities_ids()
 

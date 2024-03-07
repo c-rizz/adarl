@@ -132,12 +132,32 @@ class SigintHaltCallback(BaseCallback):
 
 
 class PrintLrRunInfo(BaseCallback):
+
+    def __init__(self, verbose: int = 0, print_freq_ep = 1):
+        super().__init__(verbose=verbose)
+        self._print_freq_ep = print_freq_ep
+        self._episode_counter = 0
+        self._step_counter = 0
+        self._last_print_ep = -1
+
+
     def _on_step(self):
         return True
     
+    def _on_step(self):
+        self._step_counter += len(self.locals["dones"])
+        dones_sum = sum(self.locals["dones"])
+        if dones_sum:
+            self._episode_counter += dones_sum
+        lr_gym.utils.session.run_info["collected_episodes"] = self._episode_counter
+        lr_gym.utils.session.run_info["collected_steps"] = self._episode_counter
+        return True
+    
     def _on_rollout_end(self) -> bool:
-        i = lr_gym.utils.session.run_info
-        ggLog.info(f"{i['experiment_name']}:{i['run_id']} '{i['comment']}'")
+        if self._episode_counter - self._last_print_ep >=self._print_freq_ep:
+            self._last_print_ep = self._episode_counter
+            i = lr_gym.utils.session.run_info
+            ggLog.info(f"{i['experiment_name']}:{i['run_id']} '{i['comment']}' eps={self._episode_counter} stps={self._step_counter}")
         return True
 
     

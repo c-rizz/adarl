@@ -69,14 +69,22 @@ class VecEnvLogger(VecEnvWrapper):
                         self._logs_batch[k].append(logs[k])
                     self._logs_batch_size +=1
             if self._logs_batch_size >= self.num_envs:
+                new_elems = {}
                 for k,v in self._logs_batch.items():
                     # ggLog.info(f"k = {k}")
                     if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating, th.Tensor)):
                         self._logs_batch[k] = sum(v)/len(v)
+                        if isinstance(v[0],(int, float, bool, np.integer, np.floating)) or v[0].numel()==1:  # only if v has just on element
+                            new_elems[k.replace("VecEnvLogger/","VecEnvLogger/max.")] = max(v)
+                            new_elems[k.replace("VecEnvLogger/","VecEnvLogger/min.")] = min(v)
+                self._logs_batch.update(new_elems)
                 wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
                 # ggLog.info(f"wdblog = {wdblog}")
                 wandb_log(lambda: wdblog)
-                ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} success={self._logs_batch.get('VecEnvLogger/success',0):.2f} reward={self._logs_batch.get('VecEnvLogger/ep_reward',0)}")
+                ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
+                           f" r={self._logs_batch.get('VecEnvLogger/ep_reward',float('nan')):08.8g}"+
+                           f" min_r={self._logs_batch.get('VecEnvLogger/min.ep_reward',float('nan')):08.8g}"+
+                           f" max_r={self._logs_batch.get('VecEnvLogger/max.ep_reward',float('nan')):08.8g}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
         return obs, rewards, dones, infos

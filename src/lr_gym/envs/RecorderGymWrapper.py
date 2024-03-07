@@ -6,8 +6,12 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
 from vidgear.gears import WriteGear
 import math
+import lr_gym.utils.session
 from lr_gym.utils.utils import puttext_cv
 from typing import Callable, Optional, Any
+import h5py
+import lzma
+import pickle
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.
@@ -24,15 +28,17 @@ class RecorderGymWrapper(gym.Wrapper):
                         overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,Any],str]] = None,
                         overlay_text_xy = (0.05,0.05),
                         overlay_text_height = 0.04,
-                        overlay_text_color_rgb = (20,20,255)):
+                        overlay_text_color_rgb = (20,20,255),
+                        use_global_ep_count = True):
         super().__init__(env)
+        self._use_global_ep_count = use_global_ep_count
         self._outFps = fps
         self._frameRepeat = 1
         if fps < 30:
             self._frameRepeat = int(math.ceil(30/fps))
             self._outFps = fps*self._frameRepeat
         self._frameBuffer = []
-        self._vecBuffer = []
+        self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
         self._episodeCounter = 0
         self._outFolder = outFolder
@@ -47,6 +53,8 @@ class RecorderGymWrapper(gym.Wrapper):
         self._overlay_text_height = overlay_text_height
         self._overlay_text_color_bgr = overlay_text_color_rgb[2],overlay_text_color_rgb[1],overlay_text_color_rgb[0]
         self._last_saved_ep = float("-inf")
+        self._saved_eps_count = 0
+        self._saved_best_eps_count = 0
         try:
             os.makedirs(self._outFolder)
         except FileExistsError:
@@ -57,7 +65,7 @@ class RecorderGymWrapper(gym.Wrapper):
             pass
 
     def step(self, action):
-        obs, rew, terminated, truncated, info =  self.env.step(action)
+        obs, reward, terminated, truncated, info =  self.env.step(action)
         if self._may_episode_be_saved(self._episodeCounter):
             img = self.render()
             if img is not None:
@@ -69,19 +77,25 @@ class RecorderGymWrapper(gym.Wrapper):
             else:
                 vecobs = None
             action = np.array(action)
-            self._vecBuffer.append([vecobs, action, rew, terminated, truncated])
+            self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
             self._infoBuffer.append(info)
             # else:
             #     self._vecBuffer.append([obs, rew, done, info])
-        self._epReward += rew
+        self._epReward += reward
         self._epStepCount += 1
-        return obs, rew, terminated, truncated, info
+        return obs, reward, terminated, truncated, info
 
+    def _update_vecbuffer(self, vecobs, action, reward, terminated, truncated):
+        self._vecBuffer["vecobs"].append(vecobs)
+        if action is not None: self._vecBuffer["action"].append(action)
+        if reward is not None: self._vecBuffer["reward"].append(reward)
+        if terminated is not None: self._vecBuffer["terminated"].append(terminated)
+        if truncated is not None: self._vecBuffer["truncated"].append(truncated)
 
 
     def _writeVideo(self, outFilename : str, imgs, vecs, infos):
         if len(imgs)>0:
-            ggLog.info(f"RecorderGymWrapper saving {len(imgs)} frames video to "+outFilename)
+            ggLog.info(f"RecorderGymWrapper saving {len(imgs)} frames: "+outFilename)
             #outFile = self._outVideoFile+str(self._episodeCounter).zfill(9)
             if not outFilename.endswith(".mp4"):
                 outFilename+=".mp4"
@@ -114,14 +128,21 @@ class RecorderGymWrapper(gym.Wrapper):
             writer = WriteGear(output=outFilename, logging=False, **output_params)
             for i in range(len(imgs)):
                 npimg = imgs[i]
-                vec, info = vecs[i], infos[i]
+                info = infos[i]
                 if npimg is None:
                     npimg = np.zeros_like(goodImg)
                 npimg = cv2.resize(npimg,dsize=out_resolution_wh,interpolation=cv2.INTER_NEAREST)
                 npimg = self._preproc_frame(npimg)
                 if self._overlay_text_func is not None:
-                    vecobs, action, rew, terminated, truncated = vec
-                    text = self._overlay_text_func(vecobs, action, rew, terminated, truncated, info)
+                    vecobs = vecs["vecobs"][i]
+                    if i == 0:
+                        action, reward, terminated, truncated = None, None, None, None
+                    else:
+                        action = vecs["action"][i-1]
+                        reward = vecs["reward"][i-1]
+                        terminated = vecs["terminated"][i-1]
+                        truncated = vecs["truncated"][i-1]
+                    text = self._overlay_text_func(vecobs, action, reward, terminated, truncated, info)
                     puttext_cv(npimg, text,
                                 origin = (int(npimg.shape[1]*self._overlay_text_xy[0]), int(npimg.shape[0]*self._overlay_text_xy[1])),
                                 rowheight = int(npimg.shape[0]*self._overlay_text_height),
@@ -130,17 +151,23 @@ class RecorderGymWrapper(gym.Wrapper):
                 for _ in range(self._frameRepeat):
                     writer.write(npimg)
             writer.close()
+        
+    def _write_infobuffer(self, out_filename, infobuffer):
+        out_filename += ".xz"
+        with lzma.open(out_filename, "wb") as f:
+            pickle.dump(infobuffer, f)
+        
+    def _write_vecbuffer(self, out_filename, vecbuffer):
+        out_filename += ".hdf5"
+        with h5py.File(out_filename, "w") as f:
+            for k,v in vecbuffer.items():
+                f.create_dataset(k, data=v)
 
-    def _writeVecs(self, outFilename : str, vecs):
-        with np.printoptions(linewidth=100000):
-            with open(outFilename+".txt", 'a') as f:
-                for vec in vecs:
-                    f.write(f"{vec}\n")
 
     def _saveLastEpisode(self, filename : str):
         self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
-        self._writeVecs(filename,self._vecBuffer)
-        self._writeVecs(filename+"_info",self._infoBuffer)
+        self._write_vecbuffer(filename,self._vecBuffer)
+        self._write_infobuffer(filename+"_info",self._infoBuffer)
         
 
     def _preproc_frame(self, img_hwc):
@@ -167,17 +194,20 @@ class RecorderGymWrapper(gym.Wrapper):
         return img_hwc
 
     def _may_episode_be_saved(self, ep_count):
-        return self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0)
+        return self._saveFrequency_ep==1 or (self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0))
 
     def reset(self, **kwargs):
         if self._epStepCount > 0:
+            ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
             if self._epReward > self._bestReward:
                 self._bestReward = self._epReward
                 if self._saveBestEpisodes:
-                    self._saveLastEpisode(self._outFolder+"/best/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")            
-            if self._saveFrequency_ep>0 and self._episodeCounter - self._last_saved_ep >= self._saveFrequency_ep:
-                self._saveLastEpisode(self._outFolder+"/ep_"+(f"{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
-                self._last_saved_ep = self._episodeCounter
+                    self._saveLastEpisode(f"{self._outFolder}/best/ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward}")            
+                    self._saved_best_eps_count += 1
+            if self._saveFrequency_ep==1 or (self._saveFrequency_ep>0 and ep_count - self._last_saved_ep >= self._saveFrequency_ep):
+                self._saveLastEpisode(f"{self._outFolder}/ep_{self._saved_eps_count:09d}_{ep_count:09d}_{self._epReward}")
+                self._last_saved_ep = ep_count
+                self._saved_eps_count += 1
 
 
         obs, info = self.env.reset(**kwargs)
@@ -189,18 +219,17 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epReward = 0.0
         self._epStepCount = 0        
         self._frameBuffer = []
-        self._vecBuffer = []
+        self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
         if self._vec_obs_key is not None:
             vecobs = np.array(obs[self._vec_obs_key])
         else:
             vecobs = None
-        self._vecBuffer.append([vecobs, None, None, None, None])
+        self._update_vecbuffer(vecobs, None, None, None, None)
         self._infoBuffer.append(info)
         
-        # else:
-        #     self._vecBuffer.append([obs, None, None, None])
-        if self._may_episode_be_saved(self._episodeCounter):
+        ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
+        if self._may_episode_be_saved(ep_count):
             img = self.render()
             if img is not None:
                 self._frameBuffer.append(img)
