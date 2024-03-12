@@ -4,13 +4,17 @@ import numpy as np
 
 import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
+import lr_gym.utils.utils
+from lr_gym.utils.dbg.web_video_streamer import VideoStreamerPublisher
 
 class DbgImg:
-    _publishers = {}
+    _ros_publishers = {}
     _initialized = False
     def init(self):
         self._initialized = True
-        self._publishers = {}
+        self._ros_publishers = {}
+        self._videostream_publisher : VideoStreamerPublisher = None
+        self._web_dbg = True
         try:
             from cv_bridge import CvBridge
             self._cv_bridge = CvBridge()
@@ -18,58 +22,59 @@ class DbgImg:
             import sensor_msgs.msg
             self._has_ros = True
         except ModuleNotFoundError as e:
-            ggLog.warn(f"ROS is not present , willnot publish debu images. exception = {e}")
+            ggLog.warn(f"ROS is not present , will not publish debug images. exception = {e}")
             self._has_ros = False
+        if self._web_dbg:
+            self._videostream_publisher = VideoStreamerPublisher()
+
 
     def _addDbgStream(self, streamName : str):
         import rospy
         import sensor_msgs.msg
         if not self._initialized:
             self.init()
-        pub = rospy.Publisher(streamName,sensor_msgs.msg.Image, queue_size = 10)
-        self._publishers[streamName] = pub
+        if self._has_ros:
+            pub = rospy.Publisher(streamName,sensor_msgs.msg.Image, queue_size = 10)
+            self._ros_publishers[streamName] = pub
 
     def _removeDbgStream(self, streamName : str):
         if not self._initialized:
             self.init()
-        self._publishers.pop(streamName, None)
+        if self._has_ros:
+            self._ros_publishers.pop(streamName, None)
 
     def num_subscribers(self, streamName : str) -> int:
-        if streamName not in self._publishers:
-            self._addDbgStream(streamName)
-        return self._publishers[streamName].get_num_connections()
+        s = 0
+        if self._has_ros:
+            if streamName not in self._ros_publishers:
+                self._addDbgStream(streamName)
+            s += self._ros_publishers[streamName].get_num_connections()
+        if self._web_dbg:
+            s += self._videostream_publisher.num_subscribers()
+        return s
 
     def publishDbgImg(self, streamName : str,
-                            img : np.ndarray = None,
                             encoding : str = "rgb8",
                             force_publish : bool =False,
                             img_callback : Callable[[], np.ndarray] = None):
         try:
             if not self._initialized:
                 self.init()
+            if self.num_subscribers(streamName) <= 0 and not force_publish:
+                return
+            img = img_callback()
+            if img is None:
+                ggLog.info("dbg_img.publishDbgImg(): No image provided, will not publish")
+            img = lr_gym.utils.utils.imgToCvIntRgb(img_chw_rgb=img)
+            
             if self._has_ros:
-                if streamName not in self._publishers:
-                    self._addDbgStream(streamName)
-
-                if self.num_subscribers(streamName) > 0 or force_publish:
-
-                    if img is not None:
-                        ggLog.info("dbg_img.publishDbgImg(): Please do not use the img argument, use img_callback")
-                    elif img_callback is not None:
-                        img = img_callback()
-                    else:
-                        ggLog.info("dbg_img.publishDbgImg(): No image provided, will not publish")
-
-                    if encoding == "32FC1" or img.dtype == np.float32:
-                        t = np.uint8(img*255)
-                        pubImg = np.dstack([t,t,t])
-                        pubEnc = "rgb8"
-                    else:
-                        pubImg = img
-                        pubEnc = encoding
-                    rosMsg = self._cv_bridge.cv2_to_imgmsg(pubImg, "passthrough")
-                    rosMsg.encoding = pubEnc
-                    self._publishers[streamName].publish(rosMsg)
+                if self._ros_publishers[streamName].get_num_connections()>0 or force_publish:                    
+                    rosMsg = self._cv_bridge.cv2_to_imgmsg(img, "passthrough")
+                    rosMsg.encoding = "rgb8"
+                    self._ros_publishers[streamName].publish(rosMsg)
+            
+            if self._web_dbg:
+                self._videostream_publisher.pub(stream_name=streamName, npimage=img)
         except Exception as e:
             ggLog.error("Ignored exception "+str(e)+"\n"+traceback.format_exc())
 

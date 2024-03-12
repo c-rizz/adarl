@@ -168,7 +168,7 @@ class BaseEnv(ABC):
         """
         raise NotImplementedError()
 
-    def initializeEpisode(self) -> None:
+    def initializeEpisode(self, options = {}) -> None:
         """To be implemented in subclass.
 
         This method is called by the reset method to allow the sub-class to reset environment-specific details
@@ -189,7 +189,7 @@ class BaseEnv(ABC):
         return
 
     @abstractmethod
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         """To be implemented in subclass.
 
         This method is called by the reset method to perform the actual reset of the environment to its initial state

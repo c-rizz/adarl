@@ -691,3 +691,35 @@ def quat_angle(q_wxyz : th.Tensor) -> th.Tensor:
         _description_
     """
     return 2*th.atan2(th.norm(q_wxyz[1:4]),q_wxyz[0])
+
+
+def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_val = 1) -> np.ndarray:
+    if isinstance(img_chw_rgb, np.ndarray):
+        imgTorch = th.as_tensor(img_chw_rgb)
+    else:
+        imgTorch = img_chw_rgb
+    if len(imgTorch.size())==2:
+        imgTorch = imgTorch.unsqueeze(0)
+    if imgTorch.size()[0] not in [1,3,4]:
+        imgTorch = imgTorch.permute(2,0,1) # hwc to chw
+
+    channels = imgTorch.size()[0]
+    if channels == 1:
+        imgTorch = imgTorch.repeat((3,1,1))
+    elif channels == 3:
+        imgTorch = imgTorch
+    else:
+        raise AttributeError(f"Unsupported image shape {imgTorch.size()}")
+    
+    if imgTorch.dtype == th.float32:
+        imgTorch = (imgTorch + (-min_val))/(max_val-min_val) * 255
+        imgTorch = imgTorch.to(dtype=th.uint8)
+    elif imgTorch.dtype == th.uint8:
+        pass
+    else:
+        raise AttributeError(f"Unsupported image dtype {imgTorch.dtype}")
+
+    imgTorch = imgTorch[[2,1,0]] # rgb to bgr
+    imgTorch = imgTorch.permute(1,2,0)
+    imgCv = imgTorch.cpu().numpy()
+    return imgCv

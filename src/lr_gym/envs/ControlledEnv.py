@@ -84,11 +84,11 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
 
 
 
-    def performReset(self):
-        super().performReset()
+    def performReset(self, options = {}):
+        super().performReset(options)
         self._environmentController.resetWorld()
         self._estimatedSimTime = 0.0
-        self.initializeEpisode()
+        self.initializeEpisode(options)
 
 
     def getSimTimeFromEpStart(self):

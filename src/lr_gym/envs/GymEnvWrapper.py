@@ -339,8 +339,6 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             the initial observation.
 
         """
-        if len(options) > 0:
-            raise NotImplementedError()
         if seed is not None:
             self._ggEnv.seed(seed)
         self._resetCount += 1
@@ -375,7 +373,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._lastPreResetTime = time.monotonic()
         #reset simulation state
-        self._ggEnv.performReset()
+        self._ggEnv.performReset(options)
         self._lastPostResetTime = time.monotonic()
 
         if self._framesCounter!=0 and self._cumulativeImagesAge!=0:
