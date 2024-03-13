@@ -17,10 +17,11 @@ tensorboard==2.14.0
 torchvision==0.15.1
 vidgear==0.3.0
 wandb==0.16.1
-xacro==1.13.3
+xacro @ git+https://github.com/c-rizz/xacro_standalone
 xmltodict==0.13.0
 brax==0.9.4
 mujoco==3.1.1
 mujoco_mjx==3.1.1
 jax[cuda12_pip]
+h5py==3.10.0
 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
