@@ -88,7 +88,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._resetCount = 0
         self._init_time = time.monotonic()
         self._totalSteps = 0
-        self._first_step_finish_time = -1
+        self._first_step_start_time = -1
         self._last_step_finish_time = -1
 
 
@@ -117,10 +117,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             resetWallDuration = self._lastPostResetTime-self._lastPreResetTime
             wallFps = self._framesCounter/totEpisodeWallDuration
             wall_fps_until_done = self._framesCounter/epWallDurationUntilDone
-            ratio_time_spent_stepping_until_done = self._timeSpentStepping_ep/epWallDurationUntilDone
+            wall_fps_only_stepping = self._framesCounter/self._timeSpentStepping_ep
             ratio_time_spent_stepping = self._timeSpentStepping_ep/totEpisodeWallDuration
-            wall_fps_first_to_last = self._framesCounter/(self._last_step_finish_time - self._first_step_finish_time)
-            ratio_time_spent_stepping_first_to_last = self._timeSpentStepping_ep/(self._last_step_finish_time - self._first_step_finish_time)
+            wall_fps_first_to_last = self._framesCounter/(self._last_step_finish_time - self._first_step_start_time)
+            ratio_time_spent_stepping_first_to_last = self._timeSpentStepping_ep/(self._last_step_finish_time - self._first_step_start_time)
             state = self._getStateCached()
         else:
             avgSimTimeStepDuration = float("NaN")
@@ -128,7 +128,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             resetWallDuration = float("NaN")
             wallFps = float("NaN")
             wall_fps_until_done = float("NaN")
-            ratio_time_spent_stepping_until_done = 0
+            wall_fps_only_stepping = float("nan")
             ratio_time_spent_stepping = 0
             wall_fps_first_to_last = float("NaN")
             ratio_time_spent_stepping_first_to_last = 0
@@ -148,7 +148,6 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info["wall_fps"] = wallFps
         self._dbg_info["wall_fps_until_done"] = wall_fps_until_done
         self._dbg_info["reset_count"] = self._resetCount
-        self._dbg_info["ratio_time_spent_stepping_until_done"] = ratio_time_spent_stepping_until_done
         self._dbg_info["ratio_time_spent_stepping"] = ratio_time_spent_stepping
         self._dbg_info["time_from_start"] = time.monotonic() - self._init_time
         self._dbg_info["total_steps"] = self._totalSteps
@@ -159,6 +158,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info["success"] = self._last_ep_succeded
         self._dbg_info["seed"] = self._ggEnv.get_seed()
         self._dbg_info["alltime_stepping_time"] = self._alltime_stepping_time
+        self._dbg_info["wall_fps_only_stepping"] = wall_fps_only_stepping
 
         self._dbg_info.update(self._ggEnv.getInfo(state))
         if self._dbg_info["ep_sub_rewards"] is None:
@@ -256,6 +256,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         #ggLog.info("step()")
 
         t0 = time.monotonic()
+        if self._framesCounter==0:
+            self._first_step_start_time = t0
+            self._last_step_finish_time = -1 # reset it
         if self._terminated:
             if self._verbose:
                 ggLog.warn("Episode already finished")
@@ -316,10 +319,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         stepDuration = time.monotonic() - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)
         self._timeSpentStepping_ep += stepDuration
-        if self._framesCounter==1:
-            self._first_step_finish_time = time.monotonic()
-            self._last_step_finish_time = -1
-        else:
+        if self._framesCounter>1:
             self._last_step_finish_time = time.monotonic()
         #ggLog.info("stepped")
         self._alltime_stepping_time += time.monotonic() - t0

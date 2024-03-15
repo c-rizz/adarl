@@ -128,10 +128,10 @@ class AverageKeeper:
 
     def reset(self):
         self._buffer = collections.deque(maxlen=self._bufferSize)
-        self._avg = 0
-        self._all_time_sum = 0
-        self._all_time_count = 0
-        self._all_time_avg = 0
+        self._avg = 0.0
+        self._all_time_sum = 0.0
+        self._all_time_count = 0.0
+        self._all_time_avg = 0.0
 
     def __enter__(self):
         self._t0 = time.monotonic()

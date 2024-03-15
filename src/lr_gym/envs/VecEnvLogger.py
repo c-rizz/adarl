@@ -60,7 +60,6 @@ class VecEnvLogger(VecEnvWrapper):
                             if type(v) is bool:
                                 v = int(v)
                             logs[k] = v
-                    # ggLog.info(f"logging {logs}")
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
                     logs["vec_ep_count"] = self._tot_ep_count # for compatibility, to be removed
                     for k in logs.keys():
