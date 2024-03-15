@@ -18,6 +18,8 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
 import torch as th
+import subprocess
+import re
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -723,3 +725,11 @@ def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_
     imgTorch = imgTorch.permute(1,2,0)
     imgCv = imgTorch.cpu().numpy()
     return imgCv
+
+def cpuinfo():
+    command = "cat /proc/cpuinfo"
+    all_info = subprocess.check_output(command, shell=True).decode().strip()
+    for line in all_info.split("\n"):
+        if "model name" in line:
+            return re.sub( ".*model name.*:", "", line,1)
+    return None

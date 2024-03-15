@@ -70,21 +70,37 @@ def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[s
     createSymlink(src = folderName, dst = script_out_folder+"/latest")
     shutil.copyfile(file, folderName+"/main_script")
     if currentframe is not None:
-        args, _, _, values = inspect.getargvalues(currentframe)
+        args, _, _, config = inspect.getargvalues(currentframe)
     else:
-        args, values = ([],{})
+        args, config = ([],{})
+
+    has_torch = False
+    cuda_available = False
+    cuda_device_name = None
+    try:
+        import torch as th
+        cuda_available = th.cuda.is_available() 
+        if cuda_available:
+            cuda_device_name = th.cuda.get_device_name()
+    except ImportError as e:
+        pass
+    config["has_torch"] = has_torch
+    config["cuda_available"] = cuda_available
+    config["cuda_device_name"] = cuda_device_name
+    config["cpu_name"] = lr_gym.utils.utils.cpuinfo()
+    
+
     # inputargs = [(i, values[i]) for i in args]
     # with open(folderName+"/input_args.txt", "w") as input_args_file:
     #     print(str(inputargs), file=input_args_file)
     args_yaml_file = folderName+"/input_args.yaml"
     with open(args_yaml_file, "w") as input_args_yamlfile:
-        yaml.dump(values,input_args_yamlfile, default_flow_style=None)
-
+        yaml.dump(config,input_args_yamlfile, default_flow_style=None)
     # ggLog.info(f"values = {values}")
 
-    if "modelFile" in values:
-        if values["modelFile"] is not None and type(values["modelFile"]) == str:
-            model_dir = os.path.dirname(values["modelFile"])
+    if "modelFile" in config:
+        if config["modelFile"] is not None and type(config["modelFile"]) == str:
+            model_dir = os.path.dirname(config["modelFile"])
             if os.path.isdir(model_dir):
                 parent = Path(model_dir).parent.absolute()
                 diff = subprocess.run(['diff', args_yaml_file, f"{parent}/input_args.yaml"], stdout=subprocess.PIPE).stdout.decode('utf-8')
@@ -100,8 +116,8 @@ def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[s
         try:
             ggLog.info(f"Staring run with experiment name '{experiment_name}', run id {run_id}")
             wandb.init( project=experiment_name,
-                        config = values,
-                        name = run_id,
+                        config = config,
+                        name = f"{run_id}_{comment.strip().replace(' ','_')}",
                         monitor_gym = False, # Do not save openai gym videos
                         save_code = True, # Save run code
                         sync_tensorboard = True, # Save tensorboard stuff,

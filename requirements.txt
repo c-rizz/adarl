@@ -17,7 +17,7 @@ tensorboard==2.14.0
 torchvision==0.15.1
 vidgear==0.3.0
 wandb==0.16.1
-xacro @ git+https://github.com/c-rizz/xacro_standalone
+xacro @ git+https://github.com/ros/xacro.git@ros2
 xmltodict==0.13.0
 brax==0.9.4
 mujoco==3.1.1
