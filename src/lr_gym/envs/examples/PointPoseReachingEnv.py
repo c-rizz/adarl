@@ -232,7 +232,7 @@ class PointPoseReachingEnv(BaseEnv):
         return
 
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         super().performReset()
         self._currentPosition = self._startPose.position
         self._currentQuat = self._startPose.orientation

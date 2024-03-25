@@ -282,7 +282,7 @@ class HopperEnv(ControlledEnv):
 
 
 
-    def performReset(self):
+    def performReset(self, options = {}):
         super().performReset()
         self._tot_episodes += 1
         self._success = False

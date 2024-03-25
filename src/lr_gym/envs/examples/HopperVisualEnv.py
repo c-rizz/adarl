@@ -212,7 +212,7 @@ class HopperVisualEnv(HopperEnv):
 
 
 
-    def performReset(self):
+    def performReset(self, options = {}):
         #ggLog.info("PerformReset")
         super().performReset()
         self._environmentController.resetWorld()

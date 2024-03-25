@@ -243,7 +243,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         self._rebuild_cartpole()
 
 
-    def performReset(self):
+    def performReset(self, options = {}):
         #ggLog.info("PerformReset")
         if self._first_reset:
             self._build_entities()

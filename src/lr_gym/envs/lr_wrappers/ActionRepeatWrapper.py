@@ -26,7 +26,7 @@ class ActionRepeatWrapper(LrWrapper):
         self._previousState = self._lastState
         self._lastState = state
 
-    def performReset(self):
+    def performReset(self, options = {}):
 
         self.env.performReset()
 

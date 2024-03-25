@@ -14,14 +14,16 @@ quaternionic==1.0.5
 rospkg==1.3.0
 stable-baselines3==2.2.1
 tensorboard==2.14.0
-torchvision==0.15.1
+torch==2.2.1
+torchvision==0.17.1
 vidgear==0.3.0
 wandb==0.16.1
-xacro @ git+https://github.com/ros/xacro.git@ros2
+xacro @ git+https://github.com/c-rizz/xacro_standalone.git@ros2
 xmltodict==0.13.0
 brax==0.9.4
 mujoco==3.1.1
 mujoco_mjx==3.1.1
 jax[cuda12_pip]
 h5py==3.10.0
+pzmq==25.1.2
 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html

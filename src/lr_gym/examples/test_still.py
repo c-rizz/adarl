@@ -2,7 +2,7 @@
 
 import time
 import argparse
-import gym
+import gymnasium
 import importlib
 import lr_gym_ros
 import lr_gym.utils.dbg.dbg_img as dbg_img
@@ -21,7 +21,7 @@ def buildNoAction(env):
                 newa[i] = np.zeros(shape=action[i].shape, dtype=action[i].dtype)
     return newa
 
-def runRandom(env : gym.Env, numEpisodes : int, pubRender : bool, fps : float) -> None:
+def runRandom(env : gymnasium.Env, numEpisodes : int, pubRender : bool, fps : float) -> None:
     """Run the provided environment with a random agent."""
 
     #setup seeds for reproducibility

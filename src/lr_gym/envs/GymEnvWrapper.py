@@ -132,7 +132,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             ratio_time_spent_stepping = 0
             wall_fps_first_to_last = float("NaN")
             ratio_time_spent_stepping_first_to_last = 0
-            state = info = map_tensor_tree(self._ggEnv.state_space.sample(), func=lambda x: th.as_tensor(x))
+            state = self._ggEnv.state_space.sample()
+            state = map_tensor_tree(state, func=lambda x: th.as_tensor(x))
 
         self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
         self._dbg_info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
@@ -164,7 +165,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if self._dbg_info["ep_sub_rewards"] is None:
             sub_rewards = {}
             # Not really setting the rewards, just populating the fields with zeros
-            reward = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
+            try:
+                _ = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
+            except ValueError:
+                pass
             self._dbg_info["ep_sub_rewards"] = {k: v*0 for k,v in sub_rewards.items()}
             # ggLog.info(f'self._dbg_info["ep_sub_rewards"] = {self._dbg_info["ep_sub_rewards"]}')
 

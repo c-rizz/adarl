@@ -2,7 +2,7 @@
 
 import time
 import argparse
-import gym
+import gymnasium
 import os
 
 from stable_baselines.sac.policies import MlpPolicy
@@ -17,7 +17,7 @@ from lr_gym.envs.panda.PandaEffortKeepPoseEnv import PandaEffortKeepPoseEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 from stable_baselines.common.callbacks import CheckpointCallback
 
-def run(env : gym.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
+def run(env : gymnasium.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
     #frames = []
     #do an average over a bunch of episodes
     episodesRan = 0
@@ -39,7 +39,7 @@ def run(env : gym.Env, model : stable_baselines.common.base_class.BaseRLModel, n
         totDuration = time.time() - t0
         print("Ran for "+str(totDuration)+"s \t Reward: "+str(episodeReward))
 
-def buildModel(random_seed : int, env : gym.Env, folderName : str):
+def buildModel(random_seed : int, env : gymnasium.Env, folderName : str):
     n_actions = env.action_space.shape[-1]
     action_noise = NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions))
 

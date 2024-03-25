@@ -47,6 +47,10 @@ def map_tensor_tree(src_tree : dict | th.Tensor, func):
         for k in src_tree.keys():
             r[k] = map_tensor_tree(src_tree[k], func = func)
         return r
+    elif isinstance(src_tree, tuple):
+        return tuple([map_tensor_tree(e, func = func) for e in src_tree])
+    elif isinstance(src_tree, list):
+        return [map_tensor_tree(e, func = func) for e in src_tree]
     else:
         return func(src_tree)
 
@@ -122,10 +126,12 @@ class SimpleCommander():
             self._cmds_done_count.value += 1
             self._cmd_done_cond.notify_all()
 
-    def wait_done(self):
+    def wait_done(self, timeout = None):
         done = False
+        if timeout is None:
+            timeout = self._timeout_s
         with self._cmd_done_cond:
-            done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs, timeout=self._timeout_s)
+            done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs, timeout=timeout)
         if not done:      
             raise TimeoutError(f"Timed out waiting for cmd {self._current_command.value} completion")
         
@@ -208,7 +214,10 @@ class SharedEnvData():
             self._n_envs_stepping.value -= 1
             self._n_envs_stepping_cond.notify_all()
 
+
     def fill_actions(self, action_batch):
+        if not isinstance(action_batch, th.Tensor):
+            action_batch = th.as_tensor(action_batch, device=self._shared_data._device)
         fill_tensor_tree(None, action_batch, self._shared_data._acts)
         with self._actions_filled_cond: # mark actions as available
             self._actions_filled.value = self._n_envs

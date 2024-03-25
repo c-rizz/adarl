@@ -2,7 +2,7 @@
 
 import time
 import argparse
-import gym
+import gymnasium
 import os
 
 from stable_baselines import SAC, HER
@@ -19,7 +19,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
 import rospy
 
-def run(env : gym.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
+def run(env : gymnasium.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
     #frames = []
     #do an average over a bunch of episodes
     print("Running ")
@@ -42,7 +42,7 @@ def run(env : gym.Env, model : stable_baselines.common.base_class.BaseRLModel, n
         totDuration = time.time() - t0
         print("Ran for "+str(totDuration)+"s \t Reward: "+str(episodeReward))
 
-def buildModel(random_seed : int, env : gym.Env, folderName : str):
+def buildModel(random_seed : int, env : gymnasium.Env, folderName : str):
 
     # episode_length = env.getBaseEnv().getMaxStepsPerEpisode()
     # sampleGoalRatio = 0.1

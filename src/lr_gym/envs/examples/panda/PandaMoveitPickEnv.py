@@ -333,7 +333,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         return
 
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         super().performReset()
         self._environmentController.resetWorld()
 

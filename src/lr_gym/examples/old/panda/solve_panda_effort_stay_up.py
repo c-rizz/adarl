@@ -2,7 +2,7 @@
 
 import time
 import argparse
-import gym
+import gymnasium
 
 from stable_baselines.td3.policies import MlpPolicy
 from stable_baselines import TD3
@@ -15,7 +15,7 @@ import numpy as np
 from lr_gym.envs.panda.PandaEffortStayUpEnv import PandaEffortStayUpEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 
-def run(env : gym.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
+def run(env : gymnasium.Env, model : stable_baselines.common.base_class.BaseRLModel, numEpisodes : int = -1):
     #frames = []
     #do an average over a bunch of episodes
     episodesRan = 0

@@ -3,6 +3,10 @@ import numpy as np
 from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.spaces as spaces
+import torch as th
+import copy
+from typing import Optional, Dict
+from typing_extensions import override
 
 class ImgStackWrapper(LrWrapper):
 
@@ -13,7 +17,7 @@ class ImgStackWrapper(LrWrapper):
         super().__init__(env)
         self._img_dict_key = img_dict_key
         self._frame_stacking_size = frame_stacking_size
-        self._actionToDo = None
+        self._actionToDo = th.tensor([])
 
         if self._img_dict_key is None:
             sub_img_space = env.observation_space
@@ -65,6 +69,9 @@ class ImgStackWrapper(LrWrapper):
             self._action_repeat = self._frame_stacking_size
         else:
             self._action_repeat = action_repeat
+        self._last_states = [None]*self._action_repeat
+
+        self.state_space = spaces.gym_spaces.Tuple([self.env.state_space]*self._action_repeat)
         # print("observation_space =", self.observation_space)
         # print("observation_space.dtype =", self.observation_space.dtype)
 
@@ -94,56 +101,62 @@ class ImgStackWrapper(LrWrapper):
             self._framesBuffer[i]=self._framesBuffer[i+1]
         self._framesBuffer[-1] = frame
 
-    def submitAction(self, action) -> None:
+    def submitAction(self, action : th.Tensor) -> None:
         self._actionToDo = action
         self.env.submitAction(self._actionToDo)
 
     def performStep(self):
-        self._rewardSum = 0
         for i in range(self._action_repeat):
-            previousState = self.env.getState()
+            # previousState = self.env.getState()
             self.env.performStep()
             state = self.env.getState()
             obs = self.env.getObservation(state)
+            self._last_states = [self._last_states[(i-1)%len(self._last_states)] for i in range(len(self._last_states))]
+            self._last_states[0] = state
             if self._img_dict_key is None:
                 img = obs
             else:
                 img = obs[self._img_dict_key]
-            img = self._preproc_frame(img)
-            self._pushFrame(img)
-            self._rewardSum += self.env.computeReward(previousState, state, self._actionToDo, env_conf=self.env.get_configuration())
+            self._pushFrame(self._preproc_frame(img))
             self.env.submitAction(self._actionToDo)
-        self._previousState = self._lastState
-        self._lastState = state
+        ggLog.info(f"performed step: self._last_states = {self._last_states}")
 
     def getObservation(self, state):
-        obs = self.env.getObservation(state)
-        
-        for i in range(self._frame_stacking_size):
-            self._stackedImg[i*self._output_img_channels:(i+1)*self._output_img_channels] = self._framesBuffer[i]
-        if self._img_dict_key is None:
-            obs = self._stackedImg
+        observations = [self.env.getObservation(substate) for substate in state[0:self._frame_stacking_size]]
+        if isinstance(self.env.observation_space, spaces.gym_spaces.Box):
+            obs = th.cat(observations) #type: ignore
+        elif isinstance(self.env.observation_space, spaces.gym_spaces.Dict):
+            obs = copy.deepcopy(observations[0])
+            obs[self._img_dict_key] = th.cat([obs[self._img_dict_key] for obs in observations])
         else:
-            obs[self._img_dict_key] = self._stackedImg
+            NotImplementedError(f"Unsupported observation space {self.env.observation_space}")
 
         return obs
 
-    def performReset(self):
+    @override
+    def performReset(self, options = {}):
+        self.env.performReset(options)
+        state = self.env.getState()
+        self._last_states = [copy.deepcopy(state) for _ in range(self._action_repeat)]
 
-        self.env.performReset()
 
-        obs = self.env.getObservation(self.env.getState())
-        if self._img_dict_key is None:
-            img = obs
-        else:
-            img = obs[self._img_dict_key]
-        img = self._preproc_frame(img)
-        for _ in range(self._frame_stacking_size):
-            self._pushFrame(img)
-        self._previousState = self.env.getState()
-        self._lastState = self.env.getState()
+    def getState(self):
+        return self._last_states
 
-    def computeReward(self, previousState, state, action, env_conf = None) -> float:
-        if not (state is self._lastState and action is self._actionToDo and previousState is self._previousState):
-            raise RuntimeError("GymToLr.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
-        return self._rewardSum
+    def computeReward(self, previousState, state, action, env_conf = None, sub_rewards : Optional[Dict[str,th.Tensor]] = None) -> float:
+        
+        tot_reward = 0.0
+        tot_sub_rewards = {}
+        for i in range(self._action_repeat):
+            sub_sub_rewards = {}
+            sub_reward = self.env.computeReward(previousState=previousState[i],
+                                                state=state[i],
+                                                action=action,
+                                                env_conf=env_conf,
+                                                sub_rewards=sub_sub_rewards)
+            tot_reward += sub_reward
+            for k in sub_sub_rewards:
+                tot_sub_rewards[k] = sub_sub_rewards[k] + self._sub_rewards_sum.get(k,0)
+        if sub_rewards is not None:
+            sub_rewards.update(tot_sub_rewards)
+        return tot_reward

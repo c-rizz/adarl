@@ -289,7 +289,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         return
 
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         super().performReset()
         self._environmentController.resetWorld()
         self._goalPose = self._goalPoseSamplFunc(self._rng)

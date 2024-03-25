@@ -198,7 +198,7 @@ class PointPositionReachingEnv(BaseEnv):
         return
 
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         super().performReset()
         self._currentPosition = self._startPose[0:3]
         self._currentQuat = quaternion.from_euler_angles(self._startPose[3:])

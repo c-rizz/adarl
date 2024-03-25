@@ -77,7 +77,7 @@ class RandomEnv(BaseEnv):
         self._state += hash(self._action.data.tobytes())
         self._rng = np.random.default_rng(seed = np.abs(self._state))
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         self._state = self._rng.integers(-1000000000,1000000000)
 
 

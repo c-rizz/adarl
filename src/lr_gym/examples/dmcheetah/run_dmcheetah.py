@@ -10,15 +10,14 @@ from stable_baselines3.td3.policies import MlpPolicy, MultiInputPolicy
 from stable_baselines3 import TD3
 from stable_baselines3.common.noise import NormalActionNoise
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-from lr_gym.envs.ObsDict2FlatBox import ObsDict2FlatBox
+from lr_gym.envs.lr_wrappers.ObsDict2FlatBox import ObsDict2FlatBox
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.utils
 
 from lr_gym.envs.GymToLr import GymToLr
-from lr_gym.envs.ObsToDict import ObsToDict
+from lr_gym.envs.lr_wrappers.ObsToDict import ObsToDict
 import os
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
-from autoencoding_rl.buffers import GenericHerReplayBuffer, RandomHoldoutBuffer, ThDictReplayBuffer_updatable, ThDictReplayBuffer
 
 
 def main(obsNoise : np.ndarray) -> None: 

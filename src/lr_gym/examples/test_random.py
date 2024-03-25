@@ -2,12 +2,12 @@
 
 import time
 import argparse
-import gym
+import gymnasium
 import importlib
 import lr_gym.utils.dbg.dbg_img as dbg_img
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 
-def runRandom(env : gym.Env, numEpisodes : int, pubRender : bool, fps : float) -> None:
+def runRandom(env : gymnasium.Env, numEpisodes : int, pubRender : bool, fps : float) -> None:
     """Run the provided environment with a random agent."""
 
     #setup seeds for reproducibility

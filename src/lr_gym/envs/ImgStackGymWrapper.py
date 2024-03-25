@@ -1,12 +1,12 @@
-import gym
+import gymnasium
 import cv2
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
 import lr_gym.utils.spaces as spaces
 
-class ImgStackGymWrapper(gym.Wrapper):
+class ImgStackGymWrapper(gymnasium.Wrapper):
     
-    def __init__(self,  env : gym.Env,
+    def __init__(self,  env : gymnasium.Env,
                         frame_stacking_size : int,
                         img_dict_key = None,
                         rgb_to_greyscale : bool = False,
@@ -87,9 +87,9 @@ class ImgStackGymWrapper(gym.Wrapper):
     def _preproc_frame(self, img):
         # ggLog.info(f"preproc input shape = {img.shape}")
         if self._rgb_to_greyscale:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) #type:ignore 
         if self._equalize_frames:
-            img = cv2.equalizeHist(img)
+            img = cv2.equalizeHist(img) #type:ignore
         img = np.squeeze(img)
         if len(img.shape) == 3 and img.shape[2] == 3: # RGB with HWC shape
             img = np.transpose(img, (2,0,1)) # convert channel ordering from HWC to CHW

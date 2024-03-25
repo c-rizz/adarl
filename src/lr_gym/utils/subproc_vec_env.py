@@ -162,10 +162,9 @@ class SubprocVecEnv(VecEnv):
             self.processes.append(process)
             work_remote.close()
 
-        self._simple_commander.set_command("get_spaces")
-        for remote in self.remotes: # do it for all remotes to clear up recv
-            observation_space, action_space, info_space = remote.recv()
-        print(f"got spaces")
+        self.num_envs = len(env_fns)
+        observation_spaces, action_spaces, info_spaces = self.get_spaces()
+        observation_space, action_space, info_space = observation_spaces[0], action_spaces[0], info_spaces[0]
 
         self._shared_data = SharedData(observation_space=observation_space,
                                         action_space=action_space,
@@ -178,6 +177,16 @@ class SubprocVecEnv(VecEnv):
         self._simple_commander.wait_done()
 
         super().__init__(len(env_fns), observation_space, action_space)
+
+    def get_spaces(self):
+        self._simple_commander.set_command("get_spaces")
+        obs_spaces = [None]*self.num_envs
+        act_spaces = [None]*self.num_envs
+        info_spaces = [None]*self.num_envs
+        self._simple_commander.wait_done()
+        for i in range(len(self.remotes)):
+            obs_spaces[i], act_spaces[i], info_spaces[i] = self.remotes[i].recv()
+        return obs_spaces, act_spaces, info_spaces
 
     def step_async(self, actions: np.ndarray) -> None:
         self._shared_env_data.mark_waiting_data()

@@ -6,6 +6,7 @@ from collections import OrderedDict
 from lr_gym.envs.lr_wrappers.LrWrapper import LrWrapper
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym.utils.spaces as spaces
+import torch as th
 
 def dict2box(dict_space):
     dtype_type = None
@@ -37,7 +38,9 @@ class ObsDict2FlatBox(LrWrapper):
 
     def __init__(self,
                  env : lr_gym.envs.BaseEnv,
-                 key : str = "obs"):
+                 key : str = "obs",
+                 torch_observations = False):
+        self._torch_observations = torch_observations
         super().__init__(env=env)
 
         if type(env.observation_space)!=spaces.gym_spaces.Dict:
@@ -52,12 +55,19 @@ class ObsDict2FlatBox(LrWrapper):
 
 
     def _dict2box_obs(self, obs, obs_space):
-        ret = np.empty(shape=obs_space.shape, dtype = obs_space.dtype)
+        if self._torch_observations: 
+            ret = th.empty(size=obs_space.shape, dtype = obs_space.dtype)
+        else:
+            ret = np.empty(shape=obs_space.shape, dtype = obs_space.dtype)
         pos = 0
         for key, value in obs.items():
             if isinstance(value, dict) or isinstance(value, OrderedDict):
                 value = self._dict2box_obs(value, obs_space)
             if type(value) == np.ndarray:
+                subobs_size = np.prod(value.shape)
+                ret[pos:pos+subobs_size] = value.flatten()
+                pos+=subobs_size
+            if type(value) == th.Tensor:
                 subobs_size = np.prod(value.shape)
                 ret[pos:pos+subobs_size] = value.flatten()
                 pos+=subobs_size

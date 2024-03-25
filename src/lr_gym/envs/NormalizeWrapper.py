@@ -1,5 +1,5 @@
 import numpy as np
-import gym
+import gymnasium
 
 
 # taken from https://github.com/openai/baselines/blob/master/baselines/common/vec_env/vec_normalize.py
@@ -38,7 +38,7 @@ def update_mean_var_count_from_moments(
     return new_mean, new_var, new_count
 
 
-class NormalizeObservation(gym.core.Wrapper):
+class NormalizeObservation(gymnasium.Wrapper):
     def __init__(
         self,
         env,
@@ -74,7 +74,7 @@ class NormalizeObservation(gym.core.Wrapper):
         return (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon)
 
 
-class NormalizeReward(gym.core.Wrapper):
+class NormalizeReward(gymnasium.Wrapper):
     def __init__(
         self,
         env,

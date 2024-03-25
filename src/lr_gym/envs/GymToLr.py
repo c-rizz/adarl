@@ -12,6 +12,8 @@ import numpy as np
 from typing import Tuple, Dict, Any, Sequence, SupportsFloat, TypeVar, Generic
 import torch as th
 import lr_gym.utils.utils
+import gymnasium
+import lr_gym.utils.dbg.ggLog as ggLog
 
 ObsType = TypeVar("ObsType")
 
@@ -21,7 +23,8 @@ class GymToLr(BaseEnv, Generic[ObsType]):
     observation_space = None
     metadata = None # e.g. {'render.modes': ['rgb_array']}
 
-    def __init__(self, openaiGym_env : gym.Env, stepSimDuration_sec : float = 1, maxStepsPerEpisode = None):
+    def __init__(self, openaiGym_env : gym.Env, stepSimDuration_sec : float = 1, maxStepsPerEpisode = None,
+                 copy_observations : bool = False):
         """Short summary.
 
         Parameters
@@ -36,29 +39,42 @@ class GymToLr(BaseEnv, Generic[ObsType]):
             if openaiGym_env.spec is not None:
                 maxStepsPerEpisode = openaiGym_env.spec.max_episode_steps
             if maxStepsPerEpisode is None and hasattr(openaiGym_env,"_max_episode_steps"):
-                maxStepsPerEpisode = openaiGym_env._max_episode_steps
+                maxStepsPerEpisode = openaiGym_env._max_episode_steps #type:ignore
             if maxStepsPerEpisode is None:
                 raise RuntimeError("Cannot determine maxStepsPerEpisode from openaiGym_env env, you need to specify it manually")
 
+        self._openaiGym_env = openaiGym_env
+        self._copy_observations = copy_observations
+        state_space = gymnasium.spaces.Dict({
+                "internal_info":gymnasium.spaces.Dict({
+                        "ep" : gymnasium.spaces.Box(low = np.array(np.iinfo(np.int32).min),high = np.array(np.iinfo(np.int32).max)),
+                        "step" : gymnasium.spaces.Box(low = np.array(np.iinfo(np.int32).min),high = np.array(np.iinfo(np.int32).max)),
+                        "reward" : gymnasium.spaces.Box(low = np.array(float("-inf")),high = np.array(float("+inf"))),
+                        "action" : openaiGym_env.action_space}),
+                "obs" : openaiGym_env.observation_space})
         super().__init__(   maxStepsPerEpisode = maxStepsPerEpisode,
                             startSimulation = True,
                             simulationBackend = "OpenAiGym",
                             verbose = False,
-                            quiet = False)
+                            quiet = False,
+                            observation_space=self._openaiGym_env.observation_space,
+                            action_space = self._openaiGym_env.action_space,
+                            state_space=state_space)
 
-        self._openaiGym_env = openaiGym_env
 
         self._actionToDo = None # This will be set by submitAction an then used in step()
         self._prev_observation = None #Observation before the last
-        self._last_observation : ObsType
-        self._last_reward, self._last_terminated, self._last_truncated, self._last_info = (None,)*4
+        self._last_observation : ObsType = None
+        self._last_reward = th.tensor(0.)
+        self._last_terminated = False
+        self._last_truncated = False
+        self._last_info = {}
+        self._last_action = self._openaiGym_env.action_space.sample()
         self._stepCount = 0
         self._stepSimDuration_sec = stepSimDuration_sec
         self._envSeed = 0
         self._must_set_seed = True
-
-        self.action_space = self._openaiGym_env.action_space
-        self.observation_space = self._openaiGym_env.observation_space
+        self._ep_count = 0
 
 
     def submitAction(self, action) -> None:
@@ -72,19 +88,27 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         else:
             ended = False
         ended = ended or super().checkEpisodeEnded(previousState, state)
-        return ended
+        return th.as_tensor(ended, dtype=th.bool)
 
 
-    def computeReward(self, previousState, state, action, env_conf = None) -> th.Tensor:
-        if not (state is self._last_observation and action is self._actionToDo and previousState is self._prev_observation):
-            raise RuntimeError("GymToLr.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
-        return self._last_reward
+    def computeReward(self, previousState, state, action, env_conf = None, sub_rewards = {}) -> th.Tensor:
+        if (state["internal_info"]["ep"] == previousState["internal_info"]["ep"] and
+            state["internal_info"]["step"] == previousState["internal_info"]["step"]+1):
+            return state["internal_info"]["reward"]
+        else:
+            raise ValueError(f"Cannot compute reward for this transition. state[internal_info'] = {state['internal_info']}, previousState[internal_info'] = {previousState['internal_info']}, action = {action}")
 
-    def getObservation(self, state : ObsType) -> ObsType:
-        return state
+    def getObservation(self, state) -> ObsType:
+        return state["obs"]
 
-    def getState(self) -> ObsType:
-        return self._last_observation
+    def getState(self):
+        ggLog.info(f"gymtolr returning state {self._last_observation}")
+        internal_info = {"step":self._stepCounter,
+                          "ep":self._ep_count,
+                          "reward":self._last_reward,
+                          "action":self._last_action}
+        return {"internal_info":internal_info,
+                "obs":self._last_observation}
 
 
     def initializeEpisode(self) -> None:
@@ -98,38 +122,37 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         # time.sleep(1)
         # print(f"Step {self._stepCount}, memory usage = {psutil.Process(os.getpid()).memory_info().rss/1024} KB")
         obs, rew, term, trunc, info = self._openaiGym_env.step(self._actionToDo)
+        ggLog.info(f"gymtolr stepped, obs = {obs}")
         # convert  to dict obs and pytorch tensors
         if not isinstance(obs, Dict):
             obs = {"obs": obs}
-        obs_th = lr_gym.utils.utils.obs_to_tensor(obs)
-        rew = th.as_tensor(rew)
-        term = th.as_tensor(term)
-        trunc = th.as_tensor(trunc)
-        info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
-        
-        self._last_observation = obs_th
-        self._last_reward = rew
-        self._last_terminated = term
-        self._last_truncated = trunc
-        self._last_info = info
+        if self._copy_observations: obs = {k:v.copy() for k,v in obs.items()}
+        self._last_observation = lr_gym.utils.utils.obs_to_tensor(obs)
+        ggLog.info(f"gymtolr set last_obs to {self._last_observation}")
+        self._last_reward = th.as_tensor(rew)
+        self._last_action = th.as_tensor(self._actionToDo)
+        self._last_terminated = th.as_tensor(term)
+        self._last_truncated = th.as_tensor(trunc)
+        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
 
-    def performReset(self) -> None:
+    def performReset(self, options = {}) -> None:
         super().performReset()
         self._prev_observation = None
         self._stepCount = 0
+        self._ep_count += 1
         if self._must_set_seed:
             seed = self._envSeed
         else:
             seed = None
 
         obs, info = self._openaiGym_env.reset(seed=seed)
-
+        ggLog.info(f"gymtolr resetted, obs = {obs}")
         if not isinstance(obs, Dict):
             obs = {"obs": obs}
-        obs = lr_gym.utils.utils.obs_to_tensor(obs)
-        info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}        
-        self._last_observation = obs
-        self._last_info = info
+        if self._copy_observations: obs = {k:v.copy() for k,v in obs.items()}
+        self._last_observation = lr_gym.utils.utils.obs_to_tensor(obs)
+        ggLog.info(f"gymtolr reset last_obs to {self._last_observation}")
+        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
 
 
 

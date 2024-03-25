@@ -60,7 +60,7 @@ def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[s
     if folderName is None:
         if run_id is None:
             run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-        script_out_folder = os.getcwd()+"/"+os.path.basename(file)
+        script_out_folder = os.getcwd()+"/lrg_exp/"+os.path.basename(file)
         folderName = script_out_folder+"/"+run_id
         os.makedirs(folderName, exist_ok=True)
     else:
@@ -114,7 +114,7 @@ def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[s
         if experiment_name is None:
             experiment_name = os.path.basename(file)
         try:
-            ggLog.info(f"Staring run with experiment name '{experiment_name}', run id {run_id}")
+            ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
             wandb.init( project=experiment_name,
                         config = config,
                         name = f"{run_id}_{comment.strip().replace(' ','_')}",
