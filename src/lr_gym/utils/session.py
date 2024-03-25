@@ -262,6 +262,9 @@ def runFunction_wrapper(seed,
         ggLog.error(f"Run failed with exception: {lr_gym.utils.utils.exc_to_str(e)}")
         return None
 
+def runFunction_wrapper_arg_kwargs(args, kwargs):
+    return runFunction_wrapper(*args,**kwargs)
+
 def detectFolderArgs(resumeFolder):
     ret = {}
 
@@ -401,7 +404,8 @@ def launchRun(runFunction,
         launch_halt_waiter()
         with multiprocessing.Pool(num_processes, maxtasksperchild=1) as p:
             # run_results = p.starmap(runFunction_wrapper, argss)
-            run_results = p.starmap(lambda f,kwargs: f(**kwargs), [(runFunction_wrapper,kwargs) for kwargs in argss])
+            # run_results = p.starmap(lambda f,kwargs: f(**kwargs), [([],kwargs) for kwargs in argss])
+            run_results = p.starmap(runFunction_wrapper_arg_kwargs, [([],kwargs) for kwargs in argss])
     
     ggLog.info(f"All runs finished. Results:\n"+"\n".join(str(run_results)))
             
