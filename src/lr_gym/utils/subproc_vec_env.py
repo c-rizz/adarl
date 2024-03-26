@@ -157,7 +157,7 @@ class SubprocVecEnv(VecEnv):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
             args = (work_remote, remote, CloudpickleWrapper(env_fn), self._simple_commander, self._shared_env_data, i)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, daemon=False)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()

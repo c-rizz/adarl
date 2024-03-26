@@ -17,8 +17,28 @@ import faulthandler
 import re
 import lr_gym.utils.utils
 import multiprocessing
+import multiprocessing.pool
 import random
 
+class NoDaemonProcess(multiprocessing.Process):
+    @property
+    def daemon(self):
+        return False
+
+    @daemon.setter
+    def daemon(self, value):
+        pass
+
+
+class NoDaemonContext(type(multiprocessing.get_context())):
+    Process = NoDaemonProcess
+
+# We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
+# because the latter is only a wrapper function, not a proper class.
+class NestablePool(multiprocessing.pool.Pool):
+    def __init__(self, *args, **kwargs):
+        kwargs['context'] = NoDaemonContext()
+        super(NestablePool, self).__init__(*args, **kwargs)
 
 _is_shutting_down = False
 
@@ -402,7 +422,7 @@ def launchRun(runFunction,
         from lr_gym.utils.sigint_handler import setupSigintHandler, launch_halt_waiter
         setupSigintHandler()
         launch_halt_waiter()
-        with multiprocessing.Pool(num_processes, maxtasksperchild=1) as p:
+        with NestablePool(num_processes, maxtasksperchild=1) as p:
             # run_results = p.starmap(runFunction_wrapper, argss)
             # run_results = p.starmap(lambda f,kwargs: f(**kwargs), [([],kwargs) for kwargs in argss])
             run_results = p.starmap(runFunction_wrapper_arg_kwargs, [([],kwargs) for kwargs in argss])
