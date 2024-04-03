@@ -1,6 +1,6 @@
-from typing import Dict, Tuple, Union
-import gymnasium as gym
+import gymnasium
 import numpy as np
+from typing import Tuple, Dict, Union
 import torch as th
 import copy
 from numpy.typing import DTypeLike
@@ -11,7 +11,7 @@ class ObsConverter:
         def __init__(self, indexes, is_img, shape, dtype, obs_space):
             self.indexes = indexes
             self.is_img = is_img
-            self.shape = shape
+            self.shape : Tuple[int,...] = shape
             self.dtype = dtype
             self.obs_space = obs_space
 
@@ -26,7 +26,7 @@ class ObsConverter:
         elif len(obs_shape)==2 or len(obs_shape)==3:
             return True
         else:
-            raise NotImplementedError(f"Unexpected obs_shape {obs_shape}")
+            raise RuntimeError(f"Unexpected obs_shape {obs_shape}")
 
     @staticmethod
     def _img_shape_chw(box_space):
@@ -38,13 +38,13 @@ class ObsConverter:
             # multi-channel image
             return (obs_shape[0], obs_shape[1], obs_shape[2])
         else:
-            raise NotImplementedError(f"Unexpected image obs_shape {obs_shape}")
+            raise RuntimeError(f"Unexpected image obs_shape {obs_shape}")
 
     @staticmethod
     def _get_space_info(obs_space):
         """Generates a list of all the sub-observations definitions.
         Each of them with its corresponding key and the space shape and type."""
-        if isinstance(obs_space, gym.spaces.Box):
+        if isinstance(obs_space, gymnasium.spaces.Box):
             is_img = ObsConverter._is_img(obs_space)
             if is_img:
                 shape = ObsConverter._img_shape_chw(obs_space)
@@ -52,7 +52,7 @@ class ObsConverter:
                 shape = (obs_space.shape[0],)
             dtype = obs_space.dtype
             return [ObsConverter.SpaceInfo([], is_img, shape, dtype, obs_space)]
-        elif isinstance(obs_space, gym.spaces.Dict):
+        elif isinstance(obs_space, gymnasium.spaces.Dict):
             ret = []
             for sub_obs_key, sub_obs_space in obs_space.spaces.items():
                 sub_info = ObsConverter._get_space_info(sub_obs_space)
@@ -60,21 +60,21 @@ class ObsConverter:
                     ret.append(ObsConverter.SpaceInfo([sub_obs_key]+si.indexes, si.is_img, si.shape, si.dtype, si.obs_space))
             return ret
         else:
-            raise NotImplementedError(f"Unexpected obs_space {obs_space}")
+            raise RuntimeError(f"Unexpected obs_space {obs_space}")
 
     @staticmethod
-    def _get_space_structure(obs_space : gym.spaces.Space):
+    def _get_space_structure(obs_space : gymnasium.spaces.Space):
         """Generates a nested-dict structure like the one of the original observations.
             None values are placed in place of the observation data."""
-        if isinstance(obs_space, gym.spaces.Box):
+        if isinstance(obs_space, gymnasium.spaces.Box):
             return None
-        elif isinstance(obs_space, gym.spaces.Dict):
+        elif isinstance(obs_space, gymnasium.spaces.Dict):
             ret = {}
             for sub_obs_key, sub_obs_space in obs_space.spaces.items():
                 ret[sub_obs_key] = ObsConverter._get_space_structure(sub_obs_space)
             return ret
         else:
-            raise NotImplementedError(f"Unexpected obs_space {obs_space}")
+            raise RuntimeError(f"Unexpected obs_space {obs_space}")
 
     @staticmethod
     def _get_sub_obs(obs, indexes):
@@ -82,11 +82,11 @@ class ObsConverter:
             obs = obs[i]
         return obs
 
-    def __init__(self, observation_shape : gym.spaces.Dict, hide_achieved_goal : bool = True):
+    def __init__(self, observation_shape : gymnasium.spaces.Dict, hide_achieved_goal : bool = True):
         self._original_obs_space = observation_shape
         
-        if not isinstance(observation_shape, gym.spaces.Dict):
-            raise AttributeError(f"observation_shape must be a gym.spaces.Dict, if it is not, just wrap it to be one")
+        if not isinstance(observation_shape, gymnasium.spaces.Dict):
+            raise AttributeError(f"observation_shape must be a gymnasium.spaces.Dict, if it is not, just wrap it to be one")
 
         self._original_obs_space_structure = self._get_space_structure(observation_shape)
         self._hide_achieved_goal = hide_achieved_goal
@@ -148,13 +148,13 @@ class ObsConverter:
         else:
             raise NotImplemented(f"Unsupported image dtype {self._img_dtype}")
 
-    def vectorPartSize(self) -> int:
+    def vector_part_size(self) -> int:
         return int(self._vectorPartSize)
 
     def imageSizeCHW(self) -> Tuple[int,int,int]:
         return (self._image_channels, self._image_height, self._image_width)
 
-    def hasImagePart(self):
+    def has_image_part(self):
         return self._img_part_indexes is not None
 
     def hasVectorPart(self):

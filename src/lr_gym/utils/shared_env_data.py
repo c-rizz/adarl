@@ -54,6 +54,23 @@ def map_tensor_tree(src_tree : dict | th.Tensor, func):
     else:
         return func(src_tree)
 
+def flatten_tensor_tree(src_tree : dict | th.Tensor) -> dict:
+    if isinstance(src_tree, tuple):
+        src_tree = {f"T{i}":src_tree[i] for i in range(len(src_tree))}
+    elif isinstance(src_tree, list):
+        src_tree = {f"L{i}":src_tree[i] for i in range(len(src_tree))}
+    if isinstance(src_tree, dict):
+        r = {}
+        for k in src_tree.keys():
+            subdict = flatten_tensor_tree(src_tree[k])
+            for sk,sv in subdict.items():
+                r[(k,)+sk] = sv
+        return r
+    else:
+        return {tuple():src_tree}
+
+
+
 def unstack_tensor_tree(src_tree : dict | th.Tensor) -> list:
     if isinstance(src_tree, dict):
         # print(f"src_tree = {src_tree}")

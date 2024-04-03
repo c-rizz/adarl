@@ -7,6 +7,7 @@ import torch as th
 import copy
 from typing import Optional, Dict
 from typing_extensions import override
+from collections import deque
 
 class ImgStackWrapper(LrWrapper):
 
@@ -69,7 +70,7 @@ class ImgStackWrapper(LrWrapper):
             self._action_repeat = self._frame_stacking_size
         else:
             self._action_repeat = action_repeat
-        self._last_states = [None]*self._action_repeat
+        self._last_states = deque(maxlen=self._action_repeat)
 
         self.state_space = spaces.gym_spaces.Tuple([self.env.state_space]*self._action_repeat)
         # print("observation_space =", self.observation_space)
@@ -111,23 +112,24 @@ class ImgStackWrapper(LrWrapper):
             self.env.performStep()
             state = self.env.getState()
             obs = self.env.getObservation(state)
-            self._last_states = [self._last_states[(i-1)%len(self._last_states)] for i in range(len(self._last_states))]
-            self._last_states[0] = state
+            self._last_states.append(state)
             if self._img_dict_key is None:
                 img = obs
             else:
                 img = obs[self._img_dict_key]
             self._pushFrame(self._preproc_frame(img))
             self.env.submitAction(self._actionToDo)
-        ggLog.info(f"performed step: self._last_states = {self._last_states}")
+        # ggLog.info(f"performed step: self._last_states = {self._last_states}")
 
     def getObservation(self, state):
-        observations = [self.env.getObservation(substate) for substate in state[0:self._frame_stacking_size]]
+        observations = [self.env.getObservation(substate) for substate in state[-3:]]
         if isinstance(self.env.observation_space, spaces.gym_spaces.Box):
             obs = th.cat(observations) #type: ignore
         elif isinstance(self.env.observation_space, spaces.gym_spaces.Dict):
             obs = copy.deepcopy(observations[0])
+            # ggLog.info(f"observations[0][self._img_dict_key].size() = {observations[0][self._img_dict_key].size()}")
             obs[self._img_dict_key] = th.cat([obs[self._img_dict_key] for obs in observations])
+            # ggLog.info(f"obs[self._img_dict_key].size() = {obs[self._img_dict_key].size()}")
         else:
             NotImplementedError(f"Unsupported observation space {self.env.observation_space}")
 
@@ -137,20 +139,24 @@ class ImgStackWrapper(LrWrapper):
     def performReset(self, options = {}):
         self.env.performReset(options)
         state = self.env.getState()
-        self._last_states = [copy.deepcopy(state) for _ in range(self._action_repeat)]
+        self._last_states.extend([copy.deepcopy(state) for _ in range(self._action_repeat)])
 
 
     def getState(self):
-        return self._last_states
+        return list(self._last_states)
 
     def computeReward(self, previousState, state, action, env_conf = None, sub_rewards : Optional[Dict[str,th.Tensor]] = None) -> float:
         
         tot_reward = 0.0
         tot_sub_rewards = {}
+        # n= '\n'
+        # ggLog.info(f"state = {n.join([str(s['internal_info']) for s in state])}")
+        # ggLog.info(f"previousState = {n.join([str(s['internal_info']) for s in previousState])}")
+        states = previousState[-1:]+state
         for i in range(self._action_repeat):
             sub_sub_rewards = {}
-            sub_reward = self.env.computeReward(previousState=previousState[i],
-                                                state=state[i],
+            sub_reward = self.env.computeReward(previousState=states[i],
+                                                state=states[i+1],
                                                 action=action,
                                                 env_conf=env_conf,
                                                 sub_rewards=sub_sub_rewards)

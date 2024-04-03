@@ -12,6 +12,7 @@ from typing import Callable, Optional, Any
 import h5py
 import lzma
 import pickle
+from lr_gym.utils.shared_env_data import flatten_tensor_tree
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.
@@ -29,7 +30,8 @@ class RecorderGymWrapper(gym.Wrapper):
                         overlay_text_xy = (0.05,0.05),
                         overlay_text_height = 0.04,
                         overlay_text_color_rgb = (20,20,255),
-                        use_global_ep_count = True):
+                        use_global_ep_count = True,
+                        only_video = False):
         super().__init__(env)
         self._use_global_ep_count = use_global_ep_count
         self._outFps = fps
@@ -38,10 +40,12 @@ class RecorderGymWrapper(gym.Wrapper):
             self._frameRepeat = int(math.ceil(30/fps))
             self._outFps = fps*self._frameRepeat
         self._frameBuffer = []
+        self._only_video = only_video
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
         self._episodeCounter = 0
         self._outFolder = outFolder
+        ggLog.info(f"outFolder = {outFolder}")
         self._saveBestEpisodes = saveBestEpisodes
         self._saveFrequency_ep = saveFrequency_ep
         self._bestReward = float("-inf")
@@ -55,14 +59,9 @@ class RecorderGymWrapper(gym.Wrapper):
         self._last_saved_ep = float("-inf")
         self._saved_eps_count = 0
         self._saved_best_eps_count = 0
-        try:
-            os.makedirs(self._outFolder)
-        except FileExistsError:
-            pass
-        try:
-            os.makedirs(self._outFolder+"/best")
-        except FileExistsError:
-            pass
+
+        os.makedirs(self._outFolder, exist_ok=True)
+        os.makedirs(self._outFolder+"/best", exist_ok=True)
 
     def step(self, action):
         obs, reward, terminated, truncated, info =  self.env.step(action)
@@ -75,7 +74,7 @@ class RecorderGymWrapper(gym.Wrapper):
             if self._vec_obs_key is not None:
                 vecobs = np.array(obs[self._vec_obs_key])
             else:
-                vecobs = None
+                vecobs = flatten_tensor_tree(obs)
             action = np.array(action)
             self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
             self._infoBuffer.append(info)
@@ -159,15 +158,22 @@ class RecorderGymWrapper(gym.Wrapper):
         
     def _write_vecbuffer(self, out_filename, vecbuffer):
         out_filename += ".hdf5"
+        ggLog.info(f"writing buffer {vecbuffer}")
         with h5py.File(out_filename, "w") as f:
             for k,v in vecbuffer.items():
-                f.create_dataset(k, data=v)
+                ggLog.info(f"writing subbuffer {v}")
+                if isinstance(v,dict):
+                    for sk,sv in vecbuffer.items():
+                        f.create_dataset(f"{k}.{sk}", data=sv)
+                else:
+                    f.create_dataset(k, data=v)
 
 
     def _saveLastEpisode(self, filename : str):
         self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
-        self._write_vecbuffer(filename,self._vecBuffer)
-        self._write_infobuffer(filename+"_info",self._infoBuffer)
+        if not self._only_video:
+            self._write_vecbuffer(filename,self._vecBuffer)
+            self._write_infobuffer(filename+"_info",self._infoBuffer)
         
 
     def _preproc_frame(self, img_hwc):
@@ -222,10 +228,11 @@ class RecorderGymWrapper(gym.Wrapper):
         self._frameBuffer = []
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
+
         if self._vec_obs_key is not None:
             vecobs = np.array(obs[self._vec_obs_key])
         else:
-            vecobs = None
+            vecobs = flatten_tensor_tree(obs)
         self._update_vecbuffer(vecobs, None, None, None, None)
         self._infoBuffer.append(info)
         
@@ -237,7 +244,11 @@ class RecorderGymWrapper(gym.Wrapper):
         return obs, info
 
     def close(self):
-        self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}").zfill(6)+f"_{self._epReward}.mp4")
+        # ggLog.info(f"self._outFolder = {self._outFolder}")
+        # self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}".zfill(6)+f"_{self._epReward}.mp4"))
+        ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
+        fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward:09.9g}"
+        self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self.env.close()
 
     def setSaveAllEpisodes(self, enable : bool, disable_after_one_episode : bool = False):

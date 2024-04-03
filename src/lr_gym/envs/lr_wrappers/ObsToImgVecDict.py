@@ -25,9 +25,9 @@ class ObsToImgVecDict(LrWrapper):
         if self._obs_converter.hasVectorPart():
             l,h = self._obs_converter.getVectorPartLimits()
             obss[self._vec_key] = spaces.gym_spaces.Box(low=l,high=h,
-                                                        shape=(self._obs_converter.vectorPartSize(),),
+                                                        shape=(self._obs_converter.vector_part_size(),),
                                                         dtype=np.float32) # Can I use a torch dtype?
-        if self._obs_converter.hasImagePart():
+        if self._obs_converter.has_image_part():
             img_shape = self._obs_converter.imageSizeCHW()
             l,h = self._obs_converter.getImgPixelRange()
             obss[self._img_key] = spaces.gym_spaces.Box(low=l,high=h,

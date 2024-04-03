@@ -6,6 +6,7 @@ from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.spaces as spaces
 from typing import Tuple, Optional
 import torch as th
+import copy
 from lr_gym.utils.utils import torch_to_numpy_dtype_dict
 
 class ImgFormatWrapper(LrWrapper):
@@ -81,13 +82,13 @@ class ImgFormatWrapper(LrWrapper):
 
 
     def _convert_frame(self, obs) -> th.Tensor:
-        ggLog.info(f"got obs: {obs}")
         # import traceback
         # traceback.print_stack()
         if self._img_dict_key is None:
             img = obs
         else:
             img = obs[self._img_dict_key]
+        # ggLog.info(f"ImgFormatWrapper input = {img.size()}")
 
         if self._input_channel_order != self._output_channel_order:
             if len(self._input_channel_order) == 2:
@@ -114,15 +115,17 @@ class ImgFormatWrapper(LrWrapper):
         if self._img_dict_key is None:
             obs = img
         else:
+            obs = copy.deepcopy(obs)
             obs[self._img_dict_key] = img
+        # ggLog.info(f"ImgFormatWrapper output = {img.size()}")
         return obs
 
 
     def getObservation(self, state):
         # ggLog.info("Converting Frame")
-        ggLog.info(f"ImgFormatWrapper getting obs from state {state}")
+        # ggLog.info(f"ImgFormatWrapper getting obs from state {state}")
         obs = self.env.getObservation(state)
-        ggLog.info(f"ImgFormatWrapper got obs {obs}")
+        # ggLog.info(f"ImgFormatWrapper got obs {obs}")
         obs = self._convert_frame(obs)
         return obs
 
