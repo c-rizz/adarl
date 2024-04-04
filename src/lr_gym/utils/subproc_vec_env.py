@@ -16,7 +16,9 @@ from stable_baselines3.common.vec_env.base_vec_env import (
 )
 from stable_baselines3.common.vec_env.patch_gym import _patch_env
 import time
-from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, space_from_tree, SharedData, unstack_tensor_tree, map_tensor_tree
+from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
+from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree
+
 import torch as th
 import copy
 

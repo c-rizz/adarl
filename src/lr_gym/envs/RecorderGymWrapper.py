@@ -12,7 +12,7 @@ from typing import Callable, Optional, Any
 import h5py
 import lzma
 import pickle
-from lr_gym.utils.shared_env_data import flatten_tensor_tree
+from lr_gym.utils.tensor_trees import flatten_tensor_tree
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.

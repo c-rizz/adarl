@@ -28,7 +28,7 @@ import lr_gym.utils.session
 import lr_gym.utils.utils
 from lr_gym.utils.wandb_wrapper import wandb_log
 import torch as th
-from lr_gym.utils.shared_env_data import map_tensor_tree
+from lr_gym.utils.tensor_trees import map_tensor_tree
 
 ObsType = TypeVar("ObsType")
 

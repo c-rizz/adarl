@@ -20,7 +20,8 @@ from gymnasium.error import (
 )
 from gymnasium.vector.utils import concatenate, create_empty_array
 from gymnasium.vector.vector_env import VectorEnv
-from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, space_from_tree, SharedData, unstack_tensor_tree, map_tensor_tree
+from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
+from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree
 import torch as th
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
@@ -105,7 +106,6 @@ def _worker(
             elif cmd == b"close":
                 env.close()
                 remote.close()
-                shared_env_data.close()
                 break
             elif cmd == b"get_spaces":
                 remote.send((env.observation_space, env.action_space, info_space))

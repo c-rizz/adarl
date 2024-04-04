@@ -4,7 +4,7 @@ import numpy as np
 import torch as th
 from typing import Any, SupportsFloat
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym.utils.shared_env_data import unstack_tensor_tree
+from lr_gym.utils.tensor_trees import unstack_tensor_tree
 
 class VectorEnvLogger(
     gym.Wrapper[ObsType, ActType, ObsType, ActType], gym.utils.RecordConstructorArgs

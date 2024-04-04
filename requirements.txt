@@ -25,5 +25,5 @@ mujoco==3.1.1
 mujoco_mjx==3.1.1
 jax[cuda12_pip]
 h5py==3.10.0
-pzmq==25.1.2
+pyzmq==25.1.2
 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
