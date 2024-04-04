@@ -87,7 +87,7 @@ class RunningNormalizer(th.nn.Module):
         super().__init__()
         self._freeze_stats = False
         self.register_buffer("_epsilon", th.tensor(epsilon, device = device))
-        self._running_stats = RunningMeanStd((self._vec_part_size,), torch_device=self._torchDevice, dtype=th.float32)
+        self._running_stats = RunningMeanStd(shape, torch_device=device, dtype=dtype)
         self.register_buffer("vec_running_mean",  self._running_stats.mean)
         self.register_buffer("vec_running_var",   self._running_stats.var)
         self.register_buffer("vec_running_count", self._running_stats.count)
