@@ -406,6 +406,9 @@ class ThDictReplayBuffer(ReplayBuffer):
     def storage_torch_device(self):
         return self._storage_torch_device
 
+    def stored_frames(self):
+        return self.size()*self.n_envs
+
 class ThDictReplayBuffer_updatable(ThDictReplayBuffer):
     def update(self, buffer : DictReplayBuffer):
 

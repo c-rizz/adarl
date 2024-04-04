@@ -19,51 +19,55 @@ class BaseEnv(ABC):
 
     You can extend this class with a sub-class to implement specific environments.
     """
-    #TODO: This should be an abstract class, defined via python's ABC
 
      # e.g. {'render.modes': ['rgb_array']}
 
     def __init__(self,
-                 action_space : spaces.gym_spaces.Space = None,
-                 observation_space : spaces.gym_spaces.Space = None,
-                 pure_observation_space : spaces.gym_spaces.Space = None,
-                 goal_observation_space : spaces.gym_spaces.Space = None,
+                 action_space : spaces.gym_spaces.Space,
+                 observation_space : spaces.gym_spaces.Space,
+                 state_space : spaces.gym_spaces.Space,
                  reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
                  metadata = {},
                  maxStepsPerEpisode : int = 500,
                  startSimulation : bool = False,
-                 simulationBackend : str = None,
-                 verbose : bool = False,
-                 quiet : bool = False,
-                 is_timelimited : bool = True,
-                 state_space : spaces.gym_spaces.Space = None):
-        """Short summary.
+                 is_timelimited : bool = False):
+        """_summary_
 
         Parameters
         ----------
-        maxStepsPerEpisode : int
-            maximum number of frames per episode. The checkEpisodeEnded() function will return
-            done=True after being called this number of times
-
+        action_space : spaces.gym_spaces.Space
+            Action space of the environment
+        observation_space : spaces.gym_spaces.Space
+            Observation space of the environment
+        reward_space : _type_, optional
+            Reward space of the environment, by default between -inf and +inf
+        metadata : dict, optional
+            Metadata for the environment with mixed infos, by default {}
+        maxStepsPerEpisode : int, optional
+            Maximum steps the environment should be able to do, after this reachedTimeout() and checkEpisodeEnded() will return True
+        startSimulation : bool, optional
+            If true the simulation will automatically be started in the constructor, by default False
+        is_timelimited : bool, optional
+            If true the env is to be considered time-limited, meaning that terminations due to reaching maxStepsPerEpisode are no truncations, 
+            but proper terminations
+        state_space : spaces.gym_spaces.Space, optional
+            State space of the environment
         """
         self.action_space = action_space
         self.observation_space = observation_space
         self.state_space = state_space
-        self.pure_observation_space = pure_observation_space
-        self.goal_observation_space = goal_observation_space
         self.reward_space = reward_space
         self.metadata = metadata
 
         self._actionsCounter = 0
         self._stepCounter = 0
         self._maxStepsPerEpisode = th.as_tensor(maxStepsPerEpisode)
-        self._backend = simulationBackend
         self._envSeed : int = 0
         self._is_timelimited = th.as_tensor(is_timelimited)
         self._closed = False
 
         if startSimulation:
-            self.buildSimulation(backend=simulationBackend)
+            self.buildSimulation()
 
 
 
@@ -95,7 +99,7 @@ class BaseEnv(ABC):
         """
         If maxStepsPerEpisode is reached. Usually not supposed to be subclassed.
         """
-        return self.getMaxStepsPerEpisode()>0 and self._stepCounter >= self.getMaxStepsPerEpisode()
+        return self.get_max_episode_steps()>0 and self._stepCounter >= self.get_max_episode_steps()
 
     
     def checkEpisodeEnded(self, previousState, state) -> th.Tensor:
@@ -218,7 +222,7 @@ class BaseEnv(ABC):
         return {"timed_out" : self.reachedTimeout()}
 
 
-    def getMaxStepsPerEpisode(self) -> th.Tensor:
+    def get_max_episode_steps(self) -> th.Tensor:
         """Get the maximum number of frames of one episode, as set by the constructor (1-element tensor)."""
         return self._maxStepsPerEpisode
 

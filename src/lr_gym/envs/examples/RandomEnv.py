@@ -16,8 +16,6 @@ class RandomEnv(BaseEnv):
 
     action_space = None
     observation_space = None
-    pure_observation_space = None
-    goal_observation_space = None
     reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32)
     metadata = None # e.g. {'render.modes': ['rgb_array']}
 

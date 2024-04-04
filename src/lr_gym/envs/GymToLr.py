@@ -54,9 +54,6 @@ class GymToLr(BaseEnv, Generic[ObsType]):
                 "obs" : openaiGym_env.observation_space})
         super().__init__(   maxStepsPerEpisode = maxStepsPerEpisode,
                             startSimulation = True,
-                            simulationBackend = "OpenAiGym",
-                            verbose = False,
-                            quiet = False,
                             observation_space=self._openaiGym_env.observation_space,
                             action_space = self._openaiGym_env.action_space,
                             state_space=state_space)
@@ -169,7 +166,7 @@ class GymToLr(BaseEnv, Generic[ObsType]):
             r = {}
         return r
 
-    def getMaxStepsPerEpisode(self):
+    def get_max_episode_steps(self):
         """Get the maximum number of frames of one episode, as set by the constructor."""
         return self._maxStepsPerEpisode
 

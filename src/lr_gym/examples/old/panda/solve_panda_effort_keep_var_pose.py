@@ -40,11 +40,11 @@ def run(env : gymnasium.Env, model : stable_baselines.common.base_class.BaseRLMo
 
 def buildModel(random_seed : int, env : gymnasium.Env, folderName : str):
 
-    episode_length = env.getBaseEnv().getMaxStepsPerEpisode()
+    episode_length = env.getBaseEnv().get_max_episode_steps()
     sampleGoalRatio = 0.1
     model = HER('MlpPolicy', env, SAC, n_sampled_goal=int(episode_length*sampleGoalRatio), goal_selection_strategy="future", verbose=1, batch_size=128,
                 buffer_size=100000, gamma=0.99, gradient_steps=int(episode_length*(1+sampleGoalRatio)), learning_starts=episode_length*10,
-                learning_rate=0.003, policy_kwargs=dict(layers=[100, 200, 100]), train_freq=env.getBaseEnv().getMaxStepsPerEpisode(),
+                learning_rate=0.003, policy_kwargs=dict(layers=[100, 200, 100]), train_freq=env.getBaseEnv().get_max_episode_steps(),
                 seed = random_seed, n_cpu_tf_sess=None, #n_cpu_tf_sess = 1 is needed for reproducibility
                 tensorboard_log=folderName)
 

@@ -46,10 +46,10 @@ def buildModel(random_seed : int, env : gymnasium.Env, folderName : str):
     #hyperparameters taken by the RL baslines zoo repo
     model = SAC( MlpPolicy, env, action_noise=action_noise, verbose=1, batch_size=100,
                  buffer_size=200000, gamma=0.99,
-                 learning_rate=0.003, learning_starts=env.getBaseEnv().getMaxStepsPerEpisode()*10,
+                 learning_rate=0.003, learning_starts=env.getBaseEnv().get_max_episode_steps()*10,
                  policy_kwargs=dict(net_arch=[64, 128, 64]),
-                 gradient_steps=env.getBaseEnv().getMaxStepsPerEpisode(),
-                 train_freq=env.getBaseEnv().getMaxStepsPerEpisode(),
+                 gradient_steps=env.getBaseEnv().get_max_episode_steps(),
+                 train_freq=env.getBaseEnv().get_max_episode_steps(),
                  seed = random_seed, #n_cpu_tf_sess is needed for reproducibility
                  tensorboard_log="./solve_panda_effort_keep_tensorboard/")
 

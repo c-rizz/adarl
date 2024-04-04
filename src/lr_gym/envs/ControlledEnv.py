@@ -8,6 +8,7 @@ The provided class must be extended to define a specific environment
 from lr_gym.envs.BaseEnv import BaseEnv
 from typing import TypeVar, Generic
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+import lr_gym.utils.spaces as spaces
 
 EnvControllerType = TypeVar("EnvControllerType", bound=EnvironmentController)
 
@@ -31,8 +32,10 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
                  maxStepsPerEpisode,
                  stepLength_sec,
                  environmentController : EnvControllerType,
+                 action_space : spaces.gym_spaces.Space,
+                 observation_space : spaces.gym_spaces.Space,
+                 state_space : spaces.gym_spaces.Space,
                  startSimulation : bool = False,
-                 simulationBackend : str = None,
                  is_timelimited : bool = True):
         """Short summary.
 
@@ -66,8 +69,10 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
 
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          startSimulation = startSimulation,
-                         simulationBackend = simulationBackend,
-                         is_timelimited=is_timelimited)
+                         is_timelimited=is_timelimited,
+                         observation_space=observation_space,
+                         action_space=action_space,
+                         state_space=state_space)
 
 
 

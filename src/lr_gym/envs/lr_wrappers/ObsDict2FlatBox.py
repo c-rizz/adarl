@@ -47,8 +47,6 @@ class ObsDict2FlatBox(LrWrapper):
             raise AttributeError("Input env observation_space is not a dict")
         
         self.observation_space = dict2box(env.observation_space)
-        if self.pure_observation_space is not None:
-            self.pure_observation_space = dict2box(env.pure_observation_space)
         self.action_space = env.action_space
         self.metadata = env.metadata
         ggLog.info(f"observation_space = {self.observation_space}")

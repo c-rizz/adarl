@@ -15,7 +15,7 @@ import lr_gym.utils.utils
 from lr_gym.envs.GymToLr import GymToLr
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-from lr_gym.utils.sb3_buffers import ThDictReplayBuffer
+from lr_gym.utils.buffers import ThDictReplayBuffer
 from lr_gym.envs.ObsToDict import ObsToDict
 import torch as th
 import lr_gym.utils.session

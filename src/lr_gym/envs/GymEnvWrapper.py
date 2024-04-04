@@ -67,9 +67,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self.metadata = env.metadata
         if self._ggEnv.is_timelimited:
             reg_env_id = f"GymEnvWrapper-env-v0_{id(env)}_{int(time.monotonic()*1000)}"
-            # gym.register(id=reg_env_id, entry_point=None, max_episode_steps = self._ggEnv.getMaxStepsPerEpisode())
+            # gym.register(id=reg_env_id, entry_point=None, max_episode_steps = self._ggEnv.get_max_episode_steps())
             # self.spec = gym.spec(env_id=reg_env_id)
-            self.spec = EnvSpec(id=reg_env_id, entry_point=None, max_episode_steps=self._ggEnv.getMaxStepsPerEpisode())
+            self.spec = EnvSpec(id=reg_env_id, entry_point=None, max_episode_steps=self._ggEnv.get_max_episode_steps())
             self._max_episode_steps = self.spec.max_episode_steps # For compatibility, some libraries read this instead of spec
 
         self._verbose = verbose

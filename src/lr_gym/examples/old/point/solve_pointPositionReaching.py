@@ -46,7 +46,7 @@ def run(env : gymnasium.Env, model : stable_baselines.common.base_class.BaseRLMo
 
 def buildModel(random_seed : int, env : gymnasium.Env, folderName : str):
 
-    # episode_length = env.getBaseEnv().getMaxStepsPerEpisode()
+    # episode_length = env.getBaseEnv().get_max_episode_steps()
     # sampleGoalRatio = 0.1
     # model = HER('MlpPolicy', env, SAC, n_sampled_goal=int(episode_length*sampleGoalRatio), goal_selection_strategy="future", verbose=1,
     #             batch_size=128, buffer_size=100000, gamma=0.99,

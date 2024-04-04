@@ -65,8 +65,7 @@ class CartpoleEnv(ControlledEnv):
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          stepLength_sec = stepLength_sec,
                          environmentController = environmentController,
-                         startSimulation = startSimulation,
-                         simulationBackend = "gazebo")
+                         startSimulation = startSimulation)
 
         self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         if self._renderingEnabled:

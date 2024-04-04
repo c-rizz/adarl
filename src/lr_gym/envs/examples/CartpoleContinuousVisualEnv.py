@@ -77,24 +77,19 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         self._randomize_at_reset = randomize_at_reset
         self._already_built_cartpole = False
 
-        super(CartpoleEnv, self).__init__(  maxStepsPerEpisode = maxStepsPerEpisode,
-                                            stepLength_sec = stepLength_sec/self._frame_stacking_size,
-                                            environmentController = simulatorController,
-                                            startSimulation = startSimulation,
-                                            simulationBackend = "gazebo")
 
         self._stackedImg = np.zeros(shape=(self._frame_stacking_size,self._obs_img_height, self._obs_img_height), dtype=np.float32)
-        self.action_space = spaces.gym_spaces.Box(low=np.array([-1]),high=np.array([1]))
+        action_space = spaces.gym_spaces.Box(low=np.array([-1]),high=np.array([1]))
         self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         self._environmentController.setCamerasToObserve(["camera"])
 
 
         if imgEncoding == "float":
-            self.observation_space = spaces.gym_spaces.Box(low=0, high=1,
+            observation_space = spaces.gym_spaces.Box(low=0, high=1,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.float32)
         elif imgEncoding == "int":
-            self.observation_space = spaces.gym_spaces.Box(low=0, high=255,
+            observation_space = spaces.gym_spaces.Box(low=0, high=255,
                                                     shape=(self._frame_stacking_size, self._obs_img_height, self._obs_img_width),
                                                     dtype=np.uint8)
         else:
@@ -102,6 +97,12 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         
 
         self._environmentController.startController()
+        super(CartpoleEnv, self).__init__(  maxStepsPerEpisode = maxStepsPerEpisode,
+                                            stepLength_sec = stepLength_sec/self._frame_stacking_size,
+                                            environmentController = simulatorController,
+                                            startSimulation = startSimulation,
+                                            action_space = action_space,
+                                            observation_space=observation_space)
 
 
 
@@ -120,7 +121,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
                 action = -1
         
         self._environmentController.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", action * 10)])
-        # ggLog.info(f"step = {self._actionsCounter} max = {self.getMaxStepsPerEpisode()}")
+        # ggLog.info(f"step = {self._actionsCounter} max = {self.get_max_episode_steps()}")
 
     def getObservation(self, state) -> np.ndarray:
         obs = state[1]

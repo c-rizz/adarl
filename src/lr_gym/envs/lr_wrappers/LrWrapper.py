@@ -45,8 +45,8 @@ class LrWrapper(BaseEnv):
     def getInfo(self, *args,**kwargs):
         return self.env.getInfo(*args,**kwargs)
 
-    def getMaxStepsPerEpisode(self, *args,**kwargs):
-        return self.env.getMaxStepsPerEpisode(*args,**kwargs)
+    def get_max_episode_steps(self, *args,**kwargs):
+        return self.env.get_max_episode_steps(*args,**kwargs)
 
     def buildSimulation(self, *args,**kwargs):
         return self.env.buildSimulation(*args,**kwargs)
