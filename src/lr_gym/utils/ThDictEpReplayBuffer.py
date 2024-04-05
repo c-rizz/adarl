@@ -114,7 +114,7 @@ class ThDictEpReplayBuffer(ReplayBuffer):
 
             return total_memory_usage
         
-        def add(self, buf, ep_len):
+        def add_episode(self, buf, ep_len):
             prev_buff_size = self._stored_frames_count
             ep_idx = self._added_episodes%self._max_episodes
             overridden_frames = self.remaining_frames[ep_idx][0]
@@ -126,9 +126,8 @@ class ThDictEpReplayBuffer(ReplayBuffer):
             self.actions[ep_idx] = buf.actions[0]
             self.rewards[ep_idx] = buf.rewards[0]
             self.dones[ep_idx] = buf.dones[0]
-            self.remaining_frames[ep_idx] = ep_len - th.arange(self._max_episode_duration, device=self._storage_torch_device) # first frame contains the ep length, last frame has 1
+            self.remaining_frames[ep_idx] = buf.remaining_frames[0]
             self.timeouts[ep_idx] = buf.timeouts[0]
-            buf.remaining_frames[:] = 0
             self._added_episodes += 1
             self._stored_frames_count += ep_len
 
@@ -426,6 +425,10 @@ class ThDictEpReplayBuffer(ReplayBuffer):
             if isinstance(self.observation_space.spaces[key], spaces.Discrete):
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
 
+        # Experience is collected in parallel, but it is stored sequentially in the main buffer
+        # To rearrange it we first save experience in a temporary buffer, then when
+        # an episode is completed we move it to the main storage
+
         # copy each transition into the buffer for the respective env
         for env_idx in range(self.n_envs):
             buf = self._last_eps_buffers[env_idx]
@@ -450,11 +453,12 @@ class ThDictEpReplayBuffer(ReplayBuffer):
                     store = self._validation_storage
                 else:
                     store = self._storage
-                
-                store.add(buf, ep_len = self._last_eps_lengths[env_idx])
+                buf.remaining_frames[0] = self._last_eps_lengths[env_idx] - th.arange(self._max_episode_duration, device=self._storage_torch_device)
+                # store.add_episode(buf, ep_len = self._last_eps_lengths[env_idx])
+                store.update(buf)
                 buf.remaining_frames[0][:] = 0
                 self._last_eps_lengths[env_idx] = 0
-            self._added_eps_count += 1
+                self._added_eps_count += 1
 
         th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
 
