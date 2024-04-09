@@ -23,6 +23,7 @@ from gymnasium.vector.vector_env import VectorEnv
 from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
 from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree
 import torch as th
+import lr_gym.utils.mp_helper as mp_helper
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -56,7 +57,8 @@ def _worker(
     # print(f"reset_info = {reset_info}")
     info_space = space_from_tree(reset_info)
     reset_info = None
-    while True:
+    running = True
+    while running:
         try:
             cmd = simple_commander.wait_command()
             if cmd == b"step":
@@ -106,7 +108,7 @@ def _worker(
             elif cmd == b"close":
                 env.close()
                 remote.close()
-                break
+                running = False
             elif cmd == b"get_spaces":
                 remote.send((env.observation_space, env.action_space, info_space))
             elif cmd == b"env_method":
@@ -167,7 +169,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             # a `if __name__ == "__main__":`)
             forkserver_available = "forkserver" in mp.get_all_start_methods()
             context = "forkserver" if forkserver_available else "spawn"
-        ctx = mp.get_context(context)
+        ctx = mp_helper.get_context(context)
         self._simple_commander = SimpleCommander(ctx, n_envs=self.num_envs, timeout_s=60)
         self._shared_env_data = SharedEnvData(n_envs=self.num_envs, mp_context=ctx, timeout_s=60)
 

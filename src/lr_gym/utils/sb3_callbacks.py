@@ -149,14 +149,14 @@ class PrintLrRunInfo(BaseCallback):
         dones_sum = sum(self.locals["dones"])
         if dones_sum:
             self._episode_counter += dones_sum
-        lr_gym.utils.session.run_info["collected_episodes"] = self._episode_counter
-        lr_gym.utils.session.run_info["collected_steps"] = self._episode_counter
+        lr_gym.utils.session.default_session.run_info["collected_episodes"] = self._episode_counter
+        lr_gym.utils.session.default_session.run_info["collected_steps"] = self._episode_counter
         return True
     
     def _on_rollout_end(self) -> bool:
         if self._episode_counter - self._last_print_ep >=self._print_freq_ep:
             self._last_print_ep = self._episode_counter
-            i = lr_gym.utils.session.run_info
+            i = lr_gym.utils.session.default_session.run_info
             ggLog.info(f"{i['experiment_name']}:{i['run_id']} '{i['comment']}' eps={self._episode_counter} stps={self._step_counter}")
         return True
 

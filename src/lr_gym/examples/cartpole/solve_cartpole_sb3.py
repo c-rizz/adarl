@@ -28,7 +28,7 @@ def main() -> None:
 
     """
 
-    logFolder = lr_gym.utils.session.lr_gym_startup(__file__,
+    logFolder, session = lr_gym.utils.session.lr_gym_startup(__file__,
                                                     inspect.currentframe(),
                                                     folderName = os.path.basename(__file__)+f"/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}",
                                                     seed = 0,

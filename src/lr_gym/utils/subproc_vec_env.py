@@ -21,6 +21,7 @@ from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree
 
 import torch as th
 import copy
+import lr_gym.utils.mp_helper as mp_helper
 
 def _worker(
     remote: mp.connection.Connection,
@@ -149,7 +150,7 @@ class SubprocVecEnv(VecEnv):
             # a `if __name__ == "__main__":`)
             forkserver_available = "forkserver" in mp.get_all_start_methods()
             start_method = "forkserver" if forkserver_available else "spawn"
-        ctx = mp.get_context(start_method)
+        ctx = mp_helper.get_context(start_method)
         self._simple_commander = SimpleCommander(ctx, n_envs=n_envs, timeout_s=60)
         self._shared_env_data = SharedEnvData(n_envs=n_envs, mp_context=ctx, timeout_s=60)
 

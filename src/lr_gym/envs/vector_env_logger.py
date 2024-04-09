@@ -81,7 +81,7 @@ class VectorEnvLogger(
                 self._logs_batch.update(new_elems)
                 wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
                 # ggLog.info(f"wdblog = {wdblog}")
-                wandb_log(lambda: wdblog)
+                wandb_log(wdblog)
                 ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
                            f" r={self._logs_batch.get('VecEnvLogger/ep_reward',float('nan')):08.8g}"+
                            f" min_r={self._logs_batch.get('VecEnvLogger/min.ep_reward',float('nan')):08.8g}"+

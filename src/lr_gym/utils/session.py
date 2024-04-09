@@ -1,7 +1,6 @@
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Tuple
 import lr_gym.utils.dbg.ggLog as ggLog
 import numpy as np
-import wandb.sdk
 from lr_gym.utils.utils import pyTorch_makeDeterministic, createSymlink, exc_to_str
 
 import datetime
@@ -14,11 +13,222 @@ from pathlib import Path
 import yaml
 import subprocess
 import faulthandler
-import re
 import lr_gym.utils.utils
 import multiprocessing
 import multiprocessing.pool
 import random
+import atexit
+from lr_gym.utils.wandb_wrapper import wandb_init
+import lr_gym.utils.mp_helper as mp_helper
+from lr_gym.utils.sigint_handler import setupSigintHandler
+import lr_gym.utils.wandb_wrapper as wandb_wrapper
+
+class Session():
+    def __init__(self):
+
+        self._is_shutting_down = False
+        self._is_wandb_enabled = False
+        self._wandb_wrapper = wandb_wrapper.default_wrapper
+
+    def reapply_globals(self):
+        wandb_wrapper.default_wrapper = self._wandb_wrapper
+
+    def initialize(self,main_file_path : str,
+                        currentframe = None,
+                        using_pytorch : bool = True,
+                        folderName : Optional[str] = None,
+                        seed = None,
+                        experiment_name : Optional[str] = None,
+                        run_id : Optional[str] = None,
+                        debug : Union[bool, int]  = False,
+                        run_comment = "",
+                        use_wandb = True):
+        
+        self._wandb_wrapper.start_worker()
+        if isinstance(debug, bool):
+            if debug:
+                debug_level = 1
+            else:
+                debug_level = 0
+        else:
+            debug_level = debug
+
+        self.run_info = {}
+        self.run_info["comment"] = run_comment
+        self.run_info["experiment_name"] = experiment_name
+        self.run_info["run_id"] = run_id
+        self.run_info["start_time_monotonic"] = time.monotonic()
+        self.run_info["start_time"] = time.time()
+        self.run_info["collected_episodes"] = 0
+        self.run_info["collected_steps"] = 0
+        faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
+        self._logFolder = self._setupLoggingForRun(main_file_path,
+                                                   currentframe,
+                                                   folderName=folderName,
+                                                   experiment_name=experiment_name,
+                                                   run_id=run_id,
+                                                   comment=run_comment,
+                                                   use_wandb=use_wandb)
+        ggLog.addLogFile(self._logFolder+"/gglog.log")
+        if seed is None:
+            raise AttributeError("You must specify the run seed")
+        ggLog.setId(str(seed))
+        np.set_printoptions(edgeitems=10,linewidth=180)
+        setupSigintHandler()
+        if using_pytorch:
+            import torch as th
+            pyTorch_makeDeterministic(seed)
+            if debug_level>0:
+                th.cuda.set_sync_debug_mode("warn")
+            th.autograd.set_detect_anomaly(debug_level >= 0) # type: ignore
+            th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
+            if th.cuda.is_available():
+                ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
+            else:
+                ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                            "                  NO CUDA AVAILABLE!\n"+
+                            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
+                            "Will continue in 10 sec...")
+                time.sleep(10)
+
+
+    def _setupLoggingForRun(self,   file : str,
+                                    currentframe = None,
+                                    folderName : Optional[str] = None,
+                                    use_wandb : bool = True,
+                                    experiment_name : Optional[str] = None,
+                                    run_id : Optional[str] = None,
+                                    comment = ""):
+        """Sets up a logging output folder for a training run.
+            It creates the folder, saves the current main script file for reference
+
+        Parameters
+        ----------
+        file : str
+            Path of the main script, the file wil be copied in the log folder
+        frame : [type]
+            Current frame from the main method, use inspect.currentframe() to get it. It will be used to save the
+            call parameters.
+
+        Returns
+        -------
+        str
+            The logging folder to be used
+        """
+        if folderName is None:
+            if run_id is None:
+                run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+            script_out_folder = os.getcwd()+"/lrg_exp/"+os.path.basename(file)
+            folderName = script_out_folder+"/"+run_id
+            os.makedirs(folderName, exist_ok=True)
+        else:
+            os.makedirs(folderName, exist_ok=True)
+            script_out_folder = str(Path(folderName).parent.absolute())
+
+        createSymlink(src = folderName, dst = script_out_folder+"/latest")
+        shutil.copyfile(file, folderName+"/main_script")
+        if currentframe is not None:
+            args, _, _, config = inspect.getargvalues(currentframe)
+        else:
+            args, config = ([],{})
+
+        has_torch = False
+        cuda_available = False
+        cuda_device_name = None
+        try:
+            import torch as th
+            cuda_available = th.cuda.is_available() 
+            if cuda_available:
+                cuda_device_name = th.cuda.get_device_name()
+        except ImportError as e:
+            pass
+        config["has_torch"] = has_torch
+        config["cuda_available"] = cuda_available
+        config["cuda_device_name"] = cuda_device_name
+        config["cpu_name"] = lr_gym.utils.utils.cpuinfo()
+        
+
+        # inputargs = [(i, values[i]) for i in args]
+        # with open(folderName+"/input_args.txt", "w") as input_args_file:
+        #     print(str(inputargs), file=input_args_file)
+        args_yaml_file = folderName+"/input_args.yaml"
+        with open(args_yaml_file, "w") as input_args_yamlfile:
+            yaml.dump(config,input_args_yamlfile, default_flow_style=None)
+        # ggLog.info(f"values = {values}")
+
+        if "modelFile" in config:
+            if config["modelFile"] is not None and type(config["modelFile"]) == str:
+                model_dir = os.path.dirname(config["modelFile"])
+                if os.path.isdir(model_dir):
+                    parent = Path(model_dir).parent.absolute()
+                    diff = subprocess.run(['diff', args_yaml_file, f"{parent}/input_args.yaml"], stdout=subprocess.PIPE).stdout.decode('utf-8')
+                    ggLog.info(f"Args comparison with loaded model:\n{diff}")
+                else:
+                    ggLog.info("modelFile is not a file")
+
+        if use_wandb:
+            global wandb_enabled
+            import wandb
+            if experiment_name is None:
+                experiment_name = os.path.basename(file)
+            try:
+                ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
+                wandb_init( project=experiment_name,
+                            config = config,
+                            name = f"{run_id}_{comment.strip().replace(' ','_')}",
+                            monitor_gym = False, # Do not save openai gym videos
+                            save_code = True, # Save run code
+                            sync_tensorboard = True, # Save tensorboard stuff,
+                            notes = comment
+                            )
+                wandb_enabled = True
+            except wandb.sdk.wandb_manager.ManagerConnectionError as e: # type: ignore
+                ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
+
+        return folderName
+
+    def log_folder(self) -> str:
+        return self._logFolder
+
+    def is_shutting_down(self):
+        return self._is_shutting_down
+    
+    def mark_shutting_down(self):
+        self._is_shutting_down = True
+
+    def shutdown(self):
+        self.mark_shutting_down()
+
+        if self.is_wandb_enabled():
+            import wandb
+            wandb.finish()
+            
+        t0 = time.monotonic()
+        timeout = 60
+        if threading.current_thread() == threading.main_thread():
+            active_threads = threading.enumerate()
+
+            while len(active_threads)>1 and time.monotonic() - t0 < timeout:
+                ggLog.warn(f"lr_gym shutting down: waiting for active threads {active_threads}")
+                time.sleep(10)
+
+        # for t in threading.enumerate():
+        #     if t != threading.main_thread():
+        #         terminate the thread???
+
+        # if len(active_threads)>1: # If we just exit() the process will wait for subthreads and not terminate
+        #     ggLog.error(f"Trying to shutdown but there are still threads running after {timeout} seconds. Self-terminating")
+        #     ggLog.error("Sending SIGTERM to myself")
+        #     os.kill(os.getpid(), signal.SIGTERM)
+        #     time.sleep(60)
+        #     ggLog.error("Still alive, sending SIGKILL to myself")
+        #     os.kill(os.getpid(), signal.SIGKILL)
+        #     time.sleep(10)
+        #     ggLog.error("Still alive after SIGKILL!")
+
+    def is_wandb_enabled(self):
+        return self._is_wandb_enabled
+
 
 class NoDaemonProcess(multiprocessing.Process):
     @property
@@ -30,7 +240,7 @@ class NoDaemonProcess(multiprocessing.Process):
         pass
 
 
-class NoDaemonContext(type(multiprocessing.get_context())):
+class NoDaemonContext(type(mp_helper.get_context())):
     Process = NoDaemonProcess
 
 # We sub-class multiprocessing.pool.Pool instead of multiprocessing.Pool
@@ -40,146 +250,20 @@ class NestablePool(multiprocessing.pool.Pool):
         kwargs['context'] = NoDaemonContext()
         super(NestablePool, self).__init__(*args, **kwargs)
 
-_is_shutting_down = False
-
-def is_shutting_down():
-    return _is_shutting_down
-
-def shutdown():
-    """Mark the current session as shutting-down.
-    """
-    # print(f"Shutting down")
-    global _is_shutting_down
-    _is_shutting_down = True
-
-
-from lr_gym.utils.sigint_handler import setupSigintHandler
-
-wandb_enabled = False
-
-def is_wandb_enabled():
-    return wandb_enabled
-
-def _setupLoggingForRun(file : str, currentframe = None, folderName : Optional[str] = None, use_wandb : bool = True, experiment_name : Optional[str] = None, run_id : Optional[str] = None, comment = ""):
-    """Sets up a logging output folder for a training run.
-        It creates the folder, saves the current main script file for reference
-
-    Parameters
-    ----------
-    file : str
-        Path of the main script, the file wil be copied in the log folder
-    frame : [type]
-        Current frame from the main method, use inspect.currentframe() to get it. It will be used to save the
-        call parameters.
-
-    Returns
-    -------
-    str
-        The logging folder to be used
-    """
-    if folderName is None:
-        if run_id is None:
-            run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-        script_out_folder = os.getcwd()+"/lrg_exp/"+os.path.basename(file)
-        folderName = script_out_folder+"/"+run_id
-        os.makedirs(folderName, exist_ok=True)
-    else:
-        os.makedirs(folderName, exist_ok=True)
-        script_out_folder = str(Path(folderName).parent.absolute())
-
-    createSymlink(src = folderName, dst = script_out_folder+"/latest")
-    shutil.copyfile(file, folderName+"/main_script")
-    if currentframe is not None:
-        args, _, _, config = inspect.getargvalues(currentframe)
-    else:
-        args, config = ([],{})
-
-    has_torch = False
-    cuda_available = False
-    cuda_device_name = None
-    try:
-        import torch as th
-        cuda_available = th.cuda.is_available() 
-        if cuda_available:
-            cuda_device_name = th.cuda.get_device_name()
-    except ImportError as e:
-        pass
-    config["has_torch"] = has_torch
-    config["cuda_available"] = cuda_available
-    config["cuda_device_name"] = cuda_device_name
-    config["cpu_name"] = lr_gym.utils.utils.cpuinfo()
-    
-
-    # inputargs = [(i, values[i]) for i in args]
-    # with open(folderName+"/input_args.txt", "w") as input_args_file:
-    #     print(str(inputargs), file=input_args_file)
-    args_yaml_file = folderName+"/input_args.yaml"
-    with open(args_yaml_file, "w") as input_args_yamlfile:
-        yaml.dump(config,input_args_yamlfile, default_flow_style=None)
-    # ggLog.info(f"values = {values}")
-
-    if "modelFile" in config:
-        if config["modelFile"] is not None and type(config["modelFile"]) == str:
-            model_dir = os.path.dirname(config["modelFile"])
-            if os.path.isdir(model_dir):
-                parent = Path(model_dir).parent.absolute()
-                diff = subprocess.run(['diff', args_yaml_file, f"{parent}/input_args.yaml"], stdout=subprocess.PIPE).stdout.decode('utf-8')
-                ggLog.info(f"Args comparison with loaded model:\n{diff}")
-            else:
-                ggLog.info("modelFile is not a file")
-
-    if use_wandb:
-        global wandb_enabled
-        import wandb
-        if experiment_name is None:
-            experiment_name = os.path.basename(file)
-        try:
-            ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
-            wandb.init( project=experiment_name,
-                        config = config,
-                        name = f"{run_id}_{comment.strip().replace(' ','_')}",
-                        monitor_gym = False, # Do not save openai gym videos
-                        save_code = True, # Save run code
-                        sync_tensorboard = True, # Save tensorboard stuff,
-                        notes = comment
-                        )
-            wandb_enabled = True
-        except wandb.sdk.wandb_manager.ManagerConnectionError as e: # type: ignore
-            ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
-
-    return folderName
 
 
 
-def lr_gym_shutdown():
-    shutdown()
-    if is_wandb_enabled():
-        import wandb
-        wandb.finish()
-    t0 = time.monotonic()
-    timeout = 60
-    if threading.current_thread() == threading.main_thread():
-        active_threads = threading.enumerate()
-
-        while len(active_threads)>1 and time.monotonic() - t0 < timeout:
-            ggLog.warn(f"lr_gym shutting down: waiting for active threads {active_threads}")
-            time.sleep(10)
-    # for t in threading.enumerate():
-    #     if t != threading.main_thread():
-    #         terminate the thread???
-
-    # if len(active_threads)>1: # If we just exit() the process will wait for subthreads and not terminate
-    #     ggLog.error(f"Trying to shutdown but there are still threads running after {timeout} seconds. Self-terminating")
-    #     ggLog.error("Sending SIGTERM to myself")
-    #     os.kill(os.getpid(), signal.SIGTERM)
-    #     time.sleep(60)
-    #     ggLog.error("Still alive, sending SIGKILL to myself")
-    #     os.kill(os.getpid(), signal.SIGKILL)
-    #     time.sleep(10)
-    #     ggLog.error("Still alive after SIGKILL!")
 
 
-run_info = {}
+
+ # Initialize with a minimal setup. Processes that do not initialize properly will use this.
+default_session : Session = Session()
+atexit.register(lambda: default_session.mark_shutting_down())
+
+def lr_gym_shutdown(session : Session):
+    session.shutdown()
+
+
 
 def lr_gym_startup( main_file_path : str,
                     currentframe = None,
@@ -190,45 +274,20 @@ def lr_gym_startup( main_file_path : str,
                     run_id : Optional[str] = None,
                     debug : Union[bool, int]  = False,
                     run_comment = "",
-                    use_wandb = True) -> str:
-    if isinstance(debug, bool):
-        if debug:
-            debug_level = 1
-        else:
-            debug_level = 0
-    else:
-        debug_level = debug
-    run_info["comment"] = run_comment
-    run_info["experiment_name"] = experiment_name
-    run_info["run_id"] = run_id
-    run_info["start_time_monotonic"] = time.monotonic()
-    run_info["start_time"] = time.time()
-    run_info["collected_episodes"] = 0
-    run_info["collected_steps"] = 0
-    faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
-    logFolder = _setupLoggingForRun(main_file_path, currentframe, folderName=folderName, experiment_name=experiment_name, run_id=run_id, comment=run_comment, use_wandb=use_wandb)
-    ggLog.addLogFile(logFolder+"/gglog.log")
-    if seed is None:
-        raise AttributeError("You must specify the run seed")
-    ggLog.setId(str(seed))
-    np.set_printoptions(edgeitems=10,linewidth=180)
-    setupSigintHandler()
-    if using_pytorch:
-        import torch as th
-        pyTorch_makeDeterministic(seed)
-        if debug_level>0:
-            th.cuda.set_sync_debug_mode("warn")
-        th.autograd.set_detect_anomaly(debug_level >= 0) # type: ignore
-        th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
-        if th.cuda.is_available():
-            ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
-        else:
-            ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                        "                  NO CUDA AVAILABLE!\n"+
-                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
-                        "Will continue in 10 sec...")
-            time.sleep(10)
-    return logFolder
+                    use_wandb = True) -> Tuple[str, Session]:
+    global default_session
+    default_session = Session()
+    default_session.initialize( main_file_path = main_file_path,
+                                currentframe = currentframe,
+                                using_pytorch = using_pytorch,
+                                folderName = folderName,
+                                seed = seed,
+                                experiment_name = experiment_name,
+                                run_id = run_id,
+                                debug = debug,
+                                run_comment = run_comment,
+                                use_wandb = use_wandb)
+    return default_session.log_folder(), default_session
 
 
 
@@ -429,4 +488,4 @@ def launchRun(runFunction,
     
     ggLog.info(f"All runs finished. Results:\n"+"\n".join(str(run_results)))
             
-    shutdown() # tell whatever may be running to stop
+    default_session.shutdown() # tell whatever may be running to stop

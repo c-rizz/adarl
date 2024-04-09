@@ -15,7 +15,7 @@ import lr_gym.utils.utils
 from lr_gym.envs.GymToLr import GymToLr
 from lr_gym.envs.RecorderGymWrapper import RecorderGymWrapper
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
-from lr_gym.utils.buffers import ThDictReplayBuffer
+from lr_gym.utils.buffers import ThDReplayBuffer
 from lr_gym.envs.ObsToDict import ObsToDict
 import torch as th
 import lr_gym.utils.session
@@ -84,7 +84,7 @@ def runFunction(seed, folderName, resumeModelFile, run_id, args):
                     seed = seed,
                     device=device,
                     policy_kwargs=dict(net_arch=[256,256]),
-                    replay_buffer_class = ThDictReplayBuffer,
+                    replay_buffer_class = ThDReplayBuffer,
                     replay_buffer_kwargs = {"storage_torch_device" : device},
                     tensorboard_log=folderName+f"/tensorboard")
 

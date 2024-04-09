@@ -14,7 +14,7 @@ class DbgImg:
         self._initialized = True
         self._ros_publishers = {}
         self._videostream_publisher : VideoStreamerPublisher = None
-        self._web_dbg = True
+        self._web_dbg = False
         try:
             from cv_bridge import CvBridge
             self._cv_bridge = CvBridge()

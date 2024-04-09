@@ -1,7 +1,7 @@
 import signal
 import traceback
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym.utils.session import shutdown, is_shutting_down
+import lr_gym.utils.session as session
 import os
 import time
 from multiprocessing import shared_memory
@@ -46,7 +46,7 @@ def sigint_handler(signal_num, stackframe):
     # print(f"stackframe = {stackframe}")
     traceback.print_stack()
     if sigint_counter>sigint_max:
-        shutdown()
+        session.default_session.mark_shutting_down()
         shared_memory_list[0] = "shutdown"
         try:
             original_sigint_handler(signal_num,stackframe)
@@ -107,10 +107,10 @@ def haltOnSigintReceived():
             while True:
                 answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":
-                    shutdown()
+                    session.default_session.mark_shutting_down()
                     shared_memory_list[0] = "shutdown"
-                    original_sigint_handler(signal.SIGINT, None)
-                    raise KeyboardInterrupt
+                    ggLog.info("Marked session for shutdown.")
+                    break
                 elif answer == "c" or answer == "continue":
                     break
             print("Resuming...")
@@ -127,17 +127,17 @@ def haltOnSigintReceived():
             if status == "resume":
                 sigint_counter = 0
         if status == "shutdown":
-            shutdown()
+            session.default_session.mark_shutting_down()
             original_sigint_handler(signal.SIGINT, None)
             raise KeyboardInterrupt
 
 
 def wait_halt_loop():
-    while not is_shutting_down():
+    while not session.default_session.is_shutting_down():
         # print(f"wait_halt_loop")
         haltOnSigintReceived()
         time.sleep(1)
-    # print(f"ending wait_halt_loop {is_shutting_down()}")
+    # print(f"ending wait_halt_loop {session.default_session.is_shutting_down()}")
 
 def launch_halt_waiter():
     t = threading.Thread(target=wait_halt_loop)

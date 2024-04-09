@@ -203,7 +203,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         #print("writing csv")
         self._logFileCsvWriter.writerow(self._dbg_info.values())
         self._logFile.flush()
-        if lr_gym.utils.session.is_wandb_enabled() and self._use_wandb:
+        if self._use_wandb and lr_gym.utils.session.default_session.is_wandb_enabled():
             if self._logs_id is not None and self._logs_id!= "":
                 prefix = self._logs_id+"/"
             else:
@@ -212,7 +212,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             wandb_dict = {}
             wandb_dict.update({"lrg/"+k:v for k,v in d.items()})
             wandb_dict.update({prefix+k:v for k,v in d.items()})
-            wandb_log(lambda: wandb_dict)
+            wandb_log(wandb_dict)
 
     def _build_info(self):
         info = {}

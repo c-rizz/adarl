@@ -3,6 +3,7 @@ import multiprocessing
 from multiprocessing import Pipe
 import cloudpickle
 import pickle
+import lr_gym.utils.mp_helper as mp_helper
 
 import os
 import signal
@@ -71,7 +72,7 @@ class SubProcEnvWrapper():
             # a `if __name__ == "__main__":`)
             forkserver_available = 'forkserver' in multiprocessing.get_all_start_methods()
             start_method = 'forkserver' if forkserver_available else 'spawn'
-        ctx = multiprocessing.get_context(start_method)
+        ctx = mp_helper.get_context(start_method)
         parent_conn, child_conn = Pipe()
         self._parentConnection = parent_conn
         pickledFunc = cloudpickle.dumps(constructEnvFunction)

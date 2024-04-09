@@ -6,6 +6,7 @@ import ctypes
 from typing import Optional, Any
 import numpy as np
 from lr_gym.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree
+import lr_gym.utils.mp_helper as mp_helper
 
 class SimpleCommander():
     def __init__(self, mp_context, n_envs, timeout_s):
@@ -49,7 +50,7 @@ class SimpleCommander():
         with self._cmd_done_cond:
             done = self._cmd_done_cond.wait_for(lambda: self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs, timeout=timeout)
         if not done:      
-            raise TimeoutError(f"Timed out waiting for cmd {self._current_command.value} completion")
+            raise TimeoutError(f"Timed out waiting for cmd {self._current_command.value} completion (timeout = {timeout})")
         
     def set_command(self, command : str):
         with self._new_cmd_cond:
@@ -242,7 +243,7 @@ if __name__ == "__main__":
     import numpy as np
     n_envs = 2
     steps = 100000
-    ctx = mp.get_context("forkserver")
+    ctx = mp_helper.get_context("forkserver")
     info_example = {"boh":th.tensor([0.0,0])}
     info_space = space_from_tree(info_example)
     print(f"info_space = {info_space}")

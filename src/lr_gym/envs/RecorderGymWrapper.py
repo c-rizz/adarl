@@ -204,7 +204,7 @@ class RecorderGymWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         if self._epStepCount > 0:
-            ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
+            ep_count = lr_gym.utils.session.default_session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
             fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward:09.9g}"
             if self._epReward > self._bestReward:
                 self._bestReward = self._epReward
@@ -236,7 +236,7 @@ class RecorderGymWrapper(gym.Wrapper):
         self._update_vecbuffer(vecobs, None, None, None, None)
         self._infoBuffer.append(info)
         
-        ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
+        ep_count = lr_gym.utils.session.default_session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
         if self._may_episode_be_saved(ep_count):
             img = self.render()
             if img is not None:
@@ -246,7 +246,7 @@ class RecorderGymWrapper(gym.Wrapper):
     def close(self):
         # ggLog.info(f"self._outFolder = {self._outFolder}")
         # self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}".zfill(6)+f"_{self._epReward}.mp4"))
-        ep_count = lr_gym.utils.session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
+        ep_count = lr_gym.utils.session.default_session.run_info["collected_episodes"] if self._use_global_ep_count else  self._episodeCounter
         fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward:09.9g}"
         self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self.env.close()
