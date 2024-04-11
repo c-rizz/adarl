@@ -314,10 +314,6 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         for k,v in sub_rewards.items():
             self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
         
-        if self._terminated:
-            ggLog.info(f"Episode terminated (truncated = {truncated} self._ggEnv.is_timelimited() = {self._ggEnv.is_timelimited()})")
-        if truncated:
-            ggLog.info(f"Episode truncated (terminated = {self._terminated} self._ggEnv.is_timelimited() = {self._ggEnv.is_timelimited()})")
         ret = (observation, reward, self._terminated, truncated, info)
 
         self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()

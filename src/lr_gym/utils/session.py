@@ -62,6 +62,7 @@ class Session():
         self.run_info["start_time"] = time.time()
         self.run_info["collected_episodes"] = 0
         self.run_info["collected_steps"] = 0
+        self.run_info["seed"] = seed
         faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
@@ -208,13 +209,14 @@ class Session():
         t0 = time.monotonic()
         timeout = 60
         if threading.current_thread() == threading.main_thread():
-            active_threads = threading.enumerate()
+            active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
 
-            while len(active_threads)>1 and time.monotonic() - t0 < timeout:
+            while len(active_threads)>0 and time.monotonic() - t0 < timeout:
                 ggLog.warn(f"Session shutting down: waiting for active threads {active_threads}")
-                time.sleep(10)
-                active_threads = threading.enumerate()
-        ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
+                time.sleep(1)
+                active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
+        if len(active_threads)>1:
+            ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 
         # for t in threading.enumerate():
         #     if t != threading.main_thread():

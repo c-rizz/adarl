@@ -1,9 +1,10 @@
-import wandb
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.utils import exc_to_str
 import time
 import torch as th
 import os
+os.environ["WANDB_ERROR_REPORTING"] = "False" # Having this enabled leavs some threads up at the end
+import wandb
 import threading
 import queue
 import lr_gym.utils.mp_helper as mp_helper

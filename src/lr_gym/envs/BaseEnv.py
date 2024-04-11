@@ -53,9 +53,9 @@ class BaseEnv(ABC):
         state_space : spaces.gym_spaces.Space, optional
             State space of the environment
         """
-        self.action_space = action_space
-        self.observation_space = observation_space
-        self.state_space = state_space
+        self.action_space : spaces.gym_spaces.Space = action_space
+        self.observation_space : spaces.gym_spaces.Space = observation_space
+        self.state_space : spaces.gym_spaces.Space = state_space
         self.reward_space = reward_space
         self.metadata = metadata
 
