@@ -85,11 +85,6 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
         return position_dist2goal, orientation_dist2goal
 
 
-    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32]) -> bool:
-        if super().checkEpisodeEnded(previousState, state):
-            return True
-        return False # Only stops at the maximum frame number
-
 
     def computeReward(self, previousState : np.typing.NDArray[(20,), np.float32], state : np.typing.NDArray[(20,), np.float32], action : int, env_conf = None) -> float:
 

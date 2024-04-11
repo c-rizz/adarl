@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-from copy import deepcopy
 from enum import Enum
 from typing import List, Optional, Sequence, Tuple, Union, Any, Callable
 
@@ -21,9 +20,11 @@ from gymnasium.error import (
 from gymnasium.vector.utils import concatenate, create_empty_array
 from gymnasium.vector.vector_env import VectorEnv
 from lr_gym.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
-from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree
+from lr_gym.utils.tensor_trees import space_from_tree, map_tensor_tree, stack_tensor_tree
 import torch as th
 import lr_gym.utils.mp_helper as mp_helper
+import time
+import lr_gym.utils.dbg.ggLog as ggLog
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -43,7 +44,8 @@ def _worker(
     cloudpickle_func: bytes,
     simple_commander : SimpleCommander,
     shared_env_data : SharedEnvData,
-    env_idx : int
+    env_idx : int,
+    action_device = "numpy"
 ) -> None:
     # Import here to avoid a circular import
     from stable_baselines3.common.env_util import is_wrapped
@@ -53,7 +55,9 @@ def _worker(
     env = cloudpickle.loads(cloudpickle_func)()
     reset_observation = {}
     observation, reset_info = env.reset()
-    reset_info["terminal_observation"] = observation # make it as if we always have terminal_observation
+    reset_info["final_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+    reset_info["terminal_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+    reset_info["real_next_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     # print(f"reset_info = {reset_info}")
     info_space = space_from_tree(reset_info)
     reset_info = None
@@ -63,20 +67,52 @@ def _worker(
             cmd = simple_commander.wait_command()
             if cmd == b"step":
                 action = shared_env_data.wait_actions()[env_idx]
+                if action_device == "numpy":
+                    if isinstance(action, th.Tensor):
+                        action = action.cpu().numpy()
+                    else:
+                        action = np.array(action)
+                elif isinstance(action_device, th.device):
+                    action = th.as_tensor(action, device = action_device)
                 observation, reward, terminated, truncated, info = env.step(action)
                 # convert to SB3 VecEnv api
                 done = terminated or truncated
                 # info = {}
-                info["TimeLimit.truncated"] = truncated and not terminated
-                info["terminal_observation"] = observation # always put last observation in info, even if not resetting
+                info["TimeLimit.truncated"] = truncated and not terminated # used by SB3 VecEnv specification
+                # When there is a reset the experience collector will need to receive both:
+                # - The "real_next_observation" observation, which is the consequence of the action
+                # - The "reset_observation" observation, which is after the reset, the first of
+                #   the new episode.
+                # To do so the reset_observation is returned in the "observation" element of the 
+                # step() return, the "real_next_observation" is returned in the info element of
+                # the step() return. Gymnasium's vector_env puts the real_next_observation in at
+                # "final_observation" key, stable_baselines VecEnv put it at the "terminal_observation"
+                # key.
+                # Actually, I think it makes sense to always distinguish between the real_next_observation
+                # and the next step's input observation. As such, I follow the logic of always returning
+                # the next step's input observation in the return of step(), and the real_next_observation
+                # in the info.
+                # In the info I will put the real_next_observation at all the possible keys: "real_next_observation",
+                # "final_observation" and "terminal_observation". I believe copy.deepcopy() is going to be
+                # smart about it and not copy it multiple times.
+                info["final_observation"] = observation # We always put the newest observation in info, even if not resetting
+                info["terminal_observation"] = observation # We always put the newest observation in info, even if not resetting
+                info["real_next_observation"] = observation # this is the actual next_observation, the one that is a consequence of action
                 if done:
                     # save final observation where user can get it, then reset
                     reset_observation, reset_info = env.reset()
                     observation = reset_observation # To follow VecEnv's behaviour
-                    reset_info["terminal_observation"] = reset_observation  # always put last observation in info
-                # To be compatible with VecEnvs the worker in case of reset will
-                # put the reset observation in obs and the last step observation in info
-                # the reset info is always in reset_info (only updated at each reset)
+                    reset_info["final_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    reset_info["terminal_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    reset_info["real_next_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                # As a result now we have:
+                # - observation contains the newest observation (either the action's consequence or the first of a new episode)
+                # - info contains the observation that is consequence of the action (the same obs at the 3 different keys)
+                # reset_info always contains the info of the last reset() (it is only updated at each reset)
+
+                # In any case (i.e. truncated, terminated, both, neither) the real next observation is the one in info
+                # then the algorithm will not consider reward propagation if termination==True (it instead has to
+                # consider reward propagation if termination==False and truncation==True)
                 observation = map_tensor_tree(observation, func=lambda x: th.as_tensor(x))
                 reward = map_tensor_tree(reward, func=lambda x: th.as_tensor(x))
                 action = map_tensor_tree(action, func=lambda x: th.as_tensor(x))
@@ -146,6 +182,10 @@ class AsyncVectorEnvShmem(VectorEnv):
         self,
         env_fns: Sequence[Callable[[], Env]],
         context : Optional[str] = None,
+        purely_numpy = False,
+        shared_mem_device = th.device("cpu"),
+        env_action_device = "numpy",
+        copy_data = False
     ):
         """Vectorized environment that runs multiple environments in parallel.
 
@@ -160,8 +200,11 @@ class AsyncVectorEnvShmem(VectorEnv):
                 such as gymnasium.spaces.Box, gymnasium.spaces.Discrete, or gymnasium.spaces.Dict) and shared_memory is True.
         """
         self.env_fns = env_fns        
-        self._purely_numpy = True
+        self._purely_numpy = purely_numpy
         self.num_envs = len(env_fns)
+        self._shared_mem_device = shared_mem_device
+        self._env_action_device = env_action_device
+        self._copy_data = copy_data
 
         if context is None:
             # Fork is not a thread safe method (see issue #217)
@@ -177,7 +220,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         self.processes = []
         for i in range(self.num_envs):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
-            args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i)
+            args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device)
             # daemon=True: if the main process crashes, we should not cause things to hang
             process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
             process.start()
@@ -193,7 +236,7 @@ class AsyncVectorEnvShmem(VectorEnv):
                                         action_space=action_space,
                                         info_space = info_space,
                                         n_envs=self.num_envs,
-                                        device=th.device("cpu"))
+                                        device=self._shared_mem_device)
         self._shared_env_data.set_data_struct(self._shared_data)
         self._simple_commander.set_command("set_data_struct")
         for remote in self.remotes: remote.send(self._shared_data)
@@ -207,9 +250,9 @@ class AsyncVectorEnvShmem(VectorEnv):
             action_space=action_space,
         )
 
-        self.observations = create_empty_array(
-            self.single_observation_space, n=self.num_envs, fn=np.zeros
-        )
+        # self.observations = create_empty_array(
+        #     self.single_observation_space, n=self.num_envs, fn=np.zeros
+        # )
 
         self._state = AsyncState.DEFAULT
         self._check_spaces()
@@ -314,13 +357,19 @@ class AsyncVectorEnvShmem(VectorEnv):
         results = [remote.recv() for remote in self.remotes]
         observations, infos = zip(*results)
 
-        self.observations = concatenate(
-            self.single_observation_space, observations, self.observations
-        )
+        if self._purely_numpy:
+            observations = concatenate(
+                self.single_observation_space, observations, out=None
+            )
+        else:
+            observations = stack_tensor_tree(observations)
 
         self._state = AsyncState.DEFAULT
 
-        return (deepcopy(self.observations), infos)
+        if self._copy_data:
+            observations = copy.deepcopy(observations)
+
+        return (observations, infos)
 
     def step(
         self, actions: ActType
@@ -358,8 +407,9 @@ class AsyncVectorEnvShmem(VectorEnv):
 
 
         self._shared_env_data.mark_waiting_data()
-        self._simple_commander.set_command("step")
         self._shared_env_data.fill_actions(actions)
+        self._simple_commander.set_command("step")
+        self._t0_step = time.monotonic()
 
         self._state = AsyncState.WAITING_STEP
 
@@ -391,8 +441,14 @@ class AsyncVectorEnvShmem(VectorEnv):
         # reset's info (only updated at each reset)
         # reset_obss is not used as it is already in obss
         self._simple_commander.wait_done(timeout=timeout)
-        obss, rewards, terminateds, truncateds, infos, reset_obss, reset_infos = copy.deepcopy(self._shared_env_data.wait_data())
-        self.reset_infos = reset_infos
+        t1_step = time.monotonic()
+        data = self._shared_env_data.wait_data()
+        t2_step = time.monotonic()
+        if self._copy_data:
+            data = copy.deepcopy(data)
+        observations, rewards, terminateds, truncateds, infos, reset_obss, reset_infos = data
+        t3_step = time.monotonic()
+        # self.reset_infos = reset_infos
         
         # obss = unstack_tensor_tree(obss)
         # self.observations = concatenate(
@@ -402,20 +458,25 @@ class AsyncVectorEnvShmem(VectorEnv):
         # )
         # infos = unstack_tensor_tree(infos)
         if self._purely_numpy:
-            obss = map_tensor_tree(obss, func=lambda x: np.array(x))
-        self.observations = obss # it is already a stacked observation
-
+            observations = map_tensor_tree(observations, func=lambda x: np.array(x))
+            rewards = np.array(rewards),
+            terminateds = np.array(terminateds, dtype=np.bool_)
+            truncateds = np.array(truncateds, dtype=np.bool_)
+        # self.observations = observations # it is already a stacked observation
         
         # return _flatten_obs(obss, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
 
         self._state = AsyncState.DEFAULT
 
+        tf_step = time.monotonic()
+        # ggLog.info(f"collection: {t1_step-self._t0_step} {t2_step-t1_step} {t3_step-t2_step} {tf_step-t3_step}")
+
 
         return (
-            self.observations,
-            np.array(rewards),
-            np.array(terminateds, dtype=np.bool_),
-            np.array(truncateds, dtype=np.bool_),
+            observations,
+            rewards,
+            terminateds,
+            truncateds,
             infos,
         )
 
@@ -569,12 +630,12 @@ class AsyncVectorEnvShmem(VectorEnv):
             self._simple_commander.set_command("close")
             self._simple_commander.wait_done()
             for remote in self.remotes : remote.close()
-            for process in self.processes: process.join(timeout)            
+            for process in self.processes: process.join(30)            
             for process in self.processes:
                 if process.is_alive():
                     logger.error(f"Subprocess still alive after timeot, sending SIGTERM.")
                     process.terminate()
-        for process in self.processes: process.join(timeout)
+        for process in self.processes: process.join(30)
         for process in self.processes:
             if process.is_alive():
                 logger.error(f"Subprocess still alive after timeot, sending SIGKILL.")

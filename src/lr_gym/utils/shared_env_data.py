@@ -189,7 +189,7 @@ class SharedEnvData():
 
 
 
-def worker_func(sh : SharedEnvData, sc, worker_id, receiver):
+def example_worker_func(sh : SharedEnvData, sc, worker_id, receiver):
     # print(f"worker starting with {sh} and {steps}")
     import time
     i = 0
@@ -250,7 +250,7 @@ if __name__ == "__main__":
     sc = SimpleCommander(ctx, n_envs=n_envs)
     sh = SharedEnvData(n_envs=n_envs,timeout_s=5, mp_context=ctx)
     receivers, senders = zip(*[ctx.Pipe(duplex=False) for _ in range(n_envs)])
-    workers = [ctx.Process(target=worker_func, args=(sh,sc,idx, receivers[idx])) for idx in range(n_envs)]
+    workers = [ctx.Process(target=example_worker_func, args=(sh,sc,idx, receivers[idx])) for idx in range(n_envs)]
     for worker in workers:
         worker.start()
 

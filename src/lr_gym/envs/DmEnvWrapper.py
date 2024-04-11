@@ -101,18 +101,21 @@ class DmEnvWrapper(dm_env.Environment):
         self._lr_env.submitAction(action)
         self._lr_env.performStep()
         state = self._lr_env.getState()
-        done = self._lr_env.checkEpisodeEnded(previousState, state)
+        terminated = self._lr_env.reachedTerminalState(previousState, state)
+        truncated = self._lr_env.reachedTimeout() and not self._lr_env.is_timelimited()
         reward = self._lr_env.computeReward(previousState, state, action, env_conf=self._lr_env.get_configuration())
         observation = self._lr_env.getObservation(state)
-        self._episode_ended = done
+        self._episode_ended = terminated or truncated
         self._episode_frames += 1
         self._total_frames += 1
 
         # ggLog.info(f"episode {self._reset_count} \tstep {self._episode_frames} \t done = {done} \t tot_frames = {self._total_frames}")
-        if not done:
+        if not (terminated or truncated):
             return dm_env.transition(reward, observation)
-        else:
+        elif terminated:
             return dm_env.termination(reward, observation)
+        elif truncated and not terminated:
+            return dm_env.truncation(reward, observation)
 
         
 

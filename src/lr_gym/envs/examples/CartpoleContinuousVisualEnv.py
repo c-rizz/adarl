@@ -182,8 +182,8 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
                             states[("cartpole_v0","cartpole_joint")].rate[0]]),
                   np.copy(self._stackedImg))
 
-    def checkEpisodeEnded(self, previousState : Tuple[float,float,float,float, np.ndarray], state : Tuple[float,float,float,float, np.ndarray]) -> bool:
-        if super(CartpoleEnv, self).checkEpisodeEnded(previousState, state):
+    def reachedTerminalState(self, previousState : Tuple[float,float,float,float, np.ndarray], state : Tuple[float,float,float,float, np.ndarray]) -> bool:
+        if super(CartpoleEnv, self).reachedTerminalState(previousState, state):
             return True
         cartPosition = state[0][0]
         poleAngle = state[0][2]

@@ -187,10 +187,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
-        if super().checkEpisodeEnded(previousState, state):
-            return True
-
+    def reachedTerminalState(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
         if not(np.all(state[0:3] >= self._operatingArea[0]) and np.all(state[0:3] <= self._operatingArea[1])):
             return True
         return False

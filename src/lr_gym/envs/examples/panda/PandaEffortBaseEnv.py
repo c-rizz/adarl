@@ -251,8 +251,8 @@ class PandaEffortBaseEnv(ControlledEnv):
         normalized_positions = (jnt_positions-min_limits)/jnt_ranges
         return normalized_positions
 
-    def checkEpisodeEnded(self, previousState, state) -> bool:
-        r = super().checkEpisodeEnded(previousState, state)
+    def reachedTerminalState(self, previousState, state) -> bool:
+        r = super().reachedTerminalState(previousState, state)
         if r:
             self.submitAction([0,0,0,0,0,0,0])
         return r

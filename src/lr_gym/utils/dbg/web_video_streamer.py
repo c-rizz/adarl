@@ -51,7 +51,7 @@ class VideoStreamerSubscriber():
         self._zmq_socket.subscribe(b"") #subscribe to anything
         self._zmq_socket.bind("ipc:///tmp/lr_gym/VideoStreamerPublisher")
 
-        self._listener_thread = threading.Thread(target=self._listener)
+        self._listener_thread = threading.Thread(target=self._listener, name="VideoStreamerSubscriber_listener")
         self._listener_thread.start()
         atexit.register(self._cleanup)
         # ggLog.info(f"Started")

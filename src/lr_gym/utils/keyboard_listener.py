@@ -6,7 +6,7 @@ import copy
 
 class KeyboardListener():
     def __init__(self):
-        self._listener_thread = threading.Thread(target=self._listener)
+        self._listener_thread = threading.Thread(target=self._listener, name="KeyboardListener")
         self._listener_thread.start()
         self._started = True
         atexit.register(self.close)

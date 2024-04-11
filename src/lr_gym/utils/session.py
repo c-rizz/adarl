@@ -45,6 +45,7 @@ class Session():
                         use_wandb = True):
         
         self._wandb_wrapper.start_worker()
+        self._is_wandb_enabled = True
         if isinstance(debug, bool):
             if debug:
                 debug_level = 1
@@ -202,6 +203,7 @@ class Session():
         if self.is_wandb_enabled():
             import wandb
             wandb.finish()
+            ggLog.info(f"Told wandb to finish.")
             
         t0 = time.monotonic()
         timeout = 60
@@ -209,8 +211,10 @@ class Session():
             active_threads = threading.enumerate()
 
             while len(active_threads)>1 and time.monotonic() - t0 < timeout:
-                ggLog.warn(f"lr_gym shutting down: waiting for active threads {active_threads}")
+                ggLog.warn(f"Session shutting down: waiting for active threads {active_threads}")
                 time.sleep(10)
+                active_threads = threading.enumerate()
+        ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 
         # for t in threading.enumerate():
         #     if t != threading.main_thread():
@@ -486,6 +490,6 @@ def launchRun(runFunction,
             # run_results = p.starmap(lambda f,kwargs: f(**kwargs), [([],kwargs) for kwargs in argss])
             run_results = p.starmap(runFunction_wrapper_arg_kwargs, [([],kwargs) for kwargs in argss])
     
-    ggLog.info(f"All runs finished. Results:\n"+"\n".join(str(run_results)))
+    ggLog.info(f"All runs finished. Results:\n"+"\n".join([str(run_result) for run_result in run_results]))
             
     default_session.shutdown() # tell whatever may be running to stop

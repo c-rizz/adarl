@@ -36,28 +36,8 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
                  observation_space : spaces.gym_spaces.Space,
                  state_space : spaces.gym_spaces.Space,
                  startSimulation : bool = False,
-                 is_timelimited : bool = True):
-        """Short summary.
-
-        Parameters
-        ----------
-        maxStepsPerEpisode : int
-            maximum number of frames per episode. The step() function will return
-            done=True after being called this number of times
-        stepLength_sec : float
-            Duration in seconds of each simulation step. Lower values will lead to
-            slower simulation. This value should be kept higher than the gazebo
-            max_step_size parameter.
-        environmentController : EnvironmentController
-            Specifies which simulator controller to use. By default it connects to Gazebo
-
-        Raises
-        -------
-        rospy.ROSException
-            In cause it fails to find the required ROS services
-        ROSInterruptException
-            In case it gets interrupted while waiting for ROS servics
-
+                 is_timelimited : bool = False):
+        """
         """
 
 

@@ -1,9 +1,10 @@
 from lr_gym.utils.spaces import gym_spaces
 import torch as th
-from typing import Optional, Any
+from typing import Optional, Any, List
 import numpy as np
 from lr_gym.utils.utils import torch_to_numpy_dtype_dict
 
+TensorTree = dict | list | tuple | th.Tensor
 
 def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> th.Tensor | dict[Any, th.Tensor]:
     if isinstance(space, gym_spaces.Dict):
@@ -20,12 +21,14 @@ def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : b
     else:
         raise RuntimeError(f"Unsupported space {space}")
 
-def fill_tensor_tree(env_idx : Optional[int], src_tree : dict | th.Tensor, dst_tree : dict | th.Tensor, depth = 0):
+def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : TensorTree, depth = 0):
     if isinstance(src_tree, dict):
         if not isinstance(dst_tree,dict):
             raise RuntimeError(f"Tree element type mismatch. src = {type(src_tree)}, dst = {dst_tree}")
         if src_tree.keys() != dst_tree.keys():
-            raise RuntimeError(f"source and destination keys do not match: src={src_tree.keys()} dst={dst_tree.keys()}")
+            src_keys = set(src_tree.keys())
+            dst_keys = set(dst_tree.keys())
+            raise RuntimeError(f"source and destination keys do not match:\nsrc={src_keys}\ndst={dst_keys}\ndiff={(src_keys-dst_keys).union(dst_keys-src_keys)}")
         for k in dst_tree.keys():
             fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1)
         if depth == 0:
@@ -40,7 +43,7 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : dict | th.Tensor, dst_t
     else:
         raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
 
-def map_tensor_tree(src_tree : dict | th.Tensor, func):
+def map_tensor_tree(src_tree : TensorTree, func):
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
@@ -53,7 +56,7 @@ def map_tensor_tree(src_tree : dict | th.Tensor, func):
     else:
         return func(src_tree)
 
-def flatten_tensor_tree(src_tree : dict | th.Tensor) -> dict:
+def flatten_tensor_tree(src_tree : TensorTree) -> dict:
     if isinstance(src_tree, tuple):
         src_tree = {f"T{i}":src_tree[i] for i in range(len(src_tree))}
     elif isinstance(src_tree, list):
@@ -68,9 +71,35 @@ def flatten_tensor_tree(src_tree : dict | th.Tensor) -> dict:
     else:
         return {tuple():src_tree}
 
+def stack_tensor_tree(src_trees : List[TensorTree]) -> TensorTree:
+    if isinstance(src_trees[0], th.Tensor):
+        # assume all trees are matching, thus they are all tensors
+        return th.stack(src_trees)
+    elif isinstance(src_trees[0], dict):
+        d = {}
+        for k in src_trees[0].keys():
+            d[k] = stack_tensor_tree([src_trees[i][k] for i in range(len(src_trees))])
+        return d
+    elif isinstance(src_trees[0], list):
+        l = []
+        for i in range(len(src_trees[0])):
+            l.append(stack_tensor_tree([src_trees[i][j] for j in range(len(src_trees))]))
+        return l
+    elif isinstance(src_trees[0], tuple):
+        l = []
+        for i in range(len(src_trees[0])):
+            l.append(stack_tensor_tree([src_trees[i][j] for j in range(len(src_trees))]))
+        return tuple(l)
+    else:
+        raise RuntimeError(f"Unexpected tensor tree type {type(src_trees[0])}")
+
+def index_select_tensor_tree(src_tree: TensorTree, indexes : th.Tensor) -> TensorTree:
+    return map_tensor_tree(src_tree=src_tree, func=lambda t: t.index_select(dim = 0, index=indexes))
 
 
-def unstack_tensor_tree(src_tree : dict | th.Tensor) -> list:
+
+
+def unstack_tensor_tree(src_tree : TensorTree) -> list:
     if isinstance(src_tree, dict):
         # print(f"src_tree = {src_tree}")
         dictlist = []

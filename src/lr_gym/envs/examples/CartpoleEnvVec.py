@@ -88,8 +88,8 @@ class CartpoleEnv(ControlledEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : Tuple[float,float,float,float, np.ndarray], state : Tuple[float,float,float,float, np.ndarray]) -> bool:
-        if super().checkEpisodeEnded(previousState, state):
+    def reachedTerminalState(self, previousState : Tuple[float,float,float,float, np.ndarray], state : Tuple[float,float,float,float, np.ndarray]) -> bool:
+        if super().reachedTerminalState(previousState, state):
             return True
         cartPosition = state[0]
         poleAngle = state[2]

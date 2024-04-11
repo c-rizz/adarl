@@ -48,8 +48,8 @@ class BaseEnv(ABC):
         startSimulation : bool, optional
             If true the simulation will automatically be started in the constructor, by default False
         is_timelimited : bool, optional
-            If true the env is to be considered time-limited, meaning that terminations due to reaching maxStepsPerEpisode are no truncations, 
-            but proper terminations
+            If true the env is to be considered time-limited, meaning that terminations due to reaching maxStepsPerEpisode are not
+            truncations, but proper terminations
         state_space : spaces.gym_spaces.Space, optional
             State space of the environment
         """
@@ -101,6 +101,12 @@ class BaseEnv(ABC):
         """
         return self.get_max_episode_steps()>0 and self._stepCounter >= self.get_max_episode_steps()
 
+    def reachedTerminalState(self, previousState, state) -> th.Tensor:
+        """
+        If maxStepsPerEpisode is reached. Usually not supposed to be subclassed.
+        """
+        return th.as_tensor(False)
+
     
     def checkEpisodeEnded(self, previousState, state) -> th.Tensor:
         """To be implemented in subclass.
@@ -120,7 +126,7 @@ class BaseEnv(ABC):
             Return True if the episode has ended, False otherwise
 
         """
-        return self.reachedTimeout()
+        return self.reachedTimeout() or self.reachedTerminalState()
 
     @abstractmethod
     def computeReward(self, previousState, state, action, env_conf = None, sub_rewards : Optional[Dict[str,th.Tensor]] = None) -> th.Tensor:

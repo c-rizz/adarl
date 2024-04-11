@@ -78,15 +78,8 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         super().submitAction(action)
         self._actionToDo = action
 
-
-    def checkEpisodeEnded(self, previousState, state) -> th.Tensor:
-        if self._last_terminated is not None:
-            ended = self._last_terminated
-        else:
-            ended = False
-        ended = ended or super().checkEpisodeEnded(previousState, state)
-        return th.as_tensor(ended, dtype=th.bool)
-
+    def reachedTerminalState(self, previousState, state) -> th.Tensor:
+        return state["terminated"]
 
     def computeReward(self, previousState, state, action, env_conf = None, sub_rewards = {}) -> th.Tensor:
         if (state["internal_info"]["ep"] == previousState["internal_info"]["ep"] and
@@ -103,7 +96,9 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         internal_info = {"step":self._stepCounter,
                           "ep":self._ep_count,
                           "reward":self._last_reward,
-                          "action":self._last_action}
+                          "action":self._last_action,
+                          "terminated":self._last_terminated,
+                          "truncated":self._last_truncated,}
         return {"internal_info":internal_info,
                 "obs":self._last_observation}
 

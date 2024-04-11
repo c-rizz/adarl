@@ -107,11 +107,11 @@ class HopperVisualEnv(HopperEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : State,
+    def reachedTerminalState(self, previousState : State,
                                 state : State) -> bool:
         robotState : RobotState = state[0]
         prevRobotState : RobotState = previousState[0]
-        return super().checkEpisodeEnded(prevRobotState, robotState)
+        return super().reachedTerminalState(prevRobotState, robotState)
 
 
 
@@ -123,7 +123,7 @@ class HopperVisualEnv(HopperEnv):
         robotState : RobotState = state[0]
         prevRobotState : RobotState = previousState[0]
 
-        if not self.checkEpisodeEnded(previousState, state):
+        if not self.reachedTerminalState(previousState, state):
             speed = (robotState[15] - robotState[16])/self._stepLength_sec
             # print("Speed: "+str(speed))
             return 1 + 2*speed - 0.003*(action[0]*action[0] + action[1]*action[1] + action[2]*action[2]) # should be more or less the same as openai's hopper_v3

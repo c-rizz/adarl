@@ -34,7 +34,7 @@ class WandbWrapper():
             object itself. When you call wandb_log from the child process it will recognize
             he is a child process and send the logs to the queue.
         """
-        self._worker_thread = threading.Thread(target=self._worker)
+        self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
         self._worker_thread.start()
 
 
@@ -92,7 +92,7 @@ class WandbWrapper():
                 except Exception as e:
                     ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
             else:
-                ggLog.info(f"wandb_log called from non-main process")
+                # ggLog.info(f"wandb_log called from non-main process")
                 # raise NotImplementedError()
                 self._queue.put((log_dict, throttle_period), block=False)
         except Exception as e:

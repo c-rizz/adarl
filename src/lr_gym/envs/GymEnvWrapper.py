@@ -299,11 +299,11 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
 
         # Assess the situation
-        self._terminated = self._ggEnv.checkEpisodeEnded(previousState, state)
+        truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
+        self._terminated = self._ggEnv.reachedTerminalState(previousState, state)
         sub_rewards : Dict[str,th.Tensor] = {}
         reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration(), sub_rewards = sub_rewards)
         observation = self._ggEnv.getObservation(state)
-        truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
         info = self._build_info()
         # info.update({"gz_gym_base_env_reached_state" : state,
         #             "gz_gym_base_env_previous_state" : previousState,
@@ -314,6 +314,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         for k,v in sub_rewards.items():
             self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
         
+        if self._terminated:
+            ggLog.info(f"Episode terminated (truncated = {truncated} self._ggEnv.is_timelimited() = {self._ggEnv.is_timelimited()})")
+        if truncated:
+            ggLog.info(f"Episode truncated (terminated = {self._terminated} self._ggEnv.is_timelimited() = {self._ggEnv.is_timelimited()})")
         ret = (observation, reward, self._terminated, truncated, info)
 
         self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()

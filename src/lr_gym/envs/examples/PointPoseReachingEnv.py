@@ -176,10 +176,7 @@ class PointPoseReachingEnv(BaseEnv):
 
 
 
-    def checkEpisodeEnded(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
-        if super().checkEpisodeEnded(previousState, state):
-            return True
-
+    def reachedTerminalState(self, previousState : np.typing.NDArray[(15,), np.float32], state : np.typing.NDArray[(15,), np.float32]) -> bool:
         #return bool(self._checkGoalReached(state))
         #print("isdone = ",isdone)
         # print("state =",state)

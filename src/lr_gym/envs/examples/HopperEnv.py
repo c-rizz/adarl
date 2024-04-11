@@ -130,10 +130,10 @@ class HopperEnv(ControlledEnv):
                                                     ("hopper","leg_to_foot",unnormalizedAction[2])])
 
 
-    def checkEpisodeEnded(self, previousState : Tuple[float,float,float,float,float,float,float,float,float,float],
+    def reachedTerminalState(self, previousState : Tuple[float,float,float,float,float,float,float,float,float,float],
                          state : Tuple[float,float,float,float,float,float,float,float,float,float]) -> bool:
         done = False
-        if super().checkEpisodeEnded(previousState, state):
+        if super().reachedTerminalState(previousState, state):
             # ggLog.info("Episode terminated: superclass reasons")
             done |= True
 
@@ -153,7 +153,7 @@ class HopperEnv(ControlledEnv):
                         state : Tuple[float,float,float,float,float,float,float,float,float,float],
                         action : Tuple[float,float,float],
                         env_conf = None) -> float:
-        if not self.checkEpisodeEnded(previousState, state):
+        if not self.reachedTerminalState(previousState, state):
             speed = (state[15] - state[16])/self._stepLength_sec
             # print("Speed: "+str(speed))
             return 1 + 2*speed - 0.003*(action[0]*action[0] + action[1]*action[1] + action[2]*action[2]) # should be more or less the same as openai's hopper_v3

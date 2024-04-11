@@ -3,7 +3,7 @@ from cmath import inf
 from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
 import numpy as np
 from gymnasium import spaces
-from typing import Union, List, Dict, Any, Optional, Callable
+from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple
 import torch as th
 import random
 from stable_baselines3.common.vec_env import VecNormalize, VecEnv
@@ -14,6 +14,7 @@ import warnings
 import time
 import lr_gym.utils.dbg.ggLog as ggLog
 from stable_baselines3.common.preprocessing import get_obs_shape
+import copy
 
 # class ReplayBuffer_updatable(ReplayBuffer):
 #     def update(self, buffer : ReplayBuffer):
@@ -40,6 +41,13 @@ from stable_baselines3.common.preprocessing import get_obs_shape
 #                 self.pos = 0
 #             copied += to_copy
 
+
+class TransitionBatch(NamedTuple):
+    observations : Union[th.Tensor, Dict]
+    actions : th.Tensor
+    next_observations : Union[th.Tensor, Dict]
+    terminated : th.Tensor
+    rewards : th.Tensor
 
 
 class RandomHoldoutBuffer(DictReplayBuffer):
@@ -775,7 +783,7 @@ class ThDReplayBuffer(ReplayBuffer):
             self.full = True
             self.pos = 0
 
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
         :param batch_size: Number of element to sample
@@ -791,7 +799,7 @@ class ThDReplayBuffer(ReplayBuffer):
         return self._get_samples(batch_inds, env=env)
         # return super(ReplayBuffer, self).sample(batch_size=batch_size, env=env)
 
-    def _get_samples(self, batch_inds: th.Tensor, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:
+    def _get_samples(self, batch_inds: th.Tensor, env: Optional[VecNormalize] = None) -> TransitionBatch:
         # Sample randomly the env idx
         # env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
         if not isinstance(batch_inds, th.Tensor):
@@ -814,11 +822,11 @@ class ThDReplayBuffer(ReplayBuffer):
         actions = self.to_out(self.actions[batch_inds, env_indices])
         rewards = self.to_out(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env))
 
-        return DictReplayBufferSamples(
+        return TransitionBatch(
             observations=observations,
             actions=actions,
             next_observations=next_observations,
-            dones=terminated,
+            terminated=terminated,
             rewards=rewards,
         )
 

@@ -20,6 +20,9 @@ class LrWrapper(BaseEnv):
     
     def checkEpisodeEnded(self, *args,**kwargs):
         return self.env.checkEpisodeEnded(*args,**kwargs)
+    
+    def reachedTerminalState(self, *args,**kwargs):
+        return self.env.reachedTerminalState(*args,**kwargs)
 
     def computeReward(self, *args,**kwargs):
         return self.env.computeReward(*args,**kwargs)
