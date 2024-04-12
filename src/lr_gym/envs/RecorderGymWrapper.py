@@ -158,10 +158,10 @@ class RecorderGymWrapper(gym.Wrapper):
         
     def _write_vecbuffer(self, out_filename, vecbuffer):
         out_filename += ".hdf5"
-        ggLog.info(f"writing buffer {vecbuffer}")
+        # ggLog.info(f"writing buffer {vecbuffer}")
         with h5py.File(out_filename, "w") as f:
             for k,v in vecbuffer.items():
-                ggLog.info(f"writing subbuffer {v}")
+                # ggLog.info(f"writing subbuffer {v}")
                 if isinstance(v,dict):
                     for sk,sv in vecbuffer.items():
                         f.create_dataset(f"{k}.{sk}", data=sv)

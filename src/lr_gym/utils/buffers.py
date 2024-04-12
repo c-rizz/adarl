@@ -14,7 +14,8 @@ import warnings
 import time
 import lr_gym.utils.dbg.ggLog as ggLog
 from stable_baselines3.common.preprocessing import get_obs_shape
-import copy
+import lr_gym.utils.mp_helper as mp_helper
+import ctypes
 
 # class ReplayBuffer_updatable(ReplayBuffer):
 #     def update(self, buffer : ReplayBuffer):
@@ -185,13 +186,39 @@ class BasicStorage():
         self._storage_torch_device = th.device(storage_torch_device)
         self.n_envs = n_envs
         self._share_mem = share_mem
+        self._allow_rollover = allow_rollover
         
         self._allocate_buffers(self.buffer_size)
-        self._addcount = 0
-        self._allow_rollover = allow_rollover
-        self._addcount_since_clear = 0
-        
+        # self._addcount = 0
+        # self._completed_episodes = 0
+        # self._addcount_since_clear = 0
 
+        ctx = mp_helper.get_context(method="forkserver")
+        # these are shared and not synchronized, so be careful to use them properly.
+        # It should not be an issue, you should use the whole class in a properly synchronized manner
+        # In the end using torch tensors as shared emmeory is just the easiest thing (mp.Values don't like to be sent through pipes)
+        self._counters = th.tensor([0,0,0], dtype=th.int64, device="cpu").share_memory_()
+
+    @property
+    def _addcount(self):
+        return self._counters[0].item()
+    @_addcount.setter
+    def _addcount(self, value):
+        self._counters[0] = value
+
+    @property
+    def _completed_episodes(self):
+        return self._counters[1].item()
+    @_completed_episodes.setter
+    def _completed_episodes(self, value):
+        self._counters[1] = value
+
+    @property
+    def _addcount_since_clear(self):
+        return self._counters[2].item()
+    @_addcount_since_clear.setter
+    def _addcount_since_clear(self, value):
+        self._counters[2] = value
 
     def _allocate_buffers(self, buffer_size):
         self.observations = {
@@ -249,9 +276,9 @@ class BasicStorage():
         terminated: th.Tensor | np.ndarray,
         truncated: th.Tensor | np.ndarray
     ) -> None:
-        if not self._allow_rollover and self._addcount_since_clear >= self.buffer_size:
+        if not self._allow_rollover and int(self._addcount_since_clear) >= self.buffer_size:
             raise RuntimeError(f"Called add with full buffer and allow_rollover is false")
-        pos = self._addcount_since_clear % self.buffer_size
+        pos = int(self._addcount_since_clear) % self.buffer_size
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
         # Copy to avoid modification by reference
         for key in self.observations.keys():
@@ -266,6 +293,12 @@ class BasicStorage():
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
             self.next_observations[key][pos] = th.as_tensor(next_obs[key]).to(self._storage_torch_device, non_blocking=True)
 
+        if isinstance(terminated, np.ndarray):
+            terminated = th.as_tensor(terminated, device="cpu") # should be a no-copy operation
+        if isinstance(truncated, np.ndarray):
+            truncated = th.as_tensor(truncated, device="cpu") # should be a no-copy operation
+        ep_ends = th.logical_or(terminated, truncated).count_nonzero().to(device="cpu", non_blocking=True)
+        # ggLog.info(f"ep_ends = {ep_ends}")
 
         self.actions[pos] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
         self.rewards[pos] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
@@ -274,20 +307,45 @@ class BasicStorage():
 
         th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
 
-        self._addcount+=1
-        self._addcount_since_clear+=1
+        self._addcount = self._addcount + 1
+        self._completed_episodes = self._completed_episodes + ep_ends.item()
+        self._addcount_since_clear +=1
     
     def size(self):
-        return max(self.buffer_size, self._addcount_since_clear)
+        return max(self.buffer_size,int(self._addcount_since_clear))
 
     def storage_torch_device(self):
         return self._storage_torch_device
 
     def stored_frames(self):
         return self.size()*self.n_envs
+    
+    def added_frames(self) -> int:
+        """Frames that were added to the buffer since its creation.
+        This is not resetted by clear() and still increases when the buffer is full.
+
+        Returns
+        -------
+        int
+            Number of frames that were added to the buffer since its creation
+        """
+        return self._addcount * self.n_envs
+    
+    def added_completed_episodes(self) -> int:
+        """Episodes that were added to the buffer since its creation. It only increases when a full episode is added.
+        Frames of non-completed episodes are not accounte for.
+        This is not resetted by clear() and still increases when the buffer is full.
+
+        Returns
+        -------
+        int
+            Number of episodes that were added to the buffer since its creation
+        """
+        return int(self._completed_episodes)
 
     def replay(self):
-        pos = self._addcount_since_clear % self.buffer_size if self._addcount_since_clear < self.buffer_size else 0
+        addcount_since_clear = int(self._addcount_since_clear)
+        pos = addcount_since_clear % self.buffer_size if addcount_since_clear < self.buffer_size else 0
         ret_vsteps = 0
         while ret_vsteps < self.size():
             obs = {k:v[pos] for k,v in self.observations.items()}

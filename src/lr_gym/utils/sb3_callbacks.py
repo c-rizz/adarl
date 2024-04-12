@@ -162,9 +162,10 @@ class PrintLrRunInfo(BaseCallback):
 
     
 
+import lr_gym.utils.callbacks
 
 
-class EvalCallback_ep(EventCallback):
+class EvalCallback_ep(BaseCallback):
     """
     Callback for evaluating an agent.
     .. warning::
@@ -191,7 +192,6 @@ class EvalCallback_ep(EventCallback):
     def __init__(
         self,
         eval_env: Union[gym.Env, VecEnv],
-        callback_on_new_best: Optional[BaseCallback] = None,
         n_eval_episodes: int = 10,
         eval_freq_ep: int = 10,
         log_path: Optional[str] = None,
@@ -201,7 +201,14 @@ class EvalCallback_ep(EventCallback):
         verbose: int = 1,
         warn: bool = True,
     ):
-        super().__init__(callback_on_new_best, verbose=verbose)
+        super().__init__(verbose=verbose)
+        self._sub_callback = lr_gym.utils.callbacks.EvalCallback(eval_env=eval_env,
+                                                                 model=None,
+                                                                 n_eval_episodes=n_eval_episodes,
+                                                                 eval_freq_ep=eval_freq_ep,
+                                                                 best_model_save_path=best_model_save_path,
+                                                                 deterministic=deterministic,
+                                                                 verbose=verbose)
         self.n_eval_episodes = n_eval_episodes
         self.eval_freq_ep = eval_freq_ep
         self.best_mean_reward = -np.inf
@@ -210,24 +217,11 @@ class EvalCallback_ep(EventCallback):
         self.render = render
         self.warn = warn
 
-        # Convert to VecEnv for consistency
-        if not isinstance(eval_env, VecEnv):
-            eval_env = DummyVecEnv([lambda: eval_env])
-
-        self.eval_env = eval_env
         self.best_model_save_path = best_model_save_path
-        # Logs will be written in ``evaluations.npz``
-        if log_path is not None:
-            log_path = os.path.join(log_path, "evaluations")
-        self.log_path = log_path
-        self.evaluations_results = []
-        self.evaluations_timesteps = []
-        self.evaluations_length = []
-        # For computing success rate
-        self._is_success_buffer = []
-        self.evaluations_successes = []
         self._episode_counter = 0
-        self._last_evaluation_episode = float("-inf")
+        self._step_counter = 0
+        self._new_episode_counter = 0
+        self._new_step_counter = 0
 
 
     def _init_callback(self) -> None:
@@ -238,120 +232,21 @@ class EvalCallback_ep(EventCallback):
         # Create folders if needed
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
-        if self.log_path is not None:
-            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
     def _on_step(self):
         # ggLog.info(f"AutoencodingSAC_VideoSaver: on_step, locals = {self.locals}")
         if self.locals["dones"][0]:
             self._episode_counter += 1
+            self._new_episode_counter += 1
+        n_envs = len(self.locals["dones"])
+        self._step_counter += n_envs
+        self._new_step_counter += n_envs
         return True
-
-    def _log_success_callback(self, locals_: Dict[str, Any], globals_: Dict[str, Any]) -> None:
-        """
-        Callback passed to the  ``evaluate_policy`` function
-        in order to log the success rate (when applicable),
-        for instance when using HER.
-        :param locals_:
-        :param globals_:
-        """
-        info = locals_["info"]
-
-        if locals_["dones"]:
-            maybe_is_success = info.get("is_success")
-            if maybe_is_success is not None:
-                self._is_success_buffer.append(maybe_is_success)
 
     def _on_rollout_end(self) -> bool:
-        if self.eval_freq_ep > 0 and self._episode_counter - self._last_evaluation_episode >= self.eval_freq_ep and self._last_evaluation_episode != self._episode_counter:
-
-            cuda_sync_debug_state = th.cuda.get_sync_debug_mode()
-            th.cuda.set_sync_debug_mode("default")
-            try:
-                self._last_evaluation_episode = self._episode_counter
-                # Sync training and eval env if there is VecNormalize
-                if self.model.get_vec_normalize_env() is not None:
-                    try:
-                        sync_envs_normalization(self.training_env, self.eval_env)
-                    except AttributeError:
-                        raise AssertionError(
-                            "Training and eval env are not wrapped the same way, "
-                            "see https://stable-baselines3.readthedocs.io/en/master/guide/callbacks.html#evalcallback "
-                            "and warning above."
-                        )
-
-                # Reset success rate buffer
-                self._is_success_buffer = []
-
-                episode_rewards, episode_lengths = evaluate_policy(
-                    self.model,
-                    self.eval_env,
-                    n_eval_episodes=self.n_eval_episodes,
-                    render=self.render,
-                    deterministic=self.deterministic,
-                    return_episode_rewards=True,
-                    warn=self.warn,
-                    callback=self._log_success_callback,
-                )
-
-                if self.log_path is not None:
-                    self.evaluations_timesteps.append(self.num_timesteps)
-                    self.evaluations_results.append(episode_rewards)
-                    self.evaluations_length.append(episode_lengths)
-
-                    kwargs = {}
-                    # Save success log if present
-                    if len(self._is_success_buffer) > 0:
-                        self.evaluations_successes.append(self._is_success_buffer)
-                        kwargs = dict(successes=self.evaluations_successes)
-
-                    np.savez(
-                        self.log_path,
-                        timesteps=self.evaluations_timesteps,
-                        results=self.evaluations_results,
-                        ep_lengths=self.evaluations_length,
-                        **kwargs,
-                    )
-
-                mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
-                mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
-                self.last_mean_reward = mean_reward
-
-                if self.verbose > 0:
-                    print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
-                    print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
-                # Add to current Logger
-                self.logger.record("eval/mean_reward", float(mean_reward))
-                self.logger.record("eval/mean_ep_length", mean_ep_length)
-
-                if len(self._is_success_buffer) > 0:
-                    success_rate = np.mean(self._is_success_buffer)
-                    if self.verbose > 0:
-                        print(f"Success rate: {100 * success_rate:.2f}%")
-                    self.logger.record("eval/success_rate", success_rate)
-
-                # Dump log so the evaluation results are printed with the correct timestep
-                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
-                self.logger.dump(self.num_timesteps)
-
-                if mean_reward > self.best_mean_reward:
-                    if self.verbose > 0:
-                        print("New best mean reward!")
-                    if self.best_model_save_path is not None:
-                        self.model.save(os.path.join(self.best_model_save_path, "best_model"))
-                    self.best_mean_reward = mean_reward
-                    # Trigger callback if needed
-                    if self.callback is not None:
-                        return self._on_event()
-            finally:
-                th.cuda.set_sync_debug_mode(cuda_sync_debug_state)
-
+        self._sub_callback.on_collection_end(collected_episodes=self._new_episode_counter,
+                                              collected_steps=self._new_step_counter,
+                                              collected_data=None)
+        self._new_episode_counter = 0
+        self._new_step_counter = 0
         return True
-
-    def update_child_locals(self, locals_: Dict[str, Any]) -> None:
-        """
-        Update the references to the local variables.
-        :param locals_: the local variables during rollout collection
-        """
-        if self.callback:
-            self.callback.update_locals(locals_)

@@ -250,72 +250,74 @@ def evaluatePolicy(env,
                    model,
                    episodes : int, on_ep_done_callback = None,
                    predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
-                   progress_bar : bool = True,
+                   progress_bar : bool = False,
                    images_return = None,
                    obs_return = None):
-    if predict_func is None:
-        predict_func_ = model.predict
-    else:
-        predict_func_ = predict_func
-    rewards = np.empty((episodes,), dtype = np.float32)
-    steps = np.empty((episodes,), dtype = np.int32)
-    wallDurations = np.empty((episodes,), dtype = np.float32)
-    predictWallDurations = np.empty((episodes,), dtype = np.float32)
-    totDuration=0.0
-    successes = 0.0
-    #frames = []
-    #do an average over a bunch of episodes
-    if not progress_bar:
-        maybe_tqdm = lambda x:x
-    else:
-        maybe_tqdm = tqdm.tqdm
-    for episode in maybe_tqdm(range(0,episodes)):
-        frame = 0
-        episodeReward = 0
-        terminated = False
-        predDurations = []
-        t0 = time.monotonic()
-        # ggLog.info("Env resetting...")
-        obs, info = env.reset()
-        # ggLog.info("Env resetted")
-        if images_return is not None:
-            images_return.append([])
-        if obs_return is not None:
-            obs_return.append([])
-        while not terminated:
-            t0_pred = time.monotonic()
-            # ggLog.info("Predicting")
+    with th.no_grad():
+        if predict_func is None:
+            predict_func_ = model.predict
+        else:
+            predict_func_ = predict_func
+        rewards = np.empty((episodes,), dtype = np.float32)
+        steps = np.empty((episodes,), dtype = np.int32)
+        wallDurations = np.empty((episodes,), dtype = np.float32)
+        predictWallDurations = np.empty((episodes,), dtype = np.float32)
+        totDuration=0.0
+        successes = 0.0
+        #frames = []
+        #do an average over a bunch of episodes
+        if not progress_bar:
+            maybe_tqdm = lambda x:x
+        else:
+            maybe_tqdm = tqdm.tqdm
+        for episode in maybe_tqdm(range(0,episodes)):
+            frame = 0
+            episodeReward = 0
+            terminated = False
+            truncated = False
+            predDurations = []
+            t0 = time.monotonic()
+            # ggLog.info("Env resetting...")
+            obs, info = env.reset()
+            # ggLog.info("Env resetted")
             if images_return is not None:
-                images_return[-1].append(env.render())
+                images_return.append([])
             if obs_return is not None:
-                obs_return[-1].append(obs)
-            action, _states = predict_func_(obs)
-            predDurations.append(time.monotonic()-t0_pred)
-            # ggLog.info("Stepping")
-            obs, stepReward, terminated, truncated, info = env.step(action)
-            frame+=1
-            episodeReward += stepReward
-            # ggLog.info(f"Step reward = {stepReward}")
-        rewards[episode]=episodeReward
-        if "success" in info.keys():
-            if info["success"]:
-                ggLog.info(f"Success {successes} ratio = {successes/(episode+1)}")
-                successes += 1
-        steps[episode]=frame
-        wallDurations[episode]=time.monotonic() - t0
-        predictWallDurations[episode]=sum(predDurations)
-        if on_ep_done_callback is not None:
-            on_ep_done_callback(episodeReward=episodeReward, steps=frame, episode=episode)
-        ggLog.debug("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
-    eval_results = {"reward_mean" : np.mean(rewards),
-                    "reward_std" : np.std(rewards),
-                    "steps_mean" : np.mean(steps),
-                    "steps_std" : np.std(steps),
-                    "success_ratio" : successes/episodes,
-                    "wall_duration_mean" : np.mean(wallDurations),
-                    "wall_duration_std" : np.std(wallDurations),
-                    "predict_wall_duration_mean" : np.mean(predictWallDurations),
-                    "predict_wall_duration_std" : np.std(predictWallDurations)}
+                obs_return.append([])
+            while not (terminated or truncated):
+                t0_pred = time.monotonic()
+                # ggLog.info("Predicting")
+                if images_return is not None:
+                    images_return[-1].append(env.render())
+                if obs_return is not None:
+                    obs_return[-1].append(obs)
+                action, _states = predict_func_(obs)
+                predDurations.append(time.monotonic()-t0_pred)
+                # ggLog.info("Stepping")
+                obs, stepReward, terminated, truncated, info = env.step(action)
+                frame+=1
+                episodeReward += stepReward
+                # ggLog.info(f"Step reward = {stepReward}")
+            rewards[episode]=episodeReward
+            if "success" in info.keys():
+                if info["success"]:
+                    ggLog.info(f"Success {successes} ratio = {successes/(episode+1)}")
+                    successes += 1
+            steps[episode]=frame
+            wallDurations[episode]=time.monotonic() - t0
+            predictWallDurations[episode]=sum(predDurations)
+            if on_ep_done_callback is not None:
+                on_ep_done_callback(episodeReward=episodeReward, steps=frame, episode=episode)
+            ggLog.debug("Episode "+str(episode)+" lasted "+str(frame)+" frames, total reward = "+str(episodeReward))
+        eval_results = {"reward_mean" : np.mean(rewards),
+                        "reward_std" : np.std(rewards),
+                        "steps_mean" : np.mean(steps),
+                        "steps_std" : np.std(steps),
+                        "success_ratio" : successes/episodes,
+                        "wall_duration_mean" : np.mean(wallDurations),
+                        "wall_duration_std" : np.std(wallDurations),
+                        "predict_wall_duration_mean" : np.mean(predictWallDurations),
+                        "predict_wall_duration_std" : np.std(predictWallDurations)}
     return eval_results
 
 def fileGlobToList(fileGlobStr : str):
