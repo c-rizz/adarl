@@ -229,9 +229,6 @@ class EvalCallback_ep(BaseCallback):
         if not isinstance(self.training_env, type(self.eval_env)):
             warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self.eval_env}")
 
-        # Create folders if needed
-        if self.best_model_save_path is not None:
-            os.makedirs(self.best_model_save_path, exist_ok=True)
 
     def _on_step(self):
         # ggLog.info(f"AutoencodingSAC_VideoSaver: on_step, locals = {self.locals}")

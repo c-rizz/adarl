@@ -7,6 +7,7 @@ from lr_gym.utils.buffers import BasicStorage
 from lr_gym.utils.utils import evaluatePolicy
 from lr_gym.utils.tensor_trees import stack_tensor_tree, unstack_tensor_tree, map_tensor_tree
 import lr_gym.utils.dbg.ggLog as ggLog
+import time
 
 class TrainingCallback():
 
@@ -76,8 +77,6 @@ class EvalCallback(TrainingCallback):
         self._episode_counter = 0
         self._step_counter = 0
 
-    def _init_callback(self) -> None:
-        # Create folders if needed
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
 
@@ -125,5 +124,102 @@ class EvalCallback(TrainingCallback):
                     self.best_mean_reward = mean_reward
             finally:
                 th.cuda.set_sync_debug_mode(cuda_sync_debug_state)
-
         return True
+
+class CheckpointCallbackRB(TrainingCallback):
+    """
+    Callback for saving a model every ``save_freq`` calls
+    to ``env.step()``.
+    .. warning::
+      When using multiple environments, each call to  ``env.step()``
+      will effectively correspond to ``n_envs`` steps.
+      To account for that, you can use ``save_freq = max(save_freq // n_envs, 1)``
+    :param save_freq:
+    :param save_path: Path to the folder where the model will be saved.
+    :param name_prefix: Common prefix to the saved models
+    :param verbose:
+    """
+
+    def __init__(self,  save_path: str, 
+                        model,
+                        buffer = None, 
+                        name_prefix: str = "rl_model",
+                        save_replay_buffer : bool = False,
+                        save_freq: Optional[int] = None,
+                        save_freq_ep : Optional[int] = None,
+                        save_best = True):
+        self.save_freq = save_freq
+        self.save_path = save_path
+        self.name_prefix = name_prefix
+        self.save_replay_buffer = save_replay_buffer
+        self.save_freq_ep = save_freq_ep
+        self._last_saved_replay_buffer_path = None
+
+        self._step_last_model_checkpoint = 0
+        self._step_last_replay_buffer_checkpoint = 0
+        self._episode_counter = 0
+        self._save_best = save_best
+        self._step_counter = 0
+
+        self._successes = [0]*50
+        self._success_ratio = 0.0
+        self._best_success_ratio = 0
+        self._ep_last_model_checkpoint = 0
+
+        self._model = model
+        self._buffer = buffer
+
+        if self.save_path is not None:
+            os.makedirs(self.save_path, exist_ok=True)
+
+    def _save_model(self, is_best, count_ep):
+        self._best_success_ratio = max(self._best_success_ratio, self._success_ratio)
+        if is_best:
+            path = os.path.join(self.save_path, f"best_{self.name_prefix}_{self._episode_counter}_{self._step_counter}_{int(self._success_ratio*100)}_steps")
+        else:
+            path = os.path.join(self.save_path, f"{self.name_prefix}_{self._episode_counter}_{self._step_counter}_{int(self._success_ratio*100)}_steps")
+        self._model.save(path)
+        if not is_best:
+            if count_ep:
+                self._ep_last_model_checkpoint = self._episode_counter
+            else:
+                self._step_last_model_checkpoint = self._step_counter
+        
+        if self.save_replay_buffer:
+            self._save_replay_buffer(is_best)
+
+    def _save_replay_buffer(self, is_best):
+        if is_best:
+            path = os.path.join(self.save_path, f"best_{self.name_prefix}_replay_buffer_{self._episode_counter}_{self._step_counter}_steps")+".pkl"
+        else:
+            path = os.path.join(self.save_path, f"{self.name_prefix}_replay_buffer_{self._episode_counter}_{self._step_counter}_steps")+".pkl"
+        t0 = time.monotonic()
+        if self._buffer is not None:
+            ggLog.info(f"Saving replay buffer with transitions {self._buffer.replay_buffer.size()}/{self._buffer.replay_buffer.buffer_size}...")
+            self._buffer.save(path)
+
+        filesize_mb = os.path.getsize(path)/1024/1024
+        if self._last_saved_replay_buffer_path is not None:
+            os.remove(self._last_saved_replay_buffer_path) 
+        t1 = time.monotonic()
+        self._last_saved_replay_buffer_path = path
+        self._step_last_replay_buffer_checkpoint = self._step_counter
+        ggLog.debug(f"Saved replay buffer checkpoint to {path}, size = {filesize_mb}MB, transitions = {self._buffer.replay_buffer.size()}, took {t1-t0}s")
+
+    def on_collection_end(self,    collected_episodes : int,
+                                    collected_steps : int,
+                                    collected_data : Optional[BasicStorage] = None):
+
+        self._episode_counter += collected_episodes
+        self._step_counter += collected_steps
+
+        # TODO: update success_ratio using collected_data
+
+        if self._success_ratio > self._best_success_ratio and self._save_best:
+            self._save_model(is_best=True, count_ep=False)
+        if self.save_freq is not None and self._step_counter - self._step_last_model_checkpoint >= self.save_freq:
+            self._save_model(is_best=False, count_ep=False)
+        if self.save_freq_ep is not None and self._episode_counter - self._ep_last_model_checkpoint >= self.save_freq_ep:
+            self._save_model(is_best=False, count_ep=True)
+        return True
+    
