@@ -120,7 +120,7 @@ class Session():
         if folderName is None:
             if run_id is None:
                 run_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-            script_out_folder = os.getcwd()+"/lrg_exp/"+os.path.basename(file)
+            script_out_folder = os.getcwd()+"/lrg_exps/"+os.path.basename(file)
             folderName = script_out_folder+"/"+run_id
             os.makedirs(folderName, exist_ok=True)
         else:
