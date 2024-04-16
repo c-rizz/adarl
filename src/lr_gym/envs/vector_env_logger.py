@@ -53,7 +53,7 @@ class VectorEnvLogger(
                     info = info_list[i]
                     logs = {}
                     for k,v in info.items():
-                        k = "VecEnvLogger/lastinfo/"+k
+                        k = "VecEnvLogger/lastinfo."+k
                         if isinstance(v,dict):
                             # ggLog.info(f"flattening {k}:{v}")
                             for k1,v1 in v.items():
