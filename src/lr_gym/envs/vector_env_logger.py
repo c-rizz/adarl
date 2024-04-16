@@ -82,9 +82,9 @@ class VectorEnvLogger(
                 # ggLog.info(f"wdblog = {wdblog}")
                 wandb_log(wdblog)
                 ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
-                           f" r={self._logs_batch.get('VecEnvLogger/ep_reward',float('nan')):08.8g}"+
-                           f" min_r={self._logs_batch.get('VecEnvLogger/min.ep_reward',float('nan')):08.8g}"+
-                           f" max_r={self._logs_batch.get('VecEnvLogger/max.ep_reward',float('nan')):08.8g}")
+                           f" r={self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}"+
+                           f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"+
+                           f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
 

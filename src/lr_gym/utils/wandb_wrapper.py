@@ -15,7 +15,7 @@ from typing import Optional
 class WandbWrapper():
     def __init__(self):
         self.req_count = 0
-        self.max_reqs_per_min = 50
+        self.max_reqs_per_min = 40
         self.last_send_to_server_times = [0.0]*self.max_reqs_per_min
 
         self.last_sent_times_by_key = {}
@@ -132,6 +132,7 @@ def wandb_init(**kwargs):
 
 
 def wandb_log(log_dict, throttle_period = 0):
+    # ggLog.info(f"wandb_log called at {traceback.format_list(traceback.extract_stack(limit=2))[0]}")
     default_wrapper.wandb_log(log_dict, throttle_period)
 
 def wandb_log_hists(d, throttle_period):
