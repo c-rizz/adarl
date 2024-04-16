@@ -53,7 +53,7 @@ class VectorEnvLogger(
                     info = info_list[i]
                     logs = {}
                     for k,v in info.items():
-                        k = "VecEnvLogger/"+k
+                        k = "VecEnvLogger/lastinfo/"+k
                         if isinstance(v,dict):
                             # ggLog.info(f"flattening {k}:{v}")
                             for k1,v1 in v.items():
@@ -63,7 +63,6 @@ class VectorEnvLogger(
                                 v = int(v)
                             logs[k] = v
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
-                    logs["vec_ep_count"] = self._tot_ep_count # for compatibility, to be removed
                     for k in logs.keys():
                         if k not in self._logs_batch:
                             self._logs_batch[k] = []
