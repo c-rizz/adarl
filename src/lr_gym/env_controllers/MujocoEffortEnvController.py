@@ -1,6 +1,6 @@
 
 from abc import ABC, abstractmethod
-from lr_gym.utils.utils import JointState, LinkState, Pose
+from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController

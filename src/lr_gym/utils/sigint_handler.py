@@ -96,14 +96,16 @@ def check_stdin_halt():
             print(f"Got '{instring}', type 'pause' to halt")
     return False
 
-def haltOnSigintReceived():
+def haltOnSigintReceived() -> bool:
+    did_halt = False
     if not did_initialize_sigint_handling:
-        return
+        return did_halt
     global sigint_received
     global sigint_counter
     if os.getpid() == main_pid:
         halt_string_received = check_stdin_halt()
         if sigint_received or halt_string_received:
+            did_halt = True
             while True:
                 answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":
@@ -130,7 +132,7 @@ def haltOnSigintReceived():
             session.default_session.mark_shutting_down()
             original_sigint_handler(signal.SIGINT, None)
             raise KeyboardInterrupt
-
+    return did_halt
 
 def wait_halt_loop():
     while not session.default_session.is_shutting_down():

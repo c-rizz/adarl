@@ -3,6 +3,7 @@ import torch as th
 from typing import Optional, Any, List
 import numpy as np
 from lr_gym.utils.utils import torch_to_numpy_dtype_dict
+import dataclasses
 
 TensorTree = dict | list | tuple | th.Tensor
 
@@ -53,6 +54,10 @@ def map_tensor_tree(src_tree : TensorTree, func):
         return tuple([map_tensor_tree(e, func = func) for e in src_tree])
     elif isinstance(src_tree, list):
         return [map_tensor_tree(e, func = func) for e in src_tree]
+    elif dataclasses.is_dataclass(src_tree):
+        mapped_fields = {field.name: map_tensor_tree(getattr(src_tree, field.name), func = func)
+                          for field in dataclasses.fields(src_tree)}
+        return src_tree.__class__(**mapped_fields)
     else:
         return func(src_tree)
 

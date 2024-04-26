@@ -20,6 +20,7 @@ import xacro
 import torch as th
 import subprocess
 import re
+from typing import TypedDict
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -172,48 +173,32 @@ def quaternionDistance(q1 : quaternion.quaternion ,q2 : quaternion.quaternion ):
 def buildQuaternion(x,y,z,w):
     return quaternion.quaternion(w,x,y,z)
 
+from dataclasses import dataclass
+
+@dataclass
 class Pose:
     position : th.Tensor
     orientation_xyzw : th.Tensor
-    orientation : np.quaternion 
 
-    def __init__(self, x,y,z, qx,qy,qz,qw, th_device=None):
-        self.position = th.tensor([x,y,z], device=th_device)
-        self.orientation_xyzw = th.tensor([qx,qy,qz,qw], device=th_device)
-        self.orientation = buildQuaternion(x=qx,y=qy,z=qz,w=qw)
 
-    def __str__(self):
-        return f"[{self.position[0],self.position[1],self.position[2],self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w}]"
+def build_pose(x,y,z, qx,qy,qz,qw, th_device=None) -> Pose:
+    # return {"position" : th.tensor([x,y,z], device=th_device),
+    #         "orientation_xyzw" : th.tensor([qx,qy,qz,qw], device=th_device)}
+    return Pose(position = th.tensor([x,y,z], device=th_device),
+                orientation_xyzw = th.tensor([qx,qy,qz,qw], device=th_device))
 
-    def getPoseStamped(self, frame_id : str):
-        return buildRos1PoseStamped(self.position, np.array([self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]), frame_id=frame_id)
-
-    def getListXyzXyzw(self):
-        return [self.position[0],self.position[1],self.position[2],self.orientation.x,self.orientation.y,self.orientation.z,self.orientation.w]
-        
-    @property
-    def orientation_wxyz(self):
-        return th.concat([self.orientation_xyzw[3].unsqueeze(0),self.orientation_xyzw[0:3]])
-    
-    def __repr__(self):
-        return self.__str__()
-
+@dataclass
 class LinkState:
-    pose : Pose = None
-    pos_velocity_xyz : th.Tensor = None
-    ang_velocity_xyz : th.Tensor = None
+    pose : Pose
+    pos_velocity_xyz : th.Tensor
+    ang_velocity_xyz : th.Tensor
 
     def __init__(self, position_xyz : th.Tensor, orientation_xyzw : th.Tensor,
                     pos_velocity_xyz : th.Tensor, ang_velocity_xyz : th.Tensor):
-        self.pose = Pose(position_xyz[0],position_xyz[1],position_xyz[2], orientation_xyzw[0],orientation_xyzw[1],orientation_xyzw[2],orientation_xyzw[3])
+        self.pose = build_pose(position_xyz[0],position_xyz[1],position_xyz[2], orientation_xyzw[0],orientation_xyzw[1],orientation_xyzw[2],orientation_xyzw[3])
         self.pos_velocity_xyz = pos_velocity_xyz
         self.ang_velocity_xyz = ang_velocity_xyz
 
-    def __str__(self):
-        return "LinkState("+str(self.pose)+","+str(self.pos_velocity_xyz)+","+str(self.ang_velocity_xyz)+")"
-
-    def __repr__(self):
-        return self.__str__()
 
 
 

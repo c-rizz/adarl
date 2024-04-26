@@ -135,7 +135,7 @@ def main(fileToLoad : str = None, usePlugin : bool = False):
     def sampleGoal(rng):
         #sample a position in a 2d rectangle in front of the robot
         position = rng.uniform(low=(0.5, -0.25, 0.2), high=(0.5, 0.25, 0.6))
-        p = lr_gym.utils.utils.Pose(x=position[0],y=position[1],z=position[2],qx=0, qy=0.707, qz=0, qw=0.707)
+        p = lr_gym.utils.utils.build_pose(x=position[0],y=position[1],z=position[2],qx=0, qy=0.707, qz=0, qw=0.707)
         ggLog.info("sampled goal "+str(p))
 
         return p
@@ -145,7 +145,7 @@ def main(fileToLoad : str = None, usePlugin : bool = False):
     env = PointPoseReachingEnv(  goalPoseSamplFunc=sampleGoal,
                                  maxStepsPerEpisode = 30,
                                  operatingArea = np.array([[0, -1, 0.1], [1, 1, 1.35]]),
-                                 startPose = lr_gym.utils.utils.Pose(0.46,0,0.83, 0, 0, 0, 1))
+                                 startPose = lr_gym.utils.utils.build_pose(0.46,0,0.83, 0, 0, 0, 1))
     # env = GymEnvWrapper(env, episodeInfoLogFile = folderName+"/GymEnvWrapper_log.csv")
     env = ToGoalEnvWrapper( env,
                             observationMask  = (0,0,0,0,0,0,  0,0,0,0,0,0),

@@ -15,7 +15,7 @@ import random
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
-from lr_gym.utils.utils import Pose, JointState
+from lr_gym.utils.utils import Pose, build_pose, JointState
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 
 class CartpoleEnv(ControlledEnv):
@@ -119,7 +119,7 @@ class CartpoleEnv(ControlledEnv):
             else:
                 cartpole_model_name = "cartpole_v0"
                 cam_model_name = "simple_camera"
-            cartpole_pose = Pose(0,0,0,0,0,0,1)
+            cartpole_pose = build_pose(0,0,0,0,0,0,1)
             name = self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
                                                             model_name=cartpole_model_name,
                                                             pose=cartpole_pose,
@@ -128,8 +128,8 @@ class CartpoleEnv(ControlledEnv):
             self._spawned = True
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
                                                     model_name=cam_model_name,
-                                                    pose=Pose(0,2,0.5, 0.0,0.0,-0.707,0.707),
-                                                    # pose=Pose(0,5,0.5, 0.0,0.0,0.0,1.0),
+                                                    pose=build_pose(0,2,0.5, 0.0,0.0,-0.707,0.707),
+                                                    # pose=build_pose(0,5,0.5, 0.0,0.0,0.0,1.0),
                                                     model_kwargs={"camera_width":"256","camera_height":"144","frame_rate":1/self._intendedStepLength_sec},
                                                     model_format="sdf.xacro")
             ggLog.info(f"Model spawned with name {name}")
@@ -210,7 +210,7 @@ class CartpoleEnv(ControlledEnv):
             self._environmentController.build_scenario(sdf_file = ("lr_gym_ros2","/worlds/empty_cams.sdf"))
             # self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/simple_camera.sdf.xacro"),
             #                                         model_name=None,
-            #                                         pose=Pose(0,2,0.5,0,0.0,-0.707,0.707),
+            #                                         pose=build_pose(0,2,0.5,0,0.0,-0.707,0.707),
             #                                         model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
             #                                         model_format="sdf.xacro")
             self._rendering_cam_name = "simple_camera"

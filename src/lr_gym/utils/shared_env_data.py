@@ -28,12 +28,12 @@ class SimpleCommander():
             self._received_cmds_count = ctypes.c_uint64(1)
         with self._new_cmd_cond:
             # print(f"waiting for command {self._received_cmds_count}")
-            got_command = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=self._timeout_s)
+            didnt_timeout = self._new_cmd_cond.wait_for(lambda: self._cmds_sent_count.value==self._received_cmds_count.value, timeout=self._timeout_s)
             # print(f"got command {self._received_cmds_count}")
-            if got_command:
+            if didnt_timeout:
                 self._last_received_cmd = self._current_command.value
                 self._received_cmds_count.value += 1
-        if got_command:
+        if didnt_timeout:
             return self._last_received_cmd
         else:
             return None

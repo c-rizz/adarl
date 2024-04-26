@@ -147,7 +147,7 @@ class HopperVisualEnv(HopperEnv):
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
-                                                    pose=Pose(0,0,0,0,0,0,1),
+                                                    pose=build_pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":str(simCamWidth),"camera_height":str(simCamHeight)})
             self._spawned = True
         self._environmentController.setJointsEffortCommand([("hopper","torso_to_thigh",0),

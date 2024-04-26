@@ -118,7 +118,7 @@ def main(fileToLoad : str = None, real : bool = False, robot_ip : str = None) ->
     def sampleGoal(rng):
         #sample a position in a 2d rectangle in front of the robot
         position = rng.uniform(low=(0.5, -0.25, 0.2), high=(0.5, 0.25, 0.6))
-        p = lr_gym.utils.utils.Pose(x=position[0],y=position[1],z=position[2],qx=0.707, qy=0, qz=0.707, qw=0)
+        p = lr_gym.utils.utils.build_pose(x=position[0],y=position[1],z=position[2],qx=0.707, qy=0, qz=0.707, qw=0)
         return p
 
 

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
-from lr_gym.utils.utils import JointState, LinkState, Pose
+from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 
 
@@ -47,7 +47,7 @@ class SimulatedEnvController(ABC):
                             model_definition_string : Optional[str] = None,
                             model_format : Optional[str] = None,
                             model_file : Optional[str] = None,
-                            pose : Pose = Pose(0,0,0,0,0,0,1),
+                            pose : Pose = build_pose(0,0,0,0,0,0,1),
                             model_kwargs : Dict[Any,Any] = {}) -> str:
         """Spawn a model in the simulation
 

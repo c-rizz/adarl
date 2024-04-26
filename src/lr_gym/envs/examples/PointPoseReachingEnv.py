@@ -10,7 +10,7 @@ from lr_gym.envs.BaseEnv import BaseEnv
 import lr_gym.utils.dbg.ggLog as ggLog
 import lr_gym
 
-from lr_gym.utils.utils import Pose
+from lr_gym.utils.utils import Pose, build_pose
 
 
 
@@ -50,7 +50,7 @@ class PointPoseReachingEnv(BaseEnv):
                     goalTolerancePosition : float = 0.05,
                     goalToleranceOrientation_rad : float = 5*3.14159/180,
                     operatingArea = np.array([[-1, -1, 0], [1, 1, 1.5]]),
-                    startPose : lr_gym.utils.utils.Pose = lr_gym.utils.utils.Pose(x=0,y=0,z=0,qx=0,qy=0,qz=0,qw=1)):
+                    startPose : lr_gym.utils.utils.Pose = lr_gym.utils.utils.build_pose(x=0,y=0,z=0,qx=0,qy=0,qz=0,qw=1)):
         """Short summary.
 
         Parameters
@@ -137,7 +137,7 @@ class PointPoseReachingEnv(BaseEnv):
         """
         super().performStep()
         self._simTime += 1
-        dbg_pose.helper.publish("current_pose", Pose( self._currentPosition[0],
+        dbg_pose.helper.publish("current_pose", build_pose( self._currentPosition[0],
                                                             self._currentPosition[1],
                                                             self._currentPosition[2],
                                                             self._currentQuat.x,

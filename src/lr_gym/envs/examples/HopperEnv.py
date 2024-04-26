@@ -14,7 +14,7 @@ from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 #import tf2_py
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym.utils.utils import Pose
+from lr_gym.utils.utils import Pose, build_pose
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
 
 class HopperEnv(ControlledEnv):
@@ -165,7 +165,7 @@ class HopperEnv(ControlledEnv):
         if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
-                                                    pose=Pose(0,0,0,0,0,0,1),
+                                                    pose=build_pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":"213","camera_height":"120"})
             self._spawned = True
         self._environmentController.setJointsEffortCommand([  ("hopper","torso_to_thigh",0),

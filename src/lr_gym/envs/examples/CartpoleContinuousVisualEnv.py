@@ -6,7 +6,7 @@ Based on ControlledEnv
 """
 
 
-from lr_gym.utils.utils import Pose
+from lr_gym.utils.utils import Pose, build_pose
 
 import lr_gym.utils.spaces as spaces
 import numpy as np
@@ -234,7 +234,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
                         "camera_height": sim_img_height}
                       
         self._environmentController.spawn_model(model_file=("lr_gym_ros","/models/camera.urdf.xacro"),
-                                                pose=Pose(0,0,0,0,0,0,1),
+                                                pose=build_pose(0,0,0,0,0,0,1),
                                                 model_name="camera",
                                                 model_kwargs=camera_args) 
         ggLog.info("Spawned camera")
@@ -314,7 +314,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
 
         self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/cartpole_v0.urdf.xacro"),
-                                                pose=Pose(0,0,0,0,0,0,1),
+                                                pose=build_pose(0,0,0,0,0,0,1),
                                                 model_name=model_name,
                                                 model_kwargs=args)  
 

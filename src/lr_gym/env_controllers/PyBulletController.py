@@ -3,7 +3,7 @@ from typing import List, Tuple, Dict, Any, Optional
 
 import pybullet
 
-from lr_gym.utils.utils import JointState, LinkState, Pose
+from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose, buildQuaternion
 from lr_gym.env_controllers.EnvironmentController import EnvironmentController
 from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
 from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
@@ -57,7 +57,7 @@ class BulletCamera:
                  pybullet_controller):
         self._width = width
         self._height = height
-        self._pose   = pose if pose is not None else Pose(0,0,0,0,0,0,1)
+        self._pose   = pose if pose is not None else build_pose(0,0,0,0,0,0,1)
         self._vfov   = hfov * height/width
         self._near   = near
         self._far    = far
@@ -95,8 +95,9 @@ class BulletCamera:
         # self._extrinsic_matrix = cvPose2BulletView(self._pose.orientation, self._pose.position)
         # ggLog.info(f"em3 = \n{n.join([str(self._extrinsic_matrix[i::4]) for i in range(4)])}")
 
-        cameraAxis =     np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([1.0, 0.0, 0.0]))
-        cameraUpVector = np.matmul(quaternion.as_rotation_matrix(self._pose.orientation),np.array([0.0, 0.0, 1.0]))
+        orientation_quat = buildQuaternion(*self._pose.orientation_xyzw)
+        cameraAxis =     np.matmul(quaternion.as_rotation_matrix(orientation_quat),np.array([1.0, 0.0, 0.0]))
+        cameraUpVector = np.matmul(quaternion.as_rotation_matrix(orientation_quat),np.array([0.0, 0.0, 1.0]))
         # ggLog.info(f"cameraAxis = {cameraAxis}")
         # ggLog.info(f"cameraUpVector = {cameraUpVector}")
         target_position = cameraAxis + np.array(self._pose.position)
@@ -704,7 +705,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
         for bodyId, states in requests.items():
             for state in states:
-                pybullet.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.getListXyzXyzw()[3:])
+                pybullet.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.orientation_xyzw)
 
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
@@ -845,7 +846,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
         ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],
-                                                    pose.position, pose.getListXyzXyzw()[3:])
+                                                    pose.position, pose.orientation_xyzw)
         return model_name
 
     def delete_model(self, model_name: str):
