@@ -3,11 +3,11 @@ from typing import List, Tuple, Dict, Any, Optional
 
 import pybullet
 import time
-from lr_gym.env_controllers.PyBulletController import PyBulletController
+from lr_gym.adapters.PyBulletAdapter import PyBulletAdapter
 
 
 
-class PyBulletJointImpedanceController(PyBulletController):
+class PyBulletJointImpedanceAdapter(PyBulletAdapter):
 
     def __init__(self, stepLength_sec : float = 0.004166666666,
                         restore_on_reset = True,

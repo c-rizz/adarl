@@ -29,14 +29,14 @@ def main():
         env = gym.make('CartPole-v1')
     else:
         if args["controller"] == "GzController":
-            from lr_gym_ros2.env_controllers.GzController import GzController
+            from lr_gym_ros2.adapters.GzController import GzController
             env_controller = GzController(stepLength_sec=stepLength_sec)
-        elif args["controller"] == "GazeboController":
-            from lr_gym_ros.envControllers.GazeboController import GazeboController
-            env_controller = GazeboController(stepLength_sec=stepLength_sec)
-        elif args["controller"] == "PyBulletController":
-            from lr_gym.env_controllers.PyBulletController import PyBulletController
-            env_controller = PyBulletController(stepLength_sec=stepLength_sec)
+        elif args["controller"] == "GazeboAdapter":
+            from lr_gym_ros.adapters.GazeboAdapter import GazeboAdapter
+            env_controller = GazeboAdapter(stepLength_sec=stepLength_sec)
+        elif args["controller"] == "PyBulletAdapter":
+            from lr_gym.adapters.PyBulletAdapter import PyBulletAdapter
+            env_controller = PyBulletAdapter(stepLength_sec=stepLength_sec)
         else:
             print(f"Requested unknown controller '{args['controller']}'")
             exit(0)

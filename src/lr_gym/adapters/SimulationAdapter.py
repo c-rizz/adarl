@@ -1,20 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
 from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose
-from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+from lr_gym.adapters.BaseAdapter import BaseAdapter
 
 
-class SimulatedEnvController(ABC):
-    # @abstractmethod
-    # def spawnModel(self):
-    #     """Spawn a model in the environment, arguments depend on the type of SimulatedEnvController
-    #     """
-    #     raise NotImplementedError()
-
-    # @abstractmethod
-    # def deleteModel(self, model : str):
-    #     """Delete a model from the environment"""
-    #     raise NotImplementedError()
+class SimulationAdapter(ABC):
 
     @abstractmethod
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):

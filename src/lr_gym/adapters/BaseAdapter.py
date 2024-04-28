@@ -12,7 +12,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 import torch as th
 
 
-class EnvironmentController(ABC):
+class BaseAdapter(ABC):
     """This class allows to control the execution of a simulation.
 
     It is an abstract class, it is meant to be extended with sub-classes for specific simulators

@@ -16,7 +16,7 @@ import random
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
 from lr_gym.utils.utils import Pose, build_pose, JointState
-from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
+from lr_gym.adapters.SimulationAdapter import SimulationAdapter
 
 class CartpoleEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
@@ -52,7 +52,7 @@ class CartpoleEnv(ControlledEnv):
             Duration in seconds of each simulation step. Lower values will lead to
             slower simulation. This value should be kept higher than the gazebo
             max_step_size parameter.
-        environmentController : EnvironmentController
+        environmentController : BaseAdapter
             Specifies which simulator controller to use. By default it connects to Gazebo
 
 
@@ -112,7 +112,7 @@ class CartpoleEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
 
-        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
+        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
             if type(self._environmentController).__name__ == "GzController":
                 cartpole_model_name = None
                 cam_model_name = None
@@ -134,7 +134,7 @@ class CartpoleEnv(ControlledEnv):
                                                     model_format="sdf.xacro")
             ggLog.info(f"Model spawned with name {name}")
         
-        if isinstance(self._environmentController, SimulatedEnvController):
+        if isinstance(self._environmentController, SimulationAdapter):
             self._environmentController.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
                                                               ("cartpole_v0","cartpole_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0])})
         self._environmentController.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])
@@ -190,7 +190,7 @@ class CartpoleEnv(ControlledEnv):
     def buildSimulation(self, backend):
         # ggLog.info("Building env")
         envCtrlName = type(self._environmentController).__name__
-        if envCtrlName in ["GazeboController", "GazeboControllerNoPlugin"]:
+        if envCtrlName in ["GazeboAdapter", "GazeboAdapterNoPlugin"]:
             # ggLog.info(f"sim_img_width  = {sim_img_width}")
             # ggLog.info(f"sim_img_height = {sim_img_height}")
             if not self._renderingEnabled:
@@ -214,7 +214,7 @@ class CartpoleEnv(ControlledEnv):
             #                                         model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
             #                                         model_format="sdf.xacro")
             self._rendering_cam_name = "simple_camera"
-        elif envCtrlName == "PyBulletController":
+        elif envCtrlName == "PyBulletAdapter":
             self._environmentController.build_scenario(None)
             self._rendering_cam_name = "simple_camera"
         else:

@@ -10,7 +10,7 @@ from typing import Tuple, Any, Dict
 import cv2
 
 from lr_gym.envs.HopperEnv import HopperEnv
-from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+from lr_gym.adapters.BaseAdapter import BaseAdapter
 #import tf2_py
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -29,7 +29,7 @@ class HopperVisualEnv(HopperEnv):
                     maxStepsPerEpisode : int = 500,
                     render : bool = False,
                     stepLength_sec : float = 0.05,
-                    simulatorController : EnvironmentController = None,
+                    simulatorController : BaseAdapter = None,
                     startSimulation : bool = True,
                     simulationBackend : str = "gazebo",
                     obs_img_height_width : Tuple[int,int] = (64,64),
@@ -50,7 +50,7 @@ class HopperVisualEnv(HopperEnv):
             Duration in seconds of each simulation step. Lower values will lead to
             slower simulation. This value should be kept higher than the gazebo
             max_step_size parameter.
-        simulatorController : EnvironmentController
+        simulatorController : BaseAdapter
             Specifies which simulator controller to use. By default it connects to Gazebo
 
         Raises
@@ -142,7 +142,7 @@ class HopperVisualEnv(HopperEnv):
         return (robotState, imgObservation)
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
+        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
             simCamHeight = int(64*(self._obs_img_height/64))
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),

@@ -43,7 +43,7 @@ class CartpoleContinuousVisualEnvDict(CartpoleContinuousVisualEnv):
             Duration in seconds of each simulation step. Lower values will lead to
             slower simulation. This value should be kept higher than the gazebo
             max_step_size parameter.
-        simulatorController : EnvironmentController
+        simulatorController : BaseAdapter
             Specifies which simulator controller to use. By default it connects to Gazebo
 
         Raises

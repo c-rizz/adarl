@@ -81,7 +81,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                
-            # self._environmentController = MoveitRosController(jointsOrder = [("panda","panda_joint1"),
+            # self._environmentController = MoveitRosAdapter(jointsOrder = [("panda","panda_joint1"),
             #                                                              ("panda","panda_joint2"),
             #                                                              ("panda","panda_joint3"),
             #                                                              ("panda","panda_joint4"),

@@ -3,8 +3,8 @@ from typing import List, Tuple, Dict, Any, Optional
 
 import pybullet as p
 
-from lr_gym.env_controllers.PyBulletController import PyBulletController
-from lr_gym.env_controllers.CartesianPositionEnvController import CartesianPositionEnvController
+from lr_gym.adapters.PyBulletAdapter import PyBulletAdapter
+from lr_gym.adapters.CartesianPositionEnvAdapter import CartesianPositionEnvAdapter
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -13,7 +13,7 @@ import time
 
 
 
-class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvController):
+class PyBullet2DofCartesianAdapter(PyBulletAdapter, CartesianPositionEnvAdapter):
     def __init__(self,  end_effector_link : Tuple[str,str],
                         xjoint : Tuple[str,str],
                         yjoint : Tuple[str,str],
@@ -51,7 +51,7 @@ class PyBullet2DofCartesianController(PyBulletController, CartesianPositionEnvCo
         if len(linkPoses) > 1:
             raise AttributeError(f"We support moving the end effector, but you requested links {linkPoses.keys()}")
         # if np.any(pose[2:]!=0):
-        #     raise AttributeError(f"PyBullet2DofCartesianController only supports moving in the xy plane, set all other values to zero")
+        #     raise AttributeError(f"PyBullet2DofCartesianAdapter only supports moving in the xy plane, set all other values to zero")
         jpose = self._ik(pose[0:2])
         # ggLog.info(f"Got request {pose} \t Moving to join pose {jpose}")
         self._target_position = pose[0:2]

@@ -21,7 +21,7 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
                     goalTolerancePosition : float = 0.05,
                     goalToleranceOrientation_rad : float = 0.0175*5,
                     maxTorques = [87, 87, 87, 87, 12, 12, 12],
-                    environmentController : lr_gym.env_controllers.EnvironmentController = None,
+                    environmentController : lr_gym.adapters.BaseAdapter = None,
                     stepLength_sec : float = 0.01,
                     startSimulation = False):
         """Short summary.
@@ -42,8 +42,8 @@ class PandaEffortKeepPoseEnv(PandaEffortBaseEnv):
             Orientation tolerance under which the goal is considered reached, in radiants
         maxTorques : Tuple[float, float, float, float, float, float, float]
             Maximum torque that can be applied ot each joint
-        environmentController : lr_gym.env_controllers.EnvironmentController
-            The contorller to be used to interface with the environment. If left to None an EffortRosControlController will be used.
+        environmentController : lr_gym.adapters.BaseAdapter
+            The contorller to be used to interface with the environment. If left to None an EffortRosControlAdapter will be used.
 
         """
 

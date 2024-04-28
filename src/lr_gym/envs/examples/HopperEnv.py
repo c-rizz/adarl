@@ -10,12 +10,12 @@ import numpy as np
 from typing import Tuple, Dict, Any
 
 from lr_gym.envs.ControlledEnv import ControlledEnv
-from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+from lr_gym.adapters.BaseAdapter import BaseAdapter
 #import tf2_py
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.utils import Pose, build_pose
-from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
+from lr_gym.adapters.SimulationAdapter import SimulationAdapter
 
 class HopperEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup.
@@ -55,7 +55,7 @@ class HopperEnv(ControlledEnv):
                     maxStepsPerEpisode : int = 500,
                     render : bool = False,
                     stepLength_sec : float = 0.05,
-                    simulatorController : EnvironmentController = None,
+                    simulatorController : BaseAdapter = None,
                     startSimulation : bool = True,
                     simulationBackend : str = "gazebo",
                     useMjcfFile : bool = False,
@@ -74,7 +74,7 @@ class HopperEnv(ControlledEnv):
             Duration in seconds of each simulation step. Lower values will lead to
             slower simulation. This value should be kept higher than the gazebo
             max_step_size parameter.
-        simulatorController : EnvironmentController
+        simulatorController : BaseAdapter
             Specifies which simulator controller to use. By default it connects to Gazebo
 
         Raises
@@ -162,7 +162,7 @@ class HopperEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, SimulatedEnvController):
+        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=build_pose(0,0,0,0,0,0,1),

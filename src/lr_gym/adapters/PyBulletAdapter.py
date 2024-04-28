@@ -4,11 +4,11 @@ from typing import List, Tuple, Dict, Any, Optional
 import pybullet
 
 from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose, buildQuaternion
-from lr_gym.env_controllers.EnvironmentController import EnvironmentController
-from lr_gym.env_controllers.JointEffortEnvController import JointEffortEnvController
-from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
-from lr_gym.env_controllers.JointPositionEnvController import JointPositionEnvController
-from lr_gym.env_controllers.JointVelocityEnvController import JointVelocityEnvController
+from lr_gym.adapters.BaseAdapter import BaseAdapter
+from lr_gym.adapters.JointEffortEnvAdapter import JointEffortEnvAdapter
+from lr_gym.adapters.SimulationAdapter import SimulationAdapter
+from lr_gym.adapters.JointPositionEnvAdapter import JointPositionEnvAdapter
+from lr_gym.adapters.JointVelocityEnvAdapter import JointVelocityEnvAdapter
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
 import quaternion
@@ -165,7 +165,7 @@ class BulletCamera:
 
 
 
-class PyBulletController(EnvironmentController, JointEffortEnvController, SimulatedEnvController, JointPositionEnvController, JointVelocityEnvController):
+class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, JointPositionEnvAdapter, JointVelocityEnvAdapter):
     """This class allows to control the execution of a PyBullet simulation.
 
     """
@@ -740,7 +740,7 @@ class PyBulletController(EnvironmentController, JointEffortEnvController, Simula
 
 
         if self._stepLength_sec % pybullet.getPhysicsEngineParameters()["fixedTimeStep"] > 0.00001:
-            ggLog.warn(f"PyBulletController: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {pybullet.getPhysicsEngineParameters()['fixedTimeStep']})")
+            ggLog.warn(f"PyBulletAdapter: stepLength_sec is not a multiple of pybullet's fixedTimeStep (respecively {self._stepLength_sec} and {pybullet.getPhysicsEngineParameters()['fixedTimeStep']})")
 
         if self._stepLength_sec<pybullet.getPhysicsEngineParameters()["fixedTimeStep"]:
             raise RuntimeError(f"Requested stepLength_sec {self._stepLength_sec} is less than requested simulation_step {self._simulation_step}")

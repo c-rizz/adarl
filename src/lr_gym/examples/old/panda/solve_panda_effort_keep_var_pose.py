@@ -101,7 +101,7 @@ def main(fileToLoad : str = None, usePlugin : bool = False):
 
     stepLength_sec = 0.05
     if usePlugin:
-        envController = lr_gym_ros.envControllers.GazeboController.GazeboController(stepLength_sec = stepLength_sec)
+        envController = lr_gym_ros.adapters.GazeboAdapter.GazeboAdapter(stepLength_sec = stepLength_sec)
     else:
         envController = None
 

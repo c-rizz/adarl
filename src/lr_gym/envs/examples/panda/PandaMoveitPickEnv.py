@@ -7,7 +7,7 @@ from typing import Tuple
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
-from lr_gym.env_controllers.SimulatedEnvController import SimulatedEnvController
+from lr_gym.adapters.SimulationAdapter import SimulationAdapter
 
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.utils import JointState, LinkState
@@ -86,7 +86,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                
-            # self._environmentController = MoveitGazeboController(jointsOrder = [("panda","panda_joint1"),
+            # self._environmentController = MoveitGazeboAdapter(jointsOrder = [("panda","panda_joint1"),
             #                                                                 ("panda","panda_joint2"),
             #                                                                 ("panda","panda_joint3"),
             #                                                                 ("panda","panda_joint4"),
@@ -317,7 +317,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._wasHoldingSomethingPrevStep = False
         self._gripperOpen = True
 
-        if isinstance(self._environmentController, SimulatedEnvController):
+        if isinstance(self._environmentController, SimulationAdapter):
             self._environmentController.setLinksStateDirect({   ("cube","cube") : LinkState(position_xyz = (0.45, 0, 0.025),
                                                                                             orientation_xyzw = (0,0,0,1),
                                                                                             pos_velocity_xyz = (0,0,0),

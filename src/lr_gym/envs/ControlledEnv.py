@@ -7,16 +7,16 @@ The provided class must be extended to define a specific environment
 
 from lr_gym.envs.BaseEnv import BaseEnv
 from typing import TypeVar, Generic
-from lr_gym.env_controllers.EnvironmentController import EnvironmentController
+from lr_gym.adapters.BaseAdapter import BaseAdapter
 import lr_gym.utils.spaces as spaces
 
-EnvControllerType = TypeVar("EnvControllerType", bound=EnvironmentController)
+EnvControllerType = TypeVar("EnvControllerType", bound=BaseAdapter)
 
 class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
-    """This is a base-class for implementing OpenAI-gym environments using environment controllers derived from EnvironmentController.
+    """This is a base-class for implementing OpenAI-gym environments using environment controllers derived from BaseAdapter.
 
-    It implements part of the methods defined in BaseEnv relying on an EnvironmentController
-    (not all methods are available on non-simulated EnvironmentControllers like RosEnvController, at least for now).
+    It implements part of the methods defined in BaseEnv relying on an BaseAdapter
+    (not all methods are available on non-simulated BaseAdapters like RosAdapter, at least for now).
 
     The idea is that environments created from this will be able to run on different simulators simply by using specifying
     environmentController objects in the constructor

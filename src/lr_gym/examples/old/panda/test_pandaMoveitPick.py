@@ -8,7 +8,7 @@ from datetime import datetime
 from lr_gym.envs.panda.PandaMoveitPickEnv import PandaMoveitPickEnv
 from lr_gym.envs.GymEnvWrapper import GymEnvWrapper
 import lr_gym.utils.dbg.ggLog as ggLog
-from lr_gym_ros.envControllers.MoveitRosController import MoveitRosController
+from lr_gym_ros.adapters.MoveitRosAdapter import MoveitRosAdapter
 
 
 def main(real : bool, robot_ip : str) -> None:
@@ -27,7 +27,7 @@ def main(real : bool, robot_ip : str) -> None:
                                     maxStepsPerEpisode = 30,
                                     backend="gazebo")
     else:
-        environmentController = MoveitRosController(jointsOrder =  [("panda","panda_joint1"),
+        environmentController = MoveitRosAdapter(jointsOrder =  [("panda","panda_joint1"),
                                                                     ("panda","panda_joint2"),
                                                                     ("panda","panda_joint3"),
                                                                     ("panda","panda_joint4"),
