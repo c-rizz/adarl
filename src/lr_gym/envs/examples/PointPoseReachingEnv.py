@@ -94,7 +94,7 @@ class PointPoseReachingEnv(BaseEnv):
 
 
     def submitAction(self, action : np.typing.NDArray[(6,), np.float32]) -> None:
-        """Plan and execute moveit movement without blocking.
+        """Plan and execute movement without blocking.
 
         Parameters
         ----------

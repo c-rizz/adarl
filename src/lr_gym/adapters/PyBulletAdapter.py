@@ -5,10 +5,10 @@ import pybullet
 
 from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose, buildQuaternion
 from lr_gym.adapters.BaseAdapter import BaseAdapter
-from lr_gym.adapters.JointEffortEnvAdapter import JointEffortEnvAdapter
-from lr_gym.adapters.SimulationAdapter import SimulationAdapter
-from lr_gym.adapters.JointPositionEnvAdapter import JointPositionEnvAdapter
-from lr_gym.adapters.JointVelocityEnvAdapter import JointVelocityEnvAdapter
+from lr_gym.adapters.BaseJointEffortAdapter import BaseJointEffortAdapter
+from lr_gym.adapters.BaseSimulationAdapter import BaseSimulationAdapter
+from lr_gym.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
+from lr_gym.adapters.BaseJointVelocityAdapter import BaseJointVelocityAdapter
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
 import quaternion
@@ -165,12 +165,12 @@ class BulletCamera:
 
 
 
-class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, JointPositionEnvAdapter, JointVelocityEnvAdapter):
+class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter, BaseJointPositionAdapter, BaseJointVelocityAdapter):
     """This class allows to control the execution of a PyBullet simulation.
 
     """
 
-    def __init__(self, stepLength_sec : float = 0.004166666666,
+    def __init__(self, stepLength_sec : float = 1/240,
                         restore_on_reset = True,
                         debug_gui : bool = False,
                         real_time_factor : Optional[float] = None,
@@ -187,6 +187,11 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
         """
         super().__init__()
         self._stepLength_sec = stepLength_sec
+        self._simulation_step = simulation_step
+        if self._stepLength_sec % self._simulation_step != 0:
+            ggLog.warn(f"{__class__}: stepLength_sec {self._stepLength_sec} is not a multiple of "
+                       f"simulation_step {self._simulation_step}, will not be able to sep of exactly stepLength_sec.")
+
         # Model names are the ones we use to uniquely identify bodies and links as (model_id, link_id)
         # Body ids are the ones pybullet uses to uniquely identify bodies
         # Body names are the names used by pybullet, I think they just come from the URDF, they can be the same for different bodies
@@ -200,8 +205,6 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
         self._commanded_trajectories = {}
         self._debug_gui = debug_gui
         self._reset_detected_contacts()
-        self._simulation_step = simulation_step
-
         if real_time_factor is not None and real_time_factor>0:
             self._real_time_factor = real_time_factor
         else:
@@ -228,7 +231,7 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
                             lightDiffuseCoeff = 0.5,
                             lightSpecularCoeff = 0.1)
 
-        self._clear_commands()
+        self.clear_commands()
 
     def _refresh_entities_ids(self, print_info = False):
         bodyIds = []
@@ -294,7 +297,7 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
         return self._linkName_to_bodyLinkIds[linkName]
 
     def resetWorld(self):
-        self._clear_commands()
+        self.clear_commands()
         # ggLog.info(f"Resetting...")
         if self._restore_on_reset:
             pybullet.restoreState(self._startStateId)
@@ -325,7 +328,7 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
         """
 
         stepLength = self.freerun(self._stepLength_sec)
-        
+        self.clear_commands()
         return stepLength
 
     def freerun(self, duration_sec: float):
@@ -364,10 +367,9 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
         # ggLog.info(f"self._last_step_commanded_torques_by_name: {self._last_step_commanded_torques_by_name}")
         self._last_step_commanded_torques_by_name = {jn:sum(torque_list)/len(torque_list) for jn, torque_list in self._last_step_commanded_torques_by_name.items()}    
         self._last_step_commanded_torques_by_name.update(self._commanded_torques_by_name) # direct torque commands override other applied torques
-        self._clear_commands()
         return self._simTime-t0
     
-    def _clear_commands(self):
+    def clear_commands(self):
         self._commanded_torques_by_body = {}
         self._commanded_torques_by_name = {}
         self._commanded_velocities_by_body = {}
@@ -871,8 +873,8 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
     
     def monitor_contacts(self, monitored_contacts : List[Tuple[Optional[str],
                                                             Optional[str],
-                                                            Optional[tuple[str,str]],
-                                                            Optional[tuple[str,str]]]]):
+                                                            Optional[Tuple[str,str]],
+                                                            Optional[Tuple[str,str]]]]):
         self._monitored_contacts = monitored_contacts
 
     def get_contacts(self) -> List[List[    Tuple[  Tuple[str,str],
@@ -901,8 +903,8 @@ class PyBulletAdapter(BaseAdapter, JointEffortEnvAdapter, SimulationAdapter, Joi
     def _get_contacts(self, 
                      model_a : Optional[str],
                      model_b : Optional[str],
-                     link_a : Optional[tuple[str,str]],
-                     link_b : Optional[tuple[str,str]]) -> List[Tuple[Tuple[str,str],Tuple[str,str],Tuple[float,float,float],float]]:
+                     link_a : Optional[Tuple[str,str]],
+                     link_b : Optional[Tuple[str,str]]) -> List[Tuple[Tuple[str,str],Tuple[str,str],Tuple[float,float,float],float]]:
         if model_b and not model_a:
             raise ValueError(f"model_b should only be set if model_a is set")
         if link_b and not (link_a or model_a):

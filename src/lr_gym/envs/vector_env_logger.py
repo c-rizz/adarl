@@ -2,7 +2,7 @@ import gymnasium as gym
 from gymnasium.core import ActType, ObsType, RenderFrame, WrapperObsType
 import numpy as np
 import torch as th
-from typing import Any, SupportsFloat
+from typing import Any, SupportsFloat, Tuple, Dict
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.tensor_trees import unstack_tensor_tree
 
@@ -32,7 +32,7 @@ class VectorEnvLogger(
 
     def step(
         self, action: ActType
-    ) -> tuple[ObsType, SupportsFloat, bool, bool, dict[str, Any]]:
+    ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Steps through the environment.
 
         Args:

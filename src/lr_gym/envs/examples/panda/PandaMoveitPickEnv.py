@@ -7,7 +7,7 @@ from typing import Tuple
 import quaternion
 import lr_gym.utils.spaces as spaces
 from lr_gym.envs.ControlledEnv import ControlledEnv
-from lr_gym.adapters.SimulationAdapter import SimulationAdapter
+from lr_gym.adapters.BaseSimulationAdapter import BaseSimulationAdapter
 
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.utils import JointState, LinkState
@@ -317,7 +317,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._wasHoldingSomethingPrevStep = False
         self._gripperOpen = True
 
-        if isinstance(self._environmentController, SimulationAdapter):
+        if isinstance(self._environmentController, BaseSimulationAdapter):
             self._environmentController.setLinksStateDirect({   ("cube","cube") : LinkState(position_xyz = (0.45, 0, 0.025),
                                                                                             orientation_xyzw = (0,0,0,1),
                                                                                             pos_velocity_xyz = (0,0,0),

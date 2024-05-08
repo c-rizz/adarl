@@ -142,7 +142,7 @@ class HopperVisualEnv(HopperEnv):
         return (robotState, imgObservation)
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
+        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
             simCamHeight = int(64*(self._obs_img_height/64))
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),

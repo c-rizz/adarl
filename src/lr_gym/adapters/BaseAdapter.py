@@ -30,9 +30,9 @@ class BaseAdapter(ABC):
         self._running_freerun_async_lock = RLock()
         self._running_freerun_async = False
         self.__lastResetTime = 0
-        self.setJointsToObserve([])
-        self.setLinksToObserve([])
-        self.setCamerasToObserve([])
+        self._jointsToObserve = []
+        self._linksToObserve = []
+        self._camerasToObserve = []
 
     def setJointsToObserve(self, jointsToObserve : List[Tuple[str,str]]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.

@@ -3,7 +3,7 @@ import torch.multiprocessing as mp
 from lr_gym.utils.spaces import gym_spaces
 from lr_gym.utils.utils import numpy_to_torch_dtype_dict, torch_to_numpy_dtype_dict
 import ctypes
-from typing import Optional, Any
+from typing import Optional, Any, Tuple, Dict
 import numpy as np
 from lr_gym.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree
 import lr_gym.utils.mp_helper as mp_helper
@@ -72,8 +72,8 @@ class SharedData():
         self._device = device
         self._obss = None
         self._acts = None
-        self._infos : dict[Any,th.Tensor] = None
-        self._reset_infos : dict[Any,th.Tensor] = None
+        self._infos : Dict[Any,th.Tensor] = None
+        self._reset_infos : Dict[Any,th.Tensor] = None
         self._reset_obss = None
         self._terms : th.Tensor = None
         self._truncs : th.Tensor = None
@@ -83,8 +83,8 @@ class SharedData():
     def build_data(self):
         self._obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
         self._acts = create_tensor_tree(self._n_envs, self._action_space, True, device=self._device)
-        self._infos : dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
-        self._reset_infos : dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
+        self._infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
+        self._reset_infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
         self._reset_obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
         self._terms : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
         self._truncs : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
@@ -156,13 +156,13 @@ class SharedEnvData():
         return ret
 
 
-    def wait_data(self) -> tuple[th.Tensor | dict[Any, th.Tensor],
+    def wait_data(self) -> Tuple[th.Tensor | Dict[Any, th.Tensor],
                                 th.Tensor,
                                 th.Tensor,
                                 th.Tensor,
-                                dict[Any, th.Tensor],
-                                th.Tensor | dict[Any, th.Tensor],
-                                dict[Any, th.Tensor]]:
+                                Dict[Any, th.Tensor],
+                                th.Tensor | Dict[Any, th.Tensor],
+                                Dict[Any, th.Tensor]]:
         with self._n_envs_stepping_cond:
             didnt_timeout = self._n_envs_stepping_cond.wait_for(lambda: self._n_envs_stepping.value<=0, timeout=self._timeout_s)
         if not didnt_timeout:

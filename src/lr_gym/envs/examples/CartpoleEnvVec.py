@@ -16,7 +16,7 @@ import random
 from lr_gym.envs.ControlledEnv import ControlledEnv
 import lr_gym
 from lr_gym.utils.utils import Pose, build_pose, JointState
-from lr_gym.adapters.SimulationAdapter import SimulationAdapter
+from lr_gym.adapters.BaseSimulationAdapter import BaseSimulationAdapter
 
 class CartpoleEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
@@ -113,7 +113,7 @@ class CartpoleEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
 
-        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
+        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
             if type(self._environmentController).__name__ == "GzController":
                 cartpole_model_name = None
                 cam_model_name = None
@@ -135,7 +135,7 @@ class CartpoleEnv(ControlledEnv):
                                                     model_format="sdf.xacro")
             ggLog.info(f"Model spawned with name {name}")
         
-        if isinstance(self._environmentController, SimulationAdapter):
+        if isinstance(self._environmentController, BaseSimulationAdapter):
             self._environmentController.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
                                                               ("cartpole_v0","cartpole_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0])})
         self._environmentController.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])

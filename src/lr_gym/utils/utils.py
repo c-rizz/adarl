@@ -92,22 +92,6 @@ numpy_to_torch_dtype_dict = {
 
 torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
 
-class JointState:
-    # These are lists because the joint may have multiple DOF
-    # position = []
-    # rate = []
-    # effort = []
-
-    def __init__(self, position : List[float], rate : List[float], effort : List[float]):
-        self.position = position
-        self.rate = rate
-        self.effort = effort
-
-    def __str__(self):
-        return "JointState("+str(self.position)+","+str(self.rate)+","+str(self.effort)+")"
-
-    def __repr__(self):
-        return self.__str__()
 
 class AverageKeeper:
     def __init__(self, bufferSize = 100):
@@ -187,6 +171,17 @@ def build_pose(x,y,z, qx,qy,qz,qw, th_device=None) -> Pose:
     return Pose(position = th.tensor([x,y,z], device=th_device),
                 orientation_xyzw = th.tensor([qx,qy,qz,qw], device=th_device))
 
+
+@dataclass
+class JointState:
+    def __init__(self, position : Union[th.Tensor, List[float], float],
+                       rate : Union[th.Tensor, List[float], float],
+                       effort : Union[th.Tensor, List[float], float]):
+        self.position = th.as_tensor(position).view(-1)
+        self.rate = th.as_tensor(rate).view(-1)
+        self.effort = th.as_tensor(effort).view(-1)
+
+    
 @dataclass
 class LinkState:
     pose : Pose

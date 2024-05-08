@@ -15,7 +15,7 @@ from lr_gym.adapters.BaseAdapter import BaseAdapter
 import lr_gym.utils
 import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.utils import Pose, build_pose
-from lr_gym.adapters.SimulationAdapter import SimulationAdapter
+from lr_gym.adapters.BaseSimulationAdapter import BaseSimulationAdapter
 
 class HopperEnv(ControlledEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup.
@@ -162,7 +162,7 @@ class HopperEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, SimulationAdapter):
+        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
             self._environmentController.spawn_model(model_file=lr_gym.utils.utils.pkgutil_get_path("lr_gym","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=build_pose(0,0,0,0,0,0,1),

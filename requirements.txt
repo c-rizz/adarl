@@ -27,3 +27,4 @@ jax[cuda12_pip]
 h5py==3.10.0
 pyzmq==25.1.2
 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+playsound==1.3.0

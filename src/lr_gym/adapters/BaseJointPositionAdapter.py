@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Optional
 
-class JointPositionEnvAdapter(ABC):
+class BaseJointPositionAdapter(ABC):
     @abstractmethod
     def setJointsPositionCommand(self, jointPositions : Dict[Tuple[str,str],float]) -> None:
         """Set the position to be requested on a set of joints.

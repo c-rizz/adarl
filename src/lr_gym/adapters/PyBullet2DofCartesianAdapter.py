@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict, Any, Optional
 import pybullet as p
 
 from lr_gym.adapters.PyBulletAdapter import PyBulletAdapter
-from lr_gym.adapters.CartesianPositionEnvAdapter import CartesianPositionEnvAdapter
+from lr_gym.adapters.BaseCartesianPositionAdapter import BaseCartesianPositionAdapter
 import lr_gym.utils.PyBulletUtils as PyBulletUtils
 import numpy as np
 import lr_gym.utils.dbg.ggLog as ggLog
@@ -13,7 +13,7 @@ import time
 
 
 
-class PyBullet2DofCartesianAdapter(PyBulletAdapter, CartesianPositionEnvAdapter):
+class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter):
     def __init__(self,  end_effector_link : Tuple[str,str],
                         xjoint : Tuple[str,str],
                         yjoint : Tuple[str,str],
@@ -120,7 +120,7 @@ class PyBullet2DofCartesianAdapter(PyBulletAdapter, CartesianPositionEnvAdapter)
         if keep_going:
             # ggLog.warn(f"{type(self)}: move timed out (ee_pos = {ee_pos}, target_position = {self._target_position}, err = {err})")
             self._move_fails_in_last_step += 1
-        self._clear_commands()
+        self.clear_commands()
         return elapsed_time
 
     def resetWorld(self):

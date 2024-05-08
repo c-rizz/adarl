@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from enum import Enum
-from typing import List, Optional, Sequence, Tuple, Union, Any, Callable
+from typing import List, Optional, Sequence, Tuple, Union, Any, Callable, Dict
 
 import numpy as np
 import cloudpickle
@@ -258,21 +258,21 @@ class AsyncVectorEnvShmem(VectorEnv):
         self._check_spaces()
 
     @property
-    def np_random_seed(self) -> tuple[int, ...]:
+    def np_random_seed(self) -> Tuple[int, ...]:
         """Returns the seeds of the wrapped envs."""
         return self.get_attr("np_random_seed")
 
     @property
-    def np_random(self) -> tuple[np.random.Generator, ...]:
+    def np_random(self) -> Tuple[np.random.Generator, ...]:
         """Returns the numpy random number generators of the wrapped envs."""
         return self.get_attr("np_random")
 
     def reset(
         self,
         *,
-        seed: int | list[int] | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> tuple[ObsType, dict[str, Any]]:
+        seed: Union[int, List[int], None] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[ObsType, Dict[str, Any]]:
         """Resets all sub-environments in parallel and return a batch of concatenated observations and info.
 
         Args:
@@ -330,7 +330,7 @@ class AsyncVectorEnvShmem(VectorEnv):
     def reset_wait(
         self,
         timeout: Optional[Union[int, float]] = None,
-    ) -> Tuple[ObsType, dict[str, Any]]:
+    ) -> Tuple[ObsType, Dict[str, Any]]:
         """Waits for the calls triggered by :meth:`reset_async` to finish and returns the results.
 
         Args:
@@ -373,7 +373,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
     def step(
         self, actions: ActType
-    ) -> tuple[ObsType, np.ndarray,np.ndarray,np.ndarray, dict[str, Any]]:
+    ) -> Tuple[ObsType, np.ndarray,np.ndarray,np.ndarray, Dict[str, Any]]:
         """Take an action for each parallel environment.
 
         Args:
@@ -415,7 +415,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
     def step_wait(
         self, timeout: int | float | None = None
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
         """Wait for the calls to :obj:`step` in each sub-environment to finish.
 
         Args:
@@ -480,7 +480,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             infos,
         )
 
-    def call(self, name: str, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
+    def call(self, name: str, *args: Any, **kwargs: Any) -> Tuple[Any, ...]:
         """Call a method from each parallel environment with args and kwargs.
 
         Args:
@@ -494,7 +494,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         self.call_async(name, *args, **kwargs)
         return self.call_wait()
 
-    def render(self) -> tuple[RenderFrame, ...] | None:
+    def render(self) -> Tuple[RenderFrame, ...] | None:
         """Returns a list of rendered frames from the environments."""
         return self.call("render")
 
@@ -523,7 +523,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
         self._state = AsyncState.WAITING_CALL
 
-    def call_wait(self, timeout: Optional[Union[int, float]] = None) -> tuple[Any, ...]:
+    def call_wait(self, timeout: Optional[Union[int, float]] = None) -> Tuple[Any, ...]:
         """Calls all parent pipes and waits for the results.
 
         Args:
@@ -550,7 +550,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         ret = [remote.recv() for remote in self.remotes]
         return tuple(ret)
 
-    def get_attr(self, name: str) -> tuple[Any, ...]:
+    def get_attr(self, name: str) -> Tuple[Any, ...]:
         """Get a property from each parallel environment.
 
         Args:
@@ -561,7 +561,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         """
         return self.call(name)
 
-    def set_attr(self, name: str, values: Union[list[Any], tuple[Any], object], timeout = None):
+    def set_attr(self, name: str, values: Union[List[Any], Tuple[Any], object], timeout = None):
         """Sets an attribute of the sub-environments.
 
         Args:

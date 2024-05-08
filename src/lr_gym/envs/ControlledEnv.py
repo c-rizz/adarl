@@ -9,6 +9,7 @@ from lr_gym.envs.BaseEnv import BaseEnv
 from typing import TypeVar, Generic
 from lr_gym.adapters.BaseAdapter import BaseAdapter
 import lr_gym.utils.spaces as spaces
+import lr_gym.utils.dbg.ggLog as ggLog
 
 EnvControllerType = TypeVar("EnvControllerType", bound=BaseAdapter)
 
@@ -36,7 +37,9 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
                  observation_space : spaces.gym_spaces.Space,
                  state_space : spaces.gym_spaces.Space,
                  startSimulation : bool = False,
-                 is_timelimited : bool = False):
+                 is_timelimited : bool = False,
+                 allow_multiple_steps : bool = False,
+                 step_precision_tolerance : float = 0.0):
         """
         """
 
@@ -46,6 +49,8 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
         self._environmentController = environmentController
         self._estimatedSimTime = 0.0 # Estimated from the results of each environmentController.step()
         self._intendedStepLength_sec = stepLength_sec
+        self._allow_multiple_steps = allow_multiple_steps
+        self._step_precision_tolerance = step_precision_tolerance
 
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          startSimulation = startSimulation,
@@ -63,9 +68,13 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
         estimatedStepDuration_sec = 0
         while True: # Do at least one step, then check if we need more
             estimatedStepDuration_sec += self._environmentController.step()
-            if estimatedStepDuration_sec >= self._intendedStepLength_sec:
+            if estimatedStepDuration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
                 break
+            elif not self._allow_multiple_steps:
+                raise RuntimeError(f"Simulation stepped less than required step length (stepped {estimatedStepDuration_sec} instead of {self._intendedStepLength_sec})")
         self._estimatedSimTime += estimatedStepDuration_sec
+        if abs(estimatedStepDuration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
+            ggLog.warn(f"Step duration is different than intended: {estimatedStepDuration_sec} != {self._intendedStepLength_sec}")
 
 
 

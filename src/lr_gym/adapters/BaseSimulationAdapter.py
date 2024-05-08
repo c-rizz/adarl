@@ -4,7 +4,7 @@ from lr_gym.utils.utils import JointState, LinkState, Pose, build_pose
 from lr_gym.adapters.BaseAdapter import BaseAdapter
 
 
-class SimulationAdapter(ABC):
+class BaseSimulationAdapter(ABC):
 
     @abstractmethod
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):

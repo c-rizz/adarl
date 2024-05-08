@@ -45,7 +45,7 @@ class Session():
                         use_wandb = True):
         
         self._wandb_wrapper.start_worker()
-        self._is_wandb_enabled = True
+        self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
             if debug:
                 debug_level = 1
@@ -169,7 +169,6 @@ class Session():
                     ggLog.info("modelFile is not a file")
 
         if use_wandb:
-            global wandb_enabled
             import wandb
             if experiment_name is None:
                 experiment_name = os.path.basename(file)
@@ -183,7 +182,6 @@ class Session():
                             sync_tensorboard = True, # Save tensorboard stuff,
                             notes = comment
                             )
-                wandb_enabled = True
             except wandb.sdk.wandb_manager.ManagerConnectionError as e: # type: ignore
                 ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
 

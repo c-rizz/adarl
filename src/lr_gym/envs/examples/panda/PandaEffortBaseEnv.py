@@ -117,8 +117,8 @@ class PandaEffortBaseEnv(ControlledEnv):
             #                  stepLength_sec = stepLength_sec,
             #                  forced_ros_master_uri = forced_ros_master_uri)
             raise AttributeError("You must specify an environmentController")
-        if not isinstance(environmentController, lr_gym.adapters.JointEffortEnvAdapter):
-            raise AttributeError("environmentController must be a JointEffortEnvAdapter")
+        if not isinstance(environmentController, lr_gym.adapters.BaseJointEffortAdapter):
+            raise AttributeError("environmentController must be a BaseJointEffortAdapter")
 
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          environmentController = environmentController,

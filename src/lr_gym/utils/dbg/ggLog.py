@@ -5,6 +5,36 @@ import logging
 import datetime
 
 
+import logging
+
+class ColoredLevelsFormatter(logging.Formatter):
+
+    grey = "\x1b[38;20m"
+    yellow = "\x1b[33;20m"
+    red = "\x1b[31;20m"
+    bold_red = "\x1b[31;1m"
+    reset = "\x1b[0m"
+    format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)"
+
+    FORMATS = {
+        logging.DEBUG: grey,
+        logging.INFO: grey,
+        logging.WARNING: yellow,
+        logging.ERROR: red,
+        logging.CRITICAL: bold_red
+    }
+
+    def __init__(self, fmt : str, datefmt):
+        super().__init__(fmt, datefmt=datefmt)
+        self._sub_format = fmt
+        self._date_format = datefmt
+
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno, self.grey) + self._sub_format + self.reset
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
 logger = logging.getLogger('GGLog')
 logger.setLevel(logging.DEBUG)
 # create file handler that logs debug and higher level messages
@@ -15,7 +45,7 @@ fh.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
 # create formatter and add it to the handlers
-formatter = logging.Formatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y%m%d%H:%M:%S')
+formatter = ColoredLevelsFormatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y%m%d%H:%M:%S')
 # formatter = logging.Formatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%s')
 ch.setFormatter(formatter)
 fh.setFormatter(formatter)

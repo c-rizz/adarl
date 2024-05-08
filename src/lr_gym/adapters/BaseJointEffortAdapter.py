@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple
 from lr_gym.adapters.BaseAdapter import BaseAdapter
 
-class JointEffortEnvAdapter(ABC):
+class BaseJointEffortAdapter(ABC):
     @abstractmethod
     def setJointsEffortCommand(self, jointTorques : List[Tuple[Tuple[str,str],float]]) -> None:
         """Set the efforts to be applied on a set of joints.

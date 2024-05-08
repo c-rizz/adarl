@@ -1,13 +1,13 @@
 from lr_gym.utils.spaces import gym_spaces
 import torch as th
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Dict, Tuple, Union
 import numpy as np
 from lr_gym.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
 
-TensorTree = dict | list | tuple | th.Tensor
+TensorTree = Union[Dict, List, Tuple, th.Tensor]
 
-def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> th.Tensor | dict[Any, th.Tensor]:
+def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
     if isinstance(space, gym_spaces.Dict):
         tree = {}
         for k, s in space.spaces.items():

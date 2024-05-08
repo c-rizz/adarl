@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Optional, List
 import numpy as np
 
-class CartesianPositionEnvAdapter(ABC):
+class BaseCartesianPositionAdapter(ABC):
     @abstractmethod
     def setCartesianPoseCommand(self, linkPoses : Dict[Tuple[str,str],np.ndarray]) -> None:
         """Request a set of links to be placed at a specific cartesian pose.
