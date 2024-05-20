@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np
 import time
 import cv2
@@ -22,7 +23,6 @@ import torch as th
 import subprocess
 import re
 from typing import TypedDict
-from lr_gym.adapters.BaseAdapter import BaseAdapter
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -531,7 +531,8 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
     return model_definition_string
 
-def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
+import lr_gym.adapters.BaseAdapter
+def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : lr_gym.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
     call_time = time.monotonic()
     last_warn_time = call_time
     while True:

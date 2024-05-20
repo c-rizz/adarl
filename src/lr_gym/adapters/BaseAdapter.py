@@ -2,11 +2,10 @@
 #!/usr/bin/env python3
 from typing import List, Tuple, Dict, Callable, Optional
 
-from lr_gym.utils.utils import JointState
-from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
+from lr_gym.utils.utils import JointState, LinkState
 
 JointName = Tuple[str,str]
 LinkName = Tuple[str,str]

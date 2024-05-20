@@ -10,7 +10,7 @@ def recdict_access(rdict, keylist):
         return rdict
     return recdict_access(rdict[keylist[0]], keylist[1:])
 
-def plot(data, filename):
+def plot(data, filename, gui = True):
     print(f"plotting data with shape {data.shape}")
     ax : matplotlib.axes.Axes
     fig, ax = plt.subplots()
@@ -22,7 +22,11 @@ def plot(data, filename):
         labels = labels[0]
     ax.plot(data, label=labels)
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    fig.savefig(filename)
+    if gui:
+        fig.show()
+    else:
+        fig.savefig(filename)
+
 
 if __name__ == "__main__":
 
