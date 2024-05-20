@@ -116,7 +116,7 @@ class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter
             ee_pos = self.getLinksState([self._end_effector_link])[self._end_effector_link].pose.position[0:2]
             err = np.linalg.norm(ee_pos - self._target_position)
             keep_going = err > self._position_tolerance
-            elapsed_time = self.getEnvSimTimeFromStart()-sim_t0
+            elapsed_time = self.getEnvTimeFromStartup()-sim_t0
         if keep_going:
             # ggLog.warn(f"{type(self)}: move timed out (ee_pos = {ee_pos}, target_position = {self._target_position}, err = {err})")
             self._move_fails_in_last_step += 1

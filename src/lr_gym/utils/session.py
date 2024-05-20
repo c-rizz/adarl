@@ -205,14 +205,19 @@ class Session():
             ggLog.info(f"Told wandb to finish.")
             
         t0 = time.monotonic()
-        timeout = 60
+        timeout = 30
         if threading.current_thread() == threading.main_thread():
             active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
-
-            while len(active_threads)>0 and time.monotonic() - t0 < timeout:
-                ggLog.warn(f"Session shutting down: waiting for active threads {active_threads}")
+            elapsed = 0
+            while len(active_threads)>0 and elapsed < timeout:
+                elapsed = time.monotonic() - t0
+                ggLog.warn(f"Session shutting down: [{int(timeout - elapsed)}] waiting for active threads {active_threads}")
                 time.sleep(1)
                 active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
+                all_daemonic = True
+                for t in active_threads: all_daemonic = all_daemonic and t.isDaemon()
+                if all_daemonic:
+                    break
         if len(active_threads)>1:
             ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 

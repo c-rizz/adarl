@@ -1,31 +1,29 @@
 """This file implements the Envitronment controller class, whic is the superclass for all th environment controllers."""
 #!/usr/bin/env python3
-from typing import List, Tuple, Dict, Any
-
+from typing import List, Tuple, Dict, Callable, Optional
 
 from lr_gym.utils.utils import JointState
 from lr_gym.utils.utils import LinkState
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
-import numpy as np
-import lr_gym.utils.dbg.ggLog as ggLog
 import torch as th
 
+JointName = Tuple[str,str]
+LinkName = Tuple[str,str]
 
 class BaseAdapter(ABC):
-    """This class allows to control the execution of a simulation.
+    """Base class for implementing environment adapters. Adapters allow to interface with a variety of 
+    execution environments, being them real or simulated. Different capabilities may be available depending
+    on the kind of environment they are implemented for, which can allow very different capabilities.
+    Simulation environments can offer different ways to manipulated the environment, but also environments
+    based on different control approaches can offer different ways to command robot hardware, and different
+    sensor setups can give access to different sensor data.
 
-    It is an abstract class, it is meant to be extended with sub-classes for specific simulators
+    It is an abstract class, it is meant to be extended with sub-classes for specific environments
     """
 
     def __init__(self):
-        """Initialize the Simulator controller.
-
-        Raises
-        -------
-        ROSException
-            If it fails to find the gazebo services
-
+        """Initialize the adapter.
         """
         self._running_freerun_async_lock = RLock()
         self._running_freerun_async = False
@@ -34,7 +32,7 @@ class BaseAdapter(ABC):
         self._linksToObserve = []
         self._camerasToObserve = []
 
-    def setJointsToObserve(self, jointsToObserve : List[Tuple[str,str]]):
+    def set_monitored_joints(self, jointsToObserve : List[JointName]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -46,7 +44,7 @@ class BaseAdapter(ABC):
         self._jointsToObserve = jointsToObserve
 
 
-    def setLinksToObserve(self, linksToObserve : List[Tuple[str,str]]):
+    def set_monitored_links(self, linksToObserve : List[LinkName]):
         """Set which links should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -57,7 +55,7 @@ class BaseAdapter(ABC):
         """
         self._linksToObserve = linksToObserve
 
-    def setCamerasToObserve(self, camerasToRender : List[str] = []):
+    def set_monitored_cameras(self, camerasToRender : List[str] = []):
         """Set which camera should be rendered after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -70,8 +68,8 @@ class BaseAdapter(ABC):
 
 
     @abstractmethod
-    def startController(self):
-        """Start up the controller. This must be called after setCamerasToObserve, setLinksToObserve and setJointsToObserve."""
+    def startup(self):
+        """Start up the controller. This must be called after set_monitored_cameras, set_monitored_links and set_monitored_joints."""
         raise NotImplementedError()
 
     def stopController(self):
@@ -106,7 +104,7 @@ class BaseAdapter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getJointsState(self, requestedJoints : List[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
+    def getJointsState(self, requestedJoints : List[JointName]) -> Dict[JointName,JointState]:
         """Get the state of the requested joints.
 
         Parameters
@@ -123,7 +121,7 @@ class BaseAdapter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def getLinksState(self, requestedLinks : List[Tuple[str,str]]) -> Dict[Tuple[str,str],LinkState]:
+    def getLinksState(self, requestedLinks : List[LinkName]) -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.
 
         Parameters
@@ -151,10 +149,6 @@ class BaseAdapter(ABC):
         """
         self.__lastResetTime = self.getEnvTimeFromStartup()
 
-    
-    def getEnvSimTimeFromStart(self) -> float:
-        """Deprecated"""
-        return self.getEnvTimeFromStartup()
 
     @abstractmethod
     def getEnvTimeFromStartup(self) -> float:
@@ -171,27 +165,37 @@ class BaseAdapter(ABC):
         raise NotImplementedError()
 
 
-    def freerun_async_loop(self):
+    def freerun_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
         # ggLog.info(f"Freerun async loop")
         should_run = True
         t_remaining = 1 # Always do at least one step # self._freerun_async_timeout - self.getEnvTimeFromStartup()
         while should_run and t_remaining > 0:
             # ggLog.info(f"Freerunning")
-            self.freerun(duration_sec = min(0.2,t_remaining))
+            self.freerun(duration_sec = min(0.5,t_remaining))
             with self._running_freerun_async_lock:
                 should_run = self._running_freerun_async
             t_remaining =  self._freerun_async_timeout - self.getEnvTimeFromStartup()
         with self._running_freerun_async_lock:
             self._running_freerun_async = False
+        if on_finish_callback is not None:
+            on_finish_callback()
 
-    def freerun_async(self, duration_sec : float = float("+inf")):
+    def freerun_async(self, duration_sec : float = float("+inf"), on_finish_callback = None):
+        """ Asynchronously run the simulation from a parallel thread.
+
+        Parameters
+        ----------
+        duration_sec : float, optional
+            Run the environment for this duration (in case of simulation, this is simulated time).
+             This can be preempted by stop_freerun_async(). By default float("+inf")
+        """
         # ggLog.info(f"Freerun async({duration_sec})")
         with self._running_freerun_async_lock:
             # ggLog.info(f"Freerun async acquired lock")
             self._freerun_async_duration_sec = duration_sec
             self._freerun_async_timeout = self.getEnvTimeFromStartup() + duration_sec
             self._running_freerun_async = True
-            self._freerun_async_thread = Thread(target=self.freerun_async_loop)
+            self._freerun_async_thread = Thread(target=self.freerun_async_loop, args=[on_finish_callback])
             self._freerun_async_thread.start()
 
     def wait_freerun_async(self):
@@ -205,7 +209,6 @@ class BaseAdapter(ABC):
             if not self._running_freerun_async:
                 return
             self._running_freerun_async = False
-        self._freerun_async_thread.join()
 
     @abstractmethod
     def build_scenario(self, **kwargs):

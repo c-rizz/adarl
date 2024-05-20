@@ -118,7 +118,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._expectedAchievedPoseXyzrpy = None
 
 
-        self._environmentController.setJointsToObserve( [("panda","panda_joint1"),
+        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -127,7 +127,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.setLinksToObserve( [("panda","panda_link1"),
+        self._environmentController.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -136,7 +136,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
                                                         ("panda","panda_link7"),
                                                         ("panda","panda_link8")])
 
-        self._environmentController.startController()
+        self._environmentController.startup()
 
 
     def submitAction(self, action : np.typing.NDArray[(6,), np.float32]) -> None:
@@ -356,7 +356,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._environmentController.destroy_scenario()
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvSimTimeFromStart()
+        return self._environmentController.getEnvTimeFromStartup()
 
     def setGoalInState(self, state, goal):
         state[-6:] = goal

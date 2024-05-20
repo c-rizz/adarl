@@ -80,8 +80,8 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
         self._stackedImg = np.zeros(shape=(self._frame_stacking_size,self._obs_img_height, self._obs_img_height), dtype=np.float32)
         action_space = spaces.gym_spaces.Box(low=np.array([-1]),high=np.array([1]))
-        self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
-        self._environmentController.setCamerasToObserve(["camera"])
+        self._environmentController.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        self._environmentController.set_monitored_cameras(["camera"])
 
 
         if imgEncoding == "float":
@@ -96,7 +96,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
             raise AttributeError(f"Unsupported imgEncoding '{imgEncoding}' requested, it can be either 'int' or 'float'")
         
 
-        self._environmentController.startController()
+        self._environmentController.startup()
         super(CartpoleEnv, self).__init__(  maxStepsPerEpisode = maxStepsPerEpisode,
                                             stepLength_sec = stepLength_sec/self._frame_stacking_size,
                                             environmentController = simulatorController,

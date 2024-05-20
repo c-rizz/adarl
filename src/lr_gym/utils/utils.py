@@ -1,3 +1,4 @@
+from __future__ import annotations
 import numpy as np
 import time
 import cv2
@@ -21,6 +22,7 @@ import torch as th
 import subprocess
 import re
 from typing import TypedDict
+from lr_gym.adapters.BaseAdapter import BaseAdapter
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -174,6 +176,10 @@ def build_pose(x,y,z, qx,qy,qz,qw, th_device=None) -> Pose:
 
 @dataclass
 class JointState:
+    position : th.Tensor
+    rate : th.Tensor
+    effort : th.Tensor
+    
     def __init__(self, position : Union[th.Tensor, List[float], float],
                        rate : Union[th.Tensor, List[float], float],
                        effort : Union[th.Tensor, List[float], float]):
@@ -188,8 +194,16 @@ class LinkState:
     pos_velocity_xyz : th.Tensor
     ang_velocity_xyz : th.Tensor
 
-    def __init__(self, position_xyz : th.Tensor, orientation_xyzw : th.Tensor,
-                    pos_velocity_xyz : th.Tensor, ang_velocity_xyz : th.Tensor):
+    def __init__(self, position_xyz : th.Tensor | tuple, orientation_xyzw : th.Tensor | tuple ,
+                    pos_velocity_xyz : th.Tensor | tuple, ang_velocity_xyz : th.Tensor | tuple):
+        if isinstance(position_xyz, tuple):
+            position_xyz = th.as_tensor(position_xyz)
+        if isinstance(orientation_xyzw, tuple):
+            orientation_xyzw = th.as_tensor(orientation_xyzw)
+        if isinstance(pos_velocity_xyz, tuple):
+            pos_velocity_xyz = th.as_tensor(pos_velocity_xyz)
+        if isinstance(ang_velocity_xyz, tuple):
+            ang_velocity_xyz = th.as_tensor(ang_velocity_xyz)
         self.pose = build_pose(position_xyz[0],position_xyz[1],position_xyz[2], orientation_xyzw[0],orientation_xyzw[1],orientation_xyzw[2],orientation_xyzw[3])
         self.pos_velocity_xyz = pos_velocity_xyz
         self.ang_velocity_xyz = ang_velocity_xyz
@@ -228,7 +242,8 @@ def puttext_cv(img, string, origin, rowheight, fontScale = 0.5, color = (255,255
 
 def evaluatePolicy(env,
                    model,
-                   episodes : int, on_ep_done_callback = None,
+                   episodes : int,
+                   on_ep_done_callback : Callable[[float, int,int],Any] | None = None,
                    predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
                    progress_bar : bool = False,
                    images_return = None,
@@ -516,7 +531,7 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
     return model_definition_string
 
-def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : EnvironmentError, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
+def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
     call_time = time.monotonic()
     last_warn_time = call_time
     while True:
@@ -583,7 +598,7 @@ def getBestGpu(seed ):
 
     bestRatio = 0
     bestGpu = None
-    ratios = [None]*len(gpus_mem_info)
+    ratios = [0.0]*len(gpus_mem_info)
     for i in range(len(gpus_mem_info)):
         tot = gpus_mem_info[i][1]
         free = gpus_mem_info[i][0]
@@ -715,3 +730,106 @@ def cpuinfo():
         if "model name" in line:
             return re.sub( ".*model name.*:", "", line,1)
     return None
+
+
+def quintic_pos(t, duration, pos_range, offset):
+    t = t/duration
+    # nicely shaped quintic curve goes from 0 to 1 for x going from 0 to 1
+    # zero first and second derivativeat 0 and 1
+    # max derivative at 0.5
+    # max second derivative at 0.5 +- (sqrt(3)/6)
+    pos = pos_range*t*t*t*(6*t*t - 15*t +10) + offset
+    return pos
+
+def quintic_vel(t, duration, pos_range):
+    b = 1/duration
+    vel = 30*pos_range*b*b*b*t*t*(b*b*t*t-2*b*t+1)
+    return vel
+
+def quintic_acc(t, duration, pos_range):
+    b = 1/duration
+    vel = 30*pos_range*b*b*b*t*t*(b*b*t*t-2*b*t+1)
+    return vel
+
+def quintic_tpva(t, duration, pos_range, offset):
+    s = (t,
+         quintic_pos(t, duration, pos_range, offset),
+         quintic_vel(t, duration, pos_range),
+         quintic_acc(t, duration, pos_range))
+    return s
+
+def compute_quintic(p0 : float, pf : float, max_vel : float, max_acc : float):
+    offset = p0
+    pos_range = pf-p0
+    duration_vel_lim = 15*pos_range/(max_vel*8)
+    duration_acc_lim = np.sqrt(10*pos_range)/(np.power(3,0.25)*np.sqrt(max_acc))
+    duration = max(duration_vel_lim, duration_acc_lim)
+    return duration, pos_range, offset
+
+def build_quintic_trajectory(p0 : float, v0 : float, pf : float, ctrl_freq_hz : float, max_vel : float, max_acc : float):
+    # TODO: implement v0 usage, maybe somehow scaling a shifting the quintic
+    duration, pos_range, offset = compute_quintic(p0 = p0, pf=pf, max_vel=max_vel, max_acc=max_acc)
+    samples_num = int(duration*ctrl_freq_hz+1)
+    traj_tpva = np.zeros(shape=(samples_num, 4), dtype=np.float32)
+    for i in range(samples_num):
+        t = i*1/ctrl_freq_hz
+        traj_tpva[i] = quintic_tpva(t, duration, pos_range, offset)
+    traj_tpva[-1] = duration, pf, 0, 0
+    return traj_tpva
+
+
+def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ctrl_freq_hz : float, max_vel : float, max_acc : float) -> np.ndarray:
+    """Generate a 1-dimensional trajectory, using a quintic (6x^51-15x^4+10x^3) position trajectory
+    and determining velocity and acceleration consequently. The trajectory will be scaled to respect 
+    the max_vel and max_acc arguments.
+    Usage of the v0 initial velocity is not implemented yet.
+
+    Parameters
+    ----------
+    t0 : float
+        Start time
+    p0 : float
+        Start position
+    v0 : float
+        Start velocity (currently unused)
+    pf : float
+        End position
+    ctrl_freq_hz : float
+        Determines how many samples to generate.
+    max_vel : float
+        Maximum velocity to plan for.
+    max_acc : float
+        Maximum acceleration to plan for.
+
+    Returns
+    -------
+    np.ndarray
+        Numpy array containing the trajectory samples in the form (time, position, velocity, acceleration)
+
+    """
+    # ggLog.info(f"build_1D_vramp_traj_samples("+ f"t0 = {t0}\n"
+    #                                             f"p0 = {p0}\n"
+    #                                             f"v0 = {v0}\n"
+    #                                             f"pf = {pf}\n"
+    #                                             f"ctrl_freq_hz = {ctrl_freq_hz}\n"
+    #                                             f"max_vel = {max_vel}\n"
+    #                                             f"max_acc = {max_acc}\n"
+    #                                             ")")
+
+    d = abs(pf-p0)
+    if pf<p0:
+        v0 = -v0 # direction was flipped, so flip the velocity
+    trajectory_tpva = build_quintic_trajectory(0,v0,d,ctrl_freq_hz,max_vel, max_acc)
+    if pf < p0:
+        trajectory_tpva = [(t,-p,-v,-a) for t,p,v,a in trajectory_tpva]
+    trajectory_tpva = [(t+t0,p+p0,v,a) for t,p,v,a in trajectory_tpva]
+    trajectory_tpva = np.array(trajectory_tpva, dtype = np.float64)
+
+    traj_max_vel = np.max(np.abs(trajectory_tpva[:,2]))
+    if traj_max_vel > max_vel:
+        raise RuntimeError(f"Error computing trajectory, max_vel exceeded. traj_max_vel = {traj_max_vel} > {max_vel}")    
+    traj_max_acc = np.max(np.abs(trajectory_tpva[:,3]))
+    if traj_max_acc > max_acc:
+        raise RuntimeError(f"Error computing trajectory, max_acc exceeded. traj_max_acc = {traj_max_acc} > {max_acc}")
+
+    return trajectory_tpva

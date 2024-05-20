@@ -97,12 +97,12 @@ class HopperEnv(ControlledEnv):
 
         #print("HopperEnv: action_space = "+str(self.action_space))
         #print("HopperEnv: action_space = "+str(self.action_space))
-        self._environmentController.setJointsToObserve([("hopper","torso_to_thigh"),
+        self._environmentController.set_monitored_joints([("hopper","torso_to_thigh"),
                                                         ("hopper","thigh_to_leg"),
                                                         ("hopper","leg_to_foot"),
                                                         ("hopper","torso_pitch_joint")])
 
-        self._environmentController.setLinksToObserve([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
+        self._environmentController.set_monitored_links([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
 
         self._stepLength_sec = stepLength_sec
         self._renderingEnabled = render
@@ -112,9 +112,9 @@ class HopperEnv(ControlledEnv):
         self._tot_episodes = 0
         self._success_ratio = 0
         if self._renderingEnabled:
-            self._environmentController.setCamerasToObserve(["camera"])
+            self._environmentController.set_monitored_cameras(["camera"])
 
-        self._environmentController.startController()
+        self._environmentController.startup()
 
     def submitAction(self, action : np.typing.NDArray[(3,), np.float32]) -> None:
         super().submitAction(action)

@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Any, Optional
 from lr_gym.adapters.PyBulletAdapter import PyBulletAdapter
 from lr_gym.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 import torch as th
+import copy
 from typing_extensions import override
 
 class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
@@ -52,7 +53,7 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         self._compute_and_apply_joint_effort(list(self._commanded_joint_impedances.items()))
 
     @override
-    def apply_joint_impedances(self, joint_impedances_pvesd : List[Tuple[Tuple[str,str],Tuple[float,float,float,float,float]]]):
+    def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]]):
         self.setJointsImpedanceCommand(joint_impedances_pvesd=joint_impedances_pvesd)
         self._apply_commanded_joint_impedances()
 
@@ -89,5 +90,5 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         self.setJointsEffortCommand(jointTorques=list(eff_cmd.items()))
 
     @override
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : List[Tuple[Tuple[str,str],Tuple[float,float,float,float,float]]]) -> None:
-        self._commanded_joint_impedances = {ji[0]:ji[1] for ji in joint_impedances_pvesd}
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]]) -> None:
+        self._commanded_joint_impedances = copy.deepcopy(joint_impedances_pvesd)

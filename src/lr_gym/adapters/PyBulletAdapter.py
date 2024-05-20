@@ -274,7 +274,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
         # ggLog.info("self._linkNameToBodyAndLinkId = "+str(self._linkNameToBodyAndLinkId))
 
 
-    def startController(self):
+    def startup(self):
         if not pybullet.isConnected():
             raise ValueError("PyBullet is not connected")
 
@@ -474,7 +474,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
                                         )
 
     def _apply_commanded_positions(self):
-        t = self.getEnvSimTimeFromStart()
+        t = self.getEnvTimeFromStartup()
         for bodyId, joint_trajectories in self._commanded_trajectories.items():
             jointIds, positions, velocities, forces, pos_gains, vel_gains = ([],[],[],[],[],[])
             sample_time = None
@@ -533,7 +533,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
                                         acceleration_scaling : float = 1.0) -> None:
         requests = {}
         jointStates = self.getJointsState(requestedJoints=jointPositions.keys())
-        t0 = self.getEnvSimTimeFromStart()
+        t0 = self.getEnvTimeFromStartup()
         for joint, req_position in jointPositions.items():
             max_acceleration = min( self._max_joint_acceleration_pos_control,
                                     self._max_joint_accelerations_pos_control.get(joint,float("+inf")))

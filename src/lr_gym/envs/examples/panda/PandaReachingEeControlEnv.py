@@ -87,7 +87,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                             simulationBackend=backend)
 
         self._camera_name = "simple_camera"
-        self._environmentController.setCamerasToObserve([self._camera_name])
+        self._environmentController.set_monitored_cameras([self._camera_name])
 
 
         self._initialJointPose = {  ("panda","panda_joint1") : 0.0,
@@ -98,7 +98,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                     ("panda","panda_joint6") : 3.14159/4,
                                     ("panda","panda_joint7") : 0.0}
 
-        self._environmentController.setJointsToObserve( [("panda","panda_joint1"),
+        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -107,7 +107,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.setLinksToObserve( [("panda","panda_link1"),
+        self._environmentController.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -123,7 +123,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
         self._maxPositionChange = 0.1
         self._maxOrientationChange = 45.0/180*3.14159 # 5 degrees
 
-        self._environmentController.startController()
+        self._environmentController.startup()
 
         self._operatingArea = operatingArea #min xyz, max xyz
 

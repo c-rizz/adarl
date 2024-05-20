@@ -115,9 +115,9 @@ class PandaMoveitPickEnv(ControlledEnv):
 
         self._renderingEnabled = render
         if self._renderingEnabled:
-            self._environmentController.setCamerasToObserve(["camera"]) #TODO: fix the camera topic
+            self._environmentController.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
 
-        self._environmentController.setJointsToObserve( [("panda","panda_joint1"),
+        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -128,7 +128,7 @@ class PandaMoveitPickEnv(ControlledEnv):
                                                         ("panda","panda_finger_joint2")])
 
 
-        self._environmentController.setLinksToObserve( [("panda","panda_link1"),
+        self._environmentController.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -145,7 +145,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._maxPositionChange = 0.1
         self._maxOrientationChange = 5.0/180*3.14159 # 5 degrees
 
-        self._environmentController.startController()
+        self._environmentController.startup()
 
         self._operatingArea = operatingArea #min xyz, max xyz
 
@@ -409,4 +409,4 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._environmentController.destroy_scenario()
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvSimTimeFromStart()
+        return self._environmentController.getEnvTimeFromStartup()

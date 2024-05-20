@@ -67,11 +67,11 @@ class CartpoleEnv(ControlledEnv):
                          environmentController = environmentController,
                          startSimulation = startSimulation)
 
-        self._environmentController.setJointsToObserve([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        self._environmentController.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         if self._renderingEnabled:
-            self._environmentController.setCamerasToObserve(["camera"])
+            self._environmentController.set_monitored_cameras(["camera"])
 
-        self._environmentController.startController()
+        self._environmentController.startup()
         self._success = False
 
     def submitAction(self, action : int) -> None:

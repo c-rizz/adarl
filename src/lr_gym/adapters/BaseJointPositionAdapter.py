@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Optional
+from lr_gym.utils.utils import MoveFailError
 
 class BaseJointPositionAdapter(ABC):
     @abstractmethod
@@ -27,4 +28,23 @@ class BaseJointPositionAdapter(ABC):
     def moveToJointPoseSync(self,   jointPositions : Dict[Tuple[str,str],float],
                                     velocity_scaling : Optional[float] = None,
                                     acceleration_scaling : Optional[float] = None) -> None:
+        
+        """ Moves the joints to the specified positions following a continuous trajectory (not instantaneously as 
+            could be done in a simulation). This is not intended to be used during the episode, but just to reposition
+            joints during reset/initialization procedures.        
+
+        Parameters
+        ----------
+        jointPositions : Dict[Tuple[str,str],float]
+            Maps joint names (model_name, joint_name) to joint positions.
+        velocity_scaling : Optional[float], optional
+            Scales the velocity of the movement
+        acceleration_scaling : Optional[float], optional
+            Scales the acceleration of the movement
+
+        Raises
+        ------
+        MoveFailError
+            If the movement fails
+        """
         raise NotImplementedError()

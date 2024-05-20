@@ -130,9 +130,9 @@ class PandaEffortBaseEnv(ControlledEnv):
         self._maxTorques = np.array(maxTorques)
         self._renderingEnabled = render
         if self._renderingEnabled:
-            self._environmentController.setCamerasToObserve(["camera"]) #TODO: fix the camera topic
+            self._environmentController.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
 
-        self._environmentController.setJointsToObserve( [("panda","panda_joint1"),
+        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -141,7 +141,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.setLinksToObserve( [("panda","panda_link1"),
+        self._environmentController.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -151,7 +151,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                        # ("panda","panda_link8"),
                                                        ])
 
-        self._environmentController.startController()
+        self._environmentController.startup()
 
 
 

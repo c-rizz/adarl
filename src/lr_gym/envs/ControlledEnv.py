@@ -86,4 +86,4 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
 
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvSimTimeFromStart()
+        return self._environmentController.getEnvTimeFromStartup()
