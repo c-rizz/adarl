@@ -55,11 +55,16 @@ def cmd_quit(file, current_path, *args, **kwargs):
 
 
 def cmd_plot(file, current_path, *args, **kwargs):
-    if len(args) != 1:
+    if len(args) < 1:
         print(f"Argument missing for plot.")
-    print(f"Plotting...")
-    data = recdict_access(f, current_path+[cmd[1]])
-    plot(np.array(data), filename = "./plot.pdf")
+    print(f"cmd_plot({args})")
+    columns = None
+    if len(args)==2:
+        columns = [int(i) for i in args[1].split(",")]
+    data = np.array(recdict_access(f, current_path+[cmd[1]]))
+    if columns is not None:
+        data = data[:,columns]
+    plot(data, filename = "./plot.pdf")
     return current_path, True
 
 
@@ -90,6 +95,7 @@ if __name__ == "__main__":
                 "ls" : cmd_ls,
                 "quit" : cmd_quit,
                 "exit" : cmd_quit,
+                "q" : cmd_quit,
                 "plot" : cmd_plot,
                 "help" : cmd_help}
         with h5py.File(fname, "r") as f:
@@ -109,7 +115,10 @@ if __name__ == "__main__":
                 if cmd_func != None:
                     kwargs = {}
                     kwargs["cmds"] = cmds
-                    current_path, running = cmd_func(f,current_path, *args, **kwargs)
+                    try:
+                        current_path, running = cmd_func(f,current_path, *cmd_args, **kwargs)
+                    except Exception as e:
+                        print(f"Command failed with exception {e.__class__.__name__}: {e}")
                 else:
                     print(f"Command {cmd[0]} not found.")
     except Exception as e:
