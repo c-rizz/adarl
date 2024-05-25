@@ -518,6 +518,26 @@ class MoveFailError(Exception):
         super().__init__(message)
 
 
+def _fix_urdf_ros_paths(urdf_string):
+    done = False
+    pos = 0
+    while not done:
+        keyword = "package://"
+        path_start = urdf_string.find(keyword, pos)
+        if path_start != -1:
+            str_delimiter = urdf_string[path_start-1]
+            path_end = urdf_string.find(str_delimiter,path_start)
+            original_path = urdf_string[path_start:path_end]
+            split_path = original_path.split("/")
+            pkg_name = split_path[2]
+            import rospkg
+            pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+            abs_path = pkg_path+"/"+"/".join(split_path[3:])
+            urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
+        else:
+            done = True
+    return urdf_string
+
 def compile_xacro_string(model_definition_string, model_kwargs = None):
     xacro_args = {"output":None, "just_deps":False, "xacro_ns":True, "verbosity":1}
     mappings = {}
@@ -529,6 +549,7 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     doc = xacro.parse(model_definition_string)
     xacro.process_doc(doc, mappings = mappings, **xacro_args)
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
+    model_definition_string = _fix_urdf_ros_paths(model_definition_string)
     return model_definition_string
 
 import lr_gym.adapters.BaseAdapter

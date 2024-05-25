@@ -4,22 +4,24 @@ import argparse
 import matplotlib.axes
 import matplotlib.pyplot as plt
 import numpy as np
+import readline # enables better input() features (arrow keys, history)
 
 def recdict_access(rdict, keylist):
     if len(keylist)==0:
         return rdict
     return recdict_access(rdict[keylist[0]], keylist[1:])
 
-def plot(data, filename, gui = True):
+def plot(data, filename, gui = True, labels = None):
     print(f"plotting data with shape {data.shape}")
     ax : matplotlib.axes.Axes
     fig, ax = plt.subplots()
     if len(data.shape)==1:
         data = np.expand_dims(data,1)
     series_num = data.shape[1]
-    labels = [f"{i}" for i in range(series_num)]
-    if len(labels)==1:
-        labels = labels[0]
+    if labels is None:
+        labels = [f"{i}" for i in range(series_num)]
+        if len(labels)==1:
+            labels = labels[0]
     ax.plot(data, label=labels)
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     if gui:
@@ -29,6 +31,9 @@ def plot(data, filename, gui = True):
         fig.savefig(filename)
 
 def cmd_cd(file, current_path, *args, **kwargs):
+    """ Move into a the dataset structure as if it was a folder structure. \
+        E.g. 'cd data' moves into the 'data' dict and 'cd ..' moves back \
+        up the hierarchy."""
     k = recdict_access(f, current_path).keys()
     if len(cmd) == 1:
         current_path = []                
@@ -58,21 +63,45 @@ def cmd_plot(file, current_path, *args, **kwargs):
     if len(args) < 1:
         print(f"Argument missing for plot.")
     print(f"cmd_plot({args})")
+    data = np.array(recdict_access(f, current_path+[cmd[1]]))
+    col_num = data.shape[1]
     columns = None
     if len(args)==2:
-        columns = [int(i) for i in args[1].split(",")]
-    data = np.array(recdict_access(f, current_path+[cmd[1]]))
+        columns = []
+        groups = args[1].split(",") # e.g. "1:4,7:9,11,12" gets split in ["1:4","7:9","11","12"]
+        for g in groups:
+            if ":" in g:
+                e = g.split(":")
+                if len(e)>3:
+                    raise RuntimeError(f"Invalid slice '{g}'")
+                if len(e)==2:
+                    e.append("")
+                if e[0] == "": e[0] = 0
+                if e[1] == "": e[1] = col_num
+                if e[2] == "": e[2] = 1
+                e = [int(es) for es in e]
+                columns += list(range(col_num))[e[0]:e[1]:e[2]]
+            else:
+                columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
-    plot(data, filename = "./plot.pdf")
+    plot(data, labels=columns, filename = "./plot.pdf")
     return current_path, True
 
 
 def cmd_help(file, current_path, *args, **kwargs):
+    """ This help command. """
     cmds = kwargs["cmds"]
     print(f"Available commands:")
+    n = "\n"
     for c in cmds.keys():
-        print(f" - {c}")
+        doc = cmds[c].__doc__
+        if doc is None:
+            doc = "No documentation."
+        doc = doc.replace(n,' ')
+        doc = ' '.join([k for k in doc.split(" ") if k])
+        print(f" - {c} :\n"
+              f"    {doc}")
     return current_path, True
 
 if __name__ == "__main__":
