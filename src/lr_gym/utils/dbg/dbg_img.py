@@ -7,6 +7,7 @@ import traceback
 import lr_gym.utils.utils
 from lr_gym.utils.dbg.web_video_streamer import VideoStreamerPublisher
 
+
 class DbgImg:
     _ros_publishers = {}
     _initialized = False
@@ -14,13 +15,13 @@ class DbgImg:
         self._initialized = True
         self._ros_publishers = {}
         self._videostream_publisher : VideoStreamerPublisher = None
-        self._web_dbg = False
+        self._web_dbg = True
         try:
             from cv_bridge import CvBridge
             self._cv_bridge = CvBridge()
             import rospy
             import sensor_msgs.msg
-            self._has_ros = True
+            self._has_ros = False
         except ModuleNotFoundError as e:
             ggLog.warn(f"ROS is not present , will not publish debug images. exception = {e}")
             self._has_ros = False

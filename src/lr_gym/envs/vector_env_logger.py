@@ -7,7 +7,7 @@ import lr_gym.utils.dbg.ggLog as ggLog
 from lr_gym.utils.tensor_trees import unstack_tensor_tree
 
 class VectorEnvLogger(
-    gym.Wrapper[ObsType, ActType, ObsType, ActType], gym.utils.RecordConstructorArgs
+    gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
 ):
     """ Logs metrics from a vector_env """
 
@@ -31,8 +31,8 @@ class VectorEnvLogger(
 
 
     def step(
-        self, action: ActType
-    ) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
+        self, action
+    ) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Steps through the environment.
 
         Args:
