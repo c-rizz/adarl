@@ -1,11 +1,16 @@
+from __future__ import annotations
 from lr_gym.utils.spaces import gym_spaces
 import torch as th
-from typing import Optional, Any, List, Dict, Tuple, Union
+from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar
 import numpy as np
 from lr_gym.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
 
-TensorTree = Union[Dict, List, Tuple, th.Tensor]
+LeafType = TypeVar("LeafType")
+TensorTree = Union[Dict[Any,"TensorTree[LeafType]" | LeafType],
+                   List["TensorTree[LeafType]" | LeafType],
+                   Tuple["TensorTree[LeafType]" | LeafType, ...],
+                   th.Tensor]
 
 def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
     if isinstance(space, gym_spaces.Dict):
@@ -44,7 +49,9 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : 
     else:
         raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
 
-def map_tensor_tree(src_tree : TensorTree, func):
+T = TypeVar('T')
+U = TypeVar('U')
+def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[TensorTree[U]],TensorTree[T]]) -> TensorTree[T]:
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
