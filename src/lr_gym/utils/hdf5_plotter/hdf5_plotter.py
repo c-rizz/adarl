@@ -14,7 +14,7 @@ def recdict_access(rdict, keylist):
     return recdict_access(rdict[keylist[0]], keylist[1:])
 
 def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
-    # print(f"plotting data with shape {data.shape}")
+    print(f"plotting data with shape {data.shape}")
 
 
     ax : matplotlib.axes.Axes
@@ -70,6 +70,8 @@ def cmd_plot(file, current_path, *args, **kwargs):
         print(f"Argument missing for plot.")
     print(f"cmd_plot({args})")
     data = np.array(recdict_access(f, current_path+[cmd[1]]))
+    if len(data.shape) == 1:
+        data = np.expand_dims(data,1)
     col_num = data.shape[1]
     columns = None
     if len(args)==2:
