@@ -7,10 +7,10 @@ from lr_gym.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
 
 LeafType = TypeVar("LeafType")
-TensorTree = Union[Dict[Any,"TensorTree[LeafType]" | LeafType],
-                   List["TensorTree[LeafType]" | LeafType],
-                   Tuple["TensorTree[LeafType]" | LeafType, ...],
-                   th.Tensor]
+TensorTree = Union[Dict[Any,"TensorTree[LeafType]"],
+                   List["TensorTree[LeafType]"],
+                   Tuple["TensorTree[LeafType]", ...],
+                   LeafType]
 
 def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
     if isinstance(space, gym_spaces.Dict):
