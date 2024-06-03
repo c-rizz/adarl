@@ -222,6 +222,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
         self._freerun_time_since_build = 0
         self._build_time = time.monotonic()
         self._verbose = False
+        self._monitored_contacts = []
 
         self.setupLight(    lightDirection = [1,1,1],
                             lightColor = [0.9,0.9,0.9],

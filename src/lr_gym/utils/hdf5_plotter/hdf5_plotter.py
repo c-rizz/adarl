@@ -5,16 +5,22 @@ import matplotlib.axes
 import matplotlib.pyplot as plt
 import numpy as np
 import readline # enables better input() features (arrow keys, history)
+# import seaborn as sns
+import os
 
 def recdict_access(rdict, keylist):
     if len(keylist)==0:
         return rdict
     return recdict_access(rdict[keylist[0]], keylist[1:])
 
-def plot(data, filename, gui = True, labels = None):
+def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
     print(f"plotting data with shape {data.shape}")
+
+
     ax : matplotlib.axes.Axes
     fig, ax = plt.subplots()
+    ax.grid(True, linestyle=":")
+    ax.set_title(title)
     if len(data.shape)==1:
         data = np.expand_dims(data,1)
     series_num = data.shape[1]
@@ -64,6 +70,8 @@ def cmd_plot(file, current_path, *args, **kwargs):
         print(f"Argument missing for plot.")
     print(f"cmd_plot({args})")
     data = np.array(recdict_access(f, current_path+[cmd[1]]))
+    if len(data.shape) == 1:
+        data = np.expand_dims(data,1)
     col_num = data.shape[1]
     columns = None
     if len(args)==2:
@@ -85,22 +93,25 @@ def cmd_plot(file, current_path, *args, **kwargs):
                 columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
-    plot(data, labels=columns, filename = "./plot.pdf")
+    plot(data, labels=columns, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))
     return current_path, True
 
-
+from collections import defaultdict
 def cmd_help(file, current_path, *args, **kwargs):
     """ This help command. """
     cmds = kwargs["cmds"]
+    cmds_by_func = defaultdict(list)
+    for key, value in sorted(cmds.items()):
+        cmds_by_func[value].append(key)
     print(f"Available commands:")
     n = "\n"
-    for c in cmds.keys():
-        doc = cmds[c].__doc__
+    for func,cmd_names in cmds_by_func.items():
+        doc = func.__doc__
         if doc is None:
             doc = "No documentation."
         doc = doc.replace(n,' ')
         doc = ' '.join([k for k in doc.split(" ") if k])
-        print(f" - {c} :\n"
+        print(f" - {', '.join(cmd_names)} :\n"
               f"    {doc}")
     return current_path, True
 
@@ -126,6 +137,7 @@ if __name__ == "__main__":
                 "exit" : cmd_quit,
                 "q" : cmd_quit,
                 "plot" : cmd_plot,
+                "p" : cmd_plot,
                 "help" : cmd_help}
         with h5py.File(fname, "r") as f:
             print(f"Opened file {fname}")
@@ -144,6 +156,7 @@ if __name__ == "__main__":
                 if cmd_func != None:
                     kwargs = {}
                     kwargs["cmds"] = cmds
+                    kwargs["filename"] = fname
                     try:
                         current_path, running = cmd_func(f,current_path, *cmd_args, **kwargs)
                     except Exception as e:

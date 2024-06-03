@@ -1,3 +1,4 @@
+from __future__ import annotations
 import torch as th
 import torch.multiprocessing as mp
 from lr_gym.utils.spaces import gym_spaces

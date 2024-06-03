@@ -190,7 +190,7 @@ class ObsConverter:
         elif len(vec[0].size())==3: # batch of trajectories
             return th.cat(vec,dim=2)
         else:
-            raise RuntimeError(f"Unexpected vec dimensionality: vec[0].size() = {vec[0].size()}")
+            raise RuntimeError(f"Unexpected batch vec dimensionality: vec[0].size() = {vec[0].size()}")
 
 
     def getVectorPart(self, observation_batch : Union[Dict[str,th.Tensor],Dict[str,np.ndarray]]):
