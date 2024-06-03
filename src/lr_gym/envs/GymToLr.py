@@ -79,7 +79,7 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         self._actionToDo = action
 
     def reachedTerminalState(self, previousState, state) -> th.Tensor:
-        return state["terminated"]
+        return state["internal_info"]["terminated"]
 
     def computeReward(self, previousState, state, action, env_conf = None, sub_rewards = {}) -> th.Tensor:
         if (state["internal_info"]["ep"] == previousState["internal_info"]["ep"] and
@@ -99,8 +99,10 @@ class GymToLr(BaseEnv, Generic[ObsType]):
                           "action":self._last_action,
                           "terminated":self._last_terminated,
                           "truncated":self._last_truncated,}
-        return {"internal_info":internal_info,
+        ret = {"internal_info":internal_info,
                 "obs":self._last_observation}
+        # ggLog.info(f"GymToLr(): Returning {ret}")
+        return ret
 
 
     def initializeEpisode(self) -> None:

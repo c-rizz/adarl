@@ -328,7 +328,7 @@ def runFunction_wrapper(seed,
         seedFolder = folderName+f"/seed_{seed}"
         experiment_name = os.path.basename(launch_file_path)
         if start_lr_gym:
-            folderName = lr_gym_startup(launch_file_path,
+            folderName, session = lr_gym_startup(launch_file_path,
                                         inspect.currentframe(),
                                         folderName = seedFolder,
                                         seed = seed,

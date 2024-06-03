@@ -300,6 +300,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         # Assess the situation
         truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
+        # ggLog.info(f"GymEnvWrapper(): reachedTerminalState({state})")
         self._terminated = self._ggEnv.reachedTerminalState(previousState, state)
         sub_rewards : Dict[str,th.Tensor] = {}
         reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration(), sub_rewards = sub_rewards)

@@ -166,3 +166,13 @@ class ImgStackWrapper(LrWrapper):
         if sub_rewards is not None:
             sub_rewards.update(tot_sub_rewards)
         return tot_reward
+
+    def reachedTerminalState(self, previousState, state) -> th.Tensor:
+        r = None
+        for i in range(len(state)):
+            st = self.env.reachedTerminalState(previousState=previousState[i], state=state[i])
+            if r is None:
+                r = st
+            else:
+                r |= st
+        return r #type: ignore

@@ -97,15 +97,19 @@ class EvalCallback(TrainingCallback):
             try:
                 self._last_evaluation_episode = self._episode_counter
 
-                def predict(obs):
-                    obs_batch = stack_tensor_tree(src_trees=[obs])
-                    obs_batch = map_tensor_tree(src_tree=obs_batch, func = lambda t: t.expand(16,21).to(device=self._model.device))
-                    return self._model.predict(obs_batch, deterministic = self.deterministic)[0].cpu().numpy(), None
+                # def predict(obs):
+                #     ggLog.info(f"Got obs of size {map_tensor_tree(obs, func = lambda t: t.size())}")
+                #     obs_batch = stack_tensor_tree(src_trees=[obs])
+                #     ggLog.info(f"Stacked obs to size {map_tensor_tree(obs, func = lambda t: t.size())}")
+                #     # obs_batch = map_tensor_tree(src_tree=obs_batch, func = lambda t: t.expand(16,21).to(device=self._model.device))
+                #     action, hidden_state = self._model.predict(obs_batch, deterministic = self.deterministic)
+                #     ggLog.info(f"Returning action {action}, hidden state {hidden_state}")
+                #     return action, hidden_state
+                
 
                 results = evaluatePolicy(self.eval_env,
-                                            model = None,
-                                            episodes=self.n_eval_episodes,
-                                            predict_func=predict)
+                                            model = self._model,
+                                            episodes=self.n_eval_episodes)
                 mean_reward = results["reward_mean"]
                 std_reward = results["reward_std"]
                 mean_ep_length = results["steps_mean"]

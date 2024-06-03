@@ -11,6 +11,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 import warnings
 import lr_gym.utils.utils
 import lr_gym.utils.session
+import lr_gym.utils.sigint_handler
 import torch as th
 
 class CheckpointCallbackRB(BaseCallback):
@@ -29,7 +30,7 @@ class CheckpointCallbackRB(BaseCallback):
 
     def __init__(self, save_freq: int, save_path: str, name_prefix: str = "rl_model", verbose: int = 0,
                        save_replay_buffer : bool = False,
-                       save_freq_ep : int = None,
+                       save_freq_ep : int | None = None,
                        save_best = True):
         super(CheckpointCallbackRB, self).__init__(verbose)
         self.save_freq = save_freq
@@ -64,7 +65,7 @@ class CheckpointCallbackRB(BaseCallback):
                 ep_succeded = info["success"]
             else:
                 ep_succeded = False
-            self._successes[self._episode_counter%len(self._successes)] = float(ep_succeded)
+            self._successes[self._episode_counter%len(self._successes)] = int(ep_succeded)
             self._success_ratio = sum(self._successes)/len(self._successes)
         return True
 
@@ -140,9 +141,6 @@ class PrintLrRunInfo(BaseCallback):
         self._step_counter = 0
         self._last_print_ep = -1
 
-
-    def _on_step(self):
-        return True
     
     def _on_step(self):
         self._step_counter += len(self.locals["dones"])
@@ -225,9 +223,10 @@ class EvalCallback_ep(BaseCallback):
 
 
     def _init_callback(self) -> None:
+        self._sub_callback.set_model(self.model)
         # Does not work in some corner cases, where the wrapper is not the same
-        if not isinstance(self.training_env, type(self.eval_env)):
-            warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self.eval_env}")
+        if not isinstance(self.training_env, type(self._sub_callback.eval_env)):
+            warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self._sub_callback.eval_env}")
 
 
     def _on_step(self):
