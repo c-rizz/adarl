@@ -124,10 +124,10 @@ class SharedEnvData():
             self._shared_data._truncs[env_idx] = truncated
             fill_tensor_tree(env_idx, observation, self._shared_data._obss)
             fill_tensor_tree(env_idx, action, self._shared_data._acts)
-            fill_tensor_tree(env_idx, info, self._shared_data._infos)
+            fill_tensor_tree(env_idx, info, self._shared_data._infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
         if reset_info is not None:
             fill_tensor_tree(env_idx, reset_observation, self._shared_data._reset_obss)
-            fill_tensor_tree(env_idx, reset_info, self._shared_data._reset_infos)
+            fill_tensor_tree(env_idx, reset_info, self._shared_data._reset_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
         with self._n_envs_stepping_cond: # decrease number of envs to wait for
             self._n_envs_stepping.value -= 1
             self._n_envs_stepping_cond.notify_all()

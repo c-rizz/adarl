@@ -14,6 +14,7 @@ import torch as th
 import lr_gym.utils.utils
 import gymnasium
 import lr_gym.utils.dbg.ggLog as ggLog
+from lr_gym.utils.tensor_trees import map_tensor_tree
 
 ObsType = TypeVar("ObsType")
 
@@ -24,7 +25,8 @@ class GymToLr(BaseEnv, Generic[ObsType]):
     metadata = None # e.g. {'render.modes': ['rgb_array']}
 
     def __init__(self, openaiGym_env : gym.Env, stepSimDuration_sec : float = 1, maxStepsPerEpisode = None,
-                 copy_observations : bool = False):
+                 copy_observations : bool = False,
+                 actions_to_numpy : bool = False):
         """Short summary.
 
         Parameters
@@ -45,6 +47,7 @@ class GymToLr(BaseEnv, Generic[ObsType]):
 
         self._openaiGym_env = openaiGym_env
         self._copy_observations = copy_observations
+        self._actions_to_numpy = actions_to_numpy
         state_space = gymnasium.spaces.Dict({
                 "internal_info":gymnasium.spaces.Dict({
                         "ep" : gymnasium.spaces.Box(low = np.array(np.iinfo(np.int32).min),high = np.array(np.iinfo(np.int32).max)),
@@ -89,7 +92,8 @@ class GymToLr(BaseEnv, Generic[ObsType]):
             raise ValueError(f"Cannot compute reward for this transition.\n state[internal_info'] = {state['internal_info']},\n previousState[internal_info'] = {previousState['internal_info']}, action = {action}")
 
     def getObservation(self, state) -> ObsType:
-        return state["obs"]
+        obs = state["obs"]
+        return obs
 
     def getState(self):
         # ggLog.info(f"gymtolr returning obs {self._last_observation}")
@@ -115,13 +119,19 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         self._stepCount += 1
         # time.sleep(1)
         # print(f"Step {self._stepCount}, memory usage = {psutil.Process(os.getpid()).memory_info().rss/1024} KB")
-        obs, rew, term, trunc, info = self._openaiGym_env.step(self._actionToDo)
+        act = self._actionToDo
+        if self._actions_to_numpy and isinstance(act, th.Tensor):
+            act = act.cpu().numpy()
+        # ggLog.info(f"acting with {act}")
+        obs, rew, term, trunc, info = self._openaiGym_env.step(act)
         # ggLog.info(f"gymtolr stepped, obs = {obs}")
         # convert  to dict obs and pytorch tensors
-        if not isinstance(obs, Dict):
-            obs = {"obs": obs}
-        if self._copy_observations: obs = {k:v.copy() for k,v in obs.items()}
-        self._last_observation = lr_gym.utils.utils.obs_to_tensor(obs)
+
+        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        if self._copy_observations:
+            obs = map_tensor_tree(obs, lambda t: t.detach().clone())
+        self._last_observation = obs
+        
         # ggLog.info(f"gymtolr set last_obs to {self._last_observation}")
         self._last_reward = th.as_tensor(rew)
         self._last_action = th.as_tensor(self._actionToDo)
@@ -139,12 +149,14 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         else:
             seed = None
 
-        obs, info = self._openaiGym_env.reset(seed=seed)
+        obs, info = self._openaiGym_env.reset(seed=seed, options=options)
         # ggLog.info(f"gymtolr resetted, obs = {obs}")
-        if not isinstance(obs, Dict):
-            obs = {"obs": obs}
-        if self._copy_observations: obs = {k:v.copy() for k,v in obs.items()}
-        self._last_observation = lr_gym.utils.utils.obs_to_tensor(obs)
+        # if not isinstance(obs, Dict):
+        #     obs = {"obs": obs}
+        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        if self._copy_observations:
+            obs = map_tensor_tree(obs, lambda t: t.detach().clone())
+        self._last_observation = obs
         # ggLog.info(f"gymtolr reset last_obs to {self._last_observation}")
         self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
 

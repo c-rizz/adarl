@@ -388,7 +388,7 @@ def pkgutil_get_path(package, resource = None)  -> str:
         return None
     loader = spec.loader
     if loader is None or not hasattr(loader, 'get_data'):
-        return None
+        return None # If this happens, maybe __init__.py is missing?
     # XXX needs test
     mod = (sys.modules.get(package) or
            importlib._bootstrap._load(spec))

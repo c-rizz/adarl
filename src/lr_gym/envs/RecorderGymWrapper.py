@@ -13,6 +13,7 @@ import h5py
 import lzma
 import pickle
 from lr_gym.utils.tensor_trees import flatten_tensor_tree
+import torch as th
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.
@@ -75,6 +76,8 @@ class RecorderGymWrapper(gym.Wrapper):
                 vecobs = np.array(obs[self._vec_obs_key])
             else:
                 vecobs = flatten_tensor_tree(obs)
+            if isinstance(action, th.Tensor):
+                action = action.cpu()
             action = np.array(action)
             self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
             self._infoBuffer.append(info)

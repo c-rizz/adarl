@@ -438,7 +438,10 @@ def launchRun(runFunction,
             if tries > 10:
                 raise e
     for pkg in pkgs_to_save:
-        shutil.copytree(lr_gym.utils.utils.pkgutil_get_path(pkg,""), folderName+"/"+pkg)
+        pkg_path = lr_gym.utils.utils.pkgutil_get_path(pkg,"")
+        if pkg_path is None:
+            raise RuntimeError(f"Failed to get path for package {pkg}")
+        shutil.copytree(pkg_path, folderName+"/"+pkg)
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 

@@ -27,16 +27,22 @@ def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : b
     else:
         raise RuntimeError(f"Unsupported space {space}")
 
-def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : TensorTree, depth = 0):
+def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : TensorTree, depth = 0, nonstrict=False):
     if isinstance(src_tree, dict):
         if not isinstance(dst_tree,dict):
             raise RuntimeError(f"Tree element type mismatch. src = {type(src_tree)}, dst = {dst_tree}")
-        if src_tree.keys() != dst_tree.keys():
+        if nonstrict:
+            src_keys = set(src_tree.keys())
+            dst_keys = set(dst_tree.keys())
+            fill_keys = src_keys.intersection(dst_keys)
+        elif src_tree.keys() != dst_tree.keys():
             src_keys = set(src_tree.keys())
             dst_keys = set(dst_tree.keys())
             raise RuntimeError(f"source and destination keys do not match:\nsrc={src_keys}\ndst={dst_keys}\ndiff={(src_keys-dst_keys).union(dst_keys-src_keys)}")
-        for k in dst_tree.keys():
-            fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1)
+        else:
+            fill_keys = dst_tree.keys()
+        for k in fill_keys:
+            fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1, nonstrict=nonstrict)
         if depth == 0:
             th.cuda.synchronize() # sync non-blocking copies
     elif isinstance(src_tree, th.Tensor):
@@ -51,14 +57,15 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : 
 
 T = TypeVar('T')
 U = TypeVar('U')
-def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[TensorTree[U]],TensorTree[T]]) -> TensorTree[T]:
+def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T]) -> TensorTree[T]:
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
             r[k] = map_tensor_tree(src_tree[k], func = func)
         return r
     elif isinstance(src_tree, tuple):
-        return tuple([map_tensor_tree(e, func = func) for e in src_tree])
+        r = tuple([map_tensor_tree(e, func = func) for e in src_tree])
+        return r
     elif isinstance(src_tree, list):
         return [map_tensor_tree(e, func = func) for e in src_tree]
     elif dataclasses.is_dataclass(src_tree):
@@ -67,6 +74,47 @@ def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[TensorTree[U]],Te
         return src_tree.__class__(**mapped_fields)
     else:
         return func(src_tree)
+
+
+T = TypeVar('T')
+U = TypeVar('U')
+V = TypeVar('V')
+def map2_tensor_tree(src_tree1 : TensorTree[U],
+                     src_tree2 : TensorTree[V],
+                     func : Callable[[U,V],T]) -> TensorTree[T]:
+    if isinstance(src_tree1, dict):
+        if not isinstance(src_tree2, dict):
+            raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
+        r = {}
+        for k in src_tree1.keys():
+            r[k] = map2_tensor_tree(src_tree1[k], src_tree2[k], func = func)
+        return r
+    elif isinstance(src_tree1, tuple):
+        if not isinstance(src_tree2, tuple):
+            raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
+        r : list[TensorTree[T]] = [None]*len(src_tree1) # type: ignore
+        for k in range(len(src_tree1)):
+            r[k] = map2_tensor_tree(src_tree1[k], src_tree2[k], func = func)
+        return tuple(r)    
+    elif isinstance(src_tree1, list):
+        if not isinstance(src_tree2, list):
+            raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
+        r : list[TensorTree[T]] = [None]*len(src_tree1) # type: ignore
+        for k in range(len(src_tree1)):
+            r[k] = map2_tensor_tree(src_tree1[k], src_tree2[k], func = func)
+        return r
+    elif dataclasses.is_dataclass(src_tree1):
+        if dataclasses.is_dataclass(src_tree2):
+            raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
+        mapped_fields = {}
+        for field in dataclasses.fields(src_tree1):
+            mapped_fields[field.name] = map2_tensor_tree(getattr(src_tree1, field.name), getattr(src_tree2, field.name), func = func)
+        return src_tree1.__class__(**mapped_fields)
+    else:
+        # if not isinstance(src_tree2, type(src_tree1)):
+        #     raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
+        return func(src_tree1, src_tree2)
+
 
 def flatten_tensor_tree(src_tree : TensorTree) -> dict:
     if isinstance(src_tree, tuple):
@@ -147,3 +195,12 @@ def space_from_tree(tensor_tree):
                               dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype])
     else:
         raise RuntimeError(f"Unexpected tree element type {tensor_tree}")
+    
+
+def sizetree_from_space(space : gym_spaces.Space):
+    if isinstance(space, gym_spaces.Dict):
+        return {k : sizetree_from_space(v) for k,v in space.spaces.items()}
+    elif isinstance(space, gym_spaces.Box):
+        return space.shape
+    else:
+        raise NotImplemented(f"space {space} is not supported.")

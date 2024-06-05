@@ -122,7 +122,7 @@ def _worker(
                 if reset_info is not None:
                     reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
                 reset_observation = map_tensor_tree(reset_observation, func=lambda x: th.as_tensor(x))
-                # print(f"observation['vec'].size() = {observation['vec'].size()}")
+                # print(f"observation = {observation}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           observation=observation,
                                           reward=reward,
@@ -232,6 +232,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
         self.single_info_space = info_space
 
+        ggLog.info(f"Building shared data for space {observation_space}")
         self._shared_data = SharedData(observation_space=observation_space,
                                         action_space=action_space,
                                         info_space = info_space,
@@ -330,6 +331,8 @@ class AsyncVectorEnvShmem(VectorEnv):
     def reset_wait(
         self,
         timeout: Optional[Union[int, float]] = None,
+        seed: Optional[Union[int, List[int]]] = None,
+        options: Optional[dict] = None,
     ) -> Tuple[ObsType, Dict[str, Any]]:
         """Waits for the calls triggered by :meth:`reset_async` to finish and returns the results.
 

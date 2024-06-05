@@ -6,7 +6,7 @@ The provided class must be extended to define a specific environment
 """
 
 # import traceback
-
+from __future__ import annotations
 import lr_gym.utils.dbg.ggLog as ggLog
 
 import gymnasium as gym
@@ -50,7 +50,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                  verbose : bool = False,
                  quiet : bool = False,
                  episodeInfoLogFile : Optional[str] = None,
-                 logs_id : str = "",
+                 logs_id : str | None = "",
                  use_wandb = True):
         """Short summary.
 
@@ -60,7 +60,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         """
         
         self._use_wandb = use_wandb
-        self._logs_id = logs_id
+        self._logs_id = logs_id if logs_id is not None else ""
         self._ggEnv = env
         self.action_space = env.action_space
         self.observation_space = env.observation_space
