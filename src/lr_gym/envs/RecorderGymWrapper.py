@@ -53,6 +53,15 @@ class RecorderGymWrapper(gym.Wrapper):
         self._epReward = 0.0
         self._epStepCount = 0
         self._vec_obs_key = vec_obs_key
+        if self._vec_obs_key is None and isinstance(env.observation_space, gym.spaces.Dict):
+            if len(env.observation_space.spaces) == 1:
+                onlykey = next(iter(env.observation_space.spaces.keys()))
+                if isinstance(env.observation_space.spaces[onlykey], gym.spaces.Box):
+                    self._vec_obs_key = onlykey
+            else:
+                raise RuntimeError(f"No vec_obs_key was provided and the observation space is"
+                                   f" a dict of more than 1 element. (env.observation_space = {env.observation_space})")
+
         self._overlay_text_func = overlay_text_func
         self._overlay_text_xy = overlay_text_xy
         self._overlay_text_height = overlay_text_height
@@ -164,7 +173,7 @@ class RecorderGymWrapper(gym.Wrapper):
         # ggLog.info(f"writing buffer {vecbuffer}")
         with h5py.File(out_filename, "w") as f:
             for k,v in vecbuffer.items():
-                # ggLog.info(f"writing subbuffer {v}")
+                # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
                 if isinstance(v,dict):
                     for sk,sv in vecbuffer.items():
                         f.create_dataset(f"{k}.{sk}", data=sv)
