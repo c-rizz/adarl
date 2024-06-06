@@ -14,9 +14,9 @@ pip install --upgrade pip
 cd src
 
 echo "Cloning..."
-git clone https://gitlab.com/crzz/lr_gym.git
+git clone https://gitlab.com/crzz/adarl.git
 
 echo "Installing dependencies"
 cd ..
-pip install -r src/lr_gym/requirements.txt
-pip install -e src/lr_gym
+pip install -r src/adarl/requirements.txt
+pip install -e src/adarl

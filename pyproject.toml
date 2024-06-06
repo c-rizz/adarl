@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lr_gym"
+name = "adarl"
 version = "0.0.1"
 authors = [
   { name="Carlo Rizzardo", email="cr.git.mail@gmail.com" },
@@ -18,7 +18,7 @@ classifiers = [
 ]
 
 [project.scripts]
-lr_gym = "lr_gym:launcher"
+adarl = "adarl:launcher"
 
 # [tool.setuptools]
 # # ...
@@ -27,8 +27,8 @@ lr_gym = "lr_gym:launcher"
 # include-package-data = true
 # 
 # [tool.setuptools.packages.find]
-# where = ["src","src/lr_gym/models","src/lr_gym/assets"]
+# where = ["src","src/adarl/models","src/adarl/assets"]
 
 [tool.setuptools.package-data]
-"lr_gym.models" = ["*.urdf", "*.xacro"]
-"lr_gym.assets.audio" = ["*.ogg"]
+"adarl.models" = ["*.urdf", "*.xacro"]
+"adarl.assets.audio" = ["*.ogg"]
