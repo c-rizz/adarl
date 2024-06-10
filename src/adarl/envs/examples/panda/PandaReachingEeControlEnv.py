@@ -244,7 +244,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
             except Exception as e:
                 ggLog.error("Initialization move failed. exception = "+adarl.utils.utils.exc_to_str(e))
                 #self._actionsFailsInLastStepCounter+=1
-                self._environmentController.freerun(duration_sec=1.0)
+                self._environmentController.run(duration_sec=1.0)
                 ggLog.error(f"Retrying Initialization (i = {i}).")
         if not moved:
             ggLog.error("Failed to move to episode initialization joint pose.")

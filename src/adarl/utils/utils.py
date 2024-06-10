@@ -569,7 +569,7 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
                 if t - last_warn_time > 0.1:
                     last_warn_time = t
                     ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
-                env_controller.freerun(step_duration_sec)
+                env_controller.run(step_duration_sec)
 
 
 def ros_rpy_to_quaternion_xyzw(rpy):
@@ -855,3 +855,10 @@ def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ct
         raise RuntimeError(f"Error computing trajectory, max_acc exceeded. traj_max_acc = {traj_max_acc} > {max_acc}")
 
     return trajectory_tpva
+
+
+def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.Generator):
+    return th.randn(size=t.size(),
+                    generator=generator,
+                    dtype=t.dtype,
+                    device=t.device)*std + mu

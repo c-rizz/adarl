@@ -92,7 +92,7 @@ class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter
                                             do_cartesian = do_cartesian,
                                             velocity_scaling = velocity_scaling,
                                             acceleration_scaling = acceleration_scaling)
-            self.freerun(duration_sec=step_time)
+            self.run(duration_sec=step_time)
             curr_pos = self.getLinksState([link])[link].pose.position
             err = np.linalg.norm(req_pos - curr_pos)
 
@@ -112,7 +112,7 @@ class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter
         elapsed_time = 0
         keep_going = True
         while keep_going and elapsed_time<self._step_timeout:
-            self.freerun(self._stepLength_sec)
+            self.run(self._stepLength_sec)
             ee_pos = self.getLinksState([self._end_effector_link])[self._end_effector_link].pose.position[0:2]
             err = np.linalg.norm(ee_pos - self._target_position)
             keep_going = err > self._position_tolerance

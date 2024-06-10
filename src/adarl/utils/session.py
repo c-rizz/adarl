@@ -82,7 +82,7 @@ class Session():
             pyTorch_makeDeterministic(seed)
             if debug_level>0:
                 th.cuda.set_sync_debug_mode("warn")
-            th.autograd.set_detect_anomaly(debug_level >= 0) # type: ignore
+            th.autograd.set_detect_anomaly(debug_level >= 1) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
                 ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
@@ -128,7 +128,7 @@ class Session():
             script_out_folder = str(Path(folderName).parent.absolute())
 
         createSymlink(src = folderName, dst = script_out_folder+"/latest")
-        shutil.copyfile(file, folderName+"/main_script")
+        shutil.copyfile(file, folderName+"/main_script.py")
         if currentframe is not None:
             args, _, _, config = inspect.getargvalues(currentframe)
         else:

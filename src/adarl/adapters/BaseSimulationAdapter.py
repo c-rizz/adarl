@@ -4,7 +4,7 @@ from adarl.utils.utils import JointState, LinkState, Pose, build_pose
 from adarl.adapters.BaseAdapter import BaseAdapter
 
 
-class BaseSimulationAdapter(ABC):
+class BaseSimulationAdapter(BaseAdapter):
 
     @abstractmethod
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):

@@ -165,7 +165,7 @@ class BulletCamera:
 
 
 
-class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter, BaseJointPositionAdapter, BaseJointVelocityAdapter):
+class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPositionAdapter, BaseJointVelocityAdapter):
     """This class allows to control the execution of a PyBullet simulation.
 
     """
@@ -219,7 +219,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
         self._restore_on_reset = restore_on_reset
         self._stepping_wtime_since_build = 0
         self._stepping_stime_since_build = 0
-        self._freerun_time_since_build = 0
+        self._run_time_since_build = 0
         self._build_time = time.monotonic()
         self._verbose = False
         self._monitored_contacts = []
@@ -308,7 +308,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
         self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
         if self._verbose:
-            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_freerun_wtime = {self._freerun_time_since_build}s")
+            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_time_since_build}s")
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -328,11 +328,11 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
 
         """
 
-        stepLength = self.freerun(self._stepLength_sec)
+        stepLength = self.run(self._stepLength_sec)
         self.clear_commands()
         return stepLength
 
-    def freerun(self, duration_sec: float):
+    def run(self, duration_sec: float):
         tf0 = time.monotonic()
 
         self._reset_detected_contacts()
@@ -357,7 +357,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
             self._prev_step_end_wall_time = time.monotonic()
         self._stepping_wtime_since_build += stepping_wtime
         self._stepping_stime_since_build += self._simTime - t0
-        self._freerun_time_since_build += time.monotonic()-tf0
+        self._run_time_since_build += time.monotonic()-tf0
 
         self._last_step_commanded_torques_by_name = {}
         for jn, t in self._last_step_commanded_torques:
@@ -585,7 +585,7 @@ class PyBulletAdapter(BaseAdapter, BaseJointEffortAdapter, BaseSimulationAdapter
                                         velocity_scaling=velocity_scaling,
                                         acceleration_scaling=acceleration_scaling)
         while np.max(req_pos - curr_pos) > max_error:
-            self.freerun(duration_sec=step_time)
+            self.run(duration_sec=step_time)
             jstates = self.getJointsState(joints)
             curr_pos = np.array([jstates[k].position[0] for k in joints])
             wall_d = time.monotonic()-t0_wall

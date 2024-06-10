@@ -24,8 +24,8 @@ class BaseAdapter(ABC):
     def __init__(self):
         """Initialize the adapter.
         """
-        self._running_freerun_async_lock = RLock()
-        self._running_freerun_async = False
+        self._running_run_async_lock = RLock()
+        self._running_run_async = False
         self.__lastResetTime = 0
         self._jointsToObserve = []
         self._linksToObserve = []
@@ -159,55 +159,55 @@ class BaseAdapter(ABC):
         return self.getEnvTimeFromStartup() - self.__lastResetTime
 
     @abstractmethod
-    def freerun(self, duration_sec : float):
+    def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
         raise NotImplementedError()
 
 
-    def freerun_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
-        # ggLog.info(f"Freerun async loop")
+    def run_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
+        # ggLog.info(f"run async loop")
         should_run = True
-        t_remaining = 1 # Always do at least one step # self._freerun_async_timeout - self.getEnvTimeFromStartup()
+        t_remaining = 1 # Always do at least one step # self._run_async_timeout - self.getEnvTimeFromStartup()
         while should_run and t_remaining > 0:
-            # ggLog.info(f"Freerunning")
-            self.freerun(duration_sec = min(0.5,t_remaining))
-            with self._running_freerun_async_lock:
-                should_run = self._running_freerun_async
-            t_remaining =  self._freerun_async_timeout - self.getEnvTimeFromStartup()
-        with self._running_freerun_async_lock:
-            self._running_freerun_async = False
+            # ggLog.info(f"running")
+            self.run(duration_sec = min(0.5,t_remaining))
+            with self._running_run_async_lock:
+                should_run = self._running_run_async
+            t_remaining =  self._run_async_timeout - self.getEnvTimeFromStartup()
+        with self._running_run_async_lock:
+            self._running_run_async = False
         if on_finish_callback is not None:
             on_finish_callback()
 
-    def freerun_async(self, duration_sec : float = float("+inf"), on_finish_callback = None):
+    def run_async(self, duration_sec : float = float("+inf"), on_finish_callback = None):
         """ Asynchronously run the simulation from a parallel thread.
 
         Parameters
         ----------
         duration_sec : float, optional
             Run the environment for this duration (in case of simulation, this is simulated time).
-             This can be preempted by stop_freerun_async(). By default float("+inf")
+             This can be preempted by stop_run_async(). By default float("+inf")
         """
-        # ggLog.info(f"Freerun async({duration_sec})")
-        with self._running_freerun_async_lock:
-            # ggLog.info(f"Freerun async acquired lock")
-            self._freerun_async_duration_sec = duration_sec
-            self._freerun_async_timeout = self.getEnvTimeFromStartup() + duration_sec
-            self._running_freerun_async = True
-            self._freerun_async_thread = Thread(target=self.freerun_async_loop, args=[on_finish_callback])
-            self._freerun_async_thread.start()
+        # ggLog.info(f"run async({duration_sec})")
+        with self._running_run_async_lock:
+            # ggLog.info(f"run async acquired lock")
+            self._run_async_duration_sec = duration_sec
+            self._run_async_timeout = self.getEnvTimeFromStartup() + duration_sec
+            self._running_run_async = True
+            self._run_async_thread = Thread(target=self.run_async_loop, args=[on_finish_callback])
+            self._run_async_thread.start()
 
-    def wait_freerun_async(self):
-        with self._running_freerun_async_lock:
-            if self._freerun_async_thread is None:
+    def wait_run_async(self):
+        with self._running_run_async_lock:
+            if self._run_async_thread is None:
                 return
-        self._freerun_async_thread.join()
+        self._run_async_thread.join()
 
-    def stop_freerun_async(self):        
-        with self._running_freerun_async_lock:
-            if not self._running_freerun_async:
+    def stop_run_async(self):        
+        with self._running_run_async_lock:
+            if not self._running_run_async:
                 return
-            self._running_freerun_async = False
+            self._running_run_async = False
 
     @abstractmethod
     def build_scenario(self, **kwargs):

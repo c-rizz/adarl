@@ -8,7 +8,7 @@ The provided class must be extended to define a specific environment
 
 import numpy as np
 import adarl.utils.spaces as spaces
-from typing import Tuple, Dict, Any, Sequence, Dict, Union, Optional
+from typing import Tuple, Dict, Any, Sequence, Dict, Union, Optional, final
 from abc import ABC, abstractmethod
 import torch as th
 
@@ -107,11 +107,9 @@ class BaseEnv(ABC):
         """
         return th.as_tensor(False)
 
-    
+    @final
     def checkEpisodeEnded(self, previousState, state) -> th.Tensor:
-        """To be implemented in subclass.
-
-        If the episode has finished. In the subclass you should OR this with your own conditions.
+        """If the episode has finished. In the subclass you should OR this with your own conditions.
 
         Parameters
         ----------
@@ -126,7 +124,7 @@ class BaseEnv(ABC):
             Return True if the episode has ended, False otherwise
 
         """
-        return self.reachedTimeout() or self.reachedTerminalState()
+        return self.reachedTimeout() or self.reachedTerminalState(previousState, state)
 
     @abstractmethod
     def computeReward(self, previousState, state, action, env_conf = None, sub_rewards : Optional[Dict[str,th.Tensor]] = None) -> th.Tensor:
