@@ -96,7 +96,7 @@ def check_stdin_halt():
             print(f"Got '{instring}', type 'pause' to halt")
     return False
 
-def haltOnSigintReceived() -> bool:
+def run_on_sigint_received(func) -> bool:
     did_halt = False
     if not did_initialize_sigint_handling:
         return did_halt
@@ -106,15 +106,7 @@ def haltOnSigintReceived() -> bool:
         halt_string_received = check_stdin_halt()
         if sigint_received or halt_string_received:
             did_halt = True
-            while True:
-                answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
-                if answer == "quit":
-                    session.default_session.mark_shutting_down()
-                    shared_memory_list[0] = "shutdown"
-                    ggLog.info("Marked session for shutdown.")
-                    break
-                elif answer == "c" or answer == "continue":
-                    break
+            func()
             print("Resuming...")
             sigint_received = False
             sigint_counter = 0
@@ -133,6 +125,20 @@ def haltOnSigintReceived() -> bool:
             original_sigint_handler(signal.SIGINT, None)
             raise KeyboardInterrupt
     return did_halt
+
+
+def haltOnSigintReceived() -> bool:
+    def prompt():
+        while True:
+                answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
+                if answer == "quit":
+                    session.default_session.mark_shutting_down()
+                    shared_memory_list[0] = "shutdown"
+                    ggLog.info("Marked session for shutdown.")
+                    break
+                elif answer == "c" or answer == "continue":
+                    break
+    return run_on_sigint_received(prompt)
 
 def wait_halt_loop():
     while not session.default_session.is_shutting_down():

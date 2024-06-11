@@ -11,11 +11,15 @@ from adarl.utils.dbg.web_video_streamer import VideoStreamerPublisher
 class DbgImg:
     _ros_publishers = {}
     _initialized = False
-    def init(self):
-        self._initialized = True
+
+    def __init__(self):
         self._ros_publishers = {}
         self._videostream_publisher : VideoStreamerPublisher = None
-        self._web_dbg = True
+        self._web_dbg = False
+        self._initialized = False
+
+    def init(self):
+        self._initialized = True
         try:
             from cv_bridge import CvBridge
             self._cv_bridge = CvBridge()
@@ -26,6 +30,11 @@ class DbgImg:
             ggLog.warn(f"ROS is not present , will not publish debug images. exception = {e}")
             self._has_ros = False
         if self._web_dbg:
+            self._videostream_publisher = VideoStreamerPublisher()
+
+    def enable_web_dbg(self, enable):
+        self._web_dbg = enable
+        if self._videostream_publisher is None and self._initialized:
             self._videostream_publisher = VideoStreamerPublisher()
 
 

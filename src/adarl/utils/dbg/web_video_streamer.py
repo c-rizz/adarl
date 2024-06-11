@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import time
-import adarl.utils.dbg.ggLog as ggLog
 import io
 import threading
 import pathlib
@@ -16,6 +15,7 @@ class VideoStreamerPublisher():
         self._zmq_context = zmq.Context()
         self._zmq_socket = self._zmq_context.socket(zmq.PUB)
         self._zmq_socket.setsockopt(zmq.CONFLATE, 1)  # last msg only.
+        os.makedirs("/tmp/adarl",exist_ok=True)
         self._zmq_socket.connect("ipc:///tmp/adarl/VideoStreamerPublisher")
         atexit.register(self._cleanup)
 
@@ -49,6 +49,7 @@ class VideoStreamerSubscriber():
         self._zmq_socket = self._zmq_context.socket(zmq.SUB)
         self._zmq_socket.setsockopt(zmq.CONFLATE, 1)  # last msg only.
         self._zmq_socket.subscribe(b"") #subscribe to anything
+        os.makedirs("/tmp/adarl",exist_ok=True)
         self._zmq_socket.bind("ipc:///tmp/adarl/VideoStreamerPublisher")
 
         self._listener_thread = threading.Thread(target=self._listener, name="VideoStreamerSubscriber_listener")
