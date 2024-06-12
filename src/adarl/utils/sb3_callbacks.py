@@ -1,4 +1,4 @@
-
+from __future__ import annotations
 import os
 from stable_baselines3.common.callbacks import BaseCallback, EventCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
