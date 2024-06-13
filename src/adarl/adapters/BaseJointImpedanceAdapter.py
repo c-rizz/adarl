@@ -4,7 +4,7 @@ from adarl.adapters.BaseAdapter import BaseAdapter
 
 class BaseJointImpedanceAdapter(BaseAdapter):
     @abstractmethod
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Mapping[Tuple[str,str],Tuple[float,float,float,float,float]]) -> None:
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Mapping[Tuple[str,str],Tuple[float,float,float,float,float]], delay_sec : float = 0.0) -> None:
         """ Sets a joint impedance command. The command only is appied at the next call of step().
         After step() is called the command gets cleared out. Position, velocity and torque commands may override this.
         For each joint the command is a tuple of the format (position,velocity,effort,stiffness,damping)
@@ -15,6 +15,8 @@ class BaseJointImpedanceAdapter(BaseAdapter):
             Dictionary with:
              - key=(<model_name>,<joint_name>)
              - value=(<position_reference>,<velocity_reference>,<effort_reference>,<position_gain>,<velocity_gain>)
+        delay_sec : float, optional
+            Delay the application of the command of this time duration. By default, 0.0
         """
         raise NotImplementedError()
 

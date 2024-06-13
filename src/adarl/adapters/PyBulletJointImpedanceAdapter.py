@@ -6,6 +6,7 @@ from adarl.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 import torch as th
 import copy
 from typing_extensions import override
+import adarl.utils.dbg.ggLog as ggLog
 
 class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
 
@@ -47,10 +48,27 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
 
     def clear_commands(self):
         super().clear_commands()
-        self._commanded_joint_impedances = {}
+        self._commanded_joint_impedances : dict[float, dict] = {}
 
     def _apply_commanded_joint_impedances(self):
-        self._compute_and_apply_joint_effort(list(self._commanded_joint_impedances.items()))
+        # get the newest command with a time less or equal to now
+        cmd = {}
+        tcmd = float("-inf")
+        future_commands = {} # Commands to be applied in the future
+        t = self.getEnvTimeFromStartup()
+        # ggLog.info(f"t = {t}")
+        # ggLog.info(f"self._commanded_joint_impedances = {self._commanded_joint_impedances}")
+        for tc,c in self._commanded_joint_impedances.items():
+            if tc > t:
+                future_commands[tc] = c
+            if tc <= t and tc >= tcmd:
+                cmd = c
+                tcmd = tc
+        future_commands[tcmd] = cmd # Reapply this until a new command is reached
+        # ggLog.info(f"cmd = {cmd}")
+        # ggLog.info(f"future_commands = {future_commands}")        
+        self._commanded_joint_impedances = future_commands # keep commands not applied yet
+        self._compute_and_apply_joint_effort(list(cmd.items()))
 
     @override
     def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]]):
@@ -90,5 +108,6 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         self.setJointsEffortCommand(jointTorques=list(eff_cmd.items()))
 
     @override
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]]) -> None:
-        self._commanded_joint_impedances = copy.deepcopy(joint_impedances_pvesd)
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]], delay_sec : float = 0.0) -> None:
+        cmd_time = self.getEnvTimeFromStartup() + delay_sec
+        self._commanded_joint_impedances[cmd_time] = copy.deepcopy(joint_impedances_pvesd)
