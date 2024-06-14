@@ -93,6 +93,12 @@ def cmd_plot(file, current_path, *args, **kwargs):
                 columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
+    maybe_labels_name = cmd[1]+"_labels"
+    if maybe_labels_name in recdict_access(f, current_path).keys():
+        labels = np.array(recdict_access(f, current_path+[maybe_labels_name]))
+        labels = [a.tobytes().decode("utf-8").strip() for a in list(labels)]
+    else:
+        labels = columns
     plot(data, labels=columns, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))
     return current_path, True
 

@@ -14,6 +14,7 @@ import lzma
 import pickle
 from adarl.utils.tensor_trees import flatten_tensor_tree
 import torch as th
+import adarl.utils.tensor_trees as tt
 
 class RecorderGymWrapper(gym.Wrapper):
     """Wraps the environment to allow a modular transformation.
@@ -164,9 +165,18 @@ class RecorderGymWrapper(gym.Wrapper):
             writer.close()
         
     def _write_infobuffer(self, out_filename, infobuffer):
-        out_filename += ".xz"
-        with lzma.open(out_filename, "wb") as f:
+        pkl_filename = out_filename+".xz"
+        with lzma.open(pkl_filename, "wb") as f:
             pickle.dump(infobuffer, f)
+
+        infos = [tt.map_tensor_tree(i,th.as_tensor) for i in self._infoBuffer]
+        infos = tt.stack_tensor_tree(infos)
+        infos = tt.flatten_tensor_tree(infos)
+
+        hd_filename = out_filename+".hdf5"
+        with h5py.File(hd_filename, "w") as f:
+            for k,v in infos.items():
+                f.create_dataset(".".join(k), data=v)
         
     def _write_vecbuffer(self, out_filename, vecbuffer):
         out_filename += ".hdf5"
@@ -186,6 +196,8 @@ class RecorderGymWrapper(gym.Wrapper):
         if not self._only_video:
             self._write_vecbuffer(filename,self._vecBuffer)
             self._write_infobuffer(filename+"_info",self._infoBuffer)
+
+        
         
 
     def _preproc_frame(self, img_hwc):
