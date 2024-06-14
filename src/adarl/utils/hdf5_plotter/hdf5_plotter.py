@@ -24,14 +24,17 @@ def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
     if len(data.shape)==1:
         data = np.expand_dims(data,1)
     series_num = data.shape[1]
+    print(f"got labels {labels}")
     if labels is None:
         labels = [f"{i}" for i in range(series_num)]
         if len(labels)==1:
             labels = labels[0]
+    print(f"using labels {labels}")
     ax.plot(data, label=labels)
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    legend = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     if gui:
         # matplotlib.use('TkAgg')
+        fig.tight_layout()
         fig.show()
     else:
         fig.savefig(filename)
@@ -95,11 +98,14 @@ def cmd_plot(file, current_path, *args, **kwargs):
         data = data[:,columns]
     maybe_labels_name = cmd[1]+"_labels"
     if maybe_labels_name in recdict_access(f, current_path).keys():
-        labels = np.array(recdict_access(f, current_path+[maybe_labels_name]))
+        labels = np.array(recdict_access(f, current_path+[maybe_labels_name]))[0]
         labels = [a.tobytes().decode("utf-8").strip() for a in list(labels)]
+        print(f"Found {len(labels)} labels {labels}")
+        if columns is not None:
+            labels = [labels[i] for i in columns]
     else:
         labels = columns
-    plot(data, labels=columns, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))
+    plot(data, labels=labels, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))
     return current_path, True
 
 from collections import defaultdict
@@ -152,6 +158,7 @@ if __name__ == "__main__":
             cmd_help(f,current_path,cmds = cmds)
             while running:
                 cmd = input("/"+"/".join(current_path)+"> ")
+                cmd = " ".join(cmd.split()) # remove repeated spaces
                 cmd = cmd.split(" ")
                 if len(cmd) == 0:
                     continue
