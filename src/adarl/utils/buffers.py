@@ -16,6 +16,7 @@ import adarl.utils.dbg.ggLog as ggLog
 from stable_baselines3.common.preprocessing import get_obs_shape
 import adarl.utils.mp_helper as mp_helper
 import ctypes
+import typing_extensions
 
 # class ReplayBuffer_updatable(ReplayBuffer):
 #     def update(self, buffer : ReplayBuffer):
@@ -358,7 +359,7 @@ class BasicStorage():
             pos = (pos+1) % self.buffer_size
             ret_vsteps +=1
 
-
+@typing_extensions.deprecated("Deprecated in favor of ThDReplayBuffer, which is gymnasium-based")
 class ThDictReplayBuffer(ReplayBuffer):
     """
     Dict Replay buffer used in off-policy algorithms like SAC/TD3.
