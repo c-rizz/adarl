@@ -18,6 +18,12 @@ from adarl.utils.tensor_trees import map_tensor_tree
 
 ObsType = TypeVar("ObsType")
 
+def to_contiguous_tensor(value):
+    if isinstance(value, np.ndarray):
+        value = np.ascontiguousarray(value)
+    return th.as_tensor(value)
+
+
 class GymToLr(BaseEnv, Generic[ObsType]):
 
     action_space = None
@@ -121,13 +127,15 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         # print(f"Step {self._stepCount}, memory usage = {psutil.Process(os.getpid()).memory_info().rss/1024} KB")
         act = self._actionToDo
         if self._actions_to_numpy and isinstance(act, th.Tensor):
+            if act.dim() == 0:
+                act = act.unsqueeze(0)
             act = act.cpu().numpy()
-        # ggLog.info(f"acting with {act}")
+        # ggLog.info(f"acting with {act} ({type(act)})")
         obs, rew, term, trunc, info = self._openaiGym_env.step(act)
         # ggLog.info(f"gymtolr stepped, obs = {obs}")
         # convert  to dict obs and pytorch tensors
 
-        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        obs = map_tensor_tree(obs, to_contiguous_tensor)
         if self._copy_observations:
             obs = map_tensor_tree(obs, lambda t: t.detach().clone())
         self._last_observation = obs
@@ -137,7 +145,7 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         self._last_action = th.as_tensor(self._actionToDo)
         self._last_terminated = th.as_tensor(term)
         self._last_truncated = th.as_tensor(trunc)
-        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
+        self._last_info = {k: to_contiguous_tensor(v) for k,v in info.items()}
 
     def performReset(self, options = {}) -> None:
         super().performReset()
@@ -153,12 +161,12 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         # ggLog.info(f"gymtolr resetted, obs = {obs}")
         # if not isinstance(obs, Dict):
         #     obs = {"obs": obs}
-        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        obs = map_tensor_tree(obs, to_contiguous_tensor)
         if self._copy_observations:
             obs = map_tensor_tree(obs, lambda t: t.detach().clone())
         self._last_observation = obs
         # ggLog.info(f"gymtolr reset last_obs to {self._last_observation}")
-        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
+        self._last_info = {k: to_contiguous_tensor(v) for k,v in info.items()}
 
 
 

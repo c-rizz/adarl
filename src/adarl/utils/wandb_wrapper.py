@@ -22,7 +22,6 @@ class WandbWrapper():
         self.sent_count = {}
 
         self.last_warn_time = 0.0
-        self._init_pid = os.getpid()
         self._running = True
         self._queue = mp_helper.get_context().Queue()
         self._wandb_initialized = False
@@ -50,8 +49,9 @@ class WandbWrapper():
                 pass
 
     def wandb_init(self, **kwargs):
-        if os.getpid()!=self._init_pid:
-            raise RuntimeError(f"tried to init in a process different from the main one")
+        if self._wandb_initialized:
+            raise RuntimeError(f"Tried to initialize wandb wrapper twice (original pid {self._init_pid}, current pid = {os.getpid()}")
+        self._init_pid = os.getpid()
         wandb.init(**kwargs)
         self._wandb_initialized = True
         # self._worker_thread = threading.Thread(target=self._worker)
@@ -125,6 +125,9 @@ class WandbWrapper():
     def __setstate__(self, state):
         state["_worker_thread"] = None
         self.__dict__.update(state)
+
+    def is_main_wandb_thread(self):
+        return self._wandb_initialized and self._init_pid == os.getpid()
 
 default_wrapper = WandbWrapper()
 

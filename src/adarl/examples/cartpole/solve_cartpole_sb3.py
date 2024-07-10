@@ -28,7 +28,7 @@ def main() -> None:
 
     """
 
-    logFolder, session = adarl.utils.session.adarl_startup(__file__,
+    log_folder, session = adarl.utils.session.adarl_startup(__file__,
                                                     inspect.currentframe(),
                                                     folderName = os.path.basename(__file__)+f"/{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}",
                                                     seed = 0,
@@ -74,7 +74,7 @@ def main() -> None:
                             environmentController = env_controller,
                             render=render)
     gym_env = GymEnvWrapper(lrenv)
-    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
+    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=log_folder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
     #setup seeds for reproducibility
     RANDOM_SEED=20200401
     # env.seed(RANDOM_SEED)

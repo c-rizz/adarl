@@ -25,6 +25,8 @@ import torch as th
 import adarl.utils.mp_helper as mp_helper
 import time
 import adarl.utils.dbg.ggLog as ggLog
+import os
+import setproctitle
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -47,6 +49,8 @@ def _worker(
     env_idx : int,
     action_device = "numpy"
 ) -> None:
+    setproctitle.setproctitle(mp.current_process().name)
+    ggLog.info(f"async_vector_env starting worker with pid {os.getpid()}")
     # Import here to avoid a circular import
     from stable_baselines3.common.env_util import is_wrapped
 
@@ -65,6 +69,7 @@ def _worker(
     while running:
         try:
             cmd = simple_commander.wait_command()
+            # ggLog.info(f"async_vector_env worker got cmd {cmd}")
             if cmd == b"step":
                 action = shared_env_data.wait_actions()[env_idx]
                 if action_device == "numpy":
@@ -146,7 +151,8 @@ def _worker(
                 remote.close()
                 running = False
             elif cmd == b"get_spaces":
-                remote.send((env.observation_space, env.action_space, info_space))
+                spaces = (env.observation_space, env.action_space, info_space)
+                remote.send(spaces)
             elif cmd == b"env_method":
                 data = remote.recv()
                 method = getattr(env, data[0])
@@ -163,9 +169,10 @@ def _worker(
             elif cmd == b"set_data_struct":
                 data = remote.recv()
                 shared_env_data.set_data_struct(data)
+            elif cmd is None:
+                ggLog.info(f"async_vector_env: no command received")
             else:
-                pass
-                # print(f"`{cmd}` is not implemented in the worker"))
+                ggLog.warn(f"async_vector_env: `{cmd}` is not implemented in the worker")
             if cmd is not None:
                 simple_commander.mark_done()
         except EOFError:
@@ -222,7 +229,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
             args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, name="async_vector_env.worker", daemon=True)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()
@@ -649,10 +656,13 @@ class AsyncVectorEnvShmem(VectorEnv):
         obs_spaces = [None]*self.num_envs
         act_spaces = [None]*self.num_envs
         info_spaces = [None]*self.num_envs
-        self._simple_commander.wait_done()
         for i in range(len(self.remotes)):
+            # ggLog.info(f"Waiting spaces")
             obs_spaces[i], act_spaces[i], info_spaces[i] = self.remotes[i].recv()
+            # ggLog.info(f"got spaces")
+        self._simple_commander.wait_done()
         return obs_spaces, act_spaces, info_spaces
+    
     def _check_spaces(self):
         self._assert_is_running()
         spaces = (self.single_observation_space, self.single_action_space)

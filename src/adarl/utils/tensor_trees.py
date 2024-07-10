@@ -204,3 +204,14 @@ def sizetree_from_space(space : gym_spaces.Space):
         return space.shape
     else:
         raise NotImplemented(f"space {space} is not supported.")
+    
+def _is_all_leaf_finite(tensor : th.Tensor | np.ndarray):
+    if isinstance(tensor, th.Tensor):
+        return th.all(th.isfinite(tensor))
+    elif isinstance(tensor, np.ndarray):
+        return np.all(np.isfinite(tensor))
+    else:
+        raise NotImplementedError(f"Unsupported type {type(tensor)}")
+
+def is_all_finite(tree : TensorTree):
+    return all(flatten_tensor_tree(map_tensor_tree(tree, _is_all_leaf_finite)).values())
