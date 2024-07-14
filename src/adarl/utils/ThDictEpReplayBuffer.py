@@ -116,7 +116,7 @@ class EpisodeStorage():
 
         return total_memory_usage
     
-    def add_frame(self, observation, action, next_observation, reward, terminated, truncated):
+    def add_frame(self, observation, action, next_observation, reward, terminated, truncated, sync_stream = True):
         ep_idx = self._added_episodes%self._max_episodes
         frame_idx = self._current_ep_frame_count
 
@@ -157,6 +157,10 @@ class EpisodeStorage():
             self._added_episodes += 1
         if self._added_episodes>=self._max_episodes:
             self.full = True
+
+        if sync_stream:
+            th.cuda.current_stream().synchronize() # sync non_blocking operations
+        ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
 
     
     # def add_episode(self, buf : Storage, ep_len):
@@ -213,10 +217,10 @@ class EpisodeStorage():
             if self._min_ep_length > sample_duration:
                 sampled_episodes = new_sampled_episodes
                 break
-            valid_idx = (ep_lengths>=sample_duration).nonzero().squeeze()
+            valid_eps_idxs = (ep_lengths>=sample_duration).nonzero().squeeze()
             # ggLog.info(f"valid_idx.size() = {valid_idx.size()}")
-            sampled_episodes[valid_count:valid_count+len(valid_idx)] = new_sampled_episodes[valid_idx]
-            valid_count += len(valid_idx)
+            sampled_episodes[valid_count:valid_count+len(valid_eps_idxs)] = new_sampled_episodes[valid_eps_idxs]
+            valid_count += len(valid_eps_idxs)
             iter += 1
         ep_lengths = self.episode_durations[sampled_episodes]
         ranges = ep_lengths-sample_duration+1
@@ -233,6 +237,8 @@ class EpisodeStorage():
 
 
         sampled_frames = sampled_start_frames.unsqueeze(1) + th.arange(sample_duration, device = sampled_start_frames.device)
+
+        ggLog.info(f"sampled {list(zip(sampled_episodes,sampled_frames))}")
 
         trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
                                     for key, b in self.observations.items()} 
@@ -508,7 +514,8 @@ class ThDictEpReplayBuffer(BaseBuffer):
                             next_observation = {k:v[env_idx] for k,v in next_obs.items()},
                             reward = reward[env_idx],
                             terminated = terminated[env_idx],
-                            truncated = truncated[env_idx])
+                            truncated = truncated[env_idx],
+                            sync_stream = False)
             self._collected_frames += 1
             # If it is done copy it to the main buffer
             if terminated[env_idx] or truncated[env_idx]:
