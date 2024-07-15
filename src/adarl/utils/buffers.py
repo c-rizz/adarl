@@ -18,6 +18,7 @@ import adarl.utils.mp_helper as mp_helper
 import ctypes
 import typing_extensions
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 # class ReplayBuffer_updatable(ReplayBuffer):
 #     def update(self, buffer : ReplayBuffer):
@@ -107,8 +108,8 @@ class BaseBuffer(ABC):
 
     
 
-
-class TransitionBatch(NamedTuple):
+@dataclass
+class TransitionBatch():
     observations : Union[th.Tensor, Dict]
     actions : th.Tensor
     next_observations : Union[th.Tensor, Dict]

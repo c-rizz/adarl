@@ -141,26 +141,27 @@ class EpisodeStorage():
             if self._added_episodes < self._max_episodes:
                 self._stored_episodes += 1
             self.episode_durations[ep_idx] = 0    
-
+        nb = True
         for key in self.observations.keys():
-            self.observations[key][ep_idx][frame_idx] = th.as_tensor(observation[key]).to(self._storage_torch_device, non_blocking=True)
-            self.next_observations[key][ep_idx][frame_idx] = th.as_tensor(next_observation[key]).to(self._storage_torch_device, non_blocking=True)
-        self.actions[ep_idx][frame_idx] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
-        self.rewards[ep_idx][frame_idx] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
-        self.terminated[ep_idx][frame_idx] = th.as_tensor(terminated).to(self._storage_torch_device, non_blocking=True)
-        self.truncated[ep_idx][frame_idx] = th.as_tensor(truncated).to(self._storage_torch_device, non_blocking=True)
+            self.observations[key][ep_idx,frame_idx].copy_(th.as_tensor(observation[key]), non_blocking=nb)
+            self.next_observations[key][ep_idx,frame_idx].copy_(th.as_tensor(next_observation[key]), non_blocking=nb)
+        self.actions[ep_idx,frame_idx].copy_(th.as_tensor(action), non_blocking=nb)
+        self.rewards[ep_idx,frame_idx].copy_(th.as_tensor(reward), non_blocking=nb)
+        self.terminated[ep_idx,frame_idx].copy_(th.as_tensor(terminated), non_blocking=nb)
+        self.truncated[ep_idx,frame_idx].copy_(th.as_tensor(truncated), non_blocking=nb)
         self.episode_durations[ep_idx] += 1
         self._current_ep_frame_count += 1
         self._stored_frames_count += 1
         if terminated or truncated:
+            ggLog.info(f"EpisodeStorage{id(self)}: ep finished")
             self._current_ep_frame_count = 0
             self._added_episodes += 1
         if self._added_episodes>=self._max_episodes:
             self.full = True
-
+            
         if sync_stream:
             th.cuda.current_stream().synchronize() # sync non_blocking operations
-        ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
+        # ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
 
     
     # def add_episode(self, buf : Storage, ep_len):
@@ -238,7 +239,7 @@ class EpisodeStorage():
 
         sampled_frames = sampled_start_frames.unsqueeze(1) + th.arange(sample_duration, device = sampled_start_frames.device)
 
-        ggLog.info(f"sampled {list(zip(sampled_episodes,sampled_frames))}")
+        # ggLog.info(f"EpisodeStorage{id(self)}: sampled {list(zip(sampled_episodes,sampled_frames))}")
 
         trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
                                     for key, b in self.observations.items()} 
@@ -312,7 +313,7 @@ class EpisodeStorage():
 
     def update(self, src_storage : EpisodeStorage):
         
-        # ggLog.info(f"Updating storage of size {self.stored_frames()} with storage of size {src_storage.stored_frames()}")
+        # ggLog.info(f"Updating storage of size {self.stored_frames()} (id={id(self)}) with storage of size {src_storage.stored_frames()} (id={id(src_storage)})")
         prev_size = self.size()
         copied_eps = 0
         overridden_frames = 0
@@ -325,6 +326,11 @@ class EpisodeStorage():
                 # it's always covering either a completely empty area or a completely full one
                 # if self is full the overridden frames this round are:
                 overridden_frames += th.sum(self.episode_durations[pos:pos + eps_to_copy])
+            else:
+                overridden_frames = 0
+
+            # ggLog.info(f"Copying {copied_eps}:{copied_eps+eps_to_copy} to {pos}:{pos + eps_to_copy}")
+            # ggLog.info(f"Overwriting {overridden_frames} frames")
 
             self.actions[pos:pos + eps_to_copy] = src_storage.actions[copied_eps:copied_eps+eps_to_copy]
             self.rewards[pos:pos + eps_to_copy] = src_storage.rewards[copied_eps:copied_eps+eps_to_copy]
@@ -334,13 +340,13 @@ class EpisodeStorage():
 
             for key in self.observations.keys():
                 self.observations[key][pos:pos + eps_to_copy] = src_storage.observations[key][copied_eps:copied_eps+eps_to_copy]
-                self.next_observations[key][pos:pos + eps_to_copy] = src_storage.next_observations[key][copied_eps:copied_eps+eps_to_copy]                    
-
+                self.next_observations[key][pos:pos + eps_to_copy] = src_storage.next_observations[key][copied_eps:copied_eps+eps_to_copy]   
+            
             self._added_episodes += eps_to_copy
             copied_eps += eps_to_copy
         self._stored_frames_count += src_storage._stored_frames_count - overridden_frames
-        # ggLog.info(f"self._stored_frames_count = {self._stored_frames_count}")
-        # ggLog.info(f"self._added_episodes = {self._added_episodes}")
+        # ggLog.info(f"new self._stored_frames_count = {self._stored_frames_count}")
+        # ggLog.info(f"new self._added_episodes = {self._added_episodes}")
         new_size = self.size()
         if self._added_episodes>=self._max_episodes:
             self.full = True
@@ -517,20 +523,29 @@ class ThDictEpReplayBuffer(BaseBuffer):
                             truncated = truncated[env_idx],
                             sync_stream = False)
             self._collected_frames += 1
+
+        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
+
+        for env_idx in range(self.n_envs):
             # If it is done copy it to the main buffer
             if terminated[env_idx] or truncated[env_idx]:
+                buf = self._last_eps_buffers[env_idx] 
+                ggLog.info(f"ThDictEpReplayBuffer: idx {env_idx} ep terminated, copying to main storage")
                 r = np.random.random()
                 if (r<self._validation_holdout_ratio or 
                     (self._added_eps_count > self._fill_val_buffer_to_min_at_ep and self._val_buff_min_size > self._validation_storage.size())):
                     store = self._validation_storage
+                    ggLog.info(f"Putting ep in validation storage")
                 else:
                     store = self._storage
+                    ggLog.info(f"Putting ep in training storage")
                 # store.add_episode(buf, ep_len = self._last_eps_lengths[env_idx])
                 store.update(buf)
                 buf.clear()
                 self._added_eps_count += 1
+                ggLog.info(f"training storage contains {self._storage.stored_episodes()} eps {self._storage.stored_frames()} frames")
+                ggLog.info(f"validation storage contains {self._validation_storage.stored_episodes()} eps {self._validation_storage.stored_frames()} frames")
 
-        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
 
         # ggLog.info(f"{threading.get_ident()}: Added step, count = {self._addcount}, size = {self.size()}, val_size = {self.size(validation_set=True)}")
             
