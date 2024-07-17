@@ -215,3 +215,9 @@ def _is_all_leaf_finite(tensor : th.Tensor | np.ndarray):
 
 def is_all_finite(tree : TensorTree):
     return all(flatten_tensor_tree(map_tensor_tree(tree, _is_all_leaf_finite)).values())
+
+
+def to_contiguous_tensor(value):
+    if isinstance(value, np.ndarray):
+        value = np.ascontiguousarray(value)
+    return th.as_tensor(value)

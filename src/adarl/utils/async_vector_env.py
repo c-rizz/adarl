@@ -20,7 +20,7 @@ from gymnasium.error import (
 from gymnasium.vector.utils import concatenate, create_empty_array
 from gymnasium.vector.vector_env import VectorEnv
 from adarl.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
-from adarl.utils.tensor_trees import space_from_tree, map_tensor_tree, stack_tensor_tree
+from adarl.utils.tensor_trees import space_from_tree, map_tensor_tree, stack_tensor_tree, to_contiguous_tensor
 import torch as th
 import adarl.utils.mp_helper as mp_helper
 import time
@@ -63,7 +63,7 @@ def _worker(
     reset_info["terminal_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     reset_info["real_next_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     # print(f"reset_info = {reset_info}")
-    info_space = space_from_tree(reset_info)
+    info_space = space_from_tree(map_tensor_tree(reset_info, to_contiguous_tensor))
     reset_info = None
     running = True
     while running:
@@ -127,7 +127,7 @@ def _worker(
                 if reset_info is not None:
                     reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
                 reset_observation = map_tensor_tree(reset_observation, func=lambda x: th.as_tensor(x))
-                # print(f"observation = {observation}")
+                # print(f"observation shape = {map_tensor_tree(observation, lambda t: t.size())}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           observation=observation,
                                           reward=reward,

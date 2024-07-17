@@ -23,6 +23,7 @@ import torch as th
 import subprocess
 import re
 from typing import TypedDict
+import gymnasium as gym
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -313,6 +314,74 @@ def evaluatePolicy(env,
                         "wall_duration_std" : np.std(wallDurations),
                         "predict_wall_duration_mean" : np.mean(predictWallDurations),
                         "predict_wall_duration_std" : np.std(predictWallDurations)}
+    return eval_results
+
+
+def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
+                   model,
+                   episodes : int,
+                   on_ep_done_callback : Callable[[float, int,int],Any] | None = None,
+                   predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
+                   progress_bar : bool = False,
+                   images_return = None,
+                   obs_return = None):
+    with th.no_grad():
+        if predict_func is None:
+            predict_func_ = model.predict
+        else:
+            predict_func_ = predict_func
+        rewards = np.empty((episodes,), dtype = np.float32)
+        durations_steps = np.empty((episodes,), dtype = np.int32)
+        successes = 0.0
+        collected_eps = 0
+        collected_steps = 0
+        successes  = 0
+        #frames = []
+        #do an average over a bunch of episodes
+        if not progress_bar:
+            maybe_tqdm = lambda x:x
+        else:
+            maybe_tqdm = tqdm.tqdm
+
+        running_rews = [0] * vec_env.num_envs
+        running_durations = [0] * vec_env.num_envs
+        if obs_return is not None:
+            running_obss = [[] for i in range(vec_env.num_envs)]
+        t0 = time.monotonic()
+        obss, infos = vec_env.reset()
+        while collected_eps < episodes:
+            acts, _states = predict_func_(obss)
+            obss, rews, terms, truncs, infos = vec_env.step(acts)
+            collected_steps += vec_env.num_envs
+            for i in range(vec_env.num_envs):
+                running_rews[i] += rews[i]
+                running_durations[i] += 1
+                if obs_return is not None:
+                    running_obss[i].append(obss[i])
+                if terms[i] or truncs[i]:
+                    rewards[collected_eps] = running_rews[i]
+                    durations_steps[collected_eps] = running_durations[i]
+                    if obs_return is not None:
+                        obs_return.append(running_obss[i])
+                    if on_ep_done_callback is not None:
+                        on_ep_done_callback(episodeReward=running_rews[i], steps=running_durations[i], episode=collected_eps)
+                    # if "success" in infos[i].keys():
+                    #     if infos[i]["success"]:
+                    #         successes += 1
+                    running_durations[i] = 0
+                    running_rews[i] = 0
+                    if obs_return is not None:
+                        running_obss[i] = []
+                    collected_eps += 1
+        tf = time.monotonic()
+        eval_results = {"reward_mean" : np.mean(rewards),
+                        "reward_std" : np.std(rewards),
+                        "steps_mean" : np.mean(durations_steps),
+                        "steps_std" : np.std(durations_steps),
+                        "success_ratio" : successes/episodes,
+                        "fps" : collected_steps/(tf-t0),
+                        "collected_steps" : collected_steps,
+                        "collected_episodes" : collected_eps}
     return eval_results
 
 def fileGlobToList(fileGlobStr : str):
