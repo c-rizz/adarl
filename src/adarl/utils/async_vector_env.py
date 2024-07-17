@@ -27,6 +27,7 @@ import time
 import adarl.utils.dbg.ggLog as ggLog
 import os
 import setproctitle
+import cProfile
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -49,7 +50,10 @@ def _worker(
     env_idx : int,
     action_device = "numpy"
 ) -> None:
+    ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}")
     setproctitle.setproctitle(mp.current_process().name)
+    pr = cProfile.Profile()
+    pr.enable()
     ggLog.info(f"async_vector_env starting worker with pid {os.getpid()}")
     # Import here to avoid a circular import
     from stable_baselines3.common.env_util import is_wrapped
@@ -177,6 +181,9 @@ def _worker(
                 simple_commander.mark_done()
         except EOFError:
             break
+    pr.disable()
+    if env_idx == 1:
+        pr.print_stats(sort='cumtime')  # sort as you wish>
 
 class AsyncVectorEnvShmem(VectorEnv):
     """Vectorized environment that runs multiple environments in parallel.
@@ -229,7 +236,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
             args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, name="async_vector_env.worker", daemon=True)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=True)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()
