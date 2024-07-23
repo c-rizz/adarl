@@ -153,7 +153,6 @@ class EpisodeStorage():
         self._current_ep_frame_count += 1
         self._stored_frames_count += 1
         if terminated or truncated:
-            ggLog.info(f"EpisodeStorage{id(self)}: ep finished")
             self._current_ep_frame_count = 0
             self._added_episodes += 1
         if self._added_episodes>=self._max_episodes:
@@ -530,21 +529,21 @@ class ThDictEpReplayBuffer(BaseBuffer):
             # If it is done copy it to the main buffer
             if terminated[env_idx] or truncated[env_idx]:
                 buf = self._last_eps_buffers[env_idx] 
-                ggLog.info(f"ThDictEpReplayBuffer: idx {env_idx} ep terminated, copying to main storage")
+                # ggLog.info(f"ThDictEpReplayBuffer: idx {env_idx} ep terminated, copying to main storage")
                 r = np.random.random()
                 if (r<self._validation_holdout_ratio or 
                     (self._added_eps_count > self._fill_val_buffer_to_min_at_ep and self._val_buff_min_size > self._validation_storage.size())):
                     store = self._validation_storage
-                    ggLog.info(f"Putting ep in validation storage")
+                    # ggLog.info(f"Putting ep in validation storage")
                 else:
                     store = self._storage
-                    ggLog.info(f"Putting ep in training storage")
+                    # ggLog.info(f"Putting ep in training storage")
                 # store.add_episode(buf, ep_len = self._last_eps_lengths[env_idx])
                 store.update(buf)
                 buf.clear()
                 self._added_eps_count += 1
-                ggLog.info(f"training storage contains {self._storage.stored_episodes()} eps {self._storage.stored_frames()} frames")
-                ggLog.info(f"validation storage contains {self._validation_storage.stored_episodes()} eps {self._validation_storage.stored_frames()} frames")
+                # ggLog.info(f"training storage contains {self._storage.stored_episodes()} eps {self._storage.stored_frames()} frames")
+                # ggLog.info(f"validation storage contains {self._validation_storage.stored_episodes()} eps {self._validation_storage.stored_frames()} frames")
 
 
         # ggLog.info(f"{threading.get_ident()}: Added step, count = {self._addcount}, size = {self.size()}, val_size = {self.size(validation_set=True)}")

@@ -50,11 +50,11 @@ def _worker(
     env_idx : int,
     action_device = "numpy"
 ) -> None:
-    ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}")
+    ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
     setproctitle.setproctitle(mp.current_process().name)
-    pr = cProfile.Profile()
-    pr.enable()
-    ggLog.info(f"async_vector_env starting worker with pid {os.getpid()}")
+    # th.cuda.memory._record_memory_history()
+    # pr = cProfile.Profile()
+    # pr.enable()
     # Import here to avoid a circular import
     from stable_baselines3.common.env_util import is_wrapped
 
@@ -70,6 +70,7 @@ def _worker(
     info_space = space_from_tree(map_tensor_tree(reset_info, to_contiguous_tensor))
     reset_info = None
     running = True
+    stepcount = 0
     while running:
         try:
             cmd = simple_commander.wait_command()
@@ -142,6 +143,8 @@ def _worker(
                                           reset_info = reset_info,
                                           reset_observation = reset_observation)
                 reset_info = None
+                stepcount+=1
+                # th.cuda.memory._dump_snapshot(f"worker{env_idx}_step{stepcount}.pickle")
             elif cmd == b"reset":
                 data = remote.recv()
                 maybe_options = {"options": data[1]} if data[1] else {}
@@ -181,9 +184,10 @@ def _worker(
                 simple_commander.mark_done()
         except EOFError:
             break
-    pr.disable()
-    if env_idx == 1:
-        pr.print_stats(sort='cumtime')  # sort as you wish>
+    # pr.disable()
+    # ggLog.info(f"async_vector_env: worker {mp.current_process().name} terminating, pid = {os.getpid()}")
+    # if env_idx == 1:
+    #     pr.print_stats(sort='cumtime')
 
 class AsyncVectorEnvShmem(VectorEnv):
     """Vectorized environment that runs multiple environments in parallel.

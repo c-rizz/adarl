@@ -324,18 +324,21 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                    predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
                    progress_bar : bool = False,
                    images_return = None,
-                   obs_return = None):
+                   obs_return = None,
+                   extra_info_stats : list[str] = [],
+                   deterministic : bool = False):
     with th.no_grad():
         if predict_func is None:
             predict_func_ = model.predict
         else:
             predict_func_ = predict_func
-        rewards = np.empty((episodes,), dtype = np.float32)
-        durations_steps = np.empty((episodes,), dtype = np.int32)
-        successes = 0.0
+        buffsizes = episodes+vec_env.num_envs # may collect at most num_env excess episodes
+        rewards = np.empty((buffsizes,), dtype = np.float32)
+        durations_steps = np.empty((buffsizes,), dtype = np.int32)
+        extra_stats = {k:np.empty((buffsizes,), dtype = np.float32) for k in extra_info_stats}
+        successes = np.empty((buffsizes,), dtype = np.int32)
         collected_eps = 0
         collected_steps = 0
-        successes  = 0
         #frames = []
         #do an average over a bunch of episodes
         if not progress_bar:
@@ -350,7 +353,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         t0 = time.monotonic()
         obss, infos = vec_env.reset()
         while collected_eps < episodes:
-            acts, _states = predict_func_(obss)
+            acts, _states = predict_func_(obss, deterministic = deterministic)
             obss, rews, terms, truncs, infos = vec_env.step(acts)
             collected_steps += vec_env.num_envs
             for i in range(vec_env.num_envs):
@@ -361,27 +364,30 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                 if terms[i] or truncs[i]:
                     rewards[collected_eps] = running_rews[i]
                     durations_steps[collected_eps] = running_durations[i]
+                    for k in extra_stats:
+                        extra_stats[k][collected_eps] = infos[k][i]
                     if obs_return is not None:
                         obs_return.append(running_obss[i])
                     if on_ep_done_callback is not None:
                         on_ep_done_callback(episodeReward=running_rews[i], steps=running_durations[i], episode=collected_eps)
-                    # if "success" in infos[i].keys():
-                    #     if infos[i]["success"]:
-                    #         successes += 1
+                    if "success" in infos.keys():
+                        successes[collected_eps] = 1 if infos["success"][i] else 0
                     running_durations[i] = 0
                     running_rews[i] = 0
                     if obs_return is not None:
                         running_obss[i] = []
                     collected_eps += 1
         tf = time.monotonic()
-        eval_results = {"reward_mean" : np.mean(rewards),
-                        "reward_std" : np.std(rewards),
-                        "steps_mean" : np.mean(durations_steps),
-                        "steps_std" : np.std(durations_steps),
-                        "success_ratio" : successes/episodes,
+        eval_results = {"reward_mean" : np.mean(rewards[:episodes]),
+                        "reward_std" : np.std(rewards[:episodes]),
+                        "steps_mean" : np.mean(durations_steps[:episodes]),
+                        "steps_std" : np.std(durations_steps[:episodes]),
+                        "success_ratio" : sum(successes[:episodes])/episodes,
                         "fps" : collected_steps/(tf-t0),
                         "collected_steps" : collected_steps,
                         "collected_episodes" : collected_eps}
+        eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
+        eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
     return eval_results
 
 def fileGlobToList(fileGlobStr : str):
@@ -764,7 +770,7 @@ def quat_swing_twist_decomposition(quat_wxyz : th.Tensor, axis_xyz : th.Tensor) 
     twist[1:4] = vector_projection(quat_axis, axis_xyz)
     twist[0] = quat_wxyz[0]
     twist = twist/twist.norm()
-    swing = quat_mul(quat_wxyz,(twist*th.tensor([1.0,-1.0,-1.0,-1.0])))
+    swing = quat_mul(quat_wxyz,(twist*th.tensor([1.0,-1.0,-1.0,-1.0], device=twist.device)))
     return swing, twist
 
 def quat_angle(q_wxyz : th.Tensor) -> th.Tensor:

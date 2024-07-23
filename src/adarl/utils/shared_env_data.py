@@ -82,11 +82,11 @@ class SharedData():
         self.build_data()
 
     def build_data(self):
-        self._obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
-        self._acts = create_tensor_tree(self._n_envs, self._action_space, True, device=self._device)
-        self._infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
-        self._reset_infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, True, device=self._device)
-        self._reset_obss = create_tensor_tree(self._n_envs, self._observation_space, True, device=self._device)
+        self._obss = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
+        self._acts = create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
+        self._infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._reset_infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._reset_obss = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
         self._terms : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
         self._truncs : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
         self._rews : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.float32).share_memory_()
@@ -118,16 +118,18 @@ class SharedEnvData():
     def fill_data(self, env_idx, observation, action, terminated, truncated, reward, info, reset_info, reset_observation):
         if observation is not None:
             # print("writing rew")
-            self._shared_data._rews[env_idx] = reward
+            self._shared_data._rews[env_idx].copy_(reward, non_blocking=True)
             # print("wrote rew")
-            self._shared_data._terms[env_idx] = terminated
-            self._shared_data._truncs[env_idx] = truncated
+            self._shared_data._terms[env_idx].copy_(terminated, non_blocking=True)
+            self._shared_data._truncs[env_idx].copy_(truncated, non_blocking=True)
             fill_tensor_tree(env_idx, observation, self._shared_data._obss)
             fill_tensor_tree(env_idx, action, self._shared_data._acts)
             fill_tensor_tree(env_idx, info, self._shared_data._infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
         if reset_info is not None:
             fill_tensor_tree(env_idx, reset_observation, self._shared_data._reset_obss)
             fill_tensor_tree(env_idx, reset_info, self._shared_data._reset_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
+        if self._shared_data._device.type == "cuda":
+            th.cuda.synchronize()
         with self._n_envs_stepping_cond: # decrease number of envs to wait for
             self._n_envs_stepping.value -= 1
             self._n_envs_stepping_cond.notify_all()

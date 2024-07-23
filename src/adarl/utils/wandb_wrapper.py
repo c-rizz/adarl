@@ -60,8 +60,8 @@ class WandbWrapper():
 
     def wandb_log(self, log_dict, throttle_period = 0):
         if not self._wandb_initialized:
-            ggLog.error(f"Called wandb_log, but wandb is not initialized. Skipping log.")
-            traceback.print_stack()
+            ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
+            # traceback.print_stack()
             return
         try:
             if os.getpid()==self._init_pid:

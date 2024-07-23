@@ -180,7 +180,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         joints_max_velocity_position_control : Dict[Tuple[str,str],float] = {},
                         global_max_acceleration_position_control : float = 10,
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
-                        simulation_step = 1/960):
+                        simulation_step = 1/960,
+                        enable_redering = True):
         """Initialize the Simulator controller.
 
 
@@ -188,6 +189,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         super().__init__()
         self._stepLength_sec = stepLength_sec
         self._simulation_step = simulation_step
+        self._enable_rendering = enable_redering
         if self._stepLength_sec % self._simulation_step != 0:
             ggLog.warn(f"{__class__}: stepLength_sec {self._stepLength_sec} is not a multiple of "
                        f"simulation_step {self._simulation_step}, will not be able to sep of exactly stepLength_sec.")
@@ -378,6 +380,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
 
     def getRenderings(self, requestedCameras : List[str]) -> Dict[str, Tuple[np.ndarray, float]]:
+        if not self._enable_rendering:
+            raise RuntimeError(f"Called getRenderings, but enable_rendering is false")
         # ggLog.info(f"Rendering")
         ret = {}
         for cam_name in requestedCameras:
@@ -719,7 +723,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 1)
         else:
             self._client_id = pybullet.connect(pybullet.DIRECT)
-            plugin = pybullet.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
+            if self._enable_rendering:
+                plugin = pybullet.loadPlugin(egl.get_filename(), "_eglRendererPlugin")
             pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 0)
         self._pybullet_thread = threading.current_thread()
         # ggLog.info("Started pybullet")
