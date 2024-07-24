@@ -27,7 +27,7 @@ from adarl.utils.sb3_callbacks import EvalCallback_ep
 from wandb.integration.sb3 import WandbCallback
 from adarl.utils.sb3_callbacks import SigintHaltCallback
 
-def build_ant(seed,logFolder) -> Tuple[gym.Env, float]:
+def build_ant(seed,log_folder) -> Tuple[gym.Env, float]:
 
     
     #logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y-%m-%d,%H:%M:%S')
@@ -43,7 +43,7 @@ def build_ant(seed,logFolder) -> Tuple[gym.Env, float]:
     lrenv = GymToLr(openaiGym_env=base_gym_env, stepSimDuration_sec=stepLength_sec)
     lrenv = ObsToDict(env=lrenv)
     gym_env = GymEnvWrapper(lrenv)
-    # env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
+    # env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=log_folder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
     #setup seeds for reproducibility
     # env.seed(RANDOM_SEED)
     gym_env.action_space.seed(seed)
@@ -58,11 +58,11 @@ def runFunction(seed, folderName, resumeModelFile, run_id, args):
     seed = 20200401
     parallel_envs = 4
 
-    builders = [(lambda i: (lambda: build_ant(seed = seed*100000+i, logFolder=folderName)[0]))(i) for i in range(parallel_envs)]
+    builders = [(lambda i: (lambda: build_ant(seed = seed*100000+i, log_folder=folderName)[0]))(i) for i in range(parallel_envs)]
     env = SubprocVecEnv(builders, start_method = "forkserver")
     env = VecEnvLogger(env)
     
-    eval_env, targetFps = build_ant(seed = seed*100000000, logFolder=folderName+"/eval")
+    eval_env, targetFps = build_ant(seed = seed*100000000, log_folder=folderName+"/eval")
     eval_recEnv = RecorderGymWrapper(eval_env,
                                 fps = targetFps, outFolder = folderName+"/eval/videos/RecorderGymWrapper",
                                 saveBestEpisodes = True,

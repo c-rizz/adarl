@@ -20,7 +20,8 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
                         joints_max_velocity_position_control : Dict[Tuple[str,str],float] = {},
                         global_max_acceleration_position_control : float = 10,
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
-                        simulation_step = 1/960):
+                        simulation_step = 1/960,
+                        enable_redering = True):
         """Initialize the Simulator controller.
 
         """
@@ -35,7 +36,8 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
             joints_max_velocity_position_control = joints_max_velocity_position_control,
             global_max_acceleration_position_control = global_max_acceleration_position_control,
             joints_max_acceleration_position_control = joints_max_acceleration_position_control,
-            simulation_step = simulation_step
+            simulation_step = simulation_step,
+            enable_redering = enable_redering
         )
 
     

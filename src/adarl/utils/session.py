@@ -22,6 +22,7 @@ from adarl.utils.wandb_wrapper import wandb_init
 import adarl.utils.mp_helper as mp_helper
 from adarl.utils.sigint_handler import setupSigintHandler
 import adarl.utils.wandb_wrapper as wandb_wrapper
+faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
 
 class Session():
     def __init__(self):
@@ -63,7 +64,6 @@ class Session():
         self.run_info["collected_episodes"] = 0
         self.run_info["collected_steps"] = 0
         self.run_info["seed"] = seed
-        faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
                                                    folderName=folderName,

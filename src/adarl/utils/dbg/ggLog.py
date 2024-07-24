@@ -70,7 +70,7 @@ def _addId(msg):
     #     return "[] "+msg
     # else:
     #     return "["+str(ros_master_uri)+"] "+msg
-    return f"[{runid}] "+msg
+    return f"[{runid}p{os.getpid()}] "+msg
 
 def debug(msg, *args, **kwargs):
     msg = _addId(msg)

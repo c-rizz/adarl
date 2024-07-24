@@ -1,6 +1,6 @@
 from __future__ import annotations
 from cmath import inf
-from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
+from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer
 import numpy as np
 from gymnasium import spaces
 from typing import Union, List, Dict, Any, Optional
@@ -10,7 +10,8 @@ import psutil
 import warnings
 import time
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.buffers import numpy_to_torch_dtype
+from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseBuffer
+from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree
 import random
 import threading
 
@@ -48,28 +49,33 @@ class EpisodeStorage():
 
         #TODO: Make more efficient by using only one observation buffer
         self.observations = {
-            key: th.zeros(  size = (self._max_episodes, self._max_episode_duration) + _obs_shape,
+            key: th.full(  fill_value=42,
+                            size = (self._max_episodes, self._max_episode_duration) + _obs_shape,
                             dtype=numpy_to_torch_dtype(self._buffer._observation_space[key].dtype),
                             device = self._storage_torch_device)
             for key, _obs_shape in self._buffer.obs_shape.items()
         }
         self.next_observations = {
-            key: th.zeros(  size = (self._max_episodes, self._max_episode_duration) + _obs_shape,
+            key: th.full(  fill_value=42,
+                            size = (self._max_episodes, self._max_episode_duration) + _obs_shape,
                             dtype=numpy_to_torch_dtype(self._buffer._observation_space[key].dtype),
                             device = self._storage_torch_device)
             for key, _obs_shape in self._buffer.obs_shape.items()
         }
 
-        self.actions = th.zeros(size = (self._max_episodes, self._max_episode_duration, self._buffer.action_dim),
+        self.actions = th.full( fill_value=42,
+                                size = (self._max_episodes, self._max_episode_duration, self._buffer.action_dim),
                                 dtype=numpy_to_torch_dtype(self._buffer._action_space.dtype),
                                 device = self._storage_torch_device)
-        self.rewards = th.zeros(size = (self._max_episodes, self._max_episode_duration,),
-                                dtype=th.float32,
+        self.rewards = th.full( fill_value=42,
+                                size = (self._max_episodes, self._max_episode_duration,), dtype=th.float32,
                                 device = self._storage_torch_device)
-        self.dones = th.zeros(size = (self._max_episodes, self._max_episode_duration,), dtype=th.float32,
-                            device = self._storage_torch_device)
-
-        self.truncated = th.zeros(size = (self._max_episodes, self._max_episode_duration), dtype=th.uint8,  device = self._buffer._storage_torch_device)
+        self.terminated = th.full(  fill_value=42,
+                                    size = (self._max_episodes, self._max_episode_duration,), dtype=th.uint8,
+                                    device = self._storage_torch_device)
+        self.truncated = th.full(   fill_value=42,
+                                    size = (self._max_episodes, self._max_episode_duration), dtype=th.uint8,
+                                    device = self._buffer._storage_torch_device)
 
 
         self.episode_durations = th.zeros(size = (self._max_episodes,),
@@ -82,7 +88,7 @@ class EpisodeStorage():
                 self.next_observations[k] = self.next_observations[k].pin_memory()
             self.actions = self.actions.pin_memory()
             self.rewards = self.rewards.pin_memory()
-            self.dones = self.dones.pin_memory()
+            self.terminated = self.terminated.pin_memory()
             self.truncated = self.truncated.pin_memory()
 
 
@@ -102,39 +108,59 @@ class EpisodeStorage():
         
         action_nbytes = self.actions.element_size()*self.actions.nelement()
         rewards_nbytes = self.rewards.element_size()*self.rewards.nelement()
-        dones_nbytes = self.dones.element_size()*self.dones.nelement()
+        terminated_nbytes = self.terminated.element_size()*self.terminated.nelement()
         timeouts_nbytes = self.truncated.element_size()*self.truncated.nelement()
         ep_durations = self.episode_durations.element_size()*self.episode_durations.nelement()
 
-        total_memory_usage = obs_nbytes + next_obs_nbytes + action_nbytes + rewards_nbytes + dones_nbytes + timeouts_nbytes + ep_durations
+        total_memory_usage = obs_nbytes + next_obs_nbytes + action_nbytes + rewards_nbytes + terminated_nbytes + timeouts_nbytes + ep_durations
 
         return total_memory_usage
     
-    def add_frame(self, observation, action, next_observation, reward, done, truncated):
+    def add_frame(self, observation, action, next_observation, reward, terminated, truncated, sync_stream = True):
         ep_idx = self._added_episodes%self._max_episodes
         frame_idx = self._current_ep_frame_count
+
+        if not is_all_finite(observation):
+            raise RuntimeError(f"nonfinite values in added observation "
+                               f"isnan_count = {map_tensor_tree(observation, lambda t: th.sum(th.isnan(t)))} "
+                               f"isinf_count = {map_tensor_tree(observation, lambda t: th.sum(th.isinf(t)))} "
+                               f"{observation} ")
+        if not is_all_finite(next_observation):
+            raise RuntimeError(f"nonfinite values in added next_observation "
+                               f"isnan_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isnan(t)))} "
+                               f"isinf_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isinf(t)))} "
+                               f"{next_observation}")
+        if not is_all_finite(action):
+            raise RuntimeError(f"nonfinite values in added action isnan_count = {th.sum(th.isnan(action))} {action}")
+        if not is_all_finite(reward):
+            raise RuntimeError(f"nonfinite values in added reward isnan_count = {th.sum(th.isnan(reward))} {reward}")
+
 
         if self._current_ep_frame_count == 0:
             self._stored_frames_count -= self.episode_durations[ep_idx].cpu().item()
             if self._added_episodes < self._max_episodes:
                 self._stored_episodes += 1
             self.episode_durations[ep_idx] = 0    
-
+        nb = True
         for key in self.observations.keys():
-            self.observations[key][ep_idx][frame_idx] = th.as_tensor(observation[key]).to(self._storage_torch_device, non_blocking=True)
-            self.next_observations[key][ep_idx][frame_idx] = th.as_tensor(next_observation[key]).to(self._storage_torch_device, non_blocking=True)
-        self.actions[ep_idx][frame_idx] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
-        self.rewards[ep_idx][frame_idx] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
-        self.dones[ep_idx][frame_idx] = th.as_tensor(done).to(self._storage_torch_device, non_blocking=True)
-        self.truncated[ep_idx][frame_idx] = th.as_tensor(truncated).to(self._storage_torch_device, non_blocking=True)
+            self.observations[key][ep_idx,frame_idx].copy_(th.as_tensor(observation[key]), non_blocking=nb)
+            self.next_observations[key][ep_idx,frame_idx].copy_(th.as_tensor(next_observation[key]), non_blocking=nb)
+        self.actions[ep_idx,frame_idx].copy_(th.as_tensor(action), non_blocking=nb)
+        self.rewards[ep_idx,frame_idx].copy_(th.as_tensor(reward), non_blocking=nb)
+        self.terminated[ep_idx,frame_idx].copy_(th.as_tensor(terminated), non_blocking=nb)
+        self.truncated[ep_idx,frame_idx].copy_(th.as_tensor(truncated), non_blocking=nb)
         self.episode_durations[ep_idx] += 1
         self._current_ep_frame_count += 1
         self._stored_frames_count += 1
-        if done:
+        if terminated or truncated:
             self._current_ep_frame_count = 0
             self._added_episodes += 1
         if self._added_episodes>=self._max_episodes:
             self.full = True
+            
+        if sync_stream:
+            th.cuda.current_stream().synchronize() # sync non_blocking operations
+        # ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
 
     
     # def add_episode(self, buf : Storage, ep_len):
@@ -171,7 +197,7 @@ class EpisodeStorage():
     def size(self):
         return self.stored_frames()
     
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None) -> DictReplayBufferSamples:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None) -> TransitionBatch:
         
         return_traj = sample_duration is not None
         if sample_duration is None:
@@ -185,19 +211,19 @@ class EpisodeStorage():
             if iter>1000:
                 raise RuntimeError(f"Unable to sample episodes long at least {sample_duration}, got {valid_count} out of {batch_size}")
             new_sampled_episodes = th.randint(0, upper_bound, size=(batch_size-valid_count,), device = self._storage_torch_device)
-            ep_lenghts = self.episode_durations[new_sampled_episodes]
+            ep_lengths = self.episode_durations[new_sampled_episodes]
             # ggLog.info(f"new_sampled_episodes.size() = {new_sampled_episodes.size()}")
             # ggLog.info(f"ep_lenghts.size() = {ep_lenghts.size()}")
             if self._min_ep_length > sample_duration:
                 sampled_episodes = new_sampled_episodes
                 break
-            valid_idx = (ep_lenghts>=sample_duration).nonzero().squeeze()
+            valid_eps_idxs = (ep_lengths>=sample_duration).nonzero().squeeze()
             # ggLog.info(f"valid_idx.size() = {valid_idx.size()}")
-            sampled_episodes[valid_count:valid_count+len(valid_idx)] = new_sampled_episodes[valid_idx]
-            valid_count += len(valid_idx)
+            sampled_episodes[valid_count:valid_count+len(valid_eps_idxs)] = new_sampled_episodes[valid_eps_idxs]
+            valid_count += len(valid_eps_idxs)
             iter += 1
-        ep_lenghts = self.episode_durations[sampled_episodes]
-        ranges = ep_lenghts-sample_duration+1
+        ep_lengths = self.episode_durations[sampled_episodes]
+        ranges = ep_lengths-sample_duration+1
         # ggLog.info(f"ranges.size() = {ranges.size()}")
         # ggLog.info(f"sample_duration = {sample_duration}")
         sampled_start_frames = (ranges*th.rand(size = sampled_episodes.size(), device=self._storage_torch_device)).int()
@@ -212,33 +238,31 @@ class EpisodeStorage():
 
         sampled_frames = sampled_start_frames.unsqueeze(1) + th.arange(sample_duration, device = sampled_start_frames.device)
 
+        # ggLog.info(f"EpisodeStorage{id(self)}: sampled {list(zip(sampled_episodes,sampled_frames))}")
+
         trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
                                     for key, b in self.observations.items()} 
         trajs_next_obs_ =   {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
                                     for key, b in self.next_observations.items()} 
-        trajs_dones = take_frames(self.dones, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
-        trajs_timeouts = take_frames(self.truncated,sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
+        trajs_terminateds = take_frames(self.terminated, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
         trajs_actions = take_frames(self.actions, sampled_episodes, sampled_frames).to(self._output_device) #.view(trajs_num,trajs_len,-1)
         trajs_rewards = take_frames(self.rewards, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
 
         for key in self.observations:
             obs_shape = trajs_obs_[key].size()[2:]
             # ggLog.info(f"obs_shape = {obs_shape}")
-            trajs_obs_[key] = self._buffer._normalize_obs(trajs_obs_[key].view((trajs_num*trajs_len,)+obs_shape),
-                                                env).view((trajs_num,trajs_len,)+obs_shape)
-            trajs_next_obs_[key] = self._buffer._normalize_obs(trajs_next_obs_[key].view((trajs_num*trajs_len,)+obs_shape),
-                                                    env).view((trajs_num,trajs_len,)+obs_shape)
+            trajs_obs_[key] = trajs_obs_[key].view((trajs_num,trajs_len,)+obs_shape)
+            trajs_next_obs_[key] = trajs_next_obs_[key].view((trajs_num,trajs_len,)+obs_shape)
         # ggLog.info(f"1 trajs_dones.size() = {trajs_dones.size()}")
         # ggLog.info(f"trajs_timeouts.size() = {trajs_timeouts.size()}")
-        trajs_dones = (trajs_dones*(1-trajs_timeouts)).view(trajs_num,trajs_len,1)
         # ggLog.info(f"2 trajs_dones.size() = {trajs_dones.size()}")
-        trajs_rewards = self._buffer._normalize_reward(trajs_rewards.view(trajs_num*trajs_len,1)).view(trajs_num,trajs_len,1)
+        trajs_rewards = trajs_rewards.view(trajs_num,trajs_len,1)
 
         if return_traj:
             observations = trajs_obs_
             actions = trajs_actions
             next_observations = trajs_next_obs_
-            dones = trajs_dones
+            terminateds = trajs_terminateds
             rewards = trajs_rewards
         else:
             observations = {}
@@ -249,7 +273,7 @@ class EpisodeStorage():
                 next_observations[key] = trajs_next_obs_[key].view((trajs_num,)+obs_shape)
             actions = trajs_actions.view((trajs_num,)+trajs_actions.size()[2:])
             # ggLog.info(f"3 trajs_dones.size() = {trajs_dones.size()}")
-            dones = trajs_dones.view(trajs_num,1)
+            terminateds = trajs_terminateds.view(trajs_num,1)
             rewards = trajs_rewards.view(trajs_num,1)
 
         # ggLog.info(f"observations = {[str(k)+':'+str(v.size()) for k,v in observations.items()]}")
@@ -261,11 +285,26 @@ class EpisodeStorage():
 
         # ggLog.info(f"actions.device = {actions.device}")
 
-        return DictReplayBufferSamples(
+        if not is_all_finite(observations):
+            raise RuntimeError(f"nonfinite values in sampled observation "
+                               f"isnan_count = {map_tensor_tree(observations, lambda t: th.sum(th.isnan(t)))}"
+                               f"isinf_count = {map_tensor_tree(observations, lambda t: th.sum(th.isinf(t)))}"
+                               f"{observations} ")
+        if not is_all_finite(next_observations):
+            raise RuntimeError(f"nonfinite values in sampled next_observation "
+                               f"isnan_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isnan(t)))}"
+                               f"isinf_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isinf(t)))}"
+                               f"{next_observations}")
+        if not is_all_finite(actions):
+            raise RuntimeError(f"nonfinite values in sampled action isnan_count = {th.sum(th.isnan(actions))} {actions}")
+        if not is_all_finite(rewards):
+            raise RuntimeError(f"nonfinite values in sampled reward isnan_count = {th.sum(th.isnan(rewards))} {rewards}")
+
+        return TransitionBatch(
             observations=observations,
             actions=actions,
             next_observations=next_observations,
-            dones=dones,
+            terminated=terminateds,
             rewards=rewards
         )
     
@@ -273,7 +312,7 @@ class EpisodeStorage():
 
     def update(self, src_storage : EpisodeStorage):
         
-        # ggLog.info(f"Updating storage of size {self.stored_frames()} with storage of size {src_storage.stored_frames()}")
+        # ggLog.info(f"Updating storage of size {self.stored_frames()} (id={id(self)}) with storage of size {src_storage.stored_frames()} (id={id(src_storage)})")
         prev_size = self.size()
         copied_eps = 0
         overridden_frames = 0
@@ -286,22 +325,27 @@ class EpisodeStorage():
                 # it's always covering either a completely empty area or a completely full one
                 # if self is full the overridden frames this round are:
                 overridden_frames += th.sum(self.episode_durations[pos:pos + eps_to_copy])
+            else:
+                overridden_frames = 0
+
+            # ggLog.info(f"Copying {copied_eps}:{copied_eps+eps_to_copy} to {pos}:{pos + eps_to_copy}")
+            # ggLog.info(f"Overwriting {overridden_frames} frames")
 
             self.actions[pos:pos + eps_to_copy] = src_storage.actions[copied_eps:copied_eps+eps_to_copy]
             self.rewards[pos:pos + eps_to_copy] = src_storage.rewards[copied_eps:copied_eps+eps_to_copy]
-            self.dones[pos:pos + eps_to_copy]   = src_storage.dones[copied_eps:copied_eps+eps_to_copy]
+            self.terminated[pos:pos + eps_to_copy]   = src_storage.terminated[copied_eps:copied_eps+eps_to_copy]
             self.truncated[pos:pos + eps_to_copy] = src_storage.truncated[copied_eps:copied_eps+eps_to_copy]
             self.episode_durations[pos:pos + eps_to_copy] = src_storage.episode_durations[copied_eps:copied_eps+eps_to_copy]
 
             for key in self.observations.keys():
                 self.observations[key][pos:pos + eps_to_copy] = src_storage.observations[key][copied_eps:copied_eps+eps_to_copy]
-                self.next_observations[key][pos:pos + eps_to_copy] = src_storage.next_observations[key][copied_eps:copied_eps+eps_to_copy]                    
-
+                self.next_observations[key][pos:pos + eps_to_copy] = src_storage.next_observations[key][copied_eps:copied_eps+eps_to_copy]   
+            
             self._added_episodes += eps_to_copy
             copied_eps += eps_to_copy
         self._stored_frames_count += src_storage._stored_frames_count - overridden_frames
-        # ggLog.info(f"self._stored_frames_count = {self._stored_frames_count}")
-        # ggLog.info(f"self._added_episodes = {self._added_episodes}")
+        # ggLog.info(f"new self._stored_frames_count = {self._stored_frames_count}")
+        # ggLog.info(f"new self._added_episodes = {self._added_episodes}")
         new_size = self.size()
         if self._added_episodes>=self._max_episodes:
             self.full = True
@@ -318,7 +362,7 @@ class EpisodeStorage():
             next_obs = {k:v[ep,frame] for k,v in self.next_observations.items()}
             action = self.actions[ep,frame]
             reward = self.rewards[ep,frame]
-            done = self.dones[ep,frame]
+            done = self.terminated[ep,frame]
             truncated = self.truncated[ep,frame]
             yield (obs, next_obs, action, reward, done, truncated)
             frame += 1
@@ -326,7 +370,7 @@ class EpisodeStorage():
 
                 
 
-class ThDictEpReplayBuffer(ReplayBuffer):
+class ThDictEpReplayBuffer(BaseBuffer):
     """
     Dict Replay buffer used in off-policy algorithms like SAC/TD3.
     Extends the ReplayBuffer to use dictionary observations
@@ -342,23 +386,6 @@ class ThDictEpReplayBuffer(ReplayBuffer):
         https://github.com/DLR-RM/stable-baselines3/issues/284
     """
 
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def __init__(
         self,
         buffer_size: int,
@@ -367,10 +394,9 @@ class ThDictEpReplayBuffer(ReplayBuffer):
         device: th.device = th.device("cpu"),
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
-        handle_timeout_termination: bool = True,
         storage_torch_device: th.device = th.device("cpu"),
         fallback_to_cpu_storage: bool = True,
-        max_episode_duration = 1000,
+        max_episode_duration : int | float = 1000,
         validation_buffer_size = 0,
         validation_holdout_ratio = 0,
         min_episode_duration = 0,
@@ -378,15 +404,13 @@ class ThDictEpReplayBuffer(ReplayBuffer):
         fill_val_buffer_to_min_at_ep = float("+inf"),
         val_buffer_min_size = 0
     ):
-        super(ReplayBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
         assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
         self.max_frames = buffer_size
         self.buffer_size = max(buffer_size // n_envs, 1)
         self._observation_space = observation_space
         self._action_space = action_space
-        if not handle_timeout_termination:
-            raise NotImplementedError(f"handle_timeout_termination must be true")
         storage_torch_device = th.device(storage_torch_device)
         self._storage_torch_device = storage_torch_device
         if storage_torch_device.type == "cuda" and device.type == "cpu":
@@ -428,6 +452,7 @@ class ThDictEpReplayBuffer(ReplayBuffer):
 
         self._allocate_buffers(self._max_episodes, self._max_val_episodes)
         self._addcount = 0
+        self._collected_frames = 0
         self._added_eps_count = 0
         self._fill_val_buffer_to_min_at_ep = fill_val_buffer_to_min_at_ep
         self._val_buff_min_size = val_buffer_min_size
@@ -465,9 +490,8 @@ class ThDictEpReplayBuffer(ReplayBuffer):
             next_obs: Dict[str, np.ndarray],
             action: np.ndarray,
             reward: np.ndarray,
-            done: np.ndarray,
-            infos: List[Dict[str, Any]],
-            truncateds : Optional[np.ndarray] = None) -> None:
+            terminated: np.ndarray,
+            truncated: np.ndarray) -> None:
         # All inputs are batches of size n_envs
         # All should be copied to avoid modification by reference
 
@@ -490,51 +514,80 @@ class ThDictEpReplayBuffer(ReplayBuffer):
         # copy each transition into the buffer for the respective env
         for env_idx in range(self.n_envs):
             buf = self._last_eps_buffers[env_idx]
-            if truncateds is None:
-                truncated = th.as_tensor(infos[env_idx].get("TimeLimit.truncated", False)).to(self._storage_torch_device, non_blocking=True)
-            else:
-                truncated = truncateds[env_idx]
-            obs = {k:v[env_idx] for k,v in obs.items()}
-            next_obs = {k:v[env_idx] for k,v in next_obs.items()}
-            buf.add_frame(obs, action[env_idx], next_obs, reward[env_idx], done[env_idx], truncated)
-            
+            buf.add_frame(  observation = {k:v[env_idx] for k,v in obs.items()},
+                            action = action[env_idx],
+                            next_observation = {k:v[env_idx] for k,v in next_obs.items()},
+                            reward = reward[env_idx],
+                            terminated = terminated[env_idx],
+                            truncated = truncated[env_idx],
+                            sync_stream = False)
+            self._collected_frames += 1
+
+        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
+
+        for env_idx in range(self.n_envs):
             # If it is done copy it to the main buffer
-            if done[env_idx]:
-                # ggLog.info(f"Storing completed episode of {self._last_eps_lengths[env_idx]} steps")
+            if terminated[env_idx] or truncated[env_idx]:
+                buf = self._last_eps_buffers[env_idx] 
+                # ggLog.info(f"ThDictEpReplayBuffer: idx {env_idx} ep terminated, copying to main storage")
                 r = np.random.random()
-                # ggLog.info(f"{r}<{self._validation_holdout_ratio}?")
-                # ggLog.info(f"{self._added_eps_count} > {self._fill_val_buffer_to_min_at_ep} and {self._val_buff_min_size} > {self._validation_storage.size()}")
                 if (r<self._validation_holdout_ratio or 
                     (self._added_eps_count > self._fill_val_buffer_to_min_at_ep and self._val_buff_min_size > self._validation_storage.size())):
                     store = self._validation_storage
+                    # ggLog.info(f"Putting ep in validation storage")
                 else:
                     store = self._storage
+                    # ggLog.info(f"Putting ep in training storage")
                 # store.add_episode(buf, ep_len = self._last_eps_lengths[env_idx])
                 store.update(buf)
                 buf.clear()
                 self._added_eps_count += 1
+                # ggLog.info(f"training storage contains {self._storage.stored_episodes()} eps {self._storage.stored_frames()} frames")
+                # ggLog.info(f"validation storage contains {self._validation_storage.stored_episodes()} eps {self._validation_storage.stored_frames()} frames")
 
-        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
 
         # ggLog.info(f"{threading.get_ident()}: Added step, count = {self._addcount}, size = {self.size()}, val_size = {self.size(validation_set=True)}")
             
+    
+
+    def replay(self):
+        pos = self.pos if self.full else 0
+        ret_vsteps = 0
+        while ret_vsteps < self.size():
+            obs = {k:v[pos] for k,v in self.observations.items()}
+            next_obs = {k:v[pos] for k,v in self.next_observations.items()}
+            action = self.actions[pos]
+            reward = self.rewards[pos]
+            done = self.dones[pos]
+            truncated = self.truncated[pos]
+            yield (obs, next_obs, action, reward, done, truncated)
+            pos = (pos+1) % self.buffer_size
+
             
-    def stored_episodes(self, validation_set = False):
+    def collected_frames(self):
+        return self._collected_frames
+
+            
+    def stored_episodes(self, validation_set = False, training_set = True):
         if validation_set and not self._disable_validation_set:
             return self._validation_storage.stored_episodes()
-        else:
+        elif training_set:
             return self._storage.stored_episodes()
+        else:
+            return self._storage.stored_episodes()+self._validation_storage.stored_episodes()
     
-    def stored_frames(self, validation_set = False):
+    def stored_frames(self, validation_set = False, training_set = True):
         if validation_set and not self._disable_validation_set:
             return self._validation_storage.stored_frames()
-        else:
+        elif training_set:
             return self._storage.stored_frames()
+        else:
+            return self._storage.stored_frames()+self._validation_storage.stored_frames()
     
-    def size(self, validation_set = False):
-        return self.stored_frames(validation_set=validation_set)
+    def size(self, validation_set = False, training_set = True):
+        return self.stored_frames(validation_set=validation_set, training_set=training_set)
 
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None, validation_set : bool = False) -> DictReplayBufferSamples:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None, validation_set : bool = False) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
         :param batch_size: Number of element to sample
@@ -550,7 +603,7 @@ class ThDictEpReplayBuffer(ReplayBuffer):
         else:
             return self._storage.sample(batch_size, env, sample_duration)
 
-    def _get_samples(self, sampled_episodes, sampled_start_frames, env: Optional[VecNormalize] = None, sample_duration = 1) -> DictReplayBufferSamples:
+    def _get_samples(self, sampled_episodes, sampled_start_frames, env: Optional[VecNormalize] = None, sample_duration = 1) -> TransitionBatch:
         raise NotImplementedError()
 
 
@@ -563,9 +616,12 @@ class ThDictEpReplayBuffer(ReplayBuffer):
             self._storage.update(src_buffer._storage)
             self._validation_storage.update(src_buffer._validation_storage)
         else:
-            for trans in src_buffer.replay():
-                obs, next_obs, action, reward, done, truncated = trans
-                self.add(obs=obs, next_obs=next_obs, action=action, reward=reward, done=done,
-                         infos=None,
-                         truncateds=truncated)
+            raise NotImplementedError()
+            for (obs, next_obs, action, reward, terminated, truncated) in src_buffer.replay():
+                self.add(obs=obs,
+                         next_obs=next_obs,
+                         action=action,
+                         reward=reward,
+                         terminated=terminated,
+                         truncated=truncated)
 

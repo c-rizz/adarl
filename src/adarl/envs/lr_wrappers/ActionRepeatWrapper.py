@@ -33,7 +33,7 @@ class ActionRepeatWrapper(LrWrapper):
         self._previousState = self.env.getState()
         self._lastState = self.env.getState()
 
-    def computeReward(self, previousState, state, action, env_conf = None) -> float:
+    def computeReward(self, previousState, state, action, env_conf = None, sub_rewards = {}) -> float:
         if not (state is self._lastState and action is self._actionToDo and previousState is self._previousState):
             raise RuntimeError("ActionRepeatWrapper.computeReward is only valid if used for the last executed step. And it looks like you tried using it for something else.")
         return self._rewardSum

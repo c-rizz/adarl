@@ -24,7 +24,7 @@ from adarl.envs.ObsToDict import ObsToDict
 import torch as th
 import adarl.utils.session
 
-def build_hafcheetah(seed,logFolder) -> gym.Env:
+def build_hafcheetah(seed,log_folder) -> gym.Env:
 
     
     #logging.basicConfig(level=logging.DEBUG, format='[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y-%m-%d,%H:%M:%S')
@@ -40,7 +40,7 @@ def build_hafcheetah(seed,logFolder) -> gym.Env:
     lrenv = GymToLr(openaiGym_env=base_gym_env, stepSimDuration_sec=stepLength_sec)
     lrenv = ObsToDict(env=lrenv)
     gym_env = GymEnvWrapper(lrenv)
-    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=logFolder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
+    env = RecorderGymWrapper(env=gym_env, fps = 1/stepLength_sec, outFolder=log_folder+"/videos/RecorderGymWrapper", saveFrequency_ep=50)
     #setup seeds for reproducibility
     # env.seed(RANDOM_SEED)
     env.action_space.seed(seed)
@@ -62,7 +62,7 @@ def runFunction(seed, folderName, resumeModelFile, run_id, args):
     device = th.device("cuda:0")
     
     seed = 20200401
-    env = build_hafcheetah(seed = seed, logFolder=folderName)
+    env = build_hafcheetah(seed = seed, log_folder=folderName)
 
 
     n_actions = env.action_space.shape[-1]

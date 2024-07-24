@@ -107,7 +107,7 @@ def run_on_sigint_received(func) -> bool:
         if sigint_received or halt_string_received:
             did_halt = True
             func()
-            print("Resuming...")
+            print("...")
             sigint_received = False
             sigint_counter = 0
             shared_memory_list[0] = "resume"

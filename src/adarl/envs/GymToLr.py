@@ -14,9 +14,10 @@ import torch as th
 import adarl.utils.utils
 import gymnasium
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.tensor_trees import map_tensor_tree
+from adarl.utils.tensor_trees import map_tensor_tree, to_contiguous_tensor
 
 ObsType = TypeVar("ObsType")
+
 
 class GymToLr(BaseEnv, Generic[ObsType]):
 
@@ -66,8 +67,8 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         self._prev_observation = None #Observation before the last
         self._last_observation : ObsType = None
         self._last_reward = th.tensor(0.)
-        self._last_terminated = False
-        self._last_truncated = False
+        self._last_terminated = th.tensor(False)
+        self._last_truncated = th.tensor(False)
         self._last_info = {}
         self._last_action = self._openaiGym_env.action_space.sample()
         self._stepCount = 0
@@ -121,23 +122,27 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         # print(f"Step {self._stepCount}, memory usage = {psutil.Process(os.getpid()).memory_info().rss/1024} KB")
         act = self._actionToDo
         if self._actions_to_numpy and isinstance(act, th.Tensor):
+            if act.dim() == 0:
+                act = act.unsqueeze(0)
             act = act.cpu().numpy()
-        # ggLog.info(f"acting with {act}")
+        # ggLog.info(f"acting with {act} ({type(act)})")
         obs, rew, term, trunc, info = self._openaiGym_env.step(act)
-        # ggLog.info(f"gymtolr stepped, obs = {obs}")
+        # ggLog.info(f"gymtolr step {self._stepCount}, rew = {rew}, term = {term}, trunc = {trunc}, info = {info}, obs = {obs}")
         # convert  to dict obs and pytorch tensors
 
-        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        obs = map_tensor_tree(obs, to_contiguous_tensor)
         if self._copy_observations:
             obs = map_tensor_tree(obs, lambda t: t.detach().clone())
         self._last_observation = obs
         
+        if rew is None: # it happens with dmc2gymnasium when going beyond truncation
+            rew = 0.0
         # ggLog.info(f"gymtolr set last_obs to {self._last_observation}")
         self._last_reward = th.as_tensor(rew)
         self._last_action = th.as_tensor(self._actionToDo)
-        self._last_terminated = th.as_tensor(term)
-        self._last_truncated = th.as_tensor(trunc)
-        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
+        self._last_terminated = th.logical_or(self._last_terminated, th.as_tensor(term))
+        self._last_truncated = th.logical_or(self._last_truncated, th.as_tensor(trunc))
+        self._last_info = {k: to_contiguous_tensor(v) for k,v in info.items()}
 
     def performReset(self, options = {}) -> None:
         super().performReset()
@@ -153,12 +158,16 @@ class GymToLr(BaseEnv, Generic[ObsType]):
         # ggLog.info(f"gymtolr resetted, obs = {obs}")
         # if not isinstance(obs, Dict):
         #     obs = {"obs": obs}
-        obs = map_tensor_tree(obs, lambda v: th.as_tensor(v))
+        obs = map_tensor_tree(obs, to_contiguous_tensor)
         if self._copy_observations:
             obs = map_tensor_tree(obs, lambda t: t.detach().clone())
         self._last_observation = obs
+        self._last_reward = th.tensor(0.)
+        self._last_terminated = th.tensor(False)
+        self._last_truncated = th.tensor(False)
+        self._last_info = {}
         # ggLog.info(f"gymtolr reset last_obs to {self._last_observation}")
-        self._last_info = {k: th.as_tensor(v) if isinstance(v,(np.ndarray,th.Tensor)) else v for k,v in info.items()}
+        self._last_info = {k: to_contiguous_tensor(v) for k,v in info.items()}
 
 
 

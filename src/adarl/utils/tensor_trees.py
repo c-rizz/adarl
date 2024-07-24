@@ -43,8 +43,6 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : 
             fill_keys = dst_tree.keys()
         for k in fill_keys:
             fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1, nonstrict=nonstrict)
-        if depth == 0:
-            th.cuda.synchronize() # sync non-blocking copies
     elif isinstance(src_tree, th.Tensor):
         if not isinstance(dst_tree,th.Tensor):
             raise RuntimeError(f"Tree element type mismatch. src = {type(src_tree)}, dst = {dst_tree}")
@@ -116,7 +114,21 @@ def map2_tensor_tree(src_tree1 : TensorTree[U],
         return func(src_tree1, src_tree2)
 
 
-def flatten_tensor_tree(src_tree : TensorTree) -> dict:
+T = TypeVar('T')
+def flatten_tensor_tree(src_tree : TensorTree[T]) -> dict[tuple,T]:
+    """Flattens a tensor tree, returning a tensor tree with not subtrees, 
+    defined as a dictionary, with tuples as keys.
+
+    Parameters
+    ----------
+    src_tree : TensorTree
+        Tensor tree to ble flattened
+
+    Returns
+    -------
+    dict
+        _description_
+    """
     if isinstance(src_tree, tuple):
         src_tree = {f"T{i}":src_tree[i] for i in range(len(src_tree))}
     elif isinstance(src_tree, list):
@@ -124,8 +136,8 @@ def flatten_tensor_tree(src_tree : TensorTree) -> dict:
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
-            subdict = flatten_tensor_tree(src_tree[k])
-            for sk,sv in subdict.items():
+            flat_subtree = flatten_tensor_tree(src_tree[k])
+            for sk,sv in flat_subtree.items():
                 r[(k,)+sk] = sv
         return r
     else:
@@ -204,3 +216,20 @@ def sizetree_from_space(space : gym_spaces.Space):
         return space.shape
     else:
         raise NotImplemented(f"space {space} is not supported.")
+    
+def _is_all_leaf_finite(tensor : th.Tensor | np.ndarray):
+    if isinstance(tensor, th.Tensor):
+        return th.all(th.isfinite(tensor))
+    elif isinstance(tensor, np.ndarray):
+        return np.all(np.isfinite(tensor))
+    else:
+        raise NotImplementedError(f"Unsupported type {type(tensor)}")
+
+def is_all_finite(tree : TensorTree):
+    return all(flatten_tensor_tree(map_tensor_tree(tree, _is_all_leaf_finite)).values())
+
+
+def to_contiguous_tensor(value):
+    if isinstance(value, np.ndarray):
+        value = np.ascontiguousarray(value)
+    return th.as_tensor(value)

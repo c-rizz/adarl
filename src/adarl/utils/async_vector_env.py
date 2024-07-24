@@ -20,11 +20,14 @@ from gymnasium.error import (
 from gymnasium.vector.utils import concatenate, create_empty_array
 from gymnasium.vector.vector_env import VectorEnv
 from adarl.utils.shared_env_data import SharedEnvData, SimpleCommander, SharedData
-from adarl.utils.tensor_trees import space_from_tree, map_tensor_tree, stack_tensor_tree
+from adarl.utils.tensor_trees import space_from_tree, map_tensor_tree, stack_tensor_tree, to_contiguous_tensor
 import torch as th
 import adarl.utils.mp_helper as mp_helper
 import time
 import adarl.utils.dbg.ggLog as ggLog
+import os
+import setproctitle
+import cProfile
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -47,6 +50,11 @@ def _worker(
     env_idx : int,
     action_device = "numpy"
 ) -> None:
+    ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
+    setproctitle.setproctitle(mp.current_process().name)
+    # th.cuda.memory._record_memory_history()
+    # pr = cProfile.Profile()
+    # pr.enable()
     # Import here to avoid a circular import
     from stable_baselines3.common.env_util import is_wrapped
 
@@ -59,12 +67,14 @@ def _worker(
     reset_info["terminal_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     reset_info["real_next_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     # print(f"reset_info = {reset_info}")
-    info_space = space_from_tree(reset_info)
+    info_space = space_from_tree(map_tensor_tree(reset_info, to_contiguous_tensor))
     reset_info = None
     running = True
+    stepcount = 0
     while running:
         try:
             cmd = simple_commander.wait_command()
+            # ggLog.info(f"async_vector_env worker got cmd {cmd}")
             if cmd == b"step":
                 action = shared_env_data.wait_actions()[env_idx]
                 if action_device == "numpy":
@@ -122,7 +132,7 @@ def _worker(
                 if reset_info is not None:
                     reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
                 reset_observation = map_tensor_tree(reset_observation, func=lambda x: th.as_tensor(x))
-                # print(f"observation = {observation}")
+                # print(f"observation shape = {map_tensor_tree(observation, lambda t: t.size())}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           observation=observation,
                                           reward=reward,
@@ -133,6 +143,8 @@ def _worker(
                                           reset_info = reset_info,
                                           reset_observation = reset_observation)
                 reset_info = None
+                stepcount+=1
+                # th.cuda.memory._dump_snapshot(f"worker{env_idx}_step{stepcount}.pickle")
             elif cmd == b"reset":
                 data = remote.recv()
                 maybe_options = {"options": data[1]} if data[1] else {}
@@ -146,7 +158,8 @@ def _worker(
                 remote.close()
                 running = False
             elif cmd == b"get_spaces":
-                remote.send((env.observation_space, env.action_space, info_space))
+                spaces = (env.observation_space, env.action_space, info_space)
+                remote.send(spaces)
             elif cmd == b"env_method":
                 data = remote.recv()
                 method = getattr(env, data[0])
@@ -163,13 +176,18 @@ def _worker(
             elif cmd == b"set_data_struct":
                 data = remote.recv()
                 shared_env_data.set_data_struct(data)
+            elif cmd is None:
+                ggLog.info(f"async_vector_env: no command received")
             else:
-                pass
-                # print(f"`{cmd}` is not implemented in the worker"))
+                ggLog.warn(f"async_vector_env: `{cmd}` is not implemented in the worker")
             if cmd is not None:
                 simple_commander.mark_done()
         except EOFError:
             break
+    # pr.disable()
+    # ggLog.info(f"async_vector_env: worker {mp.current_process().name} terminating, pid = {os.getpid()}")
+    # if env_idx == 1:
+    #     pr.print_stats(sort='cumtime')
 
 class AsyncVectorEnvShmem(VectorEnv):
     """Vectorized environment that runs multiple environments in parallel.
@@ -222,7 +240,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
             args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, daemon=True)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=True)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()
@@ -649,10 +667,13 @@ class AsyncVectorEnvShmem(VectorEnv):
         obs_spaces = [None]*self.num_envs
         act_spaces = [None]*self.num_envs
         info_spaces = [None]*self.num_envs
-        self._simple_commander.wait_done()
         for i in range(len(self.remotes)):
+            # ggLog.info(f"Waiting spaces")
             obs_spaces[i], act_spaces[i], info_spaces[i] = self.remotes[i].recv()
+            # ggLog.info(f"got spaces")
+        self._simple_commander.wait_done()
         return obs_spaces, act_spaces, info_spaces
+    
     def _check_spaces(self):
         self._assert_is_running()
         spaces = (self.single_observation_space, self.single_action_space)

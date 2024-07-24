@@ -12,7 +12,7 @@ from typing import Callable, Optional, Any
 import h5py
 import lzma
 import pickle
-from adarl.utils.tensor_trees import flatten_tensor_tree
+from adarl.utils.tensor_trees import flatten_tensor_tree, map_tensor_tree, stack_tensor_tree
 import torch as th
 import adarl.utils.tensor_trees as tt
 
@@ -59,9 +59,9 @@ class RecorderGymWrapper(gym.Wrapper):
                 onlykey = next(iter(env.observation_space.spaces.keys()))
                 if isinstance(env.observation_space.spaces[onlykey], gym.spaces.Box):
                     self._vec_obs_key = onlykey
-            else:
-                raise RuntimeError(f"No vec_obs_key was provided and the observation space is"
-                                   f" a dict of more than 1 element. (env.observation_space = {env.observation_space})")
+            # else:
+            #     raise RuntimeError(f"No vec_obs_key was provided and the observation space is"
+            #                        f" a dict of more than 1 element. (env.observation_space = {env.observation_space})")
 
         self._overlay_text_func = overlay_text_func
         self._overlay_text_xy = overlay_text_xy
@@ -82,10 +82,13 @@ class RecorderGymWrapper(gym.Wrapper):
                 self._frameBuffer.append(img)
             else:
                 self._frameBuffer.append(None)
+            
             if self._vec_obs_key is not None:
-                vecobs = np.array(obs[self._vec_obs_key])
+                vecobs = obs[self._vec_obs_key]
             else:
-                vecobs = flatten_tensor_tree(obs)
+                vecobs = obs
+            vecobs = flatten_tensor_tree(obs)
+            vecobs = map_tensor_tree(vecobs, lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
             if isinstance(action, th.Tensor):
                 action = action.cpu()
             action = np.array(action)
@@ -169,7 +172,7 @@ class RecorderGymWrapper(gym.Wrapper):
         with lzma.open(pkl_filename, "wb") as f:
             pickle.dump(infobuffer, f)
 
-        infos = [tt.map_tensor_tree(i,th.as_tensor) for i in self._infoBuffer]
+        infos = tt.map_tensor_tree(self._infoBuffer, lambda t: th.as_tensor(t).detach().cpu())
         infos = tt.stack_tensor_tree(infos)
         infos = tt.flatten_tensor_tree(infos)
 
@@ -182,20 +185,26 @@ class RecorderGymWrapper(gym.Wrapper):
         out_filename += ".hdf5"
         # ggLog.info(f"writing buffer {vecbuffer}")
         with h5py.File(out_filename, "w") as f:
+            # loop through obs, action, reward, terminated, truncation
             for k,v in vecbuffer.items():
                 # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
-                if isinstance(v,dict):
-                    for sk,sv in vecbuffer.items():
+                try:
+                    # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
+                    v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
+                    v = stack_tensor_tree(src_trees=v)
+                    v = flatten_tensor_tree(v) # flatten in case we have complex observations
+                    for sk,sv in v.items():
                         f.create_dataset(f"{k}.{sk}", data=sv)
-                else:
-                    f.create_dataset(k, data=v)
+                except TypeError as e:
+                    raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={e}")
 
 
     def _saveLastEpisode(self, filename : str):
-        self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
-        if not self._only_video:
-            self._write_vecbuffer(filename,self._vecBuffer)
-            self._write_infobuffer(filename+"_info",self._infoBuffer)
+        if len(self._frameBuffer) > 1:
+            self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
+            if not self._only_video:
+                self._write_vecbuffer(filename,self._vecBuffer)
+                self._write_infobuffer(filename+"_info",self._infoBuffer)
 
         
         
@@ -254,9 +263,11 @@ class RecorderGymWrapper(gym.Wrapper):
         self._infoBuffer = []
 
         if self._vec_obs_key is not None:
-            vecobs = np.array(obs[self._vec_obs_key])
+            vecobs = obs[self._vec_obs_key]
         else:
-            vecobs = flatten_tensor_tree(obs)
+            vecobs = obs
+        vecobs = flatten_tensor_tree(obs)
+        vecobs = map_tensor_tree(vecobs, lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
         self._update_vecbuffer(vecobs, None, None, None, None)
         self._infoBuffer.append(info)
         

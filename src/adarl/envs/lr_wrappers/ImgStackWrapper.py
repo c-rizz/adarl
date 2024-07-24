@@ -69,12 +69,16 @@ class ImgStackWrapper(LrWrapper):
         if action_repeat == -1:
             self._action_repeat = self._frame_stacking_size
         else:
+            if action_repeat < frame_stacking_size:
+                raise AttributeError(f"action _repeat ({action_repeat}) cannot be smaller than frame_stackign_size ({frame_stacking_size})")
             self._action_repeat = action_repeat
         self._last_states = deque(maxlen=self._action_repeat)
 
         self.state_space = spaces.gym_spaces.Tuple([self.env.state_space]*self._action_repeat)
         # print("observation_space =", self.observation_space)
         # print("observation_space.dtype =", self.observation_space.dtype)
+        if self.env.get_max_episode_steps() % self._action_repeat != 0:
+            ggLog.warn(f"ImgStackWrapper: max episode duration ({self.env.get_max_episode_steps()}) is not a multiple of action_repeat ({self._action_repeat})")
 
     def _preproc_frame(self, img):
         # ggLog.info(f"preproc input shape = {img.shape}")
