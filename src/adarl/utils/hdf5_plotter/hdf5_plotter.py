@@ -24,12 +24,10 @@ def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
     if len(data.shape)==1:
         data = np.expand_dims(data,1)
     series_num = data.shape[1]
-    print(f"got labels {labels}")
     if labels is None:
         labels = [f"{i}" for i in range(series_num)]
         if len(labels)==1:
             labels = labels[0]
-    print(f"using labels {labels}")
     ax.plot(data, label=labels)
     legend = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     if gui:
@@ -103,6 +101,10 @@ def cmd_plot(file, current_path, *args, **kwargs):
         print(f"Found {len(labels)} labels {labels}")
         if columns is not None:
             labels = [labels[i] for i in columns]
+        else:
+            columns = list(range(col_num))
+        n = "\n"
+        print(f"using labels {n.join([f'{i} : {l}' for i,l in zip(columns,labels)])}")
     else:
         labels = columns
     plot(data, labels=labels, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))

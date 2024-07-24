@@ -713,7 +713,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
 
-    def build_scenario(self, file_path, format = "urdf"):
+    def build_scenario(self, file_path = None, format = "urdf"):
         if self._debug_gui:
             self._client_id = pybullet.connect(pybullet.GUI)
             pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 1)
