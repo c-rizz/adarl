@@ -214,13 +214,14 @@ class RecorderGymWrapper(gym.Wrapper):
         if img_hwc.dtype == np.float32:
             img_hwc = (img_hwc*255).astype(dtype=np.uint8, copy=False)
 
+        if len(img_hwc.shape) not in [2,3] or img_hwc.shape[2] not in [1,3] or img_hwc.dtype != np.uint8:
+            raise RuntimeError(f"Unsupported image format, dtpye={img_hwc.dtype}, shape={img_hwc.shape}")
+        
         if len(img_hwc.shape) == 2:
             img_hwc = np.expand_dims(img_hwc,axis=2)
         if img_hwc.shape[2] == 1:
             img_hwc = np.repeat(img_hwc,3,axis=2)
         
-        if img_hwc.shape[2] != 3 or img_hwc.dtype != np.uint8:
-            raise RuntimeError(f"Unsupported image format, dtpye={img_hwc.dtype}, shape={img_hwc.shape}")
         # ggLog.info(f"Preproc frame shape = {img_whc.shape}")
 
         if img_hwc.shape[1]<256:

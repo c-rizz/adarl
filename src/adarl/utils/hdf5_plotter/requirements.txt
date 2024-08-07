@@ -1,8 +1,4 @@
-contourpy==1.2.1
-cycler==0.12.1
-fonttools==4.51.0
 h5py==3.11.0
-kiwisolver==1.4.5
 matplotlib==3.9.0
 numpy==1.26.4
 packaging==24.0
@@ -11,3 +7,4 @@ pyparsing==3.1.2
 python-dateutil==2.9.0.post0
 six==1.16.0
 seaborn
+PyQt5

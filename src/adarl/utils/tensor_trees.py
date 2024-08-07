@@ -12,7 +12,7 @@ TensorTree = Union[Dict[Any,"TensorTree[LeafType]"],
                    Tuple["TensorTree[LeafType]", ...],
                    LeafType]
 
-def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
+def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> TensorTree[th.Tensor]:
     if isinstance(space, gym_spaces.Dict):
         tree = {}
         for k, s in space.spaces.items():

@@ -199,7 +199,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         # Body names are the names used by pybullet, I think they just come from the URDF, they can be the same for different bodies
         self._modelName_to_bodyId : Dict[str,int] = {"0":0} 
         self._bodyId_to_modelName : Dict[int,str]= {0:"0"}
-        self._cameras = {}
+        self._cameras : dict[str,BulletCamera] = {}
         self._commanded_torques_by_body = {}
         self._commanded_torques_by_name = {}
         self._commanded_velocities_by_body : Dict[int, Tuple[List[int], List[float]]] = {}
@@ -388,8 +388,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             camera = self._cameras[cam_name]
             linkstate = self.getLinksState([camera.link_name], use_com_frame=True)[camera.link_name]
             camera.set_pose(linkstate.pose)
-            camera.setup_light(
-                                lightDirection = self._lightDirection,
+            camera.setup_light( lightDirection = self._lightDirection,
                                 lightColor = self._lightColor,
                                 lightDistance = self._lightDistance,
                                 enable_shadows = self._enable_shadows,

@@ -66,14 +66,14 @@ def _worker(
                     reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
                 # print(f"observation['vec'].size() = {observation['vec'].size()}")
                 shared_env_data.fill_data(env_idx = env_idx,
-                                          observation=observation,
+                                          consequent_observation=observation,
                                           reward=reward,
                                           action=action,
                                           terminated=terminated,
                                           truncated=truncated,
-                                          info = info,
-                                          reset_info = reset_info,
-                                          reset_observation = reset_observation)
+                                          consequent_info = info,
+                                          next_start_info = reset_info,
+                                          next_start_observation = reset_observation)
                 reset_info = None
             elif cmd == b"reset":
                 data = remote.recv()

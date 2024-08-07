@@ -4,7 +4,7 @@ import numpy as np
 import os
 import torch as th
 from adarl.utils.buffers import BasicStorage
-from adarl.utils.utils import evaluatePolicy
+from adarl.utils.utils import evaluatePolicyVec
 from adarl.utils.tensor_trees import stack_tensor_tree, unstack_tensor_tree, map_tensor_tree
 import adarl.utils.dbg.ggLog as ggLog
 import time
@@ -61,7 +61,8 @@ class EvalCallback(TrainingCallback):
         deterministic: bool = True,
         verbose: int = 1
     ):
-        if not isinstance(eval_env, gym.Env):
+        if not isinstance(eval_env, gym.vector.VectorEnv):
+            eval_env = gym.vector.SyncVectorEnv([lambda: eval_env], copy = False)
             raise NotImplementedError(f"eval_env can only be a gym.Env for now")
         self.n_eval_episodes = n_eval_episodes
         self.eval_freq_ep = eval_freq_ep
@@ -107,9 +108,10 @@ class EvalCallback(TrainingCallback):
                 #     return action, hidden_state
                 
 
-                results = evaluatePolicy(self.eval_env,
+                results = evaluatePolicyVec(self.eval_env,
                                             model = self._model,
-                                            episodes=self.n_eval_episodes)
+                                            episodes=self.n_eval_episodes,
+                                            deterministic=self.deterministic)
                 mean_reward = results["reward_mean"]
                 std_reward = results["reward_std"]
                 mean_ep_length = results["steps_mean"]

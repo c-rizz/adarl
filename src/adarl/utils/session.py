@@ -238,6 +238,10 @@ class Session():
     def is_wandb_enabled(self):
         return self._is_wandb_enabled
 
+def set_current_session(session : Session):
+    global default_session
+    default_session = session
+    default_session.reapply_globals()
 
 class NoDaemonProcess(multiprocessing.Process):
     @property

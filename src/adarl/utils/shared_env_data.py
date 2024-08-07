@@ -6,7 +6,7 @@ from adarl.utils.utils import numpy_to_torch_dtype_dict, torch_to_numpy_dtype_di
 import ctypes
 from typing import Optional, Any, Tuple, Dict
 import numpy as np
-from adarl.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree
+from adarl.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree, TensorTree
 import adarl.utils.mp_helper as mp_helper
 
 class SimpleCommander():
@@ -71,25 +71,25 @@ class SharedData():
         self._info_space = info_space
         self._n_envs = n_envs
         self._device = device
-        self._obss = None
-        self._acts = None
-        self._infos : Dict[Any,th.Tensor] = None
-        self._reset_infos : Dict[Any,th.Tensor] = None
-        self._reset_obss = None
-        self._terms : th.Tensor = None
-        self._truncs : th.Tensor = None
-        self._rews : th.Tensor = None
+        # self._consequent_observations = None
+        # self._actions = None
+        # self._consequent_infos : Dict[Any,th.Tensor] = None
+        # self._next_start_infos : Dict[Any,th.Tensor] = None
+        # self._next_start_observations = None
+        # self._terminations : th.Tensor = None
+        # self._truncations : th.Tensor = None
+        # self._rewards : th.Tensor = None
         self.build_data()
 
     def build_data(self):
-        self._obss = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
-        self._acts = create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
-        self._infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
-        self._reset_infos : Dict[Any,th.Tensor] = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
-        self._reset_obss = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
-        self._terms : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
-        self._truncs : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
-        self._rews : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.float32).share_memory_()
+        self._consequent_observations = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
+        self._actions = create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
+        self._consequent_infos = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._next_start_infos = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._next_start_observations = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
+        self._terminations : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
+        self._truncations : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
+        self._rewards : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.float32).share_memory_()
 
 
 
@@ -115,19 +115,27 @@ class SharedEnvData():
     def set_data_struct(self, shared_data : SharedData):
         self._shared_data = shared_data
 
-    def fill_data(self, env_idx, observation, action, terminated, truncated, reward, info, reset_info, reset_observation):
-        if observation is not None:
+    def fill_data(self, env_idx,
+                        next_start_info,
+                        next_start_observation,
+                        action,
+                        terminated,
+                        truncated,
+                        reward,
+                        consequent_observation,
+                        consequent_info):
+        if consequent_observation is not None:
             # print("writing rew")
-            self._shared_data._rews[env_idx].copy_(reward, non_blocking=True)
+            self._shared_data._rewards[env_idx].copy_(reward, non_blocking=True)
             # print("wrote rew")
-            self._shared_data._terms[env_idx].copy_(terminated, non_blocking=True)
-            self._shared_data._truncs[env_idx].copy_(truncated, non_blocking=True)
-            fill_tensor_tree(env_idx, observation, self._shared_data._obss)
-            fill_tensor_tree(env_idx, action, self._shared_data._acts)
-            fill_tensor_tree(env_idx, info, self._shared_data._infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
-        if reset_info is not None:
-            fill_tensor_tree(env_idx, reset_observation, self._shared_data._reset_obss)
-            fill_tensor_tree(env_idx, reset_info, self._shared_data._reset_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
+            self._shared_data._terminations[env_idx].copy_(terminated, non_blocking=True)
+            self._shared_data._truncations[env_idx].copy_(truncated, non_blocking=True)
+            fill_tensor_tree(env_idx, consequent_observation, self._shared_data._consequent_observations)
+            fill_tensor_tree(env_idx, action, self._shared_data._actions)
+            fill_tensor_tree(env_idx, consequent_info, self._shared_data._consequent_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
+        if next_start_info is not None:
+            fill_tensor_tree(env_idx, next_start_observation, self._shared_data._next_start_observations)
+            fill_tensor_tree(env_idx, next_start_info, self._shared_data._next_start_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
         if self._shared_data._device.type == "cuda":
             th.cuda.synchronize()
         with self._n_envs_stepping_cond: # decrease number of envs to wait for
@@ -138,7 +146,7 @@ class SharedEnvData():
     def fill_actions(self, action_batch):
         if not isinstance(action_batch, th.Tensor):
             action_batch = th.as_tensor(action_batch, device=self._shared_data._device)
-        fill_tensor_tree(None, action_batch, self._shared_data._acts)
+        fill_tensor_tree(None, action_batch, self._shared_data._actions)
         with self._actions_filled_cond: # mark actions as available
             self._actions_filled.value = self._n_envs
             self._actions_filled_cond.notify_all()
@@ -155,28 +163,28 @@ class SharedEnvData():
             self._actions_filled_cond.notify_all()
         if not got_actions:
             raise RuntimeError(f"SharedEnvData wait timed out waiting for actions")
-        ret =  self._shared_data._acts
+        ret =  self._shared_data._actions
         return ret
 
 
-    def wait_data(self) -> Tuple[th.Tensor | Dict[Any, th.Tensor],
+    def wait_data(self) -> Tuple[TensorTree[th.Tensor],
                                 th.Tensor,
                                 th.Tensor,
                                 th.Tensor,
-                                Dict[Any, th.Tensor],
-                                th.Tensor | Dict[Any, th.Tensor],
-                                Dict[Any, th.Tensor]]:
+                                TensorTree[th.Tensor],
+                                TensorTree[th.Tensor],
+                                TensorTree[th.Tensor]]:
         with self._n_envs_stepping_cond:
             didnt_timeout = self._n_envs_stepping_cond.wait_for(lambda: self._n_envs_stepping.value<=0, timeout=self._timeout_s)
         if not didnt_timeout:
             raise RuntimeError(f"SharedEnvData wait timed out waiting for steps")
-        return (self._shared_data._obss,
-                self._shared_data._rews,
-                self._shared_data._terms,
-                self._shared_data._truncs,
-                self._shared_data._infos,
-                self._shared_data._reset_obss,
-                self._shared_data._reset_infos)
+        return (self._shared_data._consequent_observations,
+                self._shared_data._rewards,
+                self._shared_data._terminations,
+                self._shared_data._truncations,
+                self._shared_data._consequent_infos,
+                self._shared_data._next_start_observations,
+                self._shared_data._next_start_infos)
 
 
 
@@ -208,24 +216,24 @@ def example_worker_func(sh : SharedEnvData, sc, worker_id, receiver):
             with th.no_grad():
                 act = sh.wait_actions().detach().clone()
             sh.fill_data(   env_idx = 0,
-                            observation={"obs": th.tensor([0.1,0.1])},
+                            consequent_observation={"obs": th.tensor([0.1,0.1])},
                             action = th.tensor([0.01,0.01]),
                             terminated = True,
                             truncated = True,
                             reward = 4,
-                            info = {"boh":th.tensor([i,i])},
-                            reset_info=None,
-                            reset_observation=None)
+                            consequent_info = {"boh":th.tensor([i,i])},
+                            next_start_info=None,
+                            next_start_observation=None)
         elif cmd == b"reset":
             sh.fill_data(   env_idx = 0,
-                            observation=None,
+                            consequent_observation=None,
                             action = None,
                             terminated = None,
                             truncated = None,
                             reward = None,
-                            info = None,
-                            reset_info={"boh":th.tensor([1,1])},
-                            reset_observation={"obs": th.tensor([1,1])})
+                            consequent_info = None,
+                            next_start_info={"boh":th.tensor([1,1])},
+                            next_start_observation={"obs": th.tensor([1,1])})
         elif cmd == b"close":
             running = False
         elif cmd == b"set_backend_data":

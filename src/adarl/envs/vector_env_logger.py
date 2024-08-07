@@ -5,6 +5,7 @@ import torch as th
 from typing import Any, SupportsFloat, Tuple, Dict
 import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.tensor_trees import unstack_tensor_tree
+import copy
 
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
@@ -14,7 +15,8 @@ class VectorEnvLogger(
     def __init__(
         self,
         env: gym.vector.VectorEnv,
-        use_wandb : bool = True
+        use_wandb : bool = True,
+        logs_id : str | None = None
     ):
         """Initializes the :class:`TimeLimit` wrapper with an environment and the number of steps after which truncation will occur.
 
@@ -28,6 +30,7 @@ class VectorEnvLogger(
         self._use_wandb = use_wandb
         self._logs_batch = {}
         self._logs_batch_size = 0
+        self._logs_id = logs_id+"/" if logs_id is not None else ""
 
 
     def step(
@@ -50,7 +53,7 @@ class VectorEnvLogger(
             for i in range(len(terminated)):
                 if terminated[i] or truncated[i]:
                     self._tot_ep_count += 1
-                    info = info_list[i]
+                    info = info_list[i]["final_info"]
                     logs = {}
                     for k,v in info.items():
                         k = "VecEnvLogger/lastinfo."+k
@@ -63,6 +66,7 @@ class VectorEnvLogger(
                                 v = int(v)
                             logs[k] = v
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
+                    logs = copy.deepcopy(logs) # avoid issues with references (yes, it does happen)
                     for k in logs.keys():
                         if k not in self._logs_batch:
                             self._logs_batch[k] = []
@@ -71,7 +75,6 @@ class VectorEnvLogger(
             if self._logs_batch_size >= self.num_envs:
                 new_elems = {}
                 for k,v in self._logs_batch.items():
-                    # ggLog.info(f"k = {k}")
                     if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating, th.Tensor)):
                         self._logs_batch[k] = sum(v)/len(v)
                         if isinstance(v[0],(int, float, bool, np.integer, np.floating)) or v[0].numel()==1:  # only if v has just on element
@@ -79,13 +82,13 @@ class VectorEnvLogger(
                             new_elems[k.replace("VecEnvLogger/","VecEnvLogger/min.")] = min(v)
                 self._logs_batch.update(new_elems)
                 wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
+                wdblog = {self._logs_id+k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
                 # ggLog.info(f"wdblog = {wdblog}")
                 wandb_log(wdblog)
-                ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
+                ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
                            f" r={self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}"+
                            f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"+
                            f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
-
         return observation, reward, terminated, truncated, infos

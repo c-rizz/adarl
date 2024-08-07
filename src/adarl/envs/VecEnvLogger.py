@@ -7,7 +7,9 @@ import adarl.utils.dbg.ggLog as ggLog
 
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn, VecEnvWrapper
 import torch as th
+from deprecated import deprecated
 
+@deprecated(reason="Use VectorEnvLogger, which is gymnasium-based")
 class VecEnvLogger(VecEnvWrapper):
     """
     A vectorized monitor wrapper for *vectorized* Gym environments,

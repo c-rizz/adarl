@@ -160,6 +160,17 @@ def quaternionDistance(q1 : quaternion.quaternion ,q2 : quaternion.quaternion ):
 def buildQuaternion(x,y,z,w):
     return quaternion.quaternion(w,x,y,z)
 
+def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
+    if isinstance(rotmat, th.Tensor):
+        rotmat_np = rotmat.cpu().numpy()
+    else:
+        rotmat_np = rotmat
+    quat_xyzw = quaternion.as_float_array(quaternion.from_rotation_matrix(rotmat_np))[...,[1,2,3,0]]
+    if isinstance(rotmat, th.Tensor):
+        return rotmat.new(quat_xyzw)
+    else:
+        return quat_xyzw
+
 from dataclasses import dataclass
 
 @dataclass

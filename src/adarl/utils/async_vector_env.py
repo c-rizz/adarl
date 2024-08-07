@@ -28,6 +28,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import os
 import setproctitle
 import cProfile
+from adarl.utils.tensor_trees import TensorTree
 
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
@@ -48,8 +49,12 @@ def _worker(
     simple_commander : SimpleCommander,
     shared_env_data : SharedEnvData,
     env_idx : int,
-    action_device = "numpy"
+    action_device = "numpy",
+    worker_init_fn = None,
+    worker_init_kwargs = {}
 ) -> None:
+    if worker_init_fn is not None:
+        worker_init_fn(**worker_init_kwargs)
     ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
     setproctitle.setproctitle(mp.current_process().name)
     # th.cuda.memory._record_memory_history()
@@ -61,14 +66,14 @@ def _worker(
     parent_remote.close()
     # env = _patch_env(env_fn_wrapper.var())
     env = cloudpickle.loads(cloudpickle_func)()
-    reset_observation = {}
-    observation, reset_info = env.reset()
-    reset_info["final_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
-    reset_info["terminal_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
-    reset_info["real_next_observation"] = observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+    next_start_observation, next_start_info = env.reset()
+    consequent_observation, consequent_info = next_start_observation, next_start_info
+    # next_start_info["final_observation"] = consequent_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+    # next_start_info["terminal_observation"] = consequent_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+    # next_start_info["real_next_observation"] = consequent_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
     # print(f"reset_info = {reset_info}")
-    info_space = space_from_tree(map_tensor_tree(reset_info, to_contiguous_tensor))
-    reset_info = None
+    info_space = space_from_tree(map_tensor_tree(next_start_info, to_contiguous_tensor))
+    next_start_info = None
     running = True
     stepcount = 0
     while running:
@@ -84,37 +89,43 @@ def _worker(
                         action = np.array(action)
                 elif isinstance(action_device, th.device):
                     action = th.as_tensor(action, device = action_device)
-                observation, reward, terminated, truncated, info = env.step(action)
+                consequent_observation, reward, terminated, truncated, consequent_info = env.step(action)
                 # convert to SB3 VecEnv api
                 done = terminated or truncated
                 # info = {}
-                info["TimeLimit.truncated"] = truncated and not terminated # used by SB3 VecEnv specification
+                consequent_info["TimeLimit.truncated"] = truncated and not terminated # used by SB3 VecEnv specification
+                    
                 # When there is a reset the experience collector will need to receive both:
-                # - The "real_next_observation" observation, which is the consequence of the action
-                # - The "reset_observation" observation, which is after the reset, the first of
+                # - The "consequent_observation" observation, which is the consequence of the action
+                # - The "next_start_observation" observation, which is after the reset, the first of
                 #   the new episode.
-                # To do so the reset_observation is returned in the "observation" element of the 
-                # step() return, the "real_next_observation" is returned in the info element of
-                # the step() return. Gymnasium's vector_env puts the real_next_observation in at
-                # "final_observation" key, stable_baselines VecEnv put it at the "terminal_observation"
-                # key.
-                # Actually, I think it makes sense to always distinguish between the real_next_observation
-                # and the next step's input observation. As such, I follow the logic of always returning
-                # the next step's input observation in the return of step(), and the real_next_observation
-                # in the info.
-                # In the info I will put the real_next_observation at all the possible keys: "real_next_observation",
-                # "final_observation" and "terminal_observation". I believe copy.deepcopy() is going to be
-                # smart about it and not copy it multiple times.
-                info["final_observation"] = observation # We always put the newest observation in info, even if not resetting
-                info["terminal_observation"] = observation # We always put the newest observation in info, even if not resetting
-                info["real_next_observation"] = observation # this is the actual next_observation, the one that is a consequence of action
+                # Same applies to the info, there is the one consequence of the action and the one of the next
+                # transition, which may come from the reset or be the same of the consequential one.
+                # To keep everything clear I always return both the consequential and next input observations
+                # and infos, even when there is no reset. If there is no reset the will simply be the same thing.
+                # So I will return:
+                # - consequent_observation
+                # - next_start_observation
+                # - consequent_info
+                # - next_start_info
+                # This will then be transplated to gymnasium conventions on the server side.
+                
                 if done:
                     # save final observation where user can get it, then reset
-                    reset_observation, reset_info = env.reset()
-                    observation = reset_observation # To follow VecEnv's behaviour
-                    reset_info["final_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
-                    reset_info["terminal_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
-                    reset_info["real_next_observation"] = reset_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    next_start_observation, next_start_info = env.reset()
+                    # reset_info["final_info"] = reset_info  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    # next_start_info["final_observation"] = next_start_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    # next_start_info["terminal_observation"] = next_start_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                    # next_start_info["real_next_observation"] = next_start_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
+                else:
+                    next_start_observation = consequent_observation
+                    next_start_info = consequent_info
+
+                # consequent_info["final_observation"] = consequent_observation # We always put the newest observation in info, even if not resetting
+                # consequent_info["terminal_observation"] = consequent_observation # We always put the newest observation in info, even if not resetting
+                # consequent_info["real_next_observation"] = consequent_observation # this is the actual next_observation, the one that is a consequence of action
+                # info["final_info"] = info # We always put the newest observation in info, even if not resetting
+                
                 # As a result now we have:
                 # - observation contains the newest observation (either the action's consequence or the first of a new episode)
                 # - info contains the observation that is consequence of the action (the same obs at the 3 different keys)
@@ -123,34 +134,35 @@ def _worker(
                 # In any case (i.e. truncated, terminated, both, neither) the real next observation is the one in info
                 # then the algorithm will not consider reward propagation if termination==True (it instead has to
                 # consider reward propagation if termination==False and truncation==True)
-                observation = map_tensor_tree(observation, func=lambda x: th.as_tensor(x))
+                consequent_observation = map_tensor_tree(consequent_observation, func=lambda x: th.as_tensor(x))
+                if next_start_observation is not consequent_observation:
+                    next_start_observation = map_tensor_tree(next_start_observation, func=lambda x: th.as_tensor(x))
                 reward = map_tensor_tree(reward, func=lambda x: th.as_tensor(x))
                 action = map_tensor_tree(action, func=lambda x: th.as_tensor(x))
                 terminated = map_tensor_tree(terminated, func=lambda x: th.as_tensor(x))
                 truncated = map_tensor_tree(truncated, func=lambda x: th.as_tensor(x))
-                info = map_tensor_tree(info, func=lambda x: th.as_tensor(x))
-                if reset_info is not None:
-                    reset_info = map_tensor_tree(reset_info, func=lambda x: th.as_tensor(x))
-                reset_observation = map_tensor_tree(reset_observation, func=lambda x: th.as_tensor(x))
+                consequent_info = map_tensor_tree(consequent_info, func=lambda x: th.as_tensor(x))
+                if next_start_info is not consequent_info:
+                    next_start_info = map_tensor_tree(next_start_info, func=lambda x: th.as_tensor(x))
                 # print(f"observation shape = {map_tensor_tree(observation, lambda t: t.size())}")
                 shared_env_data.fill_data(env_idx = env_idx,
-                                          observation=observation,
-                                          reward=reward,
+                                          next_start_info = next_start_info,
+                                          next_start_observation = next_start_observation,
                                           action=action,
+                                          reward=reward,
                                           terminated=terminated,
                                           truncated=truncated,
-                                          info = info,
-                                          reset_info = reset_info,
-                                          reset_observation = reset_observation)
-                reset_info = None
+                                          consequent_observation=consequent_observation,
+                                          consequent_info = consequent_info)
+                next_start_info = None
                 stepcount+=1
                 # th.cuda.memory._dump_snapshot(f"worker{env_idx}_step{stepcount}.pickle")
             elif cmd == b"reset":
                 data = remote.recv()
                 maybe_options = {"options": data[1]} if data[1] else {}
-                reset_observation, reset_info = env.reset(seed=data[0], **maybe_options)
-                remote.send((reset_observation, reset_info))
-                reset_info = None
+                next_start_observation, next_start_info = env.reset(seed=data[0], **maybe_options)
+                remote.send((next_start_observation, next_start_info))
+                next_start_info = None
             elif cmd == b"render":
                 remote.send(env.render())
             elif cmd == b"close":
@@ -177,7 +189,7 @@ def _worker(
                 data = remote.recv()
                 shared_env_data.set_data_struct(data)
             elif cmd is None:
-                ggLog.info(f"async_vector_env: no command received")
+                ggLog.debug(f"async_vector_env: no command received")
             else:
                 ggLog.warn(f"async_vector_env: `{cmd}` is not implemented in the worker")
             if cmd is not None:
@@ -203,7 +215,9 @@ class AsyncVectorEnvShmem(VectorEnv):
         purely_numpy = False,
         shared_mem_device = th.device("cpu"),
         env_action_device = "numpy",
-        copy_data = False
+        copy_data = False,
+        worker_init_fn = None,
+        worker_init_kwargs = {}
     ):
         """Vectorized environment that runs multiple environments in parallel.
 
@@ -238,7 +252,8 @@ class AsyncVectorEnvShmem(VectorEnv):
         self.processes = []
         for i in range(self.num_envs):
             work_remote, remote, env_fn = self.work_remotes[i], self.remotes[i], env_fns[i]
-            args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device)
+            args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device,
+                    worker_init_fn, worker_init_kwargs)
             # daemon=True: if the main process crashes, we should not cause things to hang
             process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=True)  # type: ignore[attr-defined]
             process.start()
@@ -436,7 +451,8 @@ class AsyncVectorEnvShmem(VectorEnv):
 
     def step_wait(
         self, timeout: int | float | None = None
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+    ) -> (Tuple[TensorTree[np.ndarray], np.ndarray, np.ndarray, np.ndarray, TensorTree[np.ndarray]] | 
+          Tuple[TensorTree[th.Tensor],  th.Tensor,  th.Tensor,  th.Tensor,  TensorTree[th.Tensor]]):
         """Wait for the calls to :obj:`step` in each sub-environment to finish.
 
         Args:
@@ -467,10 +483,13 @@ class AsyncVectorEnvShmem(VectorEnv):
         t2_step = time.monotonic()
         if self._copy_data:
             data = copy.deepcopy(data)
-        observations, rewards, terminateds, truncateds, infos, reset_obss, reset_infos = data
+        # observations, rewards, terminateds, truncateds, infos, reset_obss, reset_infos = data
+        consequent_observations, rewards, terminations, truncations, consequent_infos, next_start_observations, next_start_infos = data
         t3_step = time.monotonic()
         # self.reset_infos = reset_infos
         
+        next_start_infos["final_observation"] = consequent_observations
+        next_start_infos["final_info"] = consequent_infos
         # obss = unstack_tensor_tree(obss)
         # self.observations = concatenate(
         #     self.single_observation_space,
@@ -478,11 +497,16 @@ class AsyncVectorEnvShmem(VectorEnv):
         #     self.observations,
         # )
         # infos = unstack_tensor_tree(infos)
+        ret = (
+            next_start_observations,
+            rewards,
+            terminations,
+            truncations,
+            next_start_infos
+        )
         if self._purely_numpy:
-            observations = map_tensor_tree(observations, func=lambda x: np.array(x))
-            rewards = np.array(rewards),
-            terminateds = np.array(terminateds, dtype=np.bool_)
-            truncateds = np.array(truncateds, dtype=np.bool_)
+            ret_np : Tuple[TensorTree[np.ndarray], np.ndarray, np.ndarray, np.ndarray, TensorTree[np.ndarray]] = map_tensor_tree(ret, func=lambda x: np.array(x))
+            ret = ret_np
         # self.observations = observations # it is already a stacked observation
         
         # return _flatten_obs(obss, self.observation_space), np.stack(rews), np.stack(dones), infos  # type: ignore[return-value]
@@ -493,13 +517,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         # ggLog.info(f"collection: {t1_step-self._t0_step} {t2_step-t1_step} {t3_step-t2_step} {tf_step-t3_step}")
 
 
-        return (
-            observations,
-            rewards,
-            terminateds,
-            truncateds,
-            infos,
-        )
+        return ret
 
     def call(self, name: str, *args: Any, **kwargs: Any) -> Tuple[Any, ...]:
         """Call a method from each parallel environment with args and kwargs.
