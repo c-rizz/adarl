@@ -23,6 +23,7 @@ class Robot():
         self._joint_position = pinocchio.randomConfiguration(self._model)
         self._joint_position = np.zeros(shape=(self._model.njoints-1,))
         self._collision_object_count = 0
+        self._collision_objects = {}
 
         self._joint_names = [str(n) for n in self._model.names]
         self._joints_num = len(self._joint_names)
@@ -110,10 +111,12 @@ class Robot():
     def add_collision_object(self,  pose_xyz_xyzw : np.ndarray,
                                     collision_geometry : pinocchio.hppfcl.CollisionGeometry,
                                     reference_frame = None,
-                                    colliding_geoms : Iterable[str] | Literal["all"] = "all"):
+                                    colliding_geoms : Iterable[str] | Literal["all"] = "all",
+                                    collision_obj_id : str | None = None):
         if reference_frame is not None:
             raise NotImplementedError(f"Something is wrong with frames that are not the base frame, for now don't use reference_frame")
-        collision_obj_id = f"adarl_robot_helper_collision_object_{self._collision_object_count}"
+        if collision_obj_id is None:
+            collision_obj_id = f"adarl_robot_helper_collision_object_{self._collision_object_count}"
         # the quaternion is build with eigen::map<>, so the xyzw order depends on the internal representation,
         # and the docs specify it's xyzw (https://eigen.tuxfamily.org/dox/classEigen_1_1Quaternion.html#a3eba7a582f77a8f30525614821d7056f)
         pose = pinocchio.XYZQUATToSE3(pose_xyz_xyzw.copy())
@@ -122,19 +125,37 @@ class Robot():
                                         collision_geometry = collision_geometry,
                                         placement = pose)
 
-        self._collision_geom_model.addGeometryObject(geom)
+        idx = self._collision_geom_model.addGeometryObject(geom)
         self._collision_geom_model_data = pinocchio.GeometryData(self._collision_geom_model)
         self._need_to_place_geoms = True
 
         self._collision_object_count += 1
+        self._collision_objects[collision_obj_id] = idx
         if colliding_geoms == "all":
             colliding_geoms = [g.name for g in self._collision_geom_model.geometryObjects]
         new_coll_pairs = [(geom.name, g2) for g2 in colliding_geoms]
         self.add_collision_pairs(new_coll_pairs)
         return collision_obj_id
     
+    def move_collision_object(self, collision_obj_id : str, pose_xyz_xyzw : np.ndarray):
+        geom = self._collision_geom_model.geometryObjects[self._collision_objects[collision_obj_id]]
+        geom.placement = pinocchio.XYZQUATToSE3(pose_xyz_xyzw.copy())
+        self._collision_geom_model_data = pinocchio.GeometryData(self._collision_geom_model)
+        self._need_to_place_geoms = True
+
+    
     def remove_collision_object(self, collision_obj_id : str):
-        self._collision_geom_model.removeGeometryObject(collision_obj_id)
+        geom_id = self._collision_objects[collision_obj_id]
+        geom_name = self._collision_geom_model.geometryObjects[geom_id].name
+        self._collision_geom_model.removeGeometryObject(geom_id)
+        self._collision_objects.pop(collision_obj_id)
+        geom_pairs_to_remove = set()
+        for pair in self._collision_pairs:
+            if pair[0] == geom_name or pair[1] == geom_name:
+                geom_pairs_to_remove.add(pair)
+        self.remove_collision_pairs(geom_pairs_to_remove)
+
+
 
     def set_collision_pairs_from_joints(self, joint_pairs : list[tuple[str,str]]):
         geom_pairs = set()
@@ -208,6 +229,13 @@ class Robot():
             if name in joints:
                 self._joint_position = joints[name]
 
+    def disable_tree_self_collisions(self, root_joint : str):
+        tree_joints = self.get_tree_joint_names_under_joint(root_joint)
+        leg_geoms = list(itertools.chain.from_iterable(self.get_geoms_under_joints(tree_joints)))
+        self_collision_pairs = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]
+        self.remove_collision_pairs(self_collision_pairs)
+        return self_collision_pairs
+
 
 if __name__ == "__main__":
     leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_simple.urdf.xacro")
@@ -224,15 +252,17 @@ if __name__ == "__main__":
     print(f"New poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")
 
     robot.set_collision_pairs("all")
-    leg_joints = robot.get_tree_joint_names_under_joint("rail_joint")
-    print(f"leg_joints = {leg_joints}")
-    leg_geoms = list(itertools.chain.from_iterable(robot.get_geoms_under_joints(leg_joints)))
-    print(f"leg_geoms = {leg_geoms}")
-    self_collisions = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]
-    self_collisions.append(("rail_link_0","slider_link_0"))
-    print(f"Self collision pairs = {self_collisions}")
-    print(f"Original collision pairs = {robot._current_collision_geom_pairs}")
-    robot.remove_collision_pairs(self_collisions)
+    # leg_joints = robot.get_tree_joint_names_under_joint("rail_joint")
+    # print(f"leg_joints = {leg_joints}")
+    # leg_geoms = list(itertools.chain.from_iterable(robot.get_geoms_under_joints(leg_joints)))
+    # print(f"leg_geoms = {leg_geoms}")
+    # self_collisions = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]
+    # self_collisions.append(("rail_link_0","slider_link_0"))
+    # print(f"Self collision pairs = {self_collisions}")
+    # print(f"Original collision pairs = {robot._current_collision_geom_pairs}")
+    # robot.remove_collision_pairs(self_collisions)
+    robot.disable_tree_self_collisions("rail_joint")
+    robot.remove_collision_pairs([("rail_link_0","slider_link_0")])
     print(f"collision pairs without self-collisions = {robot._current_collision_geom_pairs}")
     # robot.set_collision_pairs_from_joints([("knee_joint_1","rail_joint")])
     # print(f"{n.join([str(i) for i in robot.get_frame_poses().items()])}")
@@ -243,9 +273,15 @@ if __name__ == "__main__":
     platform_pos = np.array([0.08,0.2,0.22, 0.0,0.0,0.0,1.0])
     print(f"foot position     = {foot_pos}")
     print(f"platform position = {platform_pos}")
-    robot.add_collision_box(    pose_xyz_xyzw=platform_pos,
-                                # reference_frame="universe",
-                                collision_box_size_xyz=(0.2,0.4,0.1))
+    co_id = robot.add_collision_box(pose_xyz_xyzw=platform_pos,
+                                    # reference_frame="universe",
+                                    collision_box_size_xyz=(0.2,0.4,0.1))
+    print("")
+    print(f"collision pairs = {robot._current_collision_geom_pairs}")
+    print(f"collisions = {robot.get_all_collisions()}")
+
+    robot.move_collision_object(collision_obj_id=co_id,
+                                pose_xyz_xyzw=np.array([0.0,0.3,0.6, 0.0,0.0,0.0,1.0]))
     print("")
     print(f"collision pairs = {robot._current_collision_geom_pairs}")
     print(f"collisions = {robot.get_all_collisions()}")

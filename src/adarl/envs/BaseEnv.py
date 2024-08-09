@@ -229,6 +229,10 @@ class BaseEnv(ABC):
     def get_max_episode_steps(self) -> th.Tensor:
         """Get the maximum number of frames of one episode, as set by the constructor (1-element tensor)."""
         return self._maxStepsPerEpisode
+    
+    def set_max_episode_steps(self, max_steps : th.Tensor):
+        """Get the maximum number of frames of one episode, as set by the constructor (1-element tensor)."""
+        self._maxStepsPerEpisode = max_steps
 
     @abstractmethod
     def buildSimulation(self, backend : str = "gazebo") -> None:

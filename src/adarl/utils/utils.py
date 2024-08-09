@@ -4,7 +4,7 @@ import numpy as np
 import time
 import cv2
 import collections
-from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional
+from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, Literal, TypeVar
 import os
 import quaternion
 import datetime
@@ -173,11 +173,23 @@ def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
 
 from dataclasses import dataclass
 
+
+T = TypeVar('T')
 @dataclass
 class Pose:
     position : th.Tensor
     orientation_xyzw : th.Tensor
 
+    def array_xyz_xyzw(self, type : type[T] = th.Tensor) -> T:
+        tensor = th.concat([self.position,self.orientation_xyzw])
+        if type == th.Tensor:
+            return tensor
+        elif type == np.ndarray:
+            return tensor.cpu().numpy()
+        elif type == list:
+            return tensor.cpu().tolist()
+        elif type == tuple:
+            return tuple(tensor.cpu().to())
 
 def build_pose(x,y,z, qx,qy,qz,qw, th_device=None) -> Pose:
     # return {"position" : th.tensor([x,y,z], device=th_device),

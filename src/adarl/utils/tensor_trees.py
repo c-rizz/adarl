@@ -206,7 +206,7 @@ def space_from_tree(tensor_tree):
                               low=(th.ones_like(tensor_tree)*float("-inf")).cpu().numpy(),
                               dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype])
     else:
-        raise RuntimeError(f"Unexpected tree element type {tensor_tree}")
+        raise RuntimeError(f"Unexpected tree element type {type(tensor_tree)}")
     
 
 def sizetree_from_space(space : gym_spaces.Space):
