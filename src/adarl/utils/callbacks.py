@@ -59,7 +59,8 @@ class EvalCallback(TrainingCallback):
         eval_freq_ep: int = 10,
         best_model_save_path: Optional[str] = None,
         deterministic: bool = True,
-        verbose: int = 1
+        verbose: int = 1,
+        eval_name : str = "eval"
     ):
         if not isinstance(eval_env, gym.vector.VectorEnv):
             eval_env = gym.vector.SyncVectorEnv([lambda: eval_env], copy = False)
@@ -77,6 +78,7 @@ class EvalCallback(TrainingCallback):
         self.best_mean_reward = float("-inf")
         self._episode_counter = 0
         self._step_counter = 0
+        self.eval_name = eval_name
 
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
@@ -107,7 +109,8 @@ class EvalCallback(TrainingCallback):
                 #     ggLog.info(f"Returning action {action}, hidden state {hidden_state}")
                 #     return action, hidden_state
                 
-
+                if self.verbose > 1:
+                    ggLog.info(f"Evaluation '{self.eval_name}':")
                 results = evaluatePolicyVec(self.eval_env,
                                             model = self._model,
                                             episodes=self.n_eval_episodes,

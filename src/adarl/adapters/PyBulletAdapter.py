@@ -642,6 +642,22 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                 if len(s.effort) != 0 and any([e!=0 for e in s.effort]):
                     raise NotImplementedError(f"Direct effort setting is not supported, only zero effort setting is supported. Requested {s.effort}")
             pybullet.resetJointStatesMultiDof(bodyId, ids, [s.position for s in states], [s.rate for s in states])
+        
+        tolerance = 0.01
+        jss = self.getJointsState(list(jointStates.keys()))
+        ggLog.info(f"jss = {jss}")
+        diff = {k:abs(v.position.item() - jointStates[k].position.item()) for k,v in jss.items()}
+        if any([e>tolerance for e in diff.values()]):
+            ggLog.error(f"Failed to set joint position. Requested:\n"
+                        f"{jointStates}\n"
+                        f"Got:\n"
+                        f"{jss}\n"
+                        f"Error:\n"
+                        f"{diff}")
+            
+            
+
+
 
 
 

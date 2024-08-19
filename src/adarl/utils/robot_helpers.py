@@ -102,11 +102,13 @@ class Robot():
     def add_collision_box(self,  pose_xyz_xyzw : np.ndarray,
                                     collision_box_size_xyz : tuple[float,float,float],
                                     reference_frame = None,
-                                    colliding_geoms : Iterable[str] | Literal["all"] = "all"):
+                                    colliding_geoms : Iterable[str] | Literal["all"] = "all",
+                                    collision_obj_id = None):
         return self.add_collision_object(pose_xyz_xyzw = pose_xyz_xyzw,
                                   collision_geometry=pinocchio.hppfcl.Box(*collision_box_size_xyz),
                                   reference_frame=reference_frame,
-                                  colliding_geoms=colliding_geoms)
+                                  colliding_geoms=colliding_geoms,
+                                  collision_obj_id=collision_obj_id)
         
     def add_collision_object(self,  pose_xyz_xyzw : np.ndarray,
                                     collision_geometry : pinocchio.hppfcl.CollisionGeometry,
@@ -117,6 +119,8 @@ class Robot():
             raise NotImplementedError(f"Something is wrong with frames that are not the base frame, for now don't use reference_frame")
         if collision_obj_id is None:
             collision_obj_id = f"adarl_robot_helper_collision_object_{self._collision_object_count}"
+        elif collision_obj_id in self._collision_objects:
+            raise RuntimeError(f"A collision object with name '{collision_obj_id}' already exists")
         # the quaternion is build with eigen::map<>, so the xyzw order depends on the internal representation,
         # and the docs specify it's xyzw (https://eigen.tuxfamily.org/dox/classEigen_1_1Quaternion.html#a3eba7a582f77a8f30525614821d7056f)
         pose = pinocchio.XYZQUATToSE3(pose_xyz_xyzw.copy())
@@ -235,6 +239,29 @@ class Robot():
         self_collision_pairs = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]
         self.remove_collision_pairs(self_collision_pairs)
         return self_collision_pairs
+    
+    def get_dbg_image(self):
+        from panda3d_viewer import Viewer, ViewerConfig
+
+        config = ViewerConfig()
+        config.set_window_size(320, 240)
+        config.enable_antialiasing(True, multisamples=4)
+        config.enable_shadow(True)
+        config.show_axes(False)
+        config.show_grid(False)
+        config.show_floor(True)
+
+        with Viewer(window_type='offscreen', config=config) as viewer:
+            from pinocchio.visualize.panda3d_visualizer import Panda3dVisualizer
+            visualizer = Panda3dVisualizer(self._model, self._collision_geom_model, self._collision_geom_model)
+            visualizer.initViewer(viewer=viewer)
+            visualizer.loadViewerModel(group_name=self._model.name)
+            # visualizer.displayCollisions(True)
+            visualizer.display(self._joint_position)
+            viewer.reset_camera(pos=(0, 2, 1), look_at=(0, 0, 0.5))
+            image_rgb = viewer.get_screenshot(requested_format='RGB')
+        return image_rgb
+
 
 
 if __name__ == "__main__":
@@ -281,7 +308,16 @@ if __name__ == "__main__":
     print(f"collisions = {robot.get_all_collisions()}")
 
     robot.move_collision_object(collision_obj_id=co_id,
-                                pose_xyz_xyzw=np.array([0.0,0.3,0.6, 0.0,0.0,0.0,1.0]))
+                                pose_xyz_xyzw=np.array([0.2,0.3,0.6, 0.0,0.0,0.0,1.0]))
+    
+    ground_co_id = robot.add_collision_box( pose_xyz_xyzw=np.array([0.,0.,0.,0.,0.,0.,1.]),
+                                            collision_box_size_xyz=(1,1,0.05),
+                                            collision_obj_id="ground_collision")
     print("")
     print(f"collision pairs = {robot._current_collision_geom_pairs}")
     print(f"collisions = {robot.get_all_collisions()}")
+
+    img = robot.get_dbg_image()
+    import cv2
+    import time
+    cv2.imwrite(f"robot_img{time.time()}.png", img)
