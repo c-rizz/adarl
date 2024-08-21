@@ -30,6 +30,8 @@ class Session():
         self._is_shutting_down = False
         self._is_wandb_enabled = False
         self._wandb_wrapper = wandb_wrapper.default_wrapper
+        self._id = f"{int(time.monotonic()*1000000)}_{int(random.random()*1000000000)}"
+        # ggLog.info(f"Created session {self._id}")
 
     def reapply_globals(self):
         wandb_wrapper.default_wrapper = self._wandb_wrapper
@@ -54,15 +56,16 @@ class Session():
                 debug_level = 0
         else:
             debug_level = debug
-
+        # self._manager = multiprocessing.Manager()
+        # self.run_info = self._manager.dict()
         self.run_info = {}
         self.run_info["comment"] = run_comment
         self.run_info["experiment_name"] = experiment_name
         self.run_info["run_id"] = run_id
         self.run_info["start_time_monotonic"] = time.monotonic()
         self.run_info["start_time"] = time.time()
-        self.run_info["collected_episodes"] = 0
-        self.run_info["collected_steps"] = 0
+        self.run_info["collected_episodes"] = mp_helper.get_context().Value("i",0)
+        self.run_info["collected_steps"] = mp_helper.get_context().Value("i",0)
         self.run_info["seed"] = seed
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
@@ -237,9 +240,13 @@ class Session():
 
     def is_wandb_enabled(self):
         return self._is_wandb_enabled
+    
+    # def __del__(self):
+    #     print(f"Session {self._id} destroyed")
 
 def set_current_session(session : Session):
     global default_session
+    # ggLog.info(f"Overwriting session {default_session._id} with {session._id}")
     default_session = session
     default_session.reapply_globals()
 

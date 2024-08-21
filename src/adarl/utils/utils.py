@@ -629,9 +629,13 @@ def _fix_urdf_ros_paths(urdf_string):
             split_path = original_path.split("/")
             pkg_name = split_path[2]
             import rospkg
-            pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+            try:
+                pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+            except rospkg.common.ResourceNotFound as e:
+                pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
             abs_path = pkg_path+"/"+"/".join(split_path[3:])
             urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
+            pos = path_start+len(abs_path)
         else:
             done = True
     return urdf_string
@@ -644,10 +648,10 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     mappings = {k:str(v) for k,v in mappings.items()}
     # ggLog.info(f"Xacro args = {xacro_args}")
     # ggLog.info(f"Input xacro: \n{model_definition_string}")
+    model_definition_string = _fix_urdf_ros_paths(model_definition_string)
     doc = xacro.parse(model_definition_string)
     xacro.process_doc(doc, mappings = mappings, **xacro_args)
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
-    model_definition_string = _fix_urdf_ros_paths(model_definition_string)
     return model_definition_string
 
 import adarl.adapters.BaseAdapter

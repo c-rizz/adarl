@@ -179,6 +179,7 @@ class Robot():
         #     self._need_to_place_geoms = False
         # pinocchio.computeCollisions(geometry_model = self._collision_geom_model,
         #                             geometry_data = self._collision_geom_model_data)
+
         # this computeCollisions recoputes forward kinematics and geometry object placements
         pinocchio.computeCollisions(model = self._model,
                                     data = self._model_data,
@@ -265,7 +266,7 @@ class Robot():
 
 
 if __name__ == "__main__":
-    leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_simple.urdf.xacro")
+    leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")
     # leg_file = adarl.utils.utils.pkgutil_get_path("adarl","models/cube.urdf")
     model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
                                                                         model_kwargs={})
