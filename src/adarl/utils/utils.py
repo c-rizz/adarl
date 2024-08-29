@@ -92,9 +92,9 @@ numpy_to_torch_dtype_dict = {
     np.complex64  : th.complex64,
     np.complex128 : th.complex128
 }
+numpy_to_torch_dtype_dict.update({np.dtype(npd):td for npd,td in numpy_to_torch_dtype_dict.items()})
 
 torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
-
 
 class AverageKeeper:
     def __init__(self, bufferSize = 100):
@@ -964,3 +964,9 @@ def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.G
                     generator=generator,
                     dtype=t.dtype,
                     device=t.device)*std + mu
+
+def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator):
+    return th.randn(size=mu_std[0].size(),
+                    generator=generator,
+                    dtype=mu_std.dtype,
+                    device=mu_std.device)*mu_std[1] + mu_std[0]

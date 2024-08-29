@@ -7,6 +7,7 @@ from adarl.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
 
 LeafType = TypeVar("LeafType")
+TensorDict = Dict[Any,"TensorDict[LeafType]"] | LeafType
 TensorTree = Union[Dict[Any,"TensorTree[LeafType]"],
                    List["TensorTree[LeafType]"],
                    Tuple["TensorTree[LeafType]", ...],

@@ -137,13 +137,13 @@ def _worker(
                 consequent_observation = map_tensor_tree(consequent_observation, func=lambda x: th.as_tensor(x))
                 if next_start_observation is not consequent_observation:
                     next_start_observation = map_tensor_tree(next_start_observation, func=lambda x: th.as_tensor(x))
-                reward = map_tensor_tree(reward, func=lambda x: th.as_tensor(x))
-                action = map_tensor_tree(action, func=lambda x: th.as_tensor(x))
-                terminated = map_tensor_tree(terminated, func=lambda x: th.as_tensor(x))
-                truncated = map_tensor_tree(truncated, func=lambda x: th.as_tensor(x))
-                consequent_info = map_tensor_tree(consequent_info, func=lambda x: th.as_tensor(x))
+                reward = map_tensor_tree(reward, func=th.as_tensor)
+                action = map_tensor_tree(action, func=th.as_tensor)
+                terminated = map_tensor_tree(terminated, func=th.as_tensor)
+                truncated = map_tensor_tree(truncated, func=th.as_tensor)
+                consequent_info = map_tensor_tree(consequent_info, func=th.as_tensor)
                 if next_start_info is not consequent_info:
-                    next_start_info = map_tensor_tree(next_start_info, func=lambda x: th.as_tensor(x))
+                    next_start_info = map_tensor_tree(next_start_info, func=th.as_tensor)
                 # print(f"observation shape = {map_tensor_tree(observation, lambda t: t.size())}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           next_start_info = next_start_info,
