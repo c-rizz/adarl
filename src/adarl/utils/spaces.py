@@ -1,3 +1,4 @@
+from __future__ import annotations
 import gymnasium as gym
 from typing import Any, SupportsFloat, Sequence
 from numpy.typing import NDArray

@@ -56,6 +56,10 @@ def sigint_handler(signal_num, stackframe):
     if os.getpid() == main_pid:
         shared_memory_list[0] = "wait"
         
+def fix_sigint_handler():
+    if did_initialize_sigint_handling:
+        setupSigintHandler()
+
 def setupSigintHandler():
     global original_sigint_handler
     global did_initialize_sigint_handling
