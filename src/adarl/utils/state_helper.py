@@ -91,6 +91,19 @@ class ThBoxStateHelper(StateHelper):
         self._fields_num = len(field_names)
         self._state_size = (self._history_length, self._fields_num) + self.field_size
         self._obs_size = (self._history_length, len(self._observable_fields)) + self.field_size
+        self._limits_minmax = self.build_limits(fields_minmax)
+        assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
+
+        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields])
+        # print(f"observable_indexes = {self._observable_indexes}")
+        lmin = self._limits_minmax[0]
+        hlmin = lmin.expand(self._history_length, *lmin.size())
+        lmax = self._limits_minmax[1]
+        hlmax = lmax.expand(self._history_length, *lmax.size())
+        self._state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_size)
+        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size, dtype=self._obs_dtype)
+
+    def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
         new_minmax = {}
         for n, minmax in fields_minmax.items():
             if not isinstance(minmax, th.Tensor):
@@ -102,17 +115,7 @@ class ThBoxStateHelper(StateHelper):
                 raise RuntimeError(f"Field {n} has size {minmax.size()}, should be {(2,)+self.field_size}")
             new_minmax[n]=minmax
         fields_minmax = new_minmax
-        self._limits_minmax = th.stack([th.as_tensor(fields_minmax[fn], dtype=self._obs_dtype, device=self._th_device) for fn in field_names]).transpose(0,1)
-        assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
-
-        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields])
-        # print(f"observable_indexes = {self._observable_indexes}")
-        lmin = self._limits_minmax[0]
-        hlmin = lmin.expand(self._history_length, *lmin.size())
-        lmax = self._limits_minmax[1]
-        hlmax = lmax.expand(self._history_length, *lmax.size())
-        self._state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_size)
-        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size, dtype=self._obs_dtype)
+        return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._obs_dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:
         instantaneous_state = {k:th.as_tensor(v) for k,v in instantaneous_state.items()}
@@ -163,8 +166,9 @@ class ThBoxStateHelper(StateHelper):
         return [f"{self.field_names[int(i/subfields_num)]}.{subnames[i%subfields_num]}"
                     for i in range(self._fields_num*subfields_num)]
     @override
-    def normalize(self, state : th.Tensor):
-        return normalize(state, self._limits_minmax[0], self._limits_minmax[1])
+    def normalize(self, state : th.Tensor, alternative_limits : th.Tensor | None = None):
+        limits = self._limits_minmax if alternative_limits is None else alternative_limits
+        return normalize(state, limits[0], limits[1])
     
     @override
     def unnormalize(self, state : th.Tensor):

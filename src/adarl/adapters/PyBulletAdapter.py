@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Any, Optional
 import pybullet
 
 from adarl.utils.utils import JointState, LinkState, Pose, build_pose, buildQuaternion
+import adarl.utils.sigint_handler
 from adarl.adapters.BaseAdapter import BaseAdapter
 from adarl.adapters.BaseJointEffortAdapter import BaseJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
