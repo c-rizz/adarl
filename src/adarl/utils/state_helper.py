@@ -9,6 +9,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 from typing_extensions import override
 import typing
+import adarl.utils.dbg.ggLog as ggLog
 
 _T = TypeVar('_T', float, th.Tensor)
 def unnormalize(v : _T, min : _T, max : _T) -> _T:
@@ -44,6 +45,10 @@ class StateHelper(ABC):
     
     @abstractmethod
     def observe(self, state):
+        ...
+
+    @abstractmethod
+    def observation_names(self):
         ...
     
     @abstractmethod
@@ -94,6 +99,7 @@ class ThBoxStateHelper(StateHelper):
         self._limits_minmax = self.build_limits(fields_minmax)
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
 
+        self._observable_fields = [f for f in self.field_names if f in self._observable_fields] # to ensure they are ordered
         self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields])
         # print(f"observable_indexes = {self._observable_indexes}")
         lmin = self._limits_minmax[0]
@@ -163,12 +169,21 @@ class ThBoxStateHelper(StateHelper):
             subnames = ["["+(','.join([str(te) for te in t]))+"]" for t in np.ndindex(self.field_size)]
         else:
             subnames = self.subfield_names
-        return [f"{self.field_names[int(i/subfields_num)]}.{subnames[i%subfields_num]}"
-                    for i in range(self._fields_num*subfields_num)]
+        fields_subfields =  [f"{self.field_names[int(i/subfields_num)]}.{subnames[i%subfields_num]}"
+                                for i in range(self._fields_num*subfields_num)]
+        if self._history_length>1:
+            state = sum([[fsf+f"[{i}]" for fsf in fields_subfields] for i in range(self._history_length)],[])
+        else:
+            state = fields_subfields
+        return state
+
     @override
-    def normalize(self, state : th.Tensor, alternative_limits : th.Tensor | None = None):
+    def normalize(self, state : th.Tensor, alternative_limits : th.Tensor | None = None, warn_limits_violation = False):
         limits = self._limits_minmax if alternative_limits is None else alternative_limits
-        return normalize(state, limits[0], limits[1])
+        ret = normalize(state, limits[0], limits[1])
+        if warn_limits_violation and th.any(th.abs(ret) > 1.1):
+            ggLog.warn(f"Normalization exceeded [-1.1,1.1] range: {state} with {limits[0]} & {limits[1]} = {ret}")
+        return ret
     
     @override
     def unnormalize(self, state : th.Tensor):
@@ -181,6 +196,14 @@ class ThBoxStateHelper(StateHelper):
         else:
             return state[:,self._observable_indexes]
     
+    @override
+    def observation_names(self):
+        raise NotImplementedError()
+        if self._fully_observable:
+            return state
+        else:
+            return [self._observable_fields for _ in range(self._history_length)]
+
     @override
     def get_space(self):
         return self._state_space
@@ -207,12 +230,15 @@ class ThBoxStateHelper(StateHelper):
             # Then subfield names are just the indexes
             return th.as_tensor([int(typing.cast(int, n)) for n in subfield_names], device=device)
 
+    def get_limits(self):
+        return self._limits_minmax
 
 class StateNoiseGenerator:
     def __init__(self, state_helper : ThBoxStateHelper, generator : th.Generator, 
                         episode_mu_std : Mapping[FieldName,th.Tensor] | th.Tensor | list[float] | tuple[float],
                         step_std : Mapping[FieldName,th.Tensor] | th.Tensor | list[float] | tuple[float] | float,
-                        dtype : th.dtype, device : th.device):
+                        dtype : th.dtype, device : th.device,
+                        squash_sigma = 3):
         self._state_helper = state_helper
         self._field_names = state_helper.field_names
         self._fields_num = len(self._field_names)
@@ -222,6 +248,7 @@ class StateNoiseGenerator:
         self._dtype = dtype
         self._history_length = state_helper._history_length
         self._noise_shape = state_helper.get_space().shape[1:]
+        self._squash_sigma = squash_sigma
         if isinstance(episode_mu_std,(list,tuple,float)):
             episode_mu_std = th.as_tensor(episode_mu_std)
         if isinstance(step_std,(list,tuple,float)):
@@ -251,8 +278,12 @@ class StateNoiseGenerator:
         assert self._episode_mu_std.size() == (2,)+self._noise_shape
         assert self._step_std.size() == self._noise_shape
 
-        self._episode_mu_std = state_helper.unnormalize(self._episode_mu_std)
-        self._step_std = state_helper.unnormalize(self._step_std)
+        # ggLog.info(f"Noise generator got [{self._episode_mu_std},{self._step_std}]")
+        state_limits = state_helper.get_limits()
+        self._fields_scale = state_limits[1]-state_limits[0]
+        self._episode_mu_std = self._episode_mu_std*self._fields_scale.expand(2, *self._fields_scale.size())
+        self._step_std = self._step_std*self._fields_scale
+        # ggLog.info(f"Noise generator unnormalized to [{self._episode_mu_std},{self._step_std}]")
 
 
         # At the beginning of each episode a mu is sampled
@@ -268,7 +299,9 @@ class StateNoiseGenerator:
         self._current_ep_mu = adarl.utils.utils.randn_from_mustd(self._episode_mu_std, generator=self._rng)
 
     def _generate_noise(self):
-        return adarl.utils.utils.randn_from_mustd(th.stack([self._current_ep_mu,self._step_std]), generator=self._rng)
+        # ggLog.info(f"generating noise with {[self._current_ep_mu,self._step_std]}")
+        return adarl.utils.utils.randn_from_mustd(th.stack([self._current_ep_mu,self._step_std]), generator=self._rng,
+                                                  squash_sigma = self._squash_sigma)
 
     def reset_state(self):
         self._resample_mu()
@@ -280,11 +313,11 @@ class StateNoiseGenerator:
         state[0] = self._generate_noise()
         return state
 
-    def normalize(self, state):
-        return self._state_helper.normalize(state)
+    def normalize(self, noise):
+        return noise / self._fields_scale
     
-    def unnormalize(self, state):
-        return self._state_helper.unnormalize(state)
+    def unnormalize(self, noise):
+        return noise*self._fields_scale
 
 
 State = TypeVar("State", bound=Mapping)
@@ -341,18 +374,20 @@ class DictStateHelper(StateHelper):
     @override
     def normalize(self, state : dict[str,th.Tensor]):
         ret = {k:sh.normalize(state[k]) for k,sh in self.sub_helpers.items()}
-        ret.update({k+"_n":ng.normalize(state[k]) for k,ng in self.noise_generators.items()})
+        ret.update({k+"_n":ng.normalize(state[k+"_n"]) for k,ng in self.noise_generators.items()})
         return ret
     
     @override
     def unnormalize(self, state : dict[str,th.Tensor]):
         ret = {k:sh.unnormalize(state[k]) for k,sh in self.sub_helpers.items()}
-        ret.update({k+"_n":ng.unnormalize(state[k]) for k,ng in self.noise_generators.items()})
+        ret.update({k+"_n":ng.unnormalize(state[k+"_n"]) for k,ng in self.noise_generators.items()})
         return ret
 
     @override
     def observe(self, state:  dict[str,th.Tensor]):
+        # ggLog.info(f"observing state {state}")
         state = self.normalize(state)
+        # ggLog.info(f"normalized state = {state}")
         noisy_state = {k:ss+state[k+"_n"] if k in self.noise_generators else ss for k,ss in state.items()}
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k]) for k in  self._observable_fields}
         flattened_parts = []
@@ -364,7 +399,23 @@ class DictStateHelper(StateHelper):
                 obs[k] = o
         if len(flattened_parts) > 0:
             obs[self._flatten_part_name] = th.concat(flattened_parts)
+            # if th.any(th.abs(obs[self._flatten_part_name]) > 1.0):
+            #     ggLog.warn(f"observation values exceed -1,1 normalization: nonflat_obs = {nonflat_obs},\nstate = {state}")
         return obs
+
+    @override    
+    def observation_names(self):
+        nonflat_obs_names = {k:self.sub_helpers[k].observation_names() for k in self._observable_fields}
+        flattened_parts_names = []
+        obs_names = {}
+        if len(flattened_parts_names) > 0:
+            obs_names[self._flatten_part_name] = []
+        for k,names in nonflat_obs_names.items():
+            if k in self._flatten_in_obs:
+                obs_names[self._flatten_part_name].extend([k+"_"+str(n) for n in names])
+            else:
+                obs_names[k] = names
+        return obs_names
 
     
     @override
@@ -401,7 +452,7 @@ class DictStateHelper(StateHelper):
         rets = []
         for k,sh in self.sub_helpers.items():
             if include_only is None or k in include_only:
-                rets.extend(sh.flatten_names())
+                rets.extend([f"{k}.{sn}" for sn in sh.flatten_names()])
         return rets
 
 
