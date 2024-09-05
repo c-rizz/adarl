@@ -82,6 +82,7 @@ class Session():
         setupSigintHandler()
         if using_pytorch:
             import torch as th
+            th.set_printoptions(linewidth=160)
             pyTorch_makeDeterministic(seed)
             if debug_level>0:
                 th.cuda.set_sync_debug_mode("warn")

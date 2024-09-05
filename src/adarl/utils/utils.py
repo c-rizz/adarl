@@ -965,8 +965,12 @@ def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.G
                     dtype=t.dtype,
                     device=t.device)*std + mu
 
-def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator):
-    return th.randn(size=mu_std[0].size(),
+def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
+                     squash_sigma = -1):
+    noise =  th.randn(size=mu_std[0].size(),
                     generator=generator,
                     dtype=mu_std.dtype,
-                    device=mu_std.device)*mu_std[1] + mu_std[0]
+                    device=mu_std.device)
+    if squash_sigma > 0:
+        noise = th.tanh(noise/(squash_sigma))*squash_sigma
+    return noise*mu_std[1] + mu_std[0]
