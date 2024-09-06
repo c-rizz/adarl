@@ -285,6 +285,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._refresh_entities_ids()
         self._startStateId = pybullet.saveState()
         self._simTime = 0
+        # self._default_joint_state_requests = self._build_joint_state_requests(self._jointsToObserve)
 
 
     def _getJointName(self, bodyId, jointIndex):
@@ -599,14 +600,26 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             if sim_d > sim_timeout_sec:
                 raise TimeoutError(f"sim tomeout: {sim_d} > {sim_timeout_sec}")
 
-    def getJointsState(self, requestedJoints : List[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
-        #For each bodyId I submit a request for joint state
+    def _build_joint_state_requests(self, requestedJoints : List[Tuple[str,str]]):
         requests = {} #for each body id we will have a list of joints
         for jn in requestedJoints:
             bodyId, jointId = self._getBodyAndJointId(jn)
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = []
             requests[bodyId].append((jointId, jn)) #requested jont
+        return requests
+
+    def getJointsState(self, requestedJoints : List[Tuple[str,str]] | None = None) -> Dict[Tuple[str,str],JointState]:
+        if requestedJoints is not None:
+            #For each bodyId I submit a request for joint state
+            requests = {} #for each body id we will have a list of joints
+            for jn in requestedJoints:
+                bodyId, jointId = self._getBodyAndJointId(jn)
+                if bodyId not in requests: #If we haven't created a request for this body yet
+                    requests[bodyId] = []
+                requests[bodyId].append((jointId, jn)) #requested jont
+        else:
+            requests = self._default_joint_state_requests
 
         allStates = {}
         for bodyId in requests.keys():#for each bodyId make a request

@@ -615,16 +615,57 @@ class MoveFailError(Exception):
     def __init__(self, message):            
         super().__init__(message)
 
+def string_find(string : str, keywords : list[str], reverse = False):
+    for k in keywords:
+        if reverse:
+            pos = string.rfind(k)
+        else:
+            pos = string.find(k)
+        if pos != -1:
+            return pos
+    return -1
 
-def _fix_urdf_ros_paths(urdf_string):
+def find_string_limits(text, pos):
+    """ Assuming pos indicates a character in a string in text (string meaning a substringh delimited by quotes),
+      this function fninds the position of the delimiters, i.e. the quotes"""
+    start = string_find(text[:pos+1], ["\"","'"], reverse=True)
+    end = text.find(text[start])
+    return start, end
+
+
+def _fix_urdf_subst_find_paths(urdf_string : str):
+    done = False
+    pos = 0
+    while not done:
+        subst_start = urdf_string.find("$(", pos)
+        if subst_start != -1:
+            subst_end = urdf_string.find(")",subst_start)
+            original_substring = urdf_string[subst_start:subst_end]
+            parts = [p for p in original_substring.split(" ") if len(p)>0]
+            if parts[1] == "find":
+                pkg_name = parts[2]
+                import rospkg
+                try:
+                    pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+                except rospkg.common.ResourceNotFound as e:
+                    pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
+                urdf_string = urdf_string.replace(original_substring,pkg_path) # could be done more efficiently...
+                pos = subst_start+len(pkg_path)
+            else:
+                pos = subst_start+1
+        else:
+            done = True
+    return urdf_string
+
+
+def _fix_urdf_package_paths(urdf_string):
     done = False
     pos = 0
     while not done:
         keyword = "package://"
-        path_start = urdf_string.find(keyword, pos)
-        if path_start != -1:
-            str_delimiter = urdf_string[path_start-1]
-            path_end = urdf_string.find(str_delimiter,path_start)
+        keyword_start = urdf_string.find(keyword, pos)
+        if keyword_start != -1:
+            path_start, path_end = find_string_limits(urdf_string, keyword_start)
             original_path = urdf_string[path_start:path_end]
             split_path = original_path.split("/")
             pkg_name = split_path[2]
@@ -638,6 +679,11 @@ def _fix_urdf_ros_paths(urdf_string):
             pos = path_start+len(abs_path)
         else:
             done = True
+    return urdf_string
+
+def _fix_urdf_ros_paths(urdf_string):
+    urdf_string = _fix_urdf_package_paths(urdf_string)
+    urdf_string = _fix_urdf_subst_find_paths(urdf_string)
     return urdf_string
 
 def compile_xacro_string(model_definition_string, model_kwargs = None):

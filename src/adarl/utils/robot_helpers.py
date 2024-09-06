@@ -28,6 +28,7 @@ class Robot():
         self._joint_names = [str(n) for n in self._model.names]
         self._joints_num = len(self._joint_names)
         self._joint_name_to_idx = {n:self._joint_names.index(n) for n in self._joint_names}
+        print(f"_joint_name_to_idx = {self._joint_name_to_idx}")
         self._joint_idx_to_name = {idx:name for name,idx in self._joint_name_to_idx.items()}
 
         self._frame_names = [frame.name for frame in self._model.frames]
@@ -262,6 +263,24 @@ class Robot():
             viewer.reset_camera(pos=(0, 2, 1), look_at=(0, 0, 0.5))
             image_rgb = viewer.get_screenshot(requested_format='RGB')
         return image_rgb
+    
+    def get_joint_limits(self, joints : list[str] | None = None) -> dict[str,np.ndarray]:
+        if joints is None:
+            joints = self.get_joint_names()
+        limits_minmax_pve = {}
+        p_minmax = np.stack([self._model.lowerPositionLimit,self._model.upperPositionLimit])
+        v_minmax = np.stack([-self._model.velocityLimit,self._model.velocityLimit])
+        e_minmax = np.stack([-self._model.effortLimit,self._model.effortLimit])
+        pve_minmax_j = np.stack([p_minmax,v_minmax,e_minmax])
+        minmax_j_pve = np.transpose(pve_minmax_j,[1,2,0])
+        for jn in joints:
+            joint_idx = self._joint_name_to_idx[jn]
+            q_idx = self._model.idx_qs[joint_idx]
+            v_idx = self._model.idx_vs[joint_idx]
+            limits_minmax_pve[jn] = np.stack([p_minmax[:,q_idx], v_minmax[:,v_idx], e_minmax[:,v_idx]]).transpose()
+            # limits_minmax_pve[jn] = minmax_j_pve[:,joint_idx,:]
+        return limits_minmax_pve
+
 
 
 
@@ -278,7 +297,7 @@ if __name__ == "__main__":
     print(f"Poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")
     robot.set_joint_pose(np.array([0.6,1.0,2.0]))
     print(f"New poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")
-
+    print(f"Joint limits = "+"\n - ".join([""]+[str(lims) for lims in robot.get_joint_limits().items()]))
     robot.set_collision_pairs("all")
     # leg_joints = robot.get_tree_joint_names_under_joint("rail_joint")
     # print(f"leg_joints = {leg_joints}")

@@ -32,7 +32,7 @@ class StateHelper(ABC):
     def flatten(self, state) -> th.Tensor:
         ...
     @abstractmethod
-    def flatten_names(self) -> list[str]:
+    def flat_state_names(self) -> list[str]:
         ...
 
     @abstractmethod
@@ -76,21 +76,34 @@ class ThBoxStateHelper(StateHelper):
                         field_size : list[int] | tuple[int,...], 
                         history_length : int = 1,
                         observable_fields : list[str|int] | None = None,
-                        subfield_names : list[str] | None = None):
+                        subfield_names : list[str] | np.ndarray | None = None,
+                        flatten_observation = False):
         self.field_names = field_names
         self.field_size = tuple(field_size)
-        if subfield_names is not None and len(subfield_names)!=np.prod(self.field_size):
-            raise RuntimeError(f"If subfield_names is provided it must have as many elements as each field, but len(subfield_names)={len(subfield_names)} and field_size is {self.field_size}")
+        if subfield_names is not None:
+            if isinstance(subfield_names,(list,tuple)):
+                if len(self.field_size)!=1:
+                    raise RuntimeError(f"subfield_names can be a list only if fields are 1-dimensional")
+                if len(subfield_names)!=self.field_size[0]:
+                    raise RuntimeError(f"subfield_names is not of size field_size, len(subfield_names)={len(subfield_names)} and field_size is {self.field_size}")
+            elif isinstance(subfield_names, np.ndarray):
+                if subfield_names.shape != self.field_size:
+                    raise RuntimeError(f"subfield_names is not of size field_size, subfield_names.shape={subfield_names.shape} and field_size is {self.field_size}")
+        if isinstance(subfield_names,(list,tuple)):
+            subfield_names = np.array(subfield_names, dtype=object)
         self.subfield_names = subfield_names
         self._obs_dtype = obs_dtype
         self._th_device = th_device
         self._history_length = history_length
         self._observable_fields = field_names if observable_fields is None else observable_fields
-        
+        self._flatten_observation = flatten_observation
+        self._obs_names = None
+        self._state_names = None
+
         self._fully_observable = observable_fields is None 
         self._field_idxs = {n:field_names.index(n) for n in field_names}
         if self.subfield_names is not None:
-            self._subfield_idxs = {n:self.subfield_names.index(n) for n in self.subfield_names}
+            self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)}
         else:
             self._subfield_idxs = None
         self._fields_num = len(field_names)
@@ -162,20 +175,14 @@ class ThBoxStateHelper(StateHelper):
     def flatten(self, state : th.Tensor):
         return state.flatten()
     
+    def flat_obs_names(self):
+        ret = self.observation_names().flatten()
+        # ggLog.info(f"flat_obs_names = {ret}")
+        return ret
+    
     @override
-    def flatten_names(self):
-        subfields_num = np.prod(self.field_size)
-        if self.subfield_names is None:
-            subnames = ["["+(','.join([str(te) for te in t]))+"]" for t in np.ndindex(self.field_size)]
-        else:
-            subnames = self.subfield_names
-        fields_subfields =  [f"{self.field_names[int(i/subfields_num)]}.{subnames[i%subfields_num]}"
-                                for i in range(self._fields_num*subfields_num)]
-        if self._history_length>1:
-            state = sum([[fsf+f"[{i}]" for fsf in fields_subfields] for i in range(self._history_length)],[])
-        else:
-            state = fields_subfields
-        return state
+    def flat_state_names(self):
+        return self.state_names().flatten()
 
     @override
     def normalize(self, state : th.Tensor, alternative_limits : th.Tensor | None = None, warn_limits_violation = False):
@@ -192,17 +199,42 @@ class ThBoxStateHelper(StateHelper):
     @override
     def observe(self, state : th.Tensor):
         if self._fully_observable:
-            return state
+            obs = state
         else:
-            return state[:,self._observable_indexes]
+            obs = state[:,self._observable_indexes]
+        if self._flatten_observation:
+            obs = th.flatten(obs)
+        return obs
     
     @override
     def observation_names(self):
-        raise NotImplementedError()
-        if self._fully_observable:
-            return state
-        else:
-            return [self._observable_fields for _ in range(self._history_length)]
+        if self._obs_names is None:
+            self._obs_names = np.empty(shape=(self._history_length,len(self._observable_fields))+self.field_size, dtype=object)
+            for h in range(self._history_length):
+                for fn in range(len(self._observable_fields)):
+                    for s in np.ndindex(self.field_size):
+                        f = self._observable_fields[fn]
+                        if self.subfield_names is not None:
+                            self._obs_names[(h,fn)+s] = f"[{h},{f},{self.subfield_names[s]}]"
+                        else:
+                            self._obs_names[(h,fn)+s] = f"[{h},{f},{','.join([str(i) for i in s])}]"
+            if self._flatten_observation:
+                self._obs_names =  self._obs_names.flatten()
+        return self._obs_names
+    
+    def state_names(self):
+        if self._state_names is None:
+            self._state_names = np.empty(shape=(self._history_length,self._fields_num)+self.field_size, dtype=object)
+            for h in range(self._history_length):
+                for fn in range(self._fields_num):
+                    for s in np.ndindex(self.field_size):
+                        f = self.field_names[fn]
+                        if self.subfield_names is not None:
+                            self._state_names[(h,fn)+tuple(s)] = f"[{h},{f},{self.subfield_names[s]}]"
+                        else:
+                            self._state_names[(h,fn)+tuple(s)] = f"[{h},{f},{','.join([str(i) for i in s])}]"
+        return self._state_names
+    
 
     @override
     def get_space(self):
@@ -392,11 +424,11 @@ class DictStateHelper(StateHelper):
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k]) for k in  self._observable_fields}
         flattened_parts = []
         obs = {}
-        for k,o in nonflat_obs.items():
+        for k,subobs in nonflat_obs.items():
             if k in self._flatten_in_obs:
-                flattened_parts.append(o.flatten())
+                flattened_parts.append(self.sub_helpers[k].flatten(subobs))
             else:
-                obs[k] = o
+                obs[k] = subobs
         if len(flattened_parts) > 0:
             obs[self._flatten_part_name] = th.concat(flattened_parts)
             # if th.any(th.abs(obs[self._flatten_part_name]) > 1.0):
@@ -405,16 +437,16 @@ class DictStateHelper(StateHelper):
 
     @override    
     def observation_names(self):
-        nonflat_obs_names = {k:self.sub_helpers[k].observation_names() for k in self._observable_fields}
         flattened_parts_names = []
         obs_names = {}
-        if len(flattened_parts_names) > 0:
-            obs_names[self._flatten_part_name] = []
-        for k,names in nonflat_obs_names.items():
+        for k in self._observable_fields:
             if k in self._flatten_in_obs:
-                obs_names[self._flatten_part_name].extend([k+"_"+str(n) for n in names])
+                flattened_parts_names.extend([k+"_"+str(n) for n in self.sub_helpers[k].flat_obs_names()])
             else:
-                obs_names[k] = names
+                obs_names[k] = self.sub_helpers[k].observation_names()
+        if len(flattened_parts_names) > 0:
+            # ggLog.info(f"flattened_parts_names = {flattened_parts_names}")
+            obs_names[self._flatten_part_name] = flattened_parts_names
         return obs_names
 
     
@@ -448,15 +480,47 @@ class DictStateHelper(StateHelper):
         return th.concat(rets)
     
     @override
-    def flatten_names(self, include_only : list[str] | None = None):
+    def flat_state_names(self, include_only : list[str] | None = None):
         rets = []
         for k,sh in self.sub_helpers.items():
             if include_only is None or k in include_only:
-                rets.extend([f"{k}.{sn}" for sn in sh.flatten_names()])
+                rets.extend([f"{k}.{sn}" for sn in sh.flat_state_names()])
         return rets
 
 
 
+class RobotStateHelper(ThBoxStateHelper):
+    def __init__(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
+                        stiffness_minmax : tuple[float,float],
+                        damping_minmax : tuple[float,float],
+                        obs_dtype : th.dtype,
+                        th_device : th.device,
+                        history_length : int = 1):
+        super().__init__(   field_names=list(joint_limit_minmax_pve.keys()),
+                            obs_dtype=obs_dtype,
+                            th_device=th_device,
+                            field_size=(8,),
+                            fields_minmax= self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax),
+                            history_length=history_length,
+                            subfield_names = ["pos","vel","eff","refpos","refvel","refeff","stiff","damp"])
+
+    def _build_fields_minmax(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
+                                    stiffness_minmax : tuple[float,float],
+                                    damping_minmax : tuple[float,float]) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
+        return {joint : th.as_tensor([  limits_minmax_pve[:,0],
+                                        limits_minmax_pve[:,1],
+                                        limits_minmax_pve[:,2],
+                                        limits_minmax_pve[:,0],
+                                        limits_minmax_pve[:,1],
+                                        limits_minmax_pve[:,2],
+                                        stiffness_minmax,
+                                        damping_minmax]).permute(1,0)
+                for joint,limits_minmax_pve in joint_limit_minmax_pve.items()}
+        
+    def build_robot_limits(self, joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
+                            stiffness_minmax : tuple[float,float],
+                            damping_minmax : tuple[float,float]):
+        return super().build_limits(fields_minmax=self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax))
 
 
 
