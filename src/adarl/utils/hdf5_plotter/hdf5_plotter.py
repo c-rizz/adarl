@@ -13,12 +13,16 @@ def recdict_access(rdict, keylist):
         return rdict
     return recdict_access(rdict[keylist[0]], keylist[1:])
 
-def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
+# def multiplot(n_cols_rows, plotnames, datas : dict, filename : dict, labels : dict, titles : dict):
+
+plot_count = 0
+def plot(data, filename, labels = None, title : str = "HDF5Plot"):
     print(f"plotting data with shape {data.shape}")
 
-
+    global plot_count
+    plot_count += 1
     ax : matplotlib.axes.Axes
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(num=title+str(plot_count))
     ax.grid(True, linestyle=":")
     ax.set_title(title)
     if len(data.shape)==1:
@@ -28,14 +32,31 @@ def plot(data, filename, gui = True, labels = None, title : str = "HDF5Plot"):
         labels = [f"{i}" for i in range(series_num)]
         if len(labels)==1:
             labels = labels[0]
-    ax.plot(data, label=labels)
+    lines = ax.plot(data, label=labels)
     legend = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-    if gui:
-        # matplotlib.use('TkAgg')
-        fig.tight_layout()
-        fig.show()
-    else:
-        fig.savefig(filename)
+    legend.set_draggable(True)
+
+    map_legend_to_ax = {}  # Will map legend lines to original lines.
+    for legend_line, ax_line in zip(legend.get_lines(), lines):
+        legend_line.set_picker(5)  # Enable picking on the legend line. (radius at 5pt)
+        map_legend_to_ax[legend_line] = ax_line
+    def on_pick(event):
+        # On the pick event, find the original line corresponding to the legend
+        # proxy line, and toggle its visibility.
+        legend_line = event.artist
+        if legend_line not in map_legend_to_ax:
+            return
+        ax_line = map_legend_to_ax[legend_line]
+        visible = not ax_line.get_visible()
+        ax_line.set_visible(visible)
+        # Change the alpha on the line in the legend, so we can see what lines
+        # have been toggled.
+        legend_line.set_alpha(1.0 if visible else 0.2)
+        fig.canvas.draw()
+    fig.canvas.mpl_connect('pick_event', on_pick)
+    # matplotlib.use('TkAgg')
+    fig.tight_layout()
+    fig.show()
 
 def cmd_cd(file, current_path, *args, **kwargs):
     """ Move into a the dataset structure as if it was a folder structure. \
@@ -70,7 +91,20 @@ def cmd_plot(file, current_path, *args, **kwargs):
     if len(args) < 1:
         print(f"Argument missing for plot.")
     print(f"cmd_plot({args})")
-    data = np.array(recdict_access(f, current_path+[cmd[1]]))
+    available_fields = recdict_access(f, current_path).keys()
+    field : str = ""
+    if cmd[1] in available_fields:
+        field = cmd[1]
+    else:
+        matches = []
+        for af in recdict_access(f, current_path).keys():
+            if  af.startswith(cmd[1]):
+                matches.append(af)
+        if len(matches)==1:
+            field = matches[0]
+        else:
+            print(f"Possible fields = "+(",".join(matches)))
+    data = np.array(recdict_access(f, current_path+[field]))
     if len(data.shape) == 1:
         data = np.expand_dims(data,1)
     col_num = data.shape[1]
@@ -94,7 +128,7 @@ def cmd_plot(file, current_path, *args, **kwargs):
                 columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
-    maybe_labels_name = cmd[1]+"_labels"
+    maybe_labels_name = field+"_labels"
     if maybe_labels_name in recdict_access(f, current_path).keys():
         labels = np.array(recdict_access(f, current_path+[maybe_labels_name]))[0]
         labels = [a.tobytes().decode("utf-8").strip() for a in list(labels)]
