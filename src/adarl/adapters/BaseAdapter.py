@@ -1,11 +1,13 @@
 """This file implements the Envitronment controller class, whic is the superclass for all th environment controllers."""
 #!/usr/bin/env python3
+from __future__ import annotations
 from typing import List, Tuple, Dict, Callable, Optional
 
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
 from adarl.utils.utils import JointState, LinkState
+from typing import overload, Sequence
 
 JointName = Tuple[str,str]
 LinkName = Tuple[str,str]
@@ -102,8 +104,10 @@ class BaseAdapter(ABC):
         """
         raise NotImplementedError()
 
+
     @abstractmethod
-    def getJointsState(self, requestedJoints : List[JointName]) -> Dict[JointName,JointState]:
+    @overload
+    def getJointsState(self, requestedJoints : Sequence[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
         """Get the state of the requested joints.
 
         Parameters
@@ -117,10 +121,26 @@ class BaseAdapter(ABC):
             Dictionary containig the state of the joints. The keys are in the format [model_name, joint_name]
 
         """
+        ...
+    @abstractmethod
+    @overload
+    def getJointsState(self) -> th.Tensor:
+        """Get the state of the monitored joints.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of shape (joints_num, 3) with position,velocity,effort for each joint in set_monitored_joints()
+
+        """
+        ...
+    @abstractmethod
+    def getJointsState(self, requestedJoints : Sequence[JointName] | None = None) -> Dict[JointName,JointState] | th.Tensor:
         raise NotImplementedError()
 
     @abstractmethod
-    def getLinksState(self, requestedLinks : List[LinkName]) -> Dict[LinkName,LinkState]:
+    @overload
+    def getLinksState(self, requestedLinks : Sequence[LinkName]) -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.
 
         Parameters
@@ -134,6 +154,22 @@ class BaseAdapter(ABC):
             Dictionary, indexed by link name containing the state of each link
 
         """
+        ...
+    @abstractmethod
+    @overload
+    def getLinksState(self, requestedLinks : None) -> th.Tensor:
+        """Get the state of the monitored links.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor containing the link state for each monitored link
+
+        """
+        ...
+    @abstractmethod
+    @overload
+    def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> Dict[LinkName,LinkState] | th.Tensor:
         raise NotImplementedError()
 
     @abstractmethod
