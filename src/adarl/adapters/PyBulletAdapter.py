@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from typing import List, Tuple, Dict, Any, Optional
+from __future__ import annotations
+from typing import List, Tuple, Dict, Any, Optional, Sequence, overload
+from typing_extensions import override
 
 import pybullet
 
@@ -22,6 +24,7 @@ import os
 import pkgutil
 egl = pkgutil.get_loader('eglRenderer')
 import pybullet_data
+import torch as th
 
 
 
@@ -226,7 +229,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._build_time = time.monotonic()
         self._verbose = False
         self._monitored_contacts = []
-
+        self._default_joint_state_requests = {}
+        
         self.setupLight(    lightDirection = [1,1,1],
                             lightColor = [0.9,0.9,0.9],
                             lightDistance = 100,
@@ -236,14 +240,17 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             lightSpecularCoeff = 0.1)
 
         self.clear_commands()
+        self._reset_joint_state_step_stats()
+        self._sent_motor_torque_commands_by_bid_jid = {}
+
 
     def _refresh_entities_ids(self, print_info = False):
         bodyIds = []
         for i in range(pybullet.getNumBodies()):
             bodyIds.append(pybullet.getBodyUniqueId(i))
 
-        self._bodyAndJointIdToJointName = {}
-        self._jointNamesToBodyAndJointId = {}
+        self._bodyAndJointIdToJointName : dict[tuple[int,int], tuple[str,str]] = {}
+        self._jointNamesToBodyAndJointId : dict[tuple[str,str], tuple[int,int]] = {}
         self._bodyLinkIds_to_linkName = {}
         self._linkName_to_bodyLinkIds = {}
         dynamics_infos = ["mass","lat_frict","loc_inertia_diag","loc_inertial_pos","loc_inertial_orn","restitution","roll_friction","spin_friction","contact_damping","contact_stiffness","body_type","collision_margin"]
@@ -285,14 +292,23 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._refresh_entities_ids()
         self._startStateId = pybullet.saveState()
         self._simTime = 0
-        # self._default_joint_state_requests = self._build_joint_state_requests(self._jointsToObserve)
+
+    def set_monitored_joints(self, jointsToObserve: List[Tuple[str,str]]):
+        self._default_joint_state_requests = self._build_joint_state_requests(jointsToObserve)
+        req_joint_names = []
+        for body_id, joint_ids in self._default_joint_state_requests.items():
+            req_joint_names.extend([self._getJointName(body_id,jid) for jid in joint_ids])
+        self._default_joint_state_request_ordering = np.array([req_joint_names.index(jn) for jn in jointsToObserve])
+        super().set_monitored_joints(jointsToObserve)
+        self._reset_joint_state_step_stats()
+
 
 
     def _getJointName(self, bodyId, jointIndex):
         jointName = self._bodyAndJointIdToJointName[(bodyId,jointIndex)]
         return jointName
 
-    def _getBodyAndJointId(self, jointName):
+    def _getBodyAndJointId(self, jointName : tuple[str,str]) -> tuple[int,int]:
         return self._jointNamesToBodyAndJointId[jointName] # TODO: this ignores the model name, should use it
 
     def _getLinkName(self, bodyId, linkIndex):
@@ -331,7 +347,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             Why the exception is raised.
 
         """
-
+        self._reset_joint_state_step_stats()
         stepLength = self.run(self._stepLength_sec)
         self.clear_commands()
         return stepLength
@@ -341,7 +357,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         self._reset_detected_contacts()
         #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
-        self._last_step_commanded_torques = []
+        self._sent_motor_torque_commands_by_bid_jid = {}
 
         # ggLog.info(f"PyBullet doing {duration_sec}/{self._bullet_stepLength_sec}={simsteps} steps")
         stepping_wtime = 0
@@ -351,6 +367,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             wtps = time.monotonic()
             pybullet.stepSimulation()
             self._read_new_contacts()
+            self._last_step_commanded_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
+            self._update_joint_state_step_stats()
             stepping_wtime += time.monotonic()-wtps
             self._simTime += self._bullet_stepLength_sec
             if self._real_time_factor is not None and self._real_time_factor>0:
@@ -363,15 +381,6 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._stepping_stime_since_build += self._simTime - t0
         self._run_time_since_build += time.monotonic()-tf0
 
-        self._last_step_commanded_torques_by_name = {}
-        for jn, t in self._last_step_commanded_torques:
-            # ggLog.info(f"self._last_step_commanded_torques: {jn}, {t}")
-            if jn not in self._last_step_commanded_torques_by_name:
-                self._last_step_commanded_torques_by_name[jn] = []
-            self._last_step_commanded_torques_by_name[jn].append(t)
-        # ggLog.info(f"self._last_step_commanded_torques_by_name: {self._last_step_commanded_torques_by_name}")
-        self._last_step_commanded_torques_by_name = {jn:sum(torque_list)/len(torque_list) for jn, torque_list in self._last_step_commanded_torques_by_name.items()}    
-        self._last_step_commanded_torques_by_name.update(self._commanded_torques_by_name) # direct torque commands override other applied torques
         return self._simTime-t0
     
     def clear_commands(self):
@@ -460,11 +469,13 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._apply_commanded_positions()
 
     def _apply_commanded_torques(self):
-        for bodyId in self._commanded_torques_by_body.keys():
+        for bodyId,(jointIds, torques) in self._commanded_torques_by_body.items():
             pybullet.setJointMotorControlArray(bodyIndex=bodyId,
-                                        jointIndices=self._commanded_torques_by_body[bodyId][0],
+                                        jointIndices=jointIds,
                                         controlMode=pybullet.TORQUE_CONTROL,
-                                        forces=self._commanded_torques_by_body[bodyId][1])
+                                        forces=torques)
+            for i in range(len(jointIds)):
+                self._sent_motor_torque_commands_by_bid_jid[(bodyId,jointIds[i])] = torques[i]
             
     
     def _apply_commanded_velocities(self):
@@ -478,6 +489,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                         targetVelocities=velocities,
                                         forces=max_torques
                                         )
+            for jid in jointIds:
+                bid_jid = (bodyId,jid)
+                if bid_jid in self._sent_motor_torque_commands_by_bid_jid:
+                    self._sent_motor_torque_commands_by_bid_jid.pop()
 
     def _apply_commanded_positions(self):
         t = self.getEnvTimeFromStartup()
@@ -509,6 +524,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                         # positionGains=pos_gains,
                                         # velocityGains=vel_gains
                                         )
+            for jid in jointIds:
+                bid_jid = (bodyId,jid)
+                if bid_jid in self._sent_motor_torque_commands_by_bid_jid:
+                    self._sent_motor_torque_commands_by_bid_jid.pop()
 
     def setJointsEffortCommand(self, jointTorques : List[Tuple[Tuple[str,str],float]]) -> None:
         #For each bodyId I submit a request for joint motor control
@@ -538,7 +557,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                         velocity_scaling : float = 1.0,
                                         acceleration_scaling : float = 1.0) -> None:
         requests = {}
-        jointStates = self.getJointsState(requestedJoints=jointPositions.keys())
+        jointStates = self.getJointsState(requestedJoints=list(jointPositions.keys()))
         t0 = self.getEnvTimeFromStartup()
         for joint, req_position in jointPositions.items():
             max_acceleration = min( self._max_joint_acceleration_pos_control,
@@ -600,42 +619,97 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             if sim_d > sim_timeout_sec:
                 raise TimeoutError(f"sim tomeout: {sim_d} > {sim_timeout_sec}")
 
-    def _build_joint_state_requests(self, requestedJoints : List[Tuple[str,str]]):
-        requests = {} #for each body id we will have a list of joints
+    def _build_joint_state_requests(self, requestedJoints : Sequence[Tuple[str,str]]):
+        requests : dict[int,list[int]] = {} #for each body id we will have a list of joints
         for jn in requestedJoints:
             bodyId, jointId = self._getBodyAndJointId(jn)
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = []
-            requests[bodyId].append((jointId, jn)) #requested jont
+            requests[bodyId].append(jointId) #requested jont
         return requests
 
-    def getJointsState(self, requestedJoints : List[Tuple[str,str]] | None = None) -> Dict[Tuple[str,str],JointState]:
-        if requestedJoints is not None:
-            #For each bodyId I submit a request for joint state
-            requests = {} #for each body id we will have a list of joints
-            for jn in requestedJoints:
-                bodyId, jointId = self._getBodyAndJointId(jn)
-                if bodyId not in requests: #If we haven't created a request for this body yet
-                    requests[bodyId] = []
-                requests[bodyId].append((jointId, jn)) #requested jont
-        else:
+    @overload
+    @override
+    def getJointsState(self, requestedJoints : Sequence[Tuple[str,str]]) -> Dict[Tuple[str,str],JointState]:
+        ...
+
+    @overload
+    @override
+    def getJointsState(self) -> th.Tensor:
+        ...
+
+    @override
+    def getJointsState(self, requestedJoints : Sequence[Tuple[str,str]] | None = None) -> Dict[Tuple[str,str],JointState] | th.Tensor:
+        # We have to make a request per each bodyId, so we create a dict of requests (or use the dfault one)
+        if requestedJoints is None:
             requests = self._default_joint_state_requests
+        else:
+            requests = self._build_joint_state_requests(requestedJoints)
 
-        allStates = {}
-        for bodyId in requests.keys():#for each bodyId make a request
-            jids = [r[0] for r in requests[bodyId]]
-            jointStates = pybullet.getJointStates(bodyId,jids)
-            for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
-                jointId, joint_name = requests[bodyId][i]
-                pos, vel, effort = jointStates[i][0], jointStates[i][1], jointStates[i][3]
-                # if the joint is commanded in torque the jointStates effort will be zero. But the actual effort is by definition the comanded one
-                if joint_name in self._last_step_commanded_torques_by_name:
-                    effort = self._last_step_commanded_torques_by_name[joint_name]
-                allStates[self._getJointName(bodyId,jointId)] = JointState([pos], [vel], [effort])
+        responses = [pybullet.getJointStates(bodyId,jids) for bodyId, jids in requests.items()]
+        responses_pve = [np.array([[jr[0],jr[1],jr[3]] for jr in r]) for r in responses]
+        
+        if requestedJoints is None:
+            state_pve = np.concatenate(responses_pve,axis=0)
+            # we have to correct the torque value fot eh joints that rea commanded in torque, pybullet returns zero for those,
+            # instead we use the commanded torque
+            row = 0
+            for bodyId, jids in requests.items():
+                for i in range(len(jids)):
+                    joint_name = self._bodyAndJointIdToJointName[(bodyId,jids[i])]
+                    if joint_name in self._last_step_commanded_torques_by_name:
+                        effort = self._last_step_commanded_torques_by_name[joint_name]
+                        state_pve[row,2] = effort
+                    row += 1
+            return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32)
+        else:
+            allStates = {}
+            pos = 0
+            for bodyId, jids in requests.items():
+                response = responses_pve[pos]
+                pos += 1
+                for i in range(len(jids)):
+                    jid = jids[i]
+                    joint_name = self._bodyAndJointIdToJointName[(bodyId,jid)]
+                    pos, vel, effort = response[i]
+                    # if the joint is commanded in torque the returned effort will be zero.
+                    # But the actual effort is by definition the comanded one
+                    if joint_name in self._last_step_commanded_torques_by_name:
+                        effort = self._last_step_commanded_torques_by_name[joint_name]
+                    allStates[self._getJointName(bodyId,jid)] = JointState([pos], [vel], [effort])
+            return allStates
 
+    def get_joints_state_step_stats(self) -> th.Tensor:
+        return self._monitored_joints_stats[:4]
 
-        return allStates
+    def _reset_joint_state_step_stats(self):
+        self._joint_stats_sample_count = 0
+        jstate_pve_size = (len(self._jointsToObserve),3)
+        self._monitored_joints_stats = th.zeros((6,)+jstate_pve_size, dtype=th.float32)
+        self._monitored_joints_min = self._monitored_joints_stats[0]
+        self._monitored_joints_max = self._monitored_joints_stats[1]
+        self._monitored_joints_avg = self._monitored_joints_stats[2]
+        self._monitored_joints_std = self._monitored_joints_stats[3]
+        self._monitored_joints_sum = self._monitored_joints_stats[4]
+        self._monitored_joints_sum_of_squares = self._monitored_joints_stats[5]
 
+        self._monitored_joints_min[:] = th.tensor(float("+inf"))
+        self._monitored_joints_max[:] = th.tensor(float("-inf"))
+        self._monitored_joints_avg[:] = th.tensor(float("nan"))
+        self._monitored_joints_std[:] = th.tensor(float("nan"))
+        self._monitored_joints_sum[:] = th.tensor(0)
+        self._monitored_joints_sum_of_squares[:] = th.tensor(0)
+
+    def _update_joint_state_step_stats(self):
+        joint_states_t = self.getJointsState()
+        self._joint_stats_sample_count += 1
+        min = th.min(self._monitored_joints_min, joint_states_t)
+        self._monitored_joints_min[:] = min
+        self._monitored_joints_max[:] = th.max(self._monitored_joints_max, joint_states_t)
+        self._monitored_joints_sum[:] = self._monitored_joints_sum + joint_states_t
+        self._monitored_joints_sum_of_squares[:] = self._monitored_joints_sum_of_squares + joint_states_t**2
+        self._monitored_joints_avg[:] = self._monitored_joints_sum / self._joint_stats_sample_count
+        self._monitored_joints_std[:] = th.sqrt(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2)
 
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):
         requests_by_body = {} # one request per body

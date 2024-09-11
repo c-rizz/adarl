@@ -197,6 +197,32 @@ def build_pose(x,y,z, qx,qy,qz,qw, th_device=None) -> Pose:
     return Pose(position = th.tensor([x,y,z], device=th_device),
                 orientation_xyzw = th.tensor([qx,qy,qz,qw], device=th_device))
 
+@dataclass
+class JointStateArray:
+    joints_pve : th.Tensor
+
+    def __init__(self, joints_pve : th.Tensor):
+        """
+
+        Parameters
+        ----------
+        joint_dof_pve : th.Tensor
+            A tensor in the shape (joints_number, 3). The first dimension represents the joint index,
+            then dimension 1 contains position, velocity and effort, in this order.
+        """
+        self.joints_pve = joints_pve
+
+    @property
+    def positions(self):
+        return self.joints_pve[:,0]
+    
+    @property
+    def velocities(self):
+        return self.joints_pve[:,1]
+    
+    @property
+    def efforts(self):
+        return self.joints_pve[:,2]
 
 @dataclass
 class JointState:
