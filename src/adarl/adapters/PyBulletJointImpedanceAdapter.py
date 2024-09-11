@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-from typing import List, Tuple, Dict, Any, Optional
+from __future__ import annotations
+from typing import List, Tuple, Dict, Any, Optional, Sequence, Mapping
+from typing_extensions import override
 
 from adarl.adapters.PyBulletAdapter import PyBulletAdapter
 from adarl.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 import torch as th
 import copy
-from typing_extensions import override
 import adarl.utils.dbg.ggLog as ggLog
 
 class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
@@ -25,6 +26,7 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         """Initialize the Simulator controller.
 
         """
+        self._jimpedance_controlled_joints : list[tuple[str,str]] = []
         super().__init__(
             stepLength_sec = stepLength_sec,
             restore_on_reset = restore_on_reset,
@@ -47,7 +49,15 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         self._apply_commanded_velocities()
         self._apply_commanded_positions()
 
+    @override
+    def set_impedance_controlled_joints(self, joint_names : Sequence[Tuple[str,str]]):
+        self._jimpedance_controlled_joints = list(joint_names)
 
+    @override
+    def get_impedance_controlled_joints(self) -> list[tuple[str,str]]:
+        return self._jimpedance_controlled_joints
+
+    @override
     def clear_commands(self):
         super().clear_commands()
         self._commanded_joint_impedances : dict[float, dict] = {}
@@ -110,6 +120,12 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         self.setJointsEffortCommand(jointTorques=list(eff_cmd.items()))
 
     @override
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]], delay_sec : float = 0.0) -> None:
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : Mapping[Tuple[str,str],Tuple[float,float,float,float,float]] | th.Tensor,
+                                        delay_sec : float = 0.0) -> None:
         cmd_time = self.getEnvTimeFromStartup() + delay_sec
-        self._commanded_joint_impedances[cmd_time] = copy.deepcopy(joint_impedances_pvesd)
+        if isinstance(joint_impedances_pvesd, Mapping):
+            self._commanded_joint_impedances[cmd_time] = dict(copy.deepcopy(joint_impedances_pvesd))
+        elif isinstance(joint_impedances_pvesd, th.Tensor):
+            self._commanded_joint_impedances[cmd_time] = dict(zip(self._jimpedance_controlled_joints, joint_impedances_pvesd))
+        else:
+            raise RuntimeError(f"Unexpected joint_impedances_pvesd type {type(joint_impedances_pvesd)}")
