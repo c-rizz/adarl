@@ -139,6 +139,19 @@ class BaseAdapter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    def get_joints_state_step_stats(self) -> th.Tensor:
+        """Returns joint state statistics over the last step for the monitored joints. The value of these statistics after a call to run()
+        is currently undefined.
+
+        Returns
+        -------
+        th.Tensor
+            Torch tensor of size (4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
+             and effort of each monitored joint. The joints are in the order use din set_monitored_joints.
+        """
+        ...
+
+    @abstractmethod
     @overload
     def getLinksState(self, requestedLinks : Sequence[LinkName]) -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.

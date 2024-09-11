@@ -8,6 +8,7 @@ import adarl.utils.dbg.ggLog as ggLog
 from stable_baselines3.common.vec_env.base_vec_env import VecEnv, VecEnvObs, VecEnvStepReturn, VecEnvWrapper
 import torch as th
 from deprecated import deprecated
+from adarl.utils.session import default_session
 
 @deprecated(reason="Use VectorEnvLogger, which is gymnasium-based")
 class VecEnvLogger(VecEnvWrapper):
@@ -79,6 +80,7 @@ class VecEnvLogger(VecEnvWrapper):
                             new_elems[k.replace("VecEnvLogger/","VecEnvLogger/min.")] = min(v)
                 self._logs_batch.update(new_elems)
                 wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
+                wdblog["VecEnvLogger/session_collected_episodes"] = default_session.run_info["collected_episodes"]
                 # ggLog.info(f"wdblog = {wdblog}")
                 wandb_log(wdblog)
                 ggLog.info(f"VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
