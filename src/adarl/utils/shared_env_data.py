@@ -83,13 +83,13 @@ class SharedData():
 
     def build_data(self):
         self._consequent_observations = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
-        self._actions = create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
-        self._consequent_infos = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
-        self._next_start_infos = create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._actions =                 create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
+        self._consequent_infos =        create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
+        self._next_start_infos =        create_tensor_tree(self._n_envs, self._info_space, share_mem=True, device=self._device)
         self._next_start_observations = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
-        self._terminations : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
-        self._truncations : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.bool).share_memory_()
-        self._rewards : th.Tensor = th.zeros(size=(self._n_envs,), dtype=th.float32).share_memory_()
+        self._terminations : th.Tensor =    th.zeros(size=(self._n_envs,), dtype=th.bool, device=self._device).share_memory_()
+        self._truncations : th.Tensor =     th.zeros(size=(self._n_envs,), dtype=th.bool, device=self._device).share_memory_()
+        self._rewards : th.Tensor =         th.zeros(size=(self._n_envs,), dtype=th.float32, device=self._device).share_memory_()
 
 
 
@@ -130,13 +130,13 @@ class SharedEnvData():
             # print("wrote rew")
             self._shared_data._terminations[env_idx].copy_(terminated, non_blocking=True)
             self._shared_data._truncations[env_idx].copy_(truncated, non_blocking=True)
-            fill_tensor_tree(env_idx, consequent_observation, self._shared_data._consequent_observations)
-            fill_tensor_tree(env_idx, action, self._shared_data._actions)
-            fill_tensor_tree(env_idx, consequent_info, self._shared_data._consequent_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
+            fill_tensor_tree(env_idx, consequent_observation, self._shared_data._consequent_observations, non_blocking=True)
+            fill_tensor_tree(env_idx, action, self._shared_data._actions, non_blocking=True)
+            fill_tensor_tree(env_idx, consequent_info, self._shared_data._consequent_infos, nonstrict=True, non_blocking=True) # Implement some mechanism to add missing keys to sharde_data.infos
         if next_start_info is not None:
-            fill_tensor_tree(env_idx, next_start_observation, self._shared_data._next_start_observations)
-            fill_tensor_tree(env_idx, next_start_info, self._shared_data._next_start_infos, nonstrict=True) # Implement some mechanism to add missing keys to sharde_data.infos
-        if self._shared_data._device.type == "cuda":
+            fill_tensor_tree(env_idx, next_start_observation, self._shared_data._next_start_observations, non_blocking=True)
+            fill_tensor_tree(env_idx, next_start_info, self._shared_data._next_start_infos, nonstrict=True, non_blocking=True) # Implement some mechanism to add missing keys to sharde_data.infos
+        if th.cuda.is_initialized(): # synchronize always unless cuda has never even been used (this way we save a lot of memory)
             th.cuda.synchronize()
         with self._n_envs_stepping_cond: # decrease number of envs to wait for
             self._n_envs_stepping.value -= 1
@@ -146,7 +146,9 @@ class SharedEnvData():
     def fill_actions(self, action_batch):
         if not isinstance(action_batch, th.Tensor):
             action_batch = th.as_tensor(action_batch, device=self._shared_data._device)
-        fill_tensor_tree(None, action_batch, self._shared_data._actions)
+        fill_tensor_tree(None, action_batch, self._shared_data._actions, non_blocking=True)
+        if th.cuda.is_initialized(): # synchronize always unless cuda has never even been used (this way we save a lot of memory)
+            th.cuda.synchronize()
         with self._actions_filled_cond: # mark actions as available
             self._actions_filled.value = self._n_envs
             self._actions_filled_cond.notify_all()

@@ -1020,3 +1020,6 @@ def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
     if squash_sigma > 0:
         noise = th.tanh(noise/(squash_sigma))*squash_sigma
     return noise*mu_std[1] + mu_std[0]
+
+def to_string_tensor(strings : list[str] | np.ndarray, max_string_len : int = 32):
+    return th.as_tensor([list(n.encode("utf-8").ljust(max_string_len)[:max_string_len]) for n in strings], dtype=th.uint8) # ugly, but simple

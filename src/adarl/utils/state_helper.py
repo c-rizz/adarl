@@ -62,7 +62,7 @@ class StateHelper(ABC):
     @abstractmethod
     def get(self, state, field_names : Sequence[FieldName]) -> th.Tensor:
         ...
-    
+
     @abstractmethod
     def field_idx(self, field_names : Sequence[FieldName], device : th.device) -> th.Tensor:
         ...
@@ -249,8 +249,8 @@ class ThBoxStateHelper(StateHelper):
         if len(field_names)>0 and isinstance(field_names[0],Sequence) and isinstance(field_names[1],Sequence):
             return state[:self.field_idx(field_names[0], device=state.device), self.subfield_idx(field_names[1], device=state.device)]
         else:
-            return state[:,self.field_idx(field_names, device=state.device)]            
-    
+            return state[:,self.field_idx(field_names, device=state.device)]
+
     @override
     def field_idx(self, field_names : Sequence[FieldName], device : th.device):
         return th.as_tensor([self._field_idxs[n] for n in field_names], device=device)

@@ -81,7 +81,9 @@ def _worker(
             cmd = simple_commander.wait_command()
             # ggLog.info(f"async_vector_env worker got cmd {cmd}")
             if cmd == b"step":
+                # ggLog.info(f"async_vec_env step: 1 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 action = shared_env_data.wait_actions()[env_idx]
+                # ggLog.info(f"async_vec_env step: 2 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 if action_device == "numpy":
                     if isinstance(action, th.Tensor):
                         action = action.cpu().numpy()
@@ -89,8 +91,10 @@ def _worker(
                         action = np.array(action)
                 elif isinstance(action_device, th.device):
                     action = th.as_tensor(action, device = action_device)
+                # ggLog.info(f"async_vec_env step: 3 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 consequent_observation, reward, terminated, truncated, consequent_info = env.step(action)
                 # convert to SB3 VecEnv api
+                # ggLog.info(f"async_vec_env step: 4 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 done = terminated or truncated
                 # info = {}
                 consequent_info["TimeLimit.truncated"] = truncated and not terminated # used by SB3 VecEnv specification
@@ -113,6 +117,7 @@ def _worker(
                 if done:
                     # save final observation where user can get it, then reset
                     next_start_observation, next_start_info = env.reset()
+                    # ggLog.info(f"async_vec_env step: 5 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                     # reset_info["final_info"] = reset_info  # always put an observation in info, this is not actually correct, but it hase the same structure
                     # next_start_info["final_observation"] = next_start_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
                     # next_start_info["terminal_observation"] = next_start_observation  # always put an observation in info, this is not actually correct, but it hase the same structure
@@ -134,6 +139,7 @@ def _worker(
                 # In any case (i.e. truncated, terminated, both, neither) the real next observation is the one in info
                 # then the algorithm will not consider reward propagation if termination==True (it instead has to
                 # consider reward propagation if termination==False and truncation==True)
+                # ggLog.info(f"async_vec_env step: 6 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 consequent_observation = map_tensor_tree(consequent_observation, func=lambda x: th.as_tensor(x))
                 if next_start_observation is not consequent_observation:
                     next_start_observation = map_tensor_tree(next_start_observation, func=lambda x: th.as_tensor(x))
@@ -145,6 +151,7 @@ def _worker(
                 if next_start_info is not consequent_info:
                     next_start_info = map_tensor_tree(next_start_info, func=th.as_tensor)
                 # print(f"observation shape = {map_tensor_tree(observation, lambda t: t.size())}")
+                # ggLog.info(f"async_vec_env step: 7 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 shared_env_data.fill_data(env_idx = env_idx,
                                           next_start_info = next_start_info,
                                           next_start_observation = next_start_observation,
@@ -154,14 +161,19 @@ def _worker(
                                           truncated=truncated,
                                           consequent_observation=consequent_observation,
                                           consequent_info = consequent_info)
+                # ggLog.info(f"async_vec_env step: 8 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 next_start_info = None
                 stepcount+=1
                 # th.cuda.memory._dump_snapshot(f"worker{env_idx}_step{stepcount}.pickle")
             elif cmd == b"reset":
+                # ggLog.info(f"async_vec_env reset: 1 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 data = remote.recv()
+                # ggLog.info(f"async_vec_env reset: 2 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 maybe_options = {"options": data[1]} if data[1] else {}
                 next_start_observation, next_start_info = env.reset(seed=data[0], **maybe_options)
+                # ggLog.info(f"async_vec_env reset: 3 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 remote.send((next_start_observation, next_start_info))
+                # ggLog.info(f"async_vec_env reset: 4 allocated {th.cuda.memory_allocated()} init {th.cuda.is_initialized()}")
                 next_start_info = None
             elif cmd == b"render":
                 remote.send(env.render())
@@ -265,7 +277,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
         self.single_info_space = info_space
 
-        ggLog.info(f"Building shared data for space {observation_space}")
+        ggLog.info(f"Building shared data for space {observation_space}, self._shared_mem_device={self._shared_mem_device}")
         self._shared_data = SharedData(observation_space=observation_space,
                                         action_space=action_space,
                                         info_space = info_space,
@@ -442,6 +454,8 @@ class AsyncVectorEnvShmem(VectorEnv):
             )
 
 
+        if isinstance(actions,th.Tensor):
+            actions = actions.to(self._shared_mem_device)
         self._shared_env_data.mark_waiting_data()
         self._shared_env_data.fill_actions(actions)
         self._simple_commander.set_command("step")

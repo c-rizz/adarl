@@ -28,7 +28,7 @@ def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : b
     else:
         raise RuntimeError(f"Unsupported space {space}")
 
-def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : TensorTree, depth = 0, nonstrict=False):
+def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : TensorTree, depth = 0, nonstrict=False, non_blocking = False):
     if isinstance(src_tree, dict):
         if not isinstance(dst_tree,dict):
             raise RuntimeError(f"Tree element type mismatch. src = {type(src_tree)}, dst = {dst_tree}")
@@ -43,14 +43,14 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : 
         else:
             fill_keys = dst_tree.keys()
         for k in fill_keys:
-            fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1, nonstrict=nonstrict)
+            fill_tensor_tree(env_idx, src_tree[k], dst_tree[k], depth = depth+1, nonstrict=nonstrict,non_blocking=non_blocking)
     elif isinstance(src_tree, th.Tensor):
         if not isinstance(dst_tree,th.Tensor):
             raise RuntimeError(f"Tree element type mismatch. src = {type(src_tree)}, dst = {dst_tree}")
         if env_idx is not None:
-            dst_tree[env_idx].copy_(src_tree, non_blocking=True)
+            dst_tree[env_idx].copy_(src_tree, non_blocking=non_blocking)
         else:
-            dst_tree.copy_(src_tree, non_blocking=True)
+            dst_tree.copy_(src_tree, non_blocking=non_blocking)
     else:
         raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
 
