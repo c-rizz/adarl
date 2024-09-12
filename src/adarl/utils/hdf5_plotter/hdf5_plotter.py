@@ -7,8 +7,15 @@ import numpy as np
 import readline # enables better input() features (arrow keys, history)
 # import seaborn as sns
 import os
+from typing import TypeVar
+import shutil
+import math 
 
-def recdict_access(rdict, keylist):
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+def recdict_access(rdict : dict[_K,_V], keylist : list[_K]) -> dict[_K,_V]:
     if len(keylist)==0:
         return rdict
     return recdict_access(rdict[keylist[0]], keylist[1:])
@@ -79,8 +86,11 @@ def cmd_cd(file, current_path, *args, **kwargs):
     return current_path, True
 
 def cmd_ls(file, current_path, *args, **kwargs):
-    k = recdict_access(f, current_path).keys()
-    print(list(k))
+    ks = recdict_access(f, current_path).keys()
+    max_k_len = max([len(k) for k in ks]) 
+    ks = [(str(k)+" ").rjust(max_k_len) for k in ks]
+    elements_per_row = int(shutil.get_terminal_size().columns/max_k_len)
+    print('\n'.join([''.join(ks[p:p+elements_per_row]) for p in range(0,math.ceil(len(ks)/elements_per_row), elements_per_row)]))
     return current_path, True
 
 def cmd_quit(file, current_path, *args, **kwargs):

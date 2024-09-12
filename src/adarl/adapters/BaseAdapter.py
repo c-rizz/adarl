@@ -2,6 +2,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import List, Tuple, Dict, Callable, Optional
+from typing_extensions import deprecated
 
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
@@ -29,9 +30,9 @@ class BaseAdapter(ABC):
         self._running_run_async_lock = RLock()
         self._running_run_async = False
         self.__lastResetTime = 0
-        self._jointsToObserve = []
-        self._linksToObserve = []
-        self._camerasToObserve = []
+        self._monitored_joints = []
+        self._monitored_links = []
+        self._monitored_cameras = []
 
     def set_monitored_joints(self, jointsToObserve : List[JointName]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.
@@ -42,7 +43,7 @@ class BaseAdapter(ABC):
             List of tuples of the format (model_name, joint_name)
 
         """
-        self._jointsToObserve = jointsToObserve
+        self._monitored_joints = jointsToObserve
 
 
     def set_monitored_links(self, linksToObserve : List[LinkName]):
@@ -54,7 +55,7 @@ class BaseAdapter(ABC):
             List of tuples of the format (model_name, link_name)
 
         """
-        self._linksToObserve = linksToObserve
+        self._monitored_links = linksToObserve
 
     def set_monitored_cameras(self, camerasToRender : List[str] = []):
         """Set which camera should be rendered after each simulation step. This information allows for more efficient communication with the simulator.
@@ -65,8 +66,16 @@ class BaseAdapter(ABC):
             List of the names of the cameras
 
         """
-        self._camerasToObserve = camerasToRender
+        self._monitored_cameras = camerasToRender
 
+    def get_monitored_joints(self):
+        return self._monitored_joints
+    
+    def get_monitored_links(self):
+        return self._monitored_links
+    
+    def get_monitored_cameras(self):
+        return self._monitored_cameras
 
     @abstractmethod
     def startup(self):
@@ -268,3 +277,19 @@ class BaseAdapter(ABC):
     def destroy_scenario(self, **kwargs):
         """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
         raise NotImplementedError()
+
+
+    @property
+    @deprecated("Just for back compatibility, do not use",)
+    def _jointsToObserve(self):
+        return self._monitored_joints
+    
+    @property
+    @deprecated("Just for back compatibility, do not use",)
+    def _linksToObserve(self):
+        return self._monitored_links
+    
+    @property
+    @deprecated("Just for back compatibility, do not use",)
+    def _camerasToObserve(self):
+        return self._monitored_cameras

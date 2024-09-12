@@ -679,12 +679,24 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                     allStates[self._getJointName(bodyId,jid)] = JointState([pos], [vel], [effort])
             return allStates
 
+    @override
     def get_joints_state_step_stats(self) -> th.Tensor:
+        """Returns the stats in a tensor of size (4,len(monitored_joints),3)
+        The four elements of the first dimension are (min,max,avg,std)
+        The second dimensin iterateson the monitored joints.
+        The last dimension contains position,velocity and effort.
+
+        Returns
+        -------
+        th.Tensor
+            The stats tensor
+        """
         return self._monitored_joints_stats[:4]
 
-    def _reset_joint_state_step_stats(self):
+
+    def _build_joint_state_step_stats(self):
         self._joint_stats_sample_count = 0
-        jstate_pve_size = (len(self._jointsToObserve),3)
+        jstate_pve_size = (len(self._monitored_joints),3)
         self._monitored_joints_stats = th.zeros((6,)+jstate_pve_size, dtype=th.float32)
         self._monitored_joints_min = self._monitored_joints_stats[0]
         self._monitored_joints_max = self._monitored_joints_stats[1]
@@ -700,7 +712,18 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._monitored_joints_sum[:] = th.tensor(0)
         self._monitored_joints_sum_of_squares[:] = th.tensor(0)
 
+    def _reset_joint_state_step_stats(self):
+        # ggLog.info(f"resetting stats")
+        self._joint_stats_sample_count = 0 # set to zero so the update rebuilds the stats
+        self._update_joint_state_step_stats() # rebuild and populate with current state
+        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because these actually belong to the previous step)
+
     def _update_joint_state_step_stats(self):
+        # ggLog.info(f"updating stats")
+        if self._joint_stats_sample_count == 0: # if we are at zero whatever is in the current state is invalid
+            self._build_joint_state_step_stats()
+        if len(self._monitored_joints) == 0:
+            return
         joint_states_t = self.getJointsState()
         self._joint_stats_sample_count += 1
         min = th.min(self._monitored_joints_min, joint_states_t)

@@ -13,7 +13,7 @@ import adarl.utils.dbg.ggLog as ggLog
 
 EnvControllerType = TypeVar("EnvControllerType", bound=BaseAdapter)
 
-class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
+class ControlledEnv(Generic[EnvControllerType], BaseEnv):
     """This is a base-class for implementing OpenAI-gym environments using environment controllers derived from BaseAdapter.
 
     It implements part of the methods defined in BaseEnv relying on an BaseAdapter
@@ -46,7 +46,7 @@ class ControlledEnv(BaseEnv, Generic[EnvControllerType]):
 
         if environmentController is None:
             raise AttributeError("You must specify environmentController")
-        self._environmentController = environmentController
+        self._environmentController : EnvControllerType = environmentController
         self._estimatedSimTime = 0.0 # Estimated from the results of each environmentController.step()
         self._intendedStepLength_sec = stepLength_sec
         self._allow_multiple_steps = allow_multiple_steps

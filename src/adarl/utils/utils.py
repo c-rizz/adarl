@@ -1049,3 +1049,11 @@ def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
 
 def to_string_tensor(strings : list[str] | np.ndarray, max_string_len : int = 32):
     return th.as_tensor([list(n.encode("utf-8").ljust(max_string_len)[:max_string_len]) for n in strings], dtype=th.uint8) # ugly, but simple
+
+_T = TypeVar('_T', float, th.Tensor)
+
+def unnormalize(v : _T, min : _T, max : _T) -> _T:
+    return min+(v+1)/2*(max-min)
+
+def normalize(value : _T, min : _T, max : _T):
+    return (value + (-min))/(max-min)*2-1
