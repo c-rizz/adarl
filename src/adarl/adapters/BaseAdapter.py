@@ -34,7 +34,7 @@ class BaseAdapter(ABC):
         self._monitored_links = []
         self._monitored_cameras = []
 
-    def set_monitored_joints(self, jointsToObserve : List[JointName]):
+    def set_monitored_joints(self, jointsToObserve : Sequence[JointName]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -43,10 +43,10 @@ class BaseAdapter(ABC):
             List of tuples of the format (model_name, joint_name)
 
         """
-        self._monitored_joints = jointsToObserve
+        self._monitored_joints = list(jointsToObserve)
 
 
-    def set_monitored_links(self, linksToObserve : List[LinkName]):
+    def set_monitored_links(self, linksToObserve : Sequence[LinkName]):
         """Set which links should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -55,9 +55,9 @@ class BaseAdapter(ABC):
             List of tuples of the format (model_name, link_name)
 
         """
-        self._monitored_links = linksToObserve
+        self._monitored_links = list(linksToObserve)
 
-    def set_monitored_cameras(self, camerasToRender : List[str] = []):
+    def set_monitored_cameras(self, camerasToRender : Sequence[str] = []):
         """Set which camera should be rendered after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -66,7 +66,7 @@ class BaseAdapter(ABC):
             List of the names of the cameras
 
         """
-        self._monitored_cameras = camerasToRender
+        self._monitored_cameras = list(camerasToRender)
 
     def get_monitored_joints(self):
         return self._monitored_joints

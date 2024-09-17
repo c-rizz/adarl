@@ -1,14 +1,14 @@
 from __future__ import annotations
 from adarl.utils.spaces import gym_spaces
 import torch as th
-from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar
+from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar, Mapping
 import numpy as np
 from adarl.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
 
 LeafType = TypeVar("LeafType")
-TensorDict = Union[Dict[Any,"TensorDict[LeafType]"], LeafType]
-TensorTree = Union[Dict[Any,"TensorTree[LeafType]"],
+TensorMapping = Union[Mapping[Any,"TensorMapping[LeafType]"], LeafType]
+TensorTree = Union[Mapping[Any,"TensorTree[LeafType]"],
                    List["TensorTree[LeafType]"],
                    Tuple["TensorTree[LeafType]", ...],
                    LeafType]

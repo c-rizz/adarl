@@ -655,7 +655,7 @@ def find_string_limits(text, pos):
     """ Assuming pos indicates a character in a string in text (string meaning a substringh delimited by quotes),
       this function fninds the position of the delimiters, i.e. the quotes"""
     start = string_find(text[:pos+1], ["\"","'"], reverse=True)
-    end = text.find(text[start])
+    end = string_find(text[start+1:], [text[start]])+start+1
     return start, end
 
 
@@ -664,18 +664,23 @@ def _fix_urdf_subst_find_paths(urdf_string : str):
     pos = 0
     while not done:
         subst_start = urdf_string.find("$(", pos)
+        # ggLog.info(f"Got match at {subst_start} : {urdf_string[subst_start:subst_start+20]}...")
         if subst_start != -1:
             subst_end = urdf_string.find(")",subst_start)
-            original_substring = urdf_string[subst_start:subst_end]
-            parts = [p for p in original_substring.split(" ") if len(p)>0]
-            if parts[1] == "find":
-                pkg_name = parts[2]
+            subst_inner = urdf_string[subst_start+2:subst_end] # Get the part inside the parentheses 
+            parts = [p for p in subst_inner.split(" ") if len(p)>0]
+            # ggLog.info(f"Got parts {parts}")
+            if parts[0] == "find":
+                pkg_name = parts[1]
+                # ggLog.info(f"Found $(find {pkg_name})")
                 import rospkg
                 try:
-                    pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+                    pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name)) # get ROS package
                 except rospkg.common.ResourceNotFound as e:
-                    pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
-                urdf_string = urdf_string.replace(original_substring,pkg_path) # could be done more efficiently...
+                    pkg_path = pkgutil_get_path(pkg_name) # get generic python package
+                full_subst = urdf_string[subst_start:subst_end+1]
+                # ggLog.info(f"Replacing {full_subst} with {[pkg_path]}")
+                urdf_string = urdf_string.replace(full_subst,pkg_path) # could be done more efficiently...
                 pos = subst_start+len(pkg_path)
             else:
                 pos = subst_start+1
@@ -684,15 +689,17 @@ def _fix_urdf_subst_find_paths(urdf_string : str):
     return urdf_string
 
 
-def _fix_urdf_package_paths(urdf_string):
+def _fix_urdf_package_paths(urdf_string : str):
     done = False
     pos = 0
     while not done:
         keyword = "package://"
         keyword_start = urdf_string.find(keyword, pos)
+        ggLog.info(f"Got match at {keyword_start} : {urdf_string[keyword_start:keyword_start+20]}...")
         if keyword_start != -1:
             path_start, path_end = find_string_limits(urdf_string, keyword_start)
-            original_path = urdf_string[path_start:path_end]
+            original_path = urdf_string[path_start+1:path_end]
+            ggLog.info(f"Resolving path in [{path_start},{path_end}]: '{original_path}'")
             split_path = original_path.split("/")
             pkg_name = split_path[2]
             import rospkg
@@ -701,8 +708,10 @@ def _fix_urdf_package_paths(urdf_string):
             except rospkg.common.ResourceNotFound as e:
                 pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
             abs_path = pkg_path+"/"+"/".join(split_path[3:])
+            ggLog.info(f"pkg_path: {pkg_path}")
             urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
             pos = path_start+len(abs_path)
+            ggLog.info(f"Fixed to {urdf_string[path_start-5:path_start+len(abs_path)+5]}")
         else:
             done = True
     return urdf_string
@@ -1057,3 +1066,13 @@ def unnormalize(v : _T, min : _T, max : _T) -> _T:
 
 def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
+
+dbg_checks_enabled = True
+def dbg_check(is_check_passed : Callable[[],bool], build_msg : Callable[[],str]):
+    if dbg_checks_enabled and not is_check_passed():
+        raise RuntimeError(build_msg())
+    
+def dbg_check_finite(tensor_tree):
+    from adarl.utils.tensor_trees import is_all_finite
+    dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
+              build_msg=lambda: f"Non-finite values in tensor tree: {tensor_tree}")

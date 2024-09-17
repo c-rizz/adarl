@@ -4,15 +4,25 @@ import pinocchio
 import numpy as np
 import adarl.utils.utils
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 import copy
-from typing import Iterable
+from typing import Iterable, TypedDict
 import itertools
 import faulthandler
 from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
+from enum import Enum
+
+
+class JointProperties(TypedDict):
+    joint_type : str
 
 class Robot():
+    JOINT_TYPES = Enum("JOINT_TYPES",["PRISMATIC",
+                                  "REVOLUTE",
+                                  "FIXED",
+                                  "FLOATING"])
+    
     def __init__(self, model_urdf_string : str):
         self._urdf_string = model_urdf_string
         self._model = pinocchio.buildModelFromXML(model_urdf_string)
@@ -20,7 +30,7 @@ class Robot():
                                                                        self._urdf_string,
                                                                        pinocchio.GeometryType.COLLISION)
         self._model_data = self._model.createData()
-        self._joint_position = pinocchio.randomConfiguration(self._model)
+        # self._joint_position = pinocchio.randomConfiguration(self._model)
         self._joint_position = np.zeros(shape=(self._model.njoints-1,))
         self._collision_object_count = 0
         self._collision_objects = {}
@@ -28,7 +38,6 @@ class Robot():
         self._joint_names = [str(n) for n in self._model.names]
         self._joints_num = len(self._joint_names)
         self._joint_name_to_idx = {n:self._joint_names.index(n) for n in self._joint_names}
-        print(f"_joint_name_to_idx = {self._joint_name_to_idx}")
         self._joint_idx_to_name = {idx:name for name,idx in self._joint_name_to_idx.items()}
 
         self._frame_names = [frame.name for frame in self._model.frames]
@@ -216,6 +225,27 @@ class Robot():
     def get_joint_names(self) -> list[str]:
         return self._joint_names
     
+    def get_joint_properties(self, joint_names : list[str] | None = None) -> dict[str,dict[str,JointProperties]]:
+        r = {}
+        if joint_names is None:
+            joint_names = self._joint_names
+        for jn in joint_names:
+            j = self._model.joints[self._joint_name_to_idx[jn]]
+            p = {}
+            if j.idx_q < 0 or j.idx_v<0:
+                p["type"] = Robot.JOINT_TYPES.FIXED # Not sure about this, but the universe joint that is added automatically apepars like this
+            elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned","JointModelRevoluteUnboundedUnaligned"]:
+                p["type"] = Robot.JOINT_TYPES.REVOLUTE
+                print(f"Joint {jn} is revolute")
+            elif j.shortname() in ["JointModelPX","JointModelPY","JointModelPZ","JointModelPrismaticUnaligned"]:
+                p["type"] = Robot.JOINT_TYPES.PRISMATIC
+            elif j.shortname() in ["JointModelFreeFlyer"]:
+                p["type"] = Robot.JOINT_TYPES.FLOATING
+            else:
+                raise RuntimeError(f"Unknown joint type {j.shortname()}")
+            r[jn] = p
+        return r
+    
     def get_frame_names(self) -> list[str]:
         return self._frame_names
     
@@ -264,21 +294,18 @@ class Robot():
             image_rgb = viewer.get_screenshot(requested_format='RGB')
         return image_rgb
     
-    def get_joint_limits(self, joints : list[str] | None = None) -> dict[str,np.ndarray]:
+    def get_joint_limits(self, joints : Sequence[str] | None = None) -> dict[str,np.ndarray]:
         if joints is None:
             joints = self.get_joint_names()
         limits_minmax_pve = {}
         p_minmax = np.stack([self._model.lowerPositionLimit,self._model.upperPositionLimit])
         v_minmax = np.stack([-self._model.velocityLimit,self._model.velocityLimit])
         e_minmax = np.stack([-self._model.effortLimit,self._model.effortLimit])
-        pve_minmax_j = np.stack([p_minmax,v_minmax,e_minmax])
-        minmax_j_pve = np.transpose(pve_minmax_j,[1,2,0])
         for jn in joints:
             joint_idx = self._joint_name_to_idx[jn]
             q_idx = self._model.idx_qs[joint_idx]
             v_idx = self._model.idx_vs[joint_idx]
             limits_minmax_pve[jn] = np.stack([p_minmax[:,q_idx], v_minmax[:,v_idx], e_minmax[:,v_idx]]).transpose()
-            # limits_minmax_pve[jn] = minmax_j_pve[:,joint_idx,:]
         return limits_minmax_pve
 
 
@@ -292,6 +319,7 @@ if __name__ == "__main__":
     robot = Robot(model_definition_string)
     n = '\n'
     print(f"Joints: {robot.get_joint_names()}")
+    print(f"Joints: {robot.get_joint_properties()}")
     print(f"Links: {robot.get_frame_names()}")
     print(f"Geoms: {robot.get_geom_names()}")
     print(f"Poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")

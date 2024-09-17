@@ -293,7 +293,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._startStateId = pybullet.saveState()
         self._simTime = 0
 
-    def set_monitored_joints(self, jointsToObserve: List[Tuple[str,str]]):
+    def set_monitored_joints(self, jointsToObserve: Sequence[Tuple[str,str]]):
         self._default_joint_state_requests = self._build_joint_state_requests(jointsToObserve)
         req_joint_names = []
         for body_id, joint_ids in self._default_joint_state_requests.items():
@@ -651,7 +651,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         
         if requestedJoints is None:
             state_pve = np.concatenate(responses_pve,axis=0)
-            # we have to correct the torque value fot eh joints that rea commanded in torque, pybullet returns zero for those,
+            # we have to correct the torque value for the joints that are commanded in torque, pybullet returns zero for those,
             # instead we use the commanded torque
             row = 0
             for bodyId, jids in requests.items():
@@ -725,6 +725,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         if len(self._monitored_joints) == 0:
             return
         joint_states_t = self.getJointsState()
+        adarl.utils.utils.dbg_check_finite(joint_states_t)
         self._joint_stats_sample_count += 1
         min = th.min(self._monitored_joints_min, joint_states_t)
         self._monitored_joints_min[:] = min
@@ -732,7 +733,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._monitored_joints_sum[:] = self._monitored_joints_sum + joint_states_t
         self._monitored_joints_sum_of_squares[:] = self._monitored_joints_sum_of_squares + joint_states_t**2
         self._monitored_joints_avg[:] = self._monitored_joints_sum / self._joint_stats_sample_count
-        self._monitored_joints_std[:] = th.sqrt(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2)
+        self._monitored_joints_std[:] = th.sqrt(th.clamp(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2,
+                                                          min=th.zeros_like(self._monitored_joints_avg)))
+        adarl.utils.utils.dbg_check_finite(self._monitored_joints_stats)
+
 
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):
         requests_by_body = {} # one request per body
@@ -889,24 +893,40 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._cameras[camera.camera_name] = camera
         ggLog.info(f"Registered camera with name {camera.camera_name} at link {camera.link_name}")
 
-    def _loadModel(self, modelFilePath : str, fileFormat : str = "urdf", model_kwargs = {}, model_name = None):
+    def _loadModel(self, model_definition_string : str | None = None,
+                         model_file_path : str | None = None,
+                         format : str = "urdf",
+                         model_kwargs = {},
+                         model_name = None,
+                         spawn_pose_xyzxyzw : tuple[float, float, float, float, float, float, float] | None = (0,0,0,0,0,0,1)):
         compiled_file_path = None
-        if fileFormat.split(".")[-1] == "xacro":
-            model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(modelFilePath).read_text(),
+        if model_definition_string is None and model_file_path is None or (model_definition_string is not None and model_file_path is not None):
+            raise RuntimeError(f"One and only one of model_definition_string and model_file_path must be None, but they are {model_definition_string} and {model_file_path}")
+        if format.split(".")[-1] == "xacro":
+            if model_file_path is not None and model_definition_string is None:
+                model_definition_string = Path(model_file_path).read_text()
+            model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=model_definition_string,
                                                                                 model_kwargs=model_kwargs)
-            compiled_file_path = f"/tmp/adarl_PyBulletUtils_xacrocompile_{int(time.time()*1000000)}_{os.getpid()}_{hash(modelFilePath)}"
+            compiled_file_path = f"/tmp/adarl_PyBulletUtils_xacrocompile_{int(time.time()*1000000)}_{os.getpid()}_{hash(model_file_path)}"
             Path(compiled_file_path).write_text(model_definition_string)
-            modelFilePath = compiled_file_path
-            fileFormat = ".".join(fileFormat.split(".")[:-1])
-        
-        if fileFormat == "urdf":
-            bodyId = pybullet.loadURDF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION|pybullet.URDF_PRINT_URDF_INFO)
-        elif fileFormat == "mjcf":
-            bodyId = pybullet.loadMJCF(modelFilePath, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
-        elif fileFormat == "sdf":
-            bodyId = pybullet.loadSDF(modelFilePath)[0]
+            model_file_path = compiled_file_path
+            format = ".".join(format.split(".")[:-1])
         else:
-            raise AttributeError("Invalid format "+str(fileFormat))
+            if model_file_path is None and model_definition_string is not None:
+                compiled_file_path = f"/tmp/adarl_PyBulletUtils_urdfstring_{int(time.time()*1000000)}_{os.getpid()}_{hash(model_file_path)}"
+                Path(compiled_file_path).write_text(model_definition_string)
+                model_file_path = compiled_file_path
+        
+        if format == "urdf":
+            bodyId = pybullet.loadURDF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION|pybullet.URDF_PRINT_URDF_INFO,
+                                       basePosition = spawn_pose_xyzxyzw[:3],
+                                       baseOrientation = spawn_pose_xyzxyzw[3:7])
+        elif format == "mjcf":
+            bodyId = pybullet.loadMJCF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
+        elif format == "sdf":
+            bodyId = pybullet.loadSDF(model_file_path)[0]
+        else:
+            raise AttributeError("Invalid format "+str(format))
 
         #pybullet.changeDynamics(bodyId, -1, linearDamping=0, angularDamping=0)
         for j in range(pybullet.getNumJoints(bodyId)):
@@ -925,8 +945,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                     force=0) # Disable velocity motor by setting its max torque to zero
             
 
-        if fileFormat == "sdf":
-            parsed_sdf = xmltodict.parse(Path(modelFilePath).read_text())
+        if format == "sdf":
+            parsed_sdf = xmltodict.parse(Path(model_file_path).read_text())
             ggLog.info(f"{parsed_sdf}")
             if "world" in parsed_sdf["sdf"]:
                 world = parsed_sdf["sdf"]["world"]
@@ -969,11 +989,14 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             model_name : Optional[str] = None,
                             pose : Optional[Pose] = None,
                             model_kwargs: Dict[Any, Any] = {}) -> str:
-        if model_definition_string is not None:
-            raise AttributeError(f"Only file model descriptions are supported")
         if model_name in self._modelName_to_bodyId:
             raise AttributeError(f"model name {model_name} is already present")
-        body_id = self._loadModel(modelFilePath=model_file, fileFormat=model_format, model_kwargs=model_kwargs, model_name = model_name)
+        body_id = self._loadModel(model_definition_string=model_definition_string,
+                                  model_file_path=model_file,
+                                  format=model_format,
+                                  model_kwargs=model_kwargs,
+                                  model_name = model_name,
+                                  spawn_pose_xyzxyzw=None if pose is None else pose.array_xyz_xyzw(tuple))
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
         self._refresh_entities_ids(print_info=True)

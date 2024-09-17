@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch as th
 from typing import TypeVar, Sequence, Mapping, Any, SupportsFloat
 import adarl.utils.spaces as spaces
-from adarl.utils.tensor_trees import TensorDict
+from adarl.utils.tensor_trees import TensorMapping
 import dataclasses
 import adarl.utils.utils
 import numpy as np
@@ -11,6 +11,7 @@ from typing_extensions import override
 import typing
 import adarl.utils.dbg.ggLog as ggLog
 from enum import IntEnum
+import adarl.utils.tensor_trees
 
 _T = TypeVar('_T', float, th.Tensor)
 def unnormalize(v : _T, min : _T, max : _T) -> _T:
@@ -86,7 +87,7 @@ class ThBoxStateHelper(StateHelper):
                 if len(self.field_size)!=1:
                     raise RuntimeError(f"subfield_names can be a list only if fields are 1-dimensional")
                 if len(subfield_names)!=self.field_size[0]:
-                    raise RuntimeError(f"subfield_names is not of size field_size, len(subfield_names)={len(subfield_names)} and field_size is {self.field_size}")
+                    raise RuntimeError(f"subfield_names is not of size field_size[0], len(subfield_names)={len(subfield_names)} and field_size[0] is {self.field_size[0]}")
             elif isinstance(subfield_names, np.ndarray):
                 if subfield_names.shape != self.field_size:
                     raise RuntimeError(f"subfield_names is not of size field_size, subfield_names.shape={subfield_names.shape} and field_size is {self.field_size}")
@@ -156,9 +157,12 @@ class ThBoxStateHelper(StateHelper):
         if self._fields_num == 1 and initial_values.size() == self._state_size[2:]:
             initial_values = initial_values.unsqueeze(0)
         if initial_values.size()!=self._state_size[1:]:
-            raise RuntimeError(f"Unexpected intial value shape {initial_values.size()}, should be {self._state_size[1:]}")
+            raise RuntimeError( f"Unexpected intial value shape {initial_values.size()}, should be {self._state_size[1:]}"
+                                f" Fields are {self.field_names}, subfields are {self.subfield_names}")
+        initial_values = initial_values.to(self._th_device, self._obs_dtype)
         state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))
-        assert state.size() == self._state_size, f"Unexpected resulting state size {state.size()}, should be {self._state_size}"
+        assert state.size() == self._state_size,    f"Unexpected resulting state size {state.size()}, should be {self._state_size}."\
+                                                    f" Fields are {self.field_names}, subfields are {self.subfield_names}"
         return state
     
     @override
@@ -491,13 +495,14 @@ class DictStateHelper(StateHelper):
 
 
 class RobotStateHelper(ThBoxStateHelper):
-    def __init__(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
-                        stiffness_minmax : tuple[float,float],
-                        damping_minmax : tuple[float,float],
+    def __init__(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                        stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                        damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
                         history_length : int = 1):
         subfield_names = ["pos","vel","eff","refpos","refvel","refeff","stiff","damp"]
+        self._th_device = th_device
         super().__init__(   field_names=list(joint_limit_minmax_pve.keys()),
                             obs_dtype=obs_dtype,
                             th_device=th_device,
@@ -506,34 +511,51 @@ class RobotStateHelper(ThBoxStateHelper):
                             history_length=history_length,
                             subfield_names = subfield_names)
 
-    def _build_fields_minmax(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
-                                    stiffness_minmax : tuple[float,float],
-                                    damping_minmax : tuple[float,float]) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
-        return {joint : th.as_tensor([  limits_minmax_pve[:,0],
-                                        limits_minmax_pve[:,1],
-                                        limits_minmax_pve[:,2],
-                                        limits_minmax_pve[:,0],
-                                        limits_minmax_pve[:,1],
-                                        limits_minmax_pve[:,2],
-                                        stiffness_minmax,
-                                        damping_minmax]).permute(1,0)
-                for joint,limits_minmax_pve in joint_limit_minmax_pve.items()}
+    def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                                    stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                                    damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor]) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
+        if isinstance(stiffness_minmax,tuple):
+            stiffness_minmax = {j:th.as_tensor(stiffness_minmax, device=self._th_device) for j in joint_limit_minmax_pve}
+        if isinstance(damping_minmax,tuple):
+            damping_minmax = {j:th.as_tensor(damping_minmax, device=self._th_device) for j in joint_limit_minmax_pve}
+        t_joint_limit_minmax_pve : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(joint_limit_minmax_pve, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
+        t_stiffness_minmax : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(stiffness_minmax, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
+        t_damping_minmax : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(damping_minmax, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
+        return {joint : th.stack([  limits_minmax_pve[:,0],
+                                    limits_minmax_pve[:,1],
+                                    limits_minmax_pve[:,2],
+                                    limits_minmax_pve[:,0],
+                                    limits_minmax_pve[:,1],
+                                    limits_minmax_pve[:,2],
+                                    t_stiffness_minmax[joint],
+                                    t_damping_minmax[joint]]).permute(1,0)
+                for joint,limits_minmax_pve in t_joint_limit_minmax_pve.items()}
         
-    def build_robot_limits(self, joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
-                            stiffness_minmax : tuple[float,float],
-                            damping_minmax : tuple[float,float]):
+    def build_robot_limits(self, joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                            stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
+                            damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor]):
         return super().build_limits(fields_minmax=self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax))
 
 
+    def state_names(self):
+        if self._state_names is None:
+            self._state_names = np.empty(shape=(self._history_length,self._fields_num)+self.field_size, dtype=object)
+            for h in range(self._history_length):
+                for fn in range(self._fields_num):
+                    for s in np.ndindex(self.field_size):
+                        jname = self.field_names[fn][0]
+                        self._state_names[(h,fn)+tuple(s)] = f"[{h},{jname},{self.subfield_names[s]}]"
+        return self._state_names
+
 class RobotStatsStateHelper(ThBoxStateHelper):
-    def __init__(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray],
+    def __init__(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
                         history_length : int = 1):
         subfield_names = [  "minpos","minvel","mineff",
-                            "maxpos","minpos","mineff",
-                            "avgpos","avgpos","avgeff",
-                            "stdpos","stdpos","stdeff"]
+                            "maxpos","maxvel","maxeff",
+                            "avgpos","avgvel","avgeff",
+                            "stdpos","stdvel","stdeff"]
         super().__init__(   field_names = list(joint_limit_minmax_pve.keys()),
                             obs_dtype = obs_dtype,
                             th_device = th_device,
@@ -542,7 +564,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                             history_length = history_length,
                             subfield_names = subfield_names)
 
-    def _build_fields_minmax(self,  joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray]
+    def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]
                              ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
         ret = {}
         for joint,limits_minmax_pve in joint_limit_minmax_pve.items():
@@ -558,7 +580,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                                     std_minmax_pve], dim=1)
         return ret
         
-    def build_robot_limits(self, joint_limit_minmax_pve : dict[tuple[str,str],np.ndarray]):
+    def build_robot_limits(self, joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]):
         return super().build_limits(fields_minmax=self._build_fields_minmax(joint_limit_minmax_pve))
 
 
@@ -573,13 +595,13 @@ class JointImpedanceActionHelper:
                                                 "POSITION_AND_STIFFNESS"], start=0)
     
     action_lengths = {
-        CONTROL_MODES.IMPEDANCE: 10 ,
-        CONTROL_MODES.IMPEDANCE_NO_GAINS: 6,
-        CONTROL_MODES.POSITION_AND_TORQUES: 4,
-        CONTROL_MODES.POSITION_AND_STIFFNESS: 4,
-        CONTROL_MODES.TORQUE: 2,
-        CONTROL_MODES.VELOCITY: 2,
-        CONTROL_MODES.POSITION: 2,
+        CONTROL_MODES.IMPEDANCE: 5 ,
+        CONTROL_MODES.IMPEDANCE_NO_GAINS: 3,
+        CONTROL_MODES.POSITION_AND_TORQUES: 2,
+        CONTROL_MODES.POSITION_AND_STIFFNESS: 2,
+        CONTROL_MODES.TORQUE: 1,
+        CONTROL_MODES.VELOCITY: 1,
+        CONTROL_MODES.POSITION: 1,
         }
     
     def __init__(self, control_mode : CONTROL_MODES,
@@ -607,32 +629,49 @@ class JointImpedanceActionHelper:
         d = normalize(self._safe_damping,   min=self._minmax_joints_pvesd[0,:,4],max=self._minmax_joints_pvesd[1,:,4])
         if self._control_mode == self.CONTROL_MODES.VELOCITY:
             act_to_pvesd =  [1]
-            base_pvesd = [0.0, 0.0, 0.0, -1.0, d]
+            base_pvesd = [0.0, 0.0, 0.0, -1.0, float("nan")]
+            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION:
             act_to_pvesd =  [0]
-            base_pvesd =  [0.0, 0.0, 0.0, s, d]
+            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
+            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd[:,3] = s
+            self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
             act_to_pvesd =  [0,2]
-            base_pvesd =  [0.0, 0.0, 0.0, s, d]
+            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
+            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd[:,3] = s
+            self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
             act_to_pvesd =  [0,1,2]
-            base_pvesd =  [0.0, 0.0, 0.0, s, d]
+            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
+            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd[:,3] = s
+            self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
             act_to_pvesd =  [0,1,2,3,4]
             base_pvesd =  [0.0, 0.0, 0.0, 0.0, 0.0]
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
             act_to_pvesd =  [0,3]
-            base_pvesd =  [0.0, 0.0, 0.0, 0.0, d]
+            base_pvesd =  [0.0, 0.0, 0.0, 0.0, float("nan")]
+            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.TORQUE:
             act_to_pvesd =  [2]
             base_pvesd =  [0.0, 0.0, 0.0, -1.0, -1.0]
         else:
             raise RuntimeError(f"Invalid control mode {self._control_mode}")
-        self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
                                               dtype=th.int32,
                                               device=self._th_device)
         
+    def action_len(self):
+        return self.action_lengths[self._control_mode]*self._joints_num
+    
+    def action_space(self, seed : int):
+        return spaces.gym_spaces.Box(-np.ones(self.action_len()),np.ones(self.action_len()), seed=seed)
 
     def _pvesd_to_action(self, cmds_pvesd : dict[tuple[str,str], tuple[float,float,float,float,float]]):
         cmd_joints_pvesd = th.as_tensor([cmds_pvesd[j] for j in self._joints])
