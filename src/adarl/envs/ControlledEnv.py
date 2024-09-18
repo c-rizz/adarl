@@ -46,7 +46,7 @@ class ControlledEnv(Generic[EnvControllerType], BaseEnv):
 
         if environmentController is None:
             raise AttributeError("You must specify environmentController")
-        self._environmentController : EnvControllerType = environmentController
+        self._adapter : EnvControllerType = environmentController
         self._estimatedSimTime = 0.0 # Estimated from the results of each environmentController.step()
         self._intendedStepLength_sec = stepLength_sec
         self._allow_multiple_steps = allow_multiple_steps
@@ -67,7 +67,7 @@ class ControlledEnv(Generic[EnvControllerType], BaseEnv):
         super().performStep()
         estimatedStepDuration_sec = 0
         while True: # Do at least one step, then check if we need more
-            estimatedStepDuration_sec += self._environmentController.step()
+            estimatedStepDuration_sec += self._adapter.step()
             if estimatedStepDuration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
                 break
             elif not self._allow_multiple_steps:
@@ -80,10 +80,10 @@ class ControlledEnv(Generic[EnvControllerType], BaseEnv):
 
     def performReset(self, options = {}):
         super().performReset(options)
-        self._environmentController.resetWorld()
+        self._adapter.resetWorld()
         self._estimatedSimTime = 0.0
         self.initializeEpisode(options)
 
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvTimeFromStartup()
+        return self._adapter.getEnvTimeFromStartup()

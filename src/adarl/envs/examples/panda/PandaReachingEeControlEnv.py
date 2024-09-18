@@ -79,15 +79,15 @@ class PandaReachingEeControlEnv(ControlledEnv):
         if environmentController is None:                
             raise AttributeError("You must specify environmentController")
         else:
-            self._environmentController = environmentController
+            self._adapter = environmentController
 
         super().__init__(   maxStepsPerEpisode = maxStepsPerEpisode,
                             startSimulation = startSimulation,
-                            environmentController=self._environmentController,
+                            environmentController=self._adapter,
                             simulationBackend=backend)
 
         self._camera_name = "simple_camera"
-        self._environmentController.set_monitored_cameras([self._camera_name])
+        self._adapter.set_monitored_cameras([self._camera_name])
 
 
         self._initialJointPose = {  ("panda","panda_joint1") : 0.0,
@@ -98,7 +98,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                     ("panda","panda_joint6") : 3.14159/4,
                                     ("panda","panda_joint7") : 0.0}
 
-        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
+        self._adapter.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -107,7 +107,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.set_monitored_links( [("panda","panda_link1"),
+        self._adapter.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -123,7 +123,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
         self._maxPositionChange = 0.1
         self._maxOrientationChange = 45.0/180*3.14159 # 5 degrees
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
         self._operatingArea = operatingArea #min xyz, max xyz
 
@@ -160,7 +160,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
         unnorm_action = np.concatenate([absolute_xyz, absolute_quat_arr])
         print("moving to "+str(unnorm_action))
 
-        self._environmentController.setCartesianPoseCommand(linkPoses = {("panda","panda_link8") : unnorm_action},
+        self._adapter.setCartesianPoseCommand(linkPoses = {("panda","panda_link8") : unnorm_action},
                                                             do_cartesian = False,
                                                             velocity_scaling = 0.5,
                                                             acceleration_scaling = 0.5)
@@ -230,7 +230,7 @@ class PandaReachingEeControlEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        self._environmentController.addCollisionBox(pose_xyz_xyzw = (0,0,-0.501,0,0,0,1),
+        self._adapter.addCollisionBox(pose_xyz_xyzw = (0,0,-0.501,0,0,0,1),
                                                     size_xyz = (10,10,1),
                                                     attach_link = None,
                                                     reference_frame = "world",
@@ -238,13 +238,13 @@ class PandaReachingEeControlEnv(ControlledEnv):
         moved = False                                                    
         for i in range(5):
             try:
-                self._environmentController.moveToJointPoseSync(jointPositions=self._initialJointPose, velocity_scaling=0.9, acceleration_scaling=0.9)
+                self._adapter.moveToJointPoseSync(jointPositions=self._initialJointPose, velocity_scaling=0.9, acceleration_scaling=0.9)
                 moved = True
                 break
             except Exception as e:
                 ggLog.error("Initialization move failed. exception = "+adarl.utils.utils.exc_to_str(e))
                 #self._actionsFailsInLastStepCounter+=1
-                self._environmentController.run(duration_sec=1.0)
+                self._adapter.run(duration_sec=1.0)
                 ggLog.error(f"Retrying Initialization (i = {i}).")
         if not moved:
             ggLog.error("Failed to move to episode initialization joint pose.")
@@ -262,8 +262,8 @@ class PandaReachingEeControlEnv(ControlledEnv):
 
         """
 
-        eePose = self._environmentController.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
-        jointStates = self._environmentController.getJointsState([("panda","panda_joint1"),
+        eePose = self._adapter.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
+        jointStates = self._adapter.getJointsState([("panda","panda_joint1"),
                                                                  ("panda","panda_joint2"),
                                                                  ("panda","panda_joint3"),
                                                                  ("panda","panda_joint4"),
@@ -294,41 +294,41 @@ class PandaReachingEeControlEnv(ControlledEnv):
                     jointStates[("panda","panda_joint5")].position[0],
                     jointStates[("panda","panda_joint6")].position[0],
                     jointStates[("panda","panda_joint7")].position[0],
-                    self._environmentController.actionsFailsInLastStep()]
+                    self._adapter.actionsFailsInLastStep()]
 
         return np.array(state,dtype=np.float32)
 
     def buildSimulation(self, backend : str = "gazebo"):
         if backend == "gazebo":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "load_gripper":"false"})
         elif backend == "real":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "robot_ip":self._real_robot_ip,
                                                                             "simulated":"false",
                                                                             "control_mode":"position"},
                                                         basePort = 11311,
                                                         ros_master_ip = self._real_robot_pc_ip)
         elif backend == "ros2_gz":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros2","/launch/gz_panda_cam.launch.xml"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros2","/launch/gz_panda_cam.launch.xml"),
                                                         launch_file_args={  "use_gui":"false"})
         elif backend == "gz":
-            self._environmentController.build_scenario( sdf_file=("adarl_ros2","/worlds/empty_cams.sdf"),
+            self._adapter.build_scenario( sdf_file=("adarl_ros2","/worlds/empty_cams.sdf"),
                                                         launch_file_pkg_and_path=("adarl_ros2","/launch/gz_panda_cam.launch.xml"),
                                                         launch_file_args={  "use_gui":"false", "launch_gazebo" : "false"})
         else:
             raise NotImplementedError("Backend '"+backend+"' not supported")
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getInfo(self,state=None):
         return {}
 
     def getUiRendering(self):
 
-        img, t = self._environmentController.getRenderings([self._camera_name])[self._camera_name]
+        img, t = self._adapter.getRenderings([self._camera_name])[self._camera_name]
         if img is None:
             npImg = None
             time = -1

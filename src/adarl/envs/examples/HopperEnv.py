@@ -97,12 +97,12 @@ class HopperEnv(ControlledEnv):
 
         #print("HopperEnv: action_space = "+str(self.action_space))
         #print("HopperEnv: action_space = "+str(self.action_space))
-        self._environmentController.set_monitored_joints([("hopper","torso_to_thigh"),
+        self._adapter.set_monitored_joints([("hopper","torso_to_thigh"),
                                                         ("hopper","thigh_to_leg"),
                                                         ("hopper","leg_to_foot"),
                                                         ("hopper","torso_pitch_joint")])
 
-        self._environmentController.set_monitored_links([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
+        self._adapter.set_monitored_links([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
 
         self._stepLength_sec = stepLength_sec
         self._renderingEnabled = render
@@ -112,9 +112,9 @@ class HopperEnv(ControlledEnv):
         self._tot_episodes = 0
         self._success_ratio = 0
         if self._renderingEnabled:
-            self._environmentController.set_monitored_cameras(["camera"])
+            self._adapter.set_monitored_cameras(["camera"])
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
     def submitAction(self, action : np.typing.NDArray[(3,), np.float32]) -> None:
         super().submitAction(action)
@@ -125,7 +125,7 @@ class HopperEnv(ControlledEnv):
         unnormalizedAction = (  float(np.clip(action[0],-1,1))*self.MAX_TORQUE,
                                 float(np.clip(action[1],-1,1))*self.MAX_TORQUE,
                                 float(np.clip(action[2],-1,1))*self.MAX_TORQUE)
-        self._environmentController.setJointsEffortCommand([ ("hopper","torso_to_thigh",unnormalizedAction[0]),
+        self._adapter.setJointsEffortCommand([ ("hopper","torso_to_thigh",unnormalizedAction[0]),
                                                     ("hopper","thigh_to_leg",unnormalizedAction[1]),
                                                     ("hopper","leg_to_foot",unnormalizedAction[2])])
 
@@ -162,13 +162,13 @@ class HopperEnv(ControlledEnv):
 
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
-            self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf.xacro"),
+        if not self._spawned and isinstance(self._adapter, BaseSimulationAdapter):
+            self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=build_pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":"213","camera_height":"120"})
             self._spawned = True
-        self._environmentController.setJointsEffortCommand([  ("hopper","torso_to_thigh",0),
+        self._adapter.setJointsEffortCommand([  ("hopper","torso_to_thigh",0),
                                                        ("hopper","thigh_to_leg",0),
                                                        ("hopper","leg_to_foot",0)])
 
@@ -188,11 +188,11 @@ class HopperEnv(ControlledEnv):
         """
 
 
-        jointStates = self._environmentController.getJointsState([("hopper","torso_to_thigh"),
+        jointStates = self._adapter.getJointsState([("hopper","torso_to_thigh"),
                                                                   ("hopper","thigh_to_leg"),
                                                                   ("hopper","leg_to_foot"),
                                                                   ("hopper","torso_pitch_joint")])
-        linksState = self._environmentController.getLinksState([("hopper","torso"),
+        linksState = self._adapter.getLinksState([("hopper","torso"),
                                                                 ("hopper","thigh"),
                                                                 ("hopper","leg"),
                                                                 ("hopper","foot")])
@@ -243,7 +243,7 @@ class HopperEnv(ControlledEnv):
         return state
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
-        npArrImg, t = self._environmentController.getRenderings(["camera"])["camera"]
+        npArrImg, t = self._adapter.getRenderings(["camera"])["camera"]
         # npArrImg = adarl.utils.utils.ros1_image_to_numpy(imgMsg)
         # t = imgMsg.header.stamp.to_sec()
         return (npArrImg,t)
@@ -252,7 +252,7 @@ class HopperEnv(ControlledEnv):
     def buildSimulation(self, backend : str = "gazebo"):
         if backend == "gazebo":
             worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "paused":"true",
                                                                             "physics_engine":"ode",
@@ -263,15 +263,15 @@ class HopperEnv(ControlledEnv):
             # time.sleep(10)
         elif backend == "bullet":
             if self._useMjcfFile:
-                self._environmentController.build_scenario(adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_mjcf_pybullet.xml"), format = "mjcf")
+                self._adapter.build_scenario(adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_mjcf_pybullet.xml"), format = "mjcf")
             else:
-                self._environmentController.build_scenario(adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf"), format = "urdf")
+                self._adapter.build_scenario(adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf"), format = "urdf")
             self._spawned = True
         else:
             raise NotImplementedError("Backend "+backend+" not supported")
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getInfo(self,state=None) -> Dict[Any,Any]:
         i = super().getInfo(state=state)

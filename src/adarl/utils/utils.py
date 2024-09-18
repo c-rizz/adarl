@@ -695,11 +695,11 @@ def _fix_urdf_package_paths(urdf_string : str):
     while not done:
         keyword = "package://"
         keyword_start = urdf_string.find(keyword, pos)
-        ggLog.info(f"Got match at {keyword_start} : {urdf_string[keyword_start:keyword_start+20]}...")
+        # ggLog.info(f"Got match at {keyword_start} : {urdf_string[keyword_start:keyword_start+20]}...")
         if keyword_start != -1:
             path_start, path_end = find_string_limits(urdf_string, keyword_start)
             original_path = urdf_string[path_start+1:path_end]
-            ggLog.info(f"Resolving path in [{path_start},{path_end}]: '{original_path}'")
+            # ggLog.info(f"Resolving path in [{path_start},{path_end}]: '{original_path}'")
             split_path = original_path.split("/")
             pkg_name = split_path[2]
             import rospkg
@@ -708,10 +708,10 @@ def _fix_urdf_package_paths(urdf_string : str):
             except rospkg.common.ResourceNotFound as e:
                 pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
             abs_path = pkg_path+"/"+"/".join(split_path[3:])
-            ggLog.info(f"pkg_path: {pkg_path}")
+            # ggLog.info(f"pkg_path: {pkg_path}")
             urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
             pos = path_start+len(abs_path)
-            ggLog.info(f"Fixed to {urdf_string[path_start-5:path_start+len(abs_path)+5]}")
+            # ggLog.info(f"Fixed to {urdf_string[path_start-5:path_start+len(abs_path)+5]}")
         else:
             done = True
     return urdf_string

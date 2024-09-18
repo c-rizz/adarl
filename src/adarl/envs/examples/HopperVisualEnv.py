@@ -96,14 +96,14 @@ class HopperVisualEnv(HopperEnv):
 
         #print("HopperEnv: action_space = "+str(self.action_space))
         #print("HopperEnv: action_space = "+str(self.action_space))
-        self._environmentController.set_monitored_joints([("hopper","torso_to_thigh"),
+        self._adapter.set_monitored_joints([("hopper","torso_to_thigh"),
                                                         ("hopper","thigh_to_leg"),
                                                         ("hopper","leg_to_foot"),
                                                         ("hopper","torso_pitch_joint")])
-        self._environmentController.set_monitored_links([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
-        self._environmentController.set_monitored_cameras(["camera"])
+        self._adapter.set_monitored_links([("hopper","torso"),("hopper","thigh"),("hopper","leg"),("hopper","foot")])
+        self._adapter.set_monitored_cameras(["camera"])
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
 
 
@@ -142,15 +142,15 @@ class HopperVisualEnv(HopperEnv):
         return (robotState, imgObservation)
 
     def initializeEpisode(self) -> None:
-        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
+        if not self._spawned and isinstance(self._adapter, BaseSimulationAdapter):
             simCamHeight = int(64*(self._obs_img_height/64))
             simCamWidth = int(64*16/9*(self._obs_img_height/64))
-            self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf.xacro"),
+            self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_v1.urdf.xacro"),
                                                     model_name="hopper",
                                                     pose=build_pose(0,0,0,0,0,0,1),
                                                     model_kwargs={"camera_width":str(simCamWidth),"camera_height":str(simCamHeight)})
             self._spawned = True
-        self._environmentController.setJointsEffortCommand([("hopper","torso_to_thigh",0),
+        self._adapter.setJointsEffortCommand([("hopper","torso_to_thigh",0),
                                                             ("hopper","thigh_to_leg",0),
                                                             ("hopper","leg_to_foot",0)])
 
@@ -158,7 +158,7 @@ class HopperVisualEnv(HopperEnv):
 
         if backend == "gazebo":
             worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "paused":"true",
                                                                             "physics_engine":"ode",
@@ -201,8 +201,8 @@ class HopperVisualEnv(HopperEnv):
         for i in range(self._frame_stacking_size):
             #ggLog.info(f"Stepping {i}")
             super(HopperEnv, self).performStep()
-            self._environmentController.step()
-            img, t = self._environmentController.getRenderings(["camera"])["camera"]
+            self._adapter.step()
+            img, t = self._adapter.getRenderings(["camera"])["camera"]
             if img is None:
                 ggLog.error("No camera image received. Observation will contain and empty image.")
                 img = np.empty([self._obs_img_height, self._obs_img_width,3])
@@ -215,9 +215,9 @@ class HopperVisualEnv(HopperEnv):
     def performReset(self, options = {}):
         #ggLog.info("PerformReset")
         super().performReset()
-        self._environmentController.resetWorld()
+        self._adapter.resetWorld()
         self.initializeEpisode()
-        img, t = self._environmentController.getRenderings(["camera"])["camera"]
+        img, t = self._adapter.getRenderings(["camera"])["camera"]
         if img is None:
             ggLog.error("No camera image received. Observation will contain and empty image.")
             img = np.empty([self._obs_img_height, self._obs_img_width,3])

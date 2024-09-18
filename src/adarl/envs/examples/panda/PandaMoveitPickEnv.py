@@ -86,7 +86,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                
-            # self._environmentController = MoveitGazeboAdapter(jointsOrder = [("panda","panda_joint1"),
+            # self._adapter = MoveitGazeboAdapter(jointsOrder = [("panda","panda_joint1"),
             #                                                                 ("panda","panda_joint2"),
             #                                                                 ("panda","panda_joint3"),
             #                                                                 ("panda","panda_joint4"),
@@ -106,18 +106,18 @@ class PandaMoveitPickEnv(ControlledEnv):
             #                                                 gripperInitialWidth = 0.08)
             raise AttributeError("You must specify environmentController")
         else:
-            self._environmentController = environmentController
+            self._adapter = environmentController
 
         super().__init__(   maxStepsPerEpisode = maxStepsPerEpisode,
                             startSimulation = startSimulation,
                             simulationBackend=backend,
-                            environmentController=self._environmentController)
+                            environmentController=self._adapter)
 
         self._renderingEnabled = render
         if self._renderingEnabled:
-            self._environmentController.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
+            self._adapter.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
 
-        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
+        self._adapter.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -128,7 +128,7 @@ class PandaMoveitPickEnv(ControlledEnv):
                                                         ("panda","panda_finger_joint2")])
 
 
-        self._environmentController.set_monitored_links( [("panda","panda_link1"),
+        self._adapter.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -145,7 +145,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._maxPositionChange = 0.1
         self._maxOrientationChange = 5.0/180*3.14159 # 5 degrees
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
         self._operatingArea = operatingArea #min xyz, max xyz
 
@@ -187,18 +187,18 @@ class PandaMoveitPickEnv(ControlledEnv):
         unnorm_action = np.concatenate([absolute_xyz, absolute_quat_arr])
         #print("attempting action "+str(action))
 
-        self._environmentController.setCartesianPoseCommand(linkPoses = {("panda","panda_tcp") : unnorm_action})
+        self._adapter.setCartesianPoseCommand(linkPoses = {("panda","panda_tcp") : unnorm_action})
 
         maxEffort = np.clip(action[7], -1, 1).item()
         maxEffort *= self._maxMaxGripperEffort
         #Only send close and open commands once, if the command a repeated in the real the gripper opens
         if action[6] > 0.5 and not self._gripperOpen:
             # ggLog.info("Opening")
-            self._environmentController.setGripperAction(width = self._maxGripperWidth, max_effort = maxEffort)
+            self._adapter.setGripperAction(width = self._maxGripperWidth, max_effort = maxEffort)
             self._gripperOpen = True
         elif action[6] <= 0.5 and self._gripperOpen:
             # ggLog.info("Closing")
-            self._environmentController.setGripperAction(width = 0, max_effort = maxEffort)
+            self._adapter.setGripperAction(width = 0, max_effort = maxEffort)
             self._gripperOpen = False
 
 
@@ -317,8 +317,8 @@ class PandaMoveitPickEnv(ControlledEnv):
         self._wasHoldingSomethingPrevStep = False
         self._gripperOpen = True
 
-        if isinstance(self._environmentController, BaseSimulationAdapter):
-            self._environmentController.setLinksStateDirect({   ("cube","cube") : LinkState(position_xyz = (0.45, 0, 0.025),
+        if isinstance(self._adapter, BaseSimulationAdapter):
+            self._adapter.setLinksStateDirect({   ("cube","cube") : LinkState(position_xyz = (0.45, 0, 0.025),
                                                                                             orientation_xyzw = (0,0,0,1),
                                                                                             pos_velocity_xyz = (0,0,0),
                                                                                             ang_velocity_xyz = (0,0,0))
@@ -332,7 +332,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
     def performReset(self, options = {}) -> None:
         super().performReset()
-        self._environmentController.resetWorld()
+        self._adapter.resetWorld()
 
 
     def getObservation(self, state) -> np.ndarray:
@@ -348,8 +348,8 @@ class PandaMoveitPickEnv(ControlledEnv):
 
         """
 
-        eePose = self._environmentController.getLinksState(requestedLinks=[("panda","panda_tcp")])[("panda","panda_tcp")].pose
-        jointStates = self._environmentController.getJointsState([("panda","panda_joint1"),
+        eePose = self._adapter.getLinksState(requestedLinks=[("panda","panda_tcp")])[("panda","panda_tcp")].pose
+        jointStates = self._adapter.getJointsState([("panda","panda_joint1"),
                                                                  ("panda","panda_joint2"),
                                                                  ("panda","panda_joint3"),
                                                                  ("panda","panda_joint4"),
@@ -383,19 +383,19 @@ class PandaMoveitPickEnv(ControlledEnv):
                     jointStates[("panda","panda_joint5")].position[0],
                     jointStates[("panda","panda_joint6")].position[0],
                     jointStates[("panda","panda_joint7")].position[0],
-                    self._environmentController.actionsFailsInLastStep(),
+                    self._adapter.actionsFailsInLastStep(),
                     gripWidth]
 
         return np.array(state,dtype=np.float32)
 
     def buildSimulation(self, backend : str = "gazebo"):
         if backend == "gazebo":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/panda_moveit_pick.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/panda_moveit_pick.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "noplugin":"false",
                                                                             "simulated":"true"})
         elif backend == "real":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/panda_moveit_pick.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/panda_moveit_pick.launch"),
                                                         launch_file_args={  "robot_ip":self._real_robot_ip,
                                                                             "simulated":"false"},
                                                         basePort = 11311,
@@ -406,7 +406,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvTimeFromStartup()
+        return self._adapter.getEnvTimeFromStartup()
