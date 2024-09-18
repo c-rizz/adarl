@@ -185,7 +185,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         global_max_acceleration_position_control : float = 10,
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
                         simulation_step = 1/960,
-                        enable_redering = True):
+                        enable_redering = True,
+                        verbose : bool = False):
         """Initialize the Simulator controller.
 
 
@@ -227,7 +228,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._stepping_stime_since_build = 0
         self._run_time_since_build = 0
         self._build_time = time.monotonic()
-        self._verbose = False
+        self._verbose = verbose
         self._monitored_contacts = []
         self._default_joint_state_requests = {}
         
@@ -870,7 +871,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
         planeObjId = pybullet.loadURDF("plane.urdf")
-        pybullet.changeDynamics(planeObjId, -1, lateralFriction=0.8, restitution=0.5)
+        pybullet.changeDynamics(planeObjId, -1, lateralFriction=1, restitution=0.5)
         adarl.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
@@ -999,7 +1000,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                   spawn_pose_xyzxyzw=None if pose is None else pose.array_xyz_xyzw(tuple))
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
-        self._refresh_entities_ids(print_info=True)
+        self._refresh_entities_ids(print_info=self._verbose)
         ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],

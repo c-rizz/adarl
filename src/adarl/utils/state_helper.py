@@ -25,7 +25,7 @@ FieldName = str | int | tuple[str,str]
 
 class StateHelper(ABC):
     @abstractmethod
-    def reset_state(self, initial_values):
+    def reset_state(self, initial_values = None):
         ...
     @abstractmethod
     def update(self, instantaneous_state, state):
@@ -115,7 +115,7 @@ class ThBoxStateHelper(StateHelper):
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
 
         self._observable_fields = [f for f in self.field_names if f in self._observable_fields] # to ensure they are ordered
-        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields])
+        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields], dtype=th.int32)
         # print(f"observable_indexes = {self._observable_indexes}")
         lmin = self._limits_minmax[0]
         hlmin = lmin.expand(self._history_length, *lmin.size())
@@ -144,7 +144,9 @@ class ThBoxStateHelper(StateHelper):
         return th.stack([instantaneous_state[k] for k in self.field_names])
 
     @override
-    def reset_state(self, initial_values : th.Tensor | SupportsFloat | Mapping[FieldName,th.Tensor | float | Sequence[float]]):
+    def reset_state(self, initial_values : th.Tensor | SupportsFloat | Mapping[FieldName,th.Tensor | float | Sequence[float]] | None= None):
+        if initial_values is None:
+            initial_values = th.tensor(0.0)
         if isinstance(initial_values,Mapping):
             initial_values = self._mapping_to_tensor(initial_values)
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
@@ -394,8 +396,39 @@ class DictStateHelper(StateHelper):
             obs_subspaces[self._flatten_part_name] = spaces.ThBox(low = -1, high = 1, shape=(self._flattened_part_size,), dtype=flattened_dtype)
         self._obs_space = spaces.gym_spaces.Dict(obs_subspaces)
         
+    def add_substate(self,  state_name : str,
+                            state_helper : ThBoxStateHelper,
+                            observable : bool,
+                            flatten : bool,
+                            noise : StateNoiseGenerator | None= None) -> DictStateHelper:
+        state_helpers = {state_name:state_helper}
+        state_helpers.update(self.sub_helpers)
+        if observable:
+            observable_fields = [state_name]
+        else:
+            observable_fields = []
+        if flatten:
+            flatten_in_obs = [state_name]
+        else:
+            flatten_in_obs = []
+        flatten_in_obs.extend(self._flatten_in_obs)
+        observable_fields.extend(self._observable_fields)
+        if noise is not None:
+            noises = {state_name:noise}
+        else:
+            noises = {}
+        noises.update(self.noise_generators)        
+        return DictStateHelper( state_helpers=state_helpers,
+                                observable_fields=observable_fields,
+                                flatten_in_obs=flatten_in_obs,
+                                flattened_part_name=self._flatten_part_name,
+                                noise=noises)
+        
+    
     @override
-    def reset_state(self, initial_values: State) -> State:
+    def reset_state(self, initial_values: State | None = None) -> State:
+        if initial_values is None:
+            initial_values = {k:th.tensor(0.0) for k in self.sub_helpers.keys()}
         state = {k:self.sub_helpers[k].reset_state(v) for k,v in initial_values.items()}
         noise_state = {k+"_n":ng.reset_state() for k,ng in self.noise_generators.items()}
         state.update(noise_state)
@@ -427,6 +460,7 @@ class DictStateHelper(StateHelper):
         # ggLog.info(f"normalized state = {state}")
         noisy_state = {k:ss+state[k+"_n"] if k in self.noise_generators else ss for k,ss in state.items()}
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k]) for k in  self._observable_fields}
+        # ggLog.info(f"non_flat_obs = {nonflat_obs}")
         flattened_parts = []
         obs = {}
         for k,subobs in nonflat_obs.items():
@@ -543,7 +577,7 @@ class RobotStateHelper(ThBoxStateHelper):
             for h in range(self._history_length):
                 for fn in range(self._fields_num):
                     for s in np.ndindex(self.field_size):
-                        jname = self.field_names[fn][0]
+                        jname = self.field_names[fn][1]
                         self._state_names[(h,fn)+tuple(s)] = f"[{h},{jname},{self.subfield_names[s]}]"
         return self._state_names
 
@@ -629,38 +663,33 @@ class JointImpedanceActionHelper:
         d = normalize(self._safe_damping,   min=self._minmax_joints_pvesd[0,:,4],max=self._minmax_joints_pvesd[1,:,4])
         if self._control_mode == self.CONTROL_MODES.VELOCITY:
             act_to_pvesd =  [1]
-            base_pvesd = [0.0, 0.0, 0.0, -1.0, float("nan")]
-            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION:
             act_to_pvesd =  [0]
-            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
-            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
             act_to_pvesd =  [0,2]
-            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
-            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
             act_to_pvesd =  [0,1,2]
-            base_pvesd =  [0.0, 0.0, 0.0, float("nan"), float("nan")]
-            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
             act_to_pvesd =  [0,1,2,3,4]
-            base_pvesd =  [0.0, 0.0, 0.0, 0.0, 0.0]
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0]).repeat(self._joints_num,1)
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
             act_to_pvesd =  [0,3]
-            base_pvesd =  [0.0, 0.0, 0.0, 0.0, float("nan")]
-            self._base_pvesd = th.as_tensor(base_pvesd).repeat(self._joints_num,1)
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,4] = d
         elif self._control_mode == self.CONTROL_MODES.TORQUE:
             act_to_pvesd =  [2]
-            base_pvesd =  [0.0, 0.0, 0.0, -1.0, -1.0]
+            self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0]).repeat(self._joints_num,1)
         else:
             raise RuntimeError(f"Invalid control mode {self._control_mode}")
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
