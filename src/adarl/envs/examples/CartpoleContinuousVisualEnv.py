@@ -80,8 +80,8 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
         self._stackedImg = np.zeros(shape=(self._frame_stacking_size,self._obs_img_height, self._obs_img_height), dtype=np.float32)
         action_space = spaces.gym_spaces.Box(low=np.array([-1]),high=np.array([1]))
-        self._environmentController.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
-        self._environmentController.set_monitored_cameras(["camera"])
+        self._adapter.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        self._adapter.set_monitored_cameras(["camera"])
 
 
         if imgEncoding == "float":
@@ -96,7 +96,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
             raise AttributeError(f"Unsupported imgEncoding '{imgEncoding}' requested, it can be either 'int' or 'float'")
         
 
-        self._environmentController.startup()
+        self._adapter.startup()
         super(CartpoleEnv, self).__init__(  maxStepsPerEpisode = maxStepsPerEpisode,
                                             stepLength_sec = stepLength_sec/self._frame_stacking_size,
                                             environmentController = simulatorController,
@@ -120,7 +120,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
             else:
                 action = -1
         
-        self._environmentController.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", action * 10)])
+        self._adapter.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", action * 10)])
         # ggLog.info(f"step = {self._actionsCounter} max = {self.get_max_episode_steps()}")
 
     def getObservation(self, state) -> np.ndarray:
@@ -166,7 +166,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
 
         #t0 = time.monotonic()
-        states = self._environmentController.getJointsState(requestedJoints=[("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        states = self._adapter.getJointsState(requestedJoints=[("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         #print("states['foot_joint'] = "+str(states["foot_joint"]))
         #print("Got joint state "+str(states))
         #t1 = time.monotonic()
@@ -205,8 +205,8 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         for i in range(self._frame_stacking_size):
             #ggLog.info(f"Stepping {i}")
             super(CartpoleEnv, self).performStep()
-            self._environmentController.step()
-            img, t = self._environmentController.getRenderings(["camera"])["camera"]
+            self._adapter.step()
+            img, t = self._adapter.getRenderings(["camera"])["camera"]
             if img is None:
                 ggLog.error("No camera image received. Observation will contain and empty image.")
                 img = np.zeros([self._obs_img_height, self._obs_img_width,3])
@@ -233,7 +233,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         camera_args = { "camera_width": sim_img_width,
                         "camera_height": sim_img_height}
                       
-        self._environmentController.spawn_model(model_file=("adarl_ros","/models/camera.urdf.xacro"),
+        self._adapter.spawn_model(model_file=("adarl_ros","/models/camera.urdf.xacro"),
                                                 pose=build_pose(0,0,0,0,0,0,1),
                                                 model_name="camera",
                                                 model_kwargs=camera_args) 
@@ -253,9 +253,9 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
             self._rebuild_cartpole()
 
         super().performReset()
-        self._environmentController.resetWorld()
+        self._adapter.resetWorld()
         self.initializeEpisode()
-        img, t = self._environmentController.getRenderings(["camera"])["camera"]
+        img, t = self._adapter.getRenderings(["camera"])["camera"]
         if img is None:
             ggLog.error("No camera image received. Observation will contain and empty image.")
             img = np.empty([self._obs_img_height, self._obs_img_width,3])
@@ -267,7 +267,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
 
         model_name = "cartpole_v0"
         if self._already_built_cartpole:
-            self._environmentController.delete_model(model_name)
+            self._adapter.delete_model(model_name)
         self._already_built_cartpole = True
 
         if self._randomize:
@@ -313,7 +313,7 @@ class CartpoleContinuousVisualEnv(CartpoleEnv):
         args.update(color_args)
 
 
-        self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro"),
+        self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro"),
                                                 pose=build_pose(0,0,0,0,0,0,1),
                                                 model_name=model_name,
                                                 model_kwargs=args)  

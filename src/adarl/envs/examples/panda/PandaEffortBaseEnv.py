@@ -130,9 +130,9 @@ class PandaEffortBaseEnv(ControlledEnv):
         self._maxTorques = np.array(maxTorques)
         self._renderingEnabled = render
         if self._renderingEnabled:
-            self._environmentController.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
+            self._adapter.set_monitored_cameras(["camera"]) #TODO: fix the camera topic
 
-        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
+        self._adapter.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -141,7 +141,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.set_monitored_links( [("panda","panda_link1"),
+        self._adapter.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -151,7 +151,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                        # ("panda","panda_link8"),
                                                        ])
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
 
 
@@ -170,7 +170,7 @@ class PandaEffortBaseEnv(ControlledEnv):
         clippedAction = np.clip(np.array(action, dtype=np.float32),-self._maxTorques,self._maxTorques)
         torques = [normalizedTorque*maxTorque for normalizedTorque,maxTorque in zip(clippedAction,self._maxTorques)]
         jointTorques = [("panda","panda_joint"+str(i+1),torques[i]) for i in range(7)]
-        self._environmentController.setJointsEffortCommand(jointTorques)
+        self._adapter.setJointsEffortCommand(jointTorques)
 
     def getObservation(self, state) -> np.ndarray:
         return state
@@ -185,7 +185,7 @@ class PandaEffortBaseEnv(ControlledEnv):
 
         """
 
-        jointStates = self._environmentController.getJointsState([  ("panda","panda_joint1"),
+        jointStates = self._adapter.getJointsState([  ("panda","panda_joint1"),
                                                                     ("panda","panda_joint2"),
                                                                     ("panda","panda_joint3"),
                                                                     ("panda","panda_joint4"),
@@ -193,7 +193,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                                     ("panda","panda_joint6"),
                                                                     ("panda","panda_joint7")])
 
-        eePose = self._environmentController.getLinksState([("panda","panda_link7")])[("panda","panda_link7")].pose
+        eePose = self._adapter.getLinksState([("panda","panda_link7")])[("panda","panda_link7")].pose
 
         quat = quaternion.from_float_array([eePose.orientation.w,eePose.orientation.x,eePose.orientation.y,eePose.orientation.z])
         eeOrientation_rpy = quaternion.as_euler_angles(quat)
@@ -233,13 +233,13 @@ class PandaEffortBaseEnv(ControlledEnv):
         if backend != "gazebo":
             raise NotImplementedError("Backend "+backend+" not supported")
 
-        self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda.launch"),
+        self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda.launch"),
                                                     launch_file_args={  "gui":"false",
                                                                         "gazebo_seed":f"{self._envSeed}",
                                                                         "load_gripper":"false"})
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def _normalizedJointPositions(self, state):
         jnt_positions = np.array([state[i] for i in range(6,6+7)])

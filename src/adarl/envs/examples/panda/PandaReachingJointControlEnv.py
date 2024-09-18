@@ -79,17 +79,17 @@ class PandaReachingJointControlEnv(ControlledEnv):
         if environmentController is None:                
             raise AttributeError("You must specify environmentController")
         else:
-            self._environmentController = environmentController
+            self._adapter = environmentController
 
         super().__init__(   maxStepsPerEpisode = maxStepsPerEpisode,
                             startSimulation = startSimulation,
-                            environmentController=self._environmentController,
+                            environmentController=self._adapter,
                             simulationBackend=backend)
 
         self._camera_name = "simple_camera"
-        self._environmentController.set_monitored_cameras([self._camera_name])
+        self._adapter.set_monitored_cameras([self._camera_name])
 
-        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
+        self._adapter.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -98,7 +98,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.set_monitored_links( [("panda","panda_link1"),
+        self._adapter.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -113,7 +113,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
         self._lastMoveFailed = False
         self._maxPositionChange = 0.1
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
         self._operatingArea = operatingArea #min xyz, max xyz
 
@@ -140,7 +140,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
         absolute_req_jpose = currentJointPose + rel_joint_move
 
-        self._environmentController.setJointsPositionCommand(jointPositions = {("panda",f"panda_joint{i+1}") : absolute_req_jpose[i] for i in range(7)})
+        self._adapter.setJointsPositionCommand(jointPositions = {("panda",f"panda_joint{i+1}") : absolute_req_jpose[i] for i in range(7)})
         #rospy.loginfo("Moving Ee of "+str(clippedAction))
 
 
@@ -222,8 +222,8 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
         """
 
-        eePose = self._environmentController.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
-        jointStates = self._environmentController.getJointsState([("panda","panda_joint1"),
+        eePose = self._adapter.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
+        jointStates = self._adapter.getJointsState([("panda","panda_joint1"),
                                                                  ("panda","panda_joint2"),
                                                                  ("panda","panda_joint3"),
                                                                  ("panda","panda_joint4"),
@@ -254,37 +254,37 @@ class PandaReachingJointControlEnv(ControlledEnv):
                     jointStates[("panda","panda_joint5")].position[0],
                     jointStates[("panda","panda_joint6")].position[0],
                     jointStates[("panda","panda_joint7")].position[0],
-                    self._environmentController.actionsFailsInLastStep()]
+                    self._adapter.actionsFailsInLastStep()]
 
         return np.array(state,dtype=np.float32)
 
     def buildSimulation(self, backend : str = "gazebo"):
         if backend == "gazebo":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "load_gripper":"false"})
         elif backend == "real":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "robot_ip":self._real_robot_ip,
                                                                             "simulated":"false",
                                                                             "control_mode":"position"},
                                                         basePort = 11311,
                                                         ros_master_ip = self._real_robot_pc_ip)
         elif backend == "gz":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros2","/launch/gz_panda_cam.launch.xml"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros2","/launch/gz_panda_cam.launch.xml"),
                                                         launch_file_args={  "use_gui":"false"})
         else:
             raise NotImplementedError("Backend '"+backend+"' not supported")
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getInfo(self,state=None):
         return {}
 
     def getUiRendering(self):
 
-        img, t = self._environmentController.getRenderings([self._camera_name])[self._camera_name]
+        img, t = self._adapter.getRenderings([self._camera_name])[self._camera_name]
         if img is None:
             npImg = None
             time = -1

@@ -68,11 +68,11 @@ class CartpoleEnv(ControlledEnv):
                          startSimulation = startSimulation,
                          simulationBackend = "gazebo")
 
-        self._environmentController.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        self._adapter.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         if self._renderingEnabled:
-            self._environmentController.set_monitored_cameras(["camera"])
+            self._adapter.set_monitored_cameras(["camera"])
 
-        self._environmentController.startup()
+        self._adapter.startup()
         self._success = False
 
     def submitAction(self, action : int) -> None:
@@ -84,7 +84,7 @@ class CartpoleEnv(ControlledEnv):
         else:
             raise AttributeError("Invalid action (it's "+str(action)+")")
 
-        self._environmentController.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", direction * 20)])
+        self._adapter.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", direction * 20)])
 
 
 
@@ -113,21 +113,21 @@ class CartpoleEnv(ControlledEnv):
 
     def initializeEpisode(self) -> None:
 
-        if not self._spawned and isinstance(self._environmentController, BaseSimulationAdapter):
-            if type(self._environmentController).__name__ == "GzController":
+        if not self._spawned and isinstance(self._adapter, BaseSimulationAdapter):
+            if type(self._adapter).__name__ == "GzController":
                 cartpole_model_name = None
                 cam_model_name = None
             else:
                 cartpole_model_name = "cartpole_v0"
                 cam_model_name = "simple_camera"
             cartpole_pose = build_pose(0,0,0,0,0,0,1)
-            name = self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro"),
+            name = self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro"),
                                                             model_name=cartpole_model_name,
                                                             pose=cartpole_pose,
                                                             # model_kwargs={"camera_width":"213","camera_height":"120"},
                                                             model_format="urdf.xacro")
             self._spawned = True
-            self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/simple_camera.sdf.xacro"),
+            self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/simple_camera.sdf.xacro"),
                                                     model_name=cam_model_name,
                                                     pose=build_pose(0,2,0.5, 0.0,0.0,-0.707,0.707),
                                                     # pose=build_pose(0,5,0.5, 0.0,0.0,0.0,1.0),
@@ -135,17 +135,17 @@ class CartpoleEnv(ControlledEnv):
                                                     model_format="sdf.xacro")
             ggLog.info(f"Model spawned with name {name}")
         
-        if isinstance(self._environmentController, BaseSimulationAdapter):
-            self._environmentController.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
+        if isinstance(self._adapter, BaseSimulationAdapter):
+            self._adapter.setJointsStateDirect({("cartpole_v0","foot_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0]),
                                                               ("cartpole_v0","cartpole_joint"): JointState(position = [0.1*random.random()-0.05], rate=[0], effort=[0])})
-        self._environmentController.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])
+        self._adapter.setJointsEffortCommand([("cartpole_v0","foot_joint",0),("cartpole_v0","cartpole_joint",0)])
 
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
         try:
-            img, t = self._environmentController.getRenderings([self._rendering_cam_name])[self._rendering_cam_name]
+            img, t = self._adapter.getRenderings([self._rendering_cam_name])[self._rendering_cam_name]
             # return imgs[0]
-            # img = self._environmentController.getRenderings(["box::simple_camera_link::simple_camera"])["box::simple_camera_link::simple_camera"]
+            # img = self._adapter.getRenderings(["box::simple_camera_link::simple_camera"])["box::simple_camera_link::simple_camera"]
             npImg = img
             if img is None:
                 time = -1
@@ -172,7 +172,7 @@ class CartpoleEnv(ControlledEnv):
 
 
         #t0 = time.monotonic()
-        states = self._environmentController.getJointsState(requestedJoints=[("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
+        states = self._adapter.getJointsState(requestedJoints=[("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
         #print("states['foot_joint'] = "+str(states["foot_joint"]))
         #print("Got joint state "+str(states))
         #t1 = time.monotonic()
@@ -190,7 +190,7 @@ class CartpoleEnv(ControlledEnv):
 
     def buildSimulation(self, backend):
         # ggLog.info("Building env")
-        envCtrlName = type(self._environmentController).__name__
+        envCtrlName = type(self._adapter).__name__
         if envCtrlName in ["GazeboAdapter", "GazeboAdapterNoPlugin"]:
             # ggLog.info(f"sim_img_width  = {sim_img_width}")
             # ggLog.info(f"sim_img_height = {sim_img_height}")
@@ -198,7 +198,7 @@ class CartpoleEnv(ControlledEnv):
                 worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
             else:
                 worldpath = "\"$(find adarl_ros)/worlds/fixed_camera_world_plugin.world\""
-            self._environmentController.build_scenario( launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
+            self._adapter.build_scenario( launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "paused":"true",
                                                                             "physics_engine":"bullet",
@@ -208,15 +208,15 @@ class CartpoleEnv(ControlledEnv):
                                                                             "wall_sim_speed":f"{self._wall_sim_speed}"})
             self._rendering_cam_name = "camera"
         elif envCtrlName == "GzController":
-            self._environmentController.build_scenario(sdf_file = ("adarl_ros2","/worlds/empty_cams.sdf"))
-            # self._environmentController.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/simple_camera.sdf.xacro"),
+            self._adapter.build_scenario(sdf_file = ("adarl_ros2","/worlds/empty_cams.sdf"))
+            # self._adapter.spawn_model(model_file=adarl.utils.utils.pkgutil_get_path("adarl","models/simple_camera.sdf.xacro"),
             #                                         model_name=None,
             #                                         pose=build_pose(0,2,0.5,0,0.0,-0.707,0.707),
             #                                         model_kwargs={"camera_width":"1920","camera_height":"1080","frame_rate":1/self._intendedStepLength_sec},
             #                                         model_format="sdf.xacro")
             self._rendering_cam_name = "simple_camera"
         elif envCtrlName == "PyBulletAdapter":
-            self._environmentController.build_scenario(None)
+            self._adapter.build_scenario(None)
             self._rendering_cam_name = "simple_camera"
         else:
             raise NotImplementedError("environmentController "+envCtrlName+" not supported")
@@ -226,7 +226,7 @@ class CartpoleEnv(ControlledEnv):
 
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getInfo(self,state=None) -> Dict[Any,Any]:
         i = super().getInfo(state=state)

@@ -81,7 +81,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._real_robot_ip = real_robot_ip
 
         if environmentController is None:                
-            # self._environmentController = MoveitRosAdapter(jointsOrder = [("panda","panda_joint1"),
+            # self._adapter = MoveitRosAdapter(jointsOrder = [("panda","panda_joint1"),
             #                                                              ("panda","panda_joint2"),
             #                                                              ("panda","panda_joint3"),
             #                                                              ("panda","panda_joint4"),
@@ -99,11 +99,11 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
             #                                                                   ("panda","panda_joint7") : startJointPose[6]})
             raise RuntimeError("You must specify environmentController")
         else:
-            self._environmentController = environmentController
+            self._adapter = environmentController
         
         super().__init__( maxStepsPerEpisode = maxStepsPerEpisode, 
                         startSimulation = startSimulation,
-                        environmentController=self._environmentController,
+                        environmentController=self._adapter,
                         simulationBackend=backend)
 
         self._goalPoseSamplFunc = goalPoseSamplFunc
@@ -118,7 +118,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         self._expectedAchievedPoseXyzrpy = None
 
 
-        self._environmentController.set_monitored_joints( [("panda","panda_joint1"),
+        self._adapter.set_monitored_joints( [("panda","panda_joint1"),
                                                         ("panda","panda_joint2"),
                                                         ("panda","panda_joint3"),
                                                         ("panda","panda_joint4"),
@@ -127,7 +127,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
                                                         ("panda","panda_joint7")])
 
 
-        self._environmentController.set_monitored_links( [("panda","panda_link1"),
+        self._adapter.set_monitored_links( [("panda","panda_link1"),
                                                         ("panda","panda_link2"),
                                                         ("panda","panda_link3"),
                                                         ("panda","panda_link4"),
@@ -136,7 +136,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
                                                         ("panda","panda_link7"),
                                                         ("panda","panda_link8")])
 
-        self._environmentController.startup()
+        self._adapter.startup()
 
 
     def submitAction(self, action : np.typing.NDArray[(6,), np.float32]) -> None:
@@ -178,7 +178,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         absolute_next_pose = np.concatenate([absolute_xyz, absolute_quat_arr])
 
 
-        self._environmentController.setCartesianPoseCommand(linkPoses = {("panda","panda_link8") : absolute_next_pose})
+        self._adapter.setCartesianPoseCommand(linkPoses = {("panda","panda_link8") : absolute_next_pose})
         # ggLog.info("received action "+str(action))
         # ggLog.info("action_xyz = "+str(action_xyz)+" action_quat = "+str(action_quat))
         # ggLog.info("_currentPosition = "+str(self._currentPosition)+ " _currentQuat = "+str(self._currentQuat))
@@ -288,7 +288,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
     def performReset(self, options = {}) -> None:
         super().performReset()
-        self._environmentController.resetWorld()
+        self._adapter.resetWorld()
         self._goalPose = self._goalPoseSamplFunc(self._rng)
         if self._publish_goal:
             self._publish("goal_pose", self._goalPose)
@@ -310,7 +310,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
         """
 
-        eePose = self._environmentController.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
+        eePose = self._adapter.getLinksState(requestedLinks=[("panda","panda_link8")])[("panda","panda_link8")].pose
 
         eeOrientation_quat = quaternion.from_float_array([eePose.orientation.w,eePose.orientation.x,eePose.orientation.y,eePose.orientation.z])
         eeOrientation_rpy = quaternion.as_euler_angles(eeOrientation_quat)
@@ -338,11 +338,11 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
     def buildSimulation(self, backend : str = "gazebo"):
         if backend == "gazebo":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "gui":"false",
                                                                             "load_gripper":"false"})
         elif backend == "real":
-            self._environmentController.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
+            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "robot_ip":self._real_robot_ip,
                                                                             "simulated":"false",
                                                                             "control_mode":"position"},
@@ -353,10 +353,10 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
 
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getSimTimeFromEpStart(self):
-        return self._environmentController.getEnvTimeFromStartup()
+        return self._adapter.getEnvTimeFromStartup()
 
     def setGoalInState(self, state, goal):
         state[-6:] = goal

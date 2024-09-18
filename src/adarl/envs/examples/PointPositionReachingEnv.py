@@ -247,7 +247,7 @@ class PointPositionReachingEnv(BaseEnv):
 
 
     def _destroySimulation(self):
-        self._environmentController.destroy_scenario()
+        self._adapter.destroy_scenario()
 
     def getSimTimeFromEpStart(self):
         return self._simTime

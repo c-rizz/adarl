@@ -28,4 +28,4 @@ class CartpoleContinuousEnv(CartpoleEnv):
         else:
             raise AttributeError("Invalid action (it's "+str(action)+")")
 
-        self._environmentController.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", direction * 20)])
+        self._adapter.setJointsEffortCommand(jointTorques = [("cartpole_v0","foot_joint", direction * 20)])
