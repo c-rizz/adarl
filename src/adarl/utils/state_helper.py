@@ -1,17 +1,17 @@
 from __future__ import annotations
-import torch as th
-from typing import TypeVar, Sequence, Mapping, Any, SupportsFloat
-import adarl.utils.spaces as spaces
-from adarl.utils.tensor_trees import TensorMapping
-import dataclasses
-import adarl.utils.utils
-import numpy as np
 from abc import ABC, abstractmethod
-from typing_extensions import override
-import typing
-import adarl.utils.dbg.ggLog as ggLog
+from adarl.utils.tensor_trees import TensorMapping
 from enum import IntEnum
+from typing import TypeVar, Sequence, Mapping, Any, SupportsFloat, Union, Tuple
+from typing_extensions import override
+import adarl.utils.dbg.ggLog as ggLog
+import adarl.utils.spaces as spaces
 import adarl.utils.tensor_trees
+import adarl.utils.utils
+import dataclasses
+import numpy as np
+import torch as th
+import typing
 
 _T = TypeVar('_T', float, th.Tensor)
 def unnormalize(v : _T, min : _T, max : _T) -> _T:
@@ -21,7 +21,7 @@ def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
 
-FieldName = str | int | tuple[str,str]
+FieldName = Union[str, int, Tuple[str,str]]
 
 class StateHelper(ABC):
     @abstractmethod

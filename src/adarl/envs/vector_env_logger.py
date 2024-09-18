@@ -1,3 +1,4 @@
+from __future__ import annotations
 import gymnasium as gym
 from gymnasium.core import ActType, ObsType, RenderFrame, WrapperObsType
 import numpy as np

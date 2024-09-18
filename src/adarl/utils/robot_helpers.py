@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
 import pinocchio
 import numpy as np
 import adarl.utils.utils

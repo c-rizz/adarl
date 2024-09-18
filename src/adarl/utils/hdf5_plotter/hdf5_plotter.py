@@ -119,23 +119,28 @@ def cmd_plot(file, current_path, *args, **kwargs):
         data = np.expand_dims(data,1)
     col_num = data.shape[1]
     columns = None
-    if len(args)==2:
+    if len(args)>=2:
         columns = []
-        groups = args[1].split(",") # e.g. "1:4,7:9,11,12" gets split in ["1:4","7:9","11","12"]
-        for g in groups:
-            if ":" in g:
-                e = g.split(":")
-                if len(e)>3:
-                    raise RuntimeError(f"Invalid slice '{g}'")
-                if len(e)==2:
-                    e.append("")
-                if e[0] == "": e[0] = 0
-                if e[1] == "": e[1] = col_num
-                if e[2] == "": e[2] = 1
-                e = [int(es) for es in e]
-                columns += list(range(col_num))[e[0]:e[1]:e[2]]
-            else:
-                columns.append(int(g))
+        for arg in args[1:]:
+            groups = arg.split(",") # e.g. "1:4,7:9,11,12" gets split in ["1:4","7:9","11","12"]
+            for g in groups:
+                if ":" in g:
+                    slice_offset = g.split("+")
+                    if len(slice_offset) == 1: 
+                        slice_offset.append("0")
+                    slice,offset = slice_offset
+                    e = slice.split(":")
+                    if len(e)>3:
+                        raise RuntimeError(f"Invalid slice '{g}'")
+                    if len(e)==2:
+                        e.append("")
+                    if e[0] == "": e[0] = 0
+                    if e[1] == "": e[1] = col_num
+                    if e[2] == "": e[2] = 1
+                    e = [int(es) for es in e]
+                    columns += [c+int(offset) for c in list(range(col_num))[e[0]:e[1]:e[2]]]
+                else:
+                    columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
     maybe_labels_name = field+"_labels"
