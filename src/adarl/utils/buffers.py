@@ -1,24 +1,26 @@
 from __future__ import annotations
+from abc import ABC, abstractmethod
+from adarl.utils.tensor_trees import map_tensor_tree
+from adarl.utils.utils import dbg_check_finite
 from cmath import inf
-from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
-import numpy as np
+from dataclasses import dataclass
 from gymnasium import spaces
-from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple
-import torch as th
-import random
-from stable_baselines3.common.vec_env import VecNormalize, VecEnv
-from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
-from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
-import psutil
-import warnings
-import time
-import adarl.utils.dbg.ggLog as ggLog
+from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
 from stable_baselines3.common.preprocessing import get_obs_shape
+from stable_baselines3.common.vec_env import VecNormalize, VecEnv
+from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
+from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
+from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple
+import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.mp_helper as mp_helper
 import ctypes
+import numpy as np
+import psutil
+import random
+import time
+import torch as th
 import typing_extensions
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+import warnings
 
 # class ReplayBuffer_updatable(ReplayBuffer):
 #     def update(self, buffer : ReplayBuffer):
@@ -61,6 +63,7 @@ class BaseBuffer(ABC):
         self.pos = 0
         self.full = False
         self.device = device
+        self.th_device = th.device(device)
         self.n_envs = n_envs
 
     @abstractmethod
@@ -344,20 +347,25 @@ class BasicStorage():
     ) -> None:
         if not self._allow_rollover and int(self._addcount_since_clear) >= self.buffer_size:
             raise RuntimeError(f"Called add with full buffer and allow_rollover is false")
+        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
         pos = int(self._addcount_since_clear) % self.buffer_size
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
         # Copy to avoid modification by reference
+        devices_to_sync = {t.device for t in [action,reward,terminated,truncated] if isinstance(t, th.Tensor)}
+        devices_to_sync.add(self._storage_torch_device)
         for key in self.observations.keys():
             # Reshape needed when using multiple envs with discrete observations
             # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.observations[key][pos] = th.as_tensor(obs[key]).to(self._storage_torch_device, non_blocking=True)
+            self.observations[key][pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
+            if isinstance(obs,th.Tensor): devices_to_sync.add(obs.device)
 
         for key in self.next_observations.keys():
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.next_observations[key][pos] = th.as_tensor(next_obs[key]).to(self._storage_torch_device, non_blocking=True)
+            self.next_observations[key][pos].copy_(th.as_tensor(next_obs[key]), non_blocking=True)
+            if isinstance(next_obs,th.Tensor): devices_to_sync.add(next_obs.device)
 
         if isinstance(terminated, np.ndarray):
             terminated = th.as_tensor(terminated, device="cpu") # should be a no-copy operation
@@ -366,19 +374,21 @@ class BasicStorage():
         ep_ends = th.logical_or(terminated, truncated).count_nonzero().to(device="cpu", non_blocking=True)
         # ggLog.info(f"ep_ends = {ep_ends}")
 
-        self.actions[pos] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
-        self.rewards[pos] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
-        self.terminated[pos]   = th.as_tensor(terminated).to(self._storage_torch_device, non_blocking=True)
-        self.truncated[pos] = th.as_tensor(truncated).to(self._storage_torch_device, non_blocking=True)
-
-        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
+        # print(f"storing action[{pos}] {action}")
+        self.actions[pos].copy_(th.as_tensor(action), non_blocking=True)
+        self.rewards[pos].copy_(th.as_tensor(reward), non_blocking=True)
+        self.terminated[pos].copy_(th.as_tensor(terminated), non_blocking=True)
+        self.truncated[pos].copy_(th.as_tensor(truncated), non_blocking=True)
+        for device in devices_to_sync:
+            if device.type == "cuda":
+                th.cuda.synchronize(device)
 
         self._addcount = self._addcount + 1
         self._completed_episodes = self._completed_episodes + ep_ends.item()
         self._addcount_since_clear +=1
     
     def size(self):
-        return max(self.buffer_size,int(self._addcount_since_clear))
+        return min(self.buffer_size,int(self._addcount_since_clear))
 
     def storage_torch_device(self):
         return self._storage_torch_device
@@ -411,7 +421,7 @@ class BasicStorage():
 
     def replay(self):
         addcount_since_clear = int(self._addcount_since_clear)
-        pos = addcount_since_clear % self.buffer_size if addcount_since_clear < self.buffer_size else 0
+        pos = addcount_since_clear % self.buffer_size if addcount_since_clear > self.buffer_size else 0
         ret_vsteps = 0
         while ret_vsteps < self.size():
             obs = {k:v[pos] for k,v in self.observations.items()}
@@ -420,6 +430,7 @@ class BasicStorage():
             reward = self.rewards[pos]
             terminated = self.terminated[pos]
             truncated = self.truncated[pos]
+            # print(f"replaying action[{pos}] {action}")
             yield (obs, next_obs, action, reward, terminated, truncated)
             pos = (pos+1) % self.buffer_size
             ret_vsteps +=1
@@ -441,7 +452,8 @@ class ThDReplayBuffer(BaseBuffer):
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
         storage_torch_device: Union[str,th.device] = "cpu",
-        fallback_to_cpu_storage: bool = True
+        fallback_to_cpu_storage: bool = True,
+        copy_outputs : bool = True
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
@@ -449,6 +461,7 @@ class ThDReplayBuffer(BaseBuffer):
         self.buffer_size = max(buffer_size // n_envs, 1)
         self._observation_space = observation_space
         self._action_space = action_space
+        self._copy_outputs = copy_outputs
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         if handle_timeout_termination == False:
@@ -575,32 +588,37 @@ class ThDReplayBuffer(BaseBuffer):
         # if infos is not None and truncated is not None:
         #     raise RuntimeError(f"Can only provided either inifo or truncated")
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
+        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
         self._addcount+=1
+
+        devices_to_sync = {t.device for t in [action,reward,terminated,truncated] if isinstance(t, th.Tensor)}
+        devices_to_sync.add(self._storage_torch_device)
         # Copy to avoid modification by reference
         for key in self.observations.keys():
             # Reshape needed when using multiple envs with discrete observations
             # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.observations[key][self.pos] = th.as_tensor(obs[key]).to(self._storage_torch_device, non_blocking=True)
+            self.observations[key][self.pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
+            if isinstance(obs,th.Tensor): devices_to_sync.add(obs.device)
 
         for key in self.next_observations.keys():
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.next_observations[key][self.pos] = th.as_tensor(next_obs[key]).to(self._storage_torch_device, non_blocking=True)
+            self.next_observations[key][self.pos].copy_(next_obs[key], non_blocking=True)
+            if isinstance(next_obs,th.Tensor): devices_to_sync.add(next_obs.device)
 
         # Same reshape, for actions
         if isinstance(self.action_space, spaces.Discrete):
             action = action.reshape((self.n_envs, self.action_dim))
 
-        self.actions[self.pos] = th.as_tensor(action).to(self._storage_torch_device, non_blocking=True)
-        self.rewards[self.pos] = th.as_tensor(reward).to(self._storage_torch_device, non_blocking=True)
-            
-        self.truncated[self.pos] = th.as_tensor(truncated).to(self._storage_torch_device, non_blocking=True)
-        self.terminated[self.pos] = th.as_tensor(terminated).to(self._storage_torch_device, non_blocking=True)
-            # print([info.get("TimeLimit.truncated",None) for info in infos])
-
-        th.cuda.current_stream().synchronize() #Wait for non_blocking transfers (they are not automatically synchronized when used as inputs! https://discuss.pytorch.org/t/how-to-wait-on-non-blocking-copying-from-gpu-to-cpu/157010/2)
+        self.actions[self.pos].copy_(th.as_tensor(action), non_blocking=True)
+        self.rewards[self.pos].copy_(th.as_tensor(reward), non_blocking=True)            
+        self.truncated[self.pos].copy_(th.as_tensor(truncated), non_blocking=True)
+        self.terminated[self.pos].copy_(th.as_tensor(terminated), non_blocking=True)
+        for device in devices_to_sync:
+            if device.type == "cuda":
+                th.cuda.synchronize(device)
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -637,39 +655,22 @@ class ThDReplayBuffer(BaseBuffer):
             batch_inds.to(self._storage_torch_device) # ensure it is on cuda if it should (avoids synchronizations when indexing later on)
         env_indices = th.randint(low = 0, high=self.n_envs, size=(len(batch_inds),), device = self._storage_torch_device)
 
-        # Normalize if needed and remove extra dimension (we are using only one env for now)
-        obs_ = {key: obs[batch_inds, env_indices, :] for key, obs in self.observations.items()}
-        next_obs_ = {key: obs[batch_inds, env_indices, :] for key, obs in self.next_observations.items()}
-
-        # Convert to torch tensor
-        observations =      {key: self.to_out(obs) for key, obs in obs_.items()}
-        next_observations = {key: self.to_out(obs) for key, obs in next_obs_.items()}
-        # Only use dones that are not due to timeouts deactivated by default (timeouts is initialized as an array of False)
-        terminated = self.to_out(self.terminated[batch_inds, env_indices]).reshape(-1, 1)
-        actions = self.to_out(self.actions[batch_inds, env_indices])
-        rewards = self.to_out(self.rewards[batch_inds, env_indices].reshape(-1, 1))
-
-        return TransitionBatch(
-            observations=observations,
-            actions=actions,
-            next_observations=next_observations,
-            terminated=terminated,
-            rewards=rewards,
+        data = TransitionBatch(
+            observations={key: obs[batch_inds, env_indices, :] for key, obs in self.observations.items()},
+            actions=self.actions[batch_inds, env_indices],
+            next_observations={key: obs[batch_inds, env_indices, :] for key, obs in self.next_observations.items()},
+            terminated=self.terminated[batch_inds, env_indices].reshape(-1, 1),
+            rewards=self.rewards[batch_inds, env_indices].reshape(-1, 1)
         )
+        
+        if self._copy_outputs:
+            data = map_tensor_tree(data, lambda t: t.detach().clone())
+        map_tensor_tree(data, lambda t: t.to(device = self.th_device, non_blocking=True))
+        if self.th_device.type == "cuda":
+            th.cuda.synchronize(self.th_device)
+        dbg_check_finite(data)
 
-    def to_out(self, tensor, copy: bool = True) -> th.Tensor:
-        """
-        Convert a numpy array to a PyTorch tensor.
-        Note: it copies the data by default
-        :param array:
-        :param copy: Whether to copy or not the data
-            (may be useful to avoid changing things be reference)
-        :return:
-        """
-        if copy:
-            return tensor.to(self.device).clone().detach()
-        else:
-            return tensor.to(self.device)
+        return data
 
     def storage_torch_device(self):
         return self._storage_torch_device

@@ -55,6 +55,7 @@ class Session():
                 debug_level = 0
         else:
             debug_level = debug
+        self.debug_level = debug_level
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
         self.run_info = {}

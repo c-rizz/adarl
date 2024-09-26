@@ -13,6 +13,7 @@ import faulthandler
 from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
+from adarl.utils.utils import quat_mul_xyzw_np, quat_conj, quat_conjugate
 
 
 class JointProperties(TypedDict):
@@ -214,14 +215,25 @@ class Robot():
             self._need_to_place_geoms = True
 
         
-    def get_frame_poses(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    def get_frame_poses_xyzxyzw(self, reference_frame : str | None = None,
+                        frames : list[str] | None = None) -> dict[str, np.ndarray]:
         self._update_forward_kinematics()
         ret = {}
+        ref_pose = None
         for frame in self._model.frames:
             joint_frame_pose = self._model_data.oMi[frame.parent]
             link_pose = joint_frame_pose*frame.placement
-            ret[frame.name] = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
-        return ret
+            if frames is None or frame.name in frames:
+                ret[frame.name] = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
+            if reference_frame is not None and reference_frame == frame.name:
+                ref_pose = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
+        if reference_frame is not None:
+            if ref_pose is None:
+                raise RuntimeError(f"Reference frame {reference_frame} not found")
+            ref_pos, ref_orient = ref_pose
+            ret = {fname: (pos-ref_pos, quat_mul_xyzw_np(orient,quat_conjugate(ref_orient))) for fname, (pos, orient) in ret.items()}
+        return {fname:np.concatenate(p_xyz,q_xyzw) for fname,(p_xyz,q_xyzw) in ret.items()}
+    
 
     def get_joint_names(self) -> list[str]:
         return self._joint_names
@@ -323,9 +335,9 @@ if __name__ == "__main__":
     print(f"Joints: {robot.get_joint_properties()}")
     print(f"Links: {robot.get_frame_names()}")
     print(f"Geoms: {robot.get_geom_names()}")
-    print(f"Poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")
+    print(f"Poses: {n.join([str(f) for f in robot.get_frame_poses_xyzxyzw().items()])}")
     robot.set_joint_pose(np.array([0.6,1.0,2.0]))
-    print(f"New poses: {n.join([str(f) for f in robot.get_frame_poses().items()])}")
+    print(f"New poses: {n.join([str(f) for f in robot.get_frame_poses_xyzxyzw().items()])}")
     print(f"Joint limits = "+"\n - ".join([""]+[str(lims) for lims in robot.get_joint_limits().items()]))
     robot.set_collision_pairs("all")
     # leg_joints = robot.get_tree_joint_names_under_joint("rail_joint")
@@ -341,11 +353,11 @@ if __name__ == "__main__":
     robot.remove_collision_pairs([("rail_link_0","slider_link_0")])
     print(f"collision pairs without self-collisions = {robot._current_collision_geom_pairs}")
     # robot.set_collision_pairs_from_joints([("knee_joint_1","rail_joint")])
-    # print(f"{n.join([str(i) for i in robot.get_frame_poses().items()])}")
+    # print(f"{n.join([str(i) for i in robot.get_frame_poses_xyzxyzw().items()])}")
 
     print(f"Current collisions = {robot.get_all_collisions()}")
 
-    foot_pos = robot.get_frame_poses()["foot_center_link"]
+    foot_pos = robot.get_frame_poses_xyzxyzw()["foot_center_link"]
     platform_pos = np.array([0.08,0.2,0.22, 0.0,0.0,0.0,1.0])
     print(f"foot position     = {foot_pos}")
     print(f"platform position = {platform_pos}")

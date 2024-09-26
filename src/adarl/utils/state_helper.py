@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from adarl.utils.tensor_trees import TensorMapping
-from enum import IntEnum
+from enum import IntEnum, Enum
 from typing import TypeVar, Sequence, Mapping, Any, SupportsFloat, Union, Tuple
 from typing_extensions import override
 import adarl.utils.dbg.ggLog as ggLog
@@ -79,7 +79,8 @@ class ThBoxStateHelper(StateHelper):
                         history_length : int = 1,
                         observable_fields : list[str|int] | None = None,
                         subfield_names : list[str] | np.ndarray | None = None,
-                        flatten_observation = False):
+                        flatten_observation = False,
+                        obs_history_length : int = 1):
         self.field_names = field_names
         self.field_size = tuple(field_size)
         if subfield_names is not None:
@@ -93,16 +94,19 @@ class ThBoxStateHelper(StateHelper):
                     raise RuntimeError(f"subfield_names is not of size field_size, subfield_names.shape={subfield_names.shape} and field_size is {self.field_size}")
         if isinstance(subfield_names,(list,tuple)):
             subfield_names = np.array(subfield_names, dtype=object)
+        if obs_history_length>history_length:
+            raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than history_length ({history_length})")
         self.subfield_names = subfield_names
         self._obs_dtype = obs_dtype
         self._th_device = th_device
         self._history_length = history_length
+        self._obs_history_length = obs_history_length
         self._observable_fields = field_names if observable_fields is None else observable_fields
         self._flatten_observation = flatten_observation
         self._obs_names = None
         self._state_names = None
 
-        self._fully_observable = observable_fields is None 
+        self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length
         self._field_idxs = {n:field_names.index(n) for n in field_names}
         if self.subfield_names is not None:
             self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)}
@@ -110,7 +114,7 @@ class ThBoxStateHelper(StateHelper):
             self._subfield_idxs = None
         self._fields_num = len(field_names)
         self._state_size = (self._history_length, self._fields_num) + self.field_size
-        self._obs_size = (self._history_length, len(self._observable_fields)) + self.field_size
+        self._obs_size = (self._obs_history_length, len(self._observable_fields)) + self.field_size
         self._limits_minmax = self.build_limits(fields_minmax)
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
 
@@ -208,7 +212,7 @@ class ThBoxStateHelper(StateHelper):
         if self._fully_observable:
             obs = state
         else:
-            obs = state[:,self._observable_indexes]
+            obs = state[:self._obs_history_length,self._observable_indexes]
         if self._flatten_observation:
             obs = th.flatten(obs)
         return obs
@@ -216,11 +220,13 @@ class ThBoxStateHelper(StateHelper):
     @override
     def observation_names(self):
         if self._obs_names is None:
-            self._obs_names = np.empty(shape=(self._history_length,len(self._observable_fields))+self.field_size, dtype=object)
-            for h in range(self._history_length):
+            self._obs_names = np.empty(shape=(self._obs_history_length,len(self._observable_fields))+self.field_size, dtype=object)
+            for h in range(self._obs_history_length):
                 for fn in range(len(self._observable_fields)):
                     for s in np.ndindex(self.field_size):
                         f = self._observable_fields[fn]
+                        if isinstance(f, Enum):
+                            f = f.name
                         if self.subfield_names is not None:
                             self._obs_names[(h,fn)+s] = f"[{h},{f},{self.subfield_names[s]}]"
                         else:
@@ -236,6 +242,8 @@ class ThBoxStateHelper(StateHelper):
                 for fn in range(self._fields_num):
                     for s in np.ndindex(self.field_size):
                         f = self.field_names[fn]
+                        if isinstance(f, Enum):
+                            f = f.name
                         if self.subfield_names is not None:
                             self._state_names[(h,fn)+tuple(s)] = f"[{h},{f},{self.subfield_names[s]}]"
                         else:
@@ -534,7 +542,8 @@ class RobotStateHelper(ThBoxStateHelper):
                         damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
-                        history_length : int = 1):
+                        history_length : int = 1,
+                        obs_history_length : int = 1):
         subfield_names = ["pos","vel","eff","refpos","refvel","refeff","stiff","damp"]
         self._th_device = th_device
         super().__init__(   field_names=list(joint_limit_minmax_pve.keys()),
@@ -543,7 +552,8 @@ class RobotStateHelper(ThBoxStateHelper):
                             field_size=(len(subfield_names),),
                             fields_minmax= self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax),
                             history_length=history_length,
-                            subfield_names = subfield_names)
+                            subfield_names = subfield_names,
+                            obs_history_length=obs_history_length)
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],

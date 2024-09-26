@@ -1,12 +1,12 @@
 from __future__ import annotations
 import torch as th
 import torch.multiprocessing as mp
-from adarl.utils.spaces import gym_spaces
+from adarl.utils.spaces import gym_spaces, ThBox
 from adarl.utils.utils import numpy_to_torch_dtype_dict, torch_to_numpy_dtype_dict
 import ctypes
 from typing import Optional, Any, Tuple, Dict
 import numpy as np
-from adarl.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree, TensorTree
+from adarl.utils.tensor_trees import create_tensor_tree, fill_tensor_tree, space_from_tree, TensorTree, is_all_finite, map_tensor_tree
 import adarl.utils.mp_helper as mp_helper
 
 class SimpleCommander():
@@ -81,6 +81,15 @@ class SharedData():
         # self._rewards : th.Tensor = None
         self.build_data()
 
+    def observation_space(self):
+        return self._observation_space
+
+    def action_space(self):
+        return self._action_space
+
+    def info_space(self):
+        return self._info_space
+
     def build_data(self):
         self._consequent_observations = create_tensor_tree(self._n_envs, self._observation_space, share_mem=True, device=self._device)
         self._actions =                 create_tensor_tree(self._n_envs, self._action_space, share_mem=True, device=self._device)
@@ -111,6 +120,9 @@ class SharedEnvData():
         self._actions_filled_cond = mp_context.Condition()
 
         self._shared_data : SharedData = None
+
+    def data(self):
+        return self._shared_data
 
     def set_data_struct(self, shared_data : SharedData):
         self._shared_data = shared_data
@@ -207,8 +219,9 @@ def example_worker_func(sh : SharedEnvData, sc, worker_id, receiver):
     import time
     i = 0
     running = True
+    device = "cuda"
     while running:
-        if i%100 == 0:
+        if i%10000 == 0:
             print(f"worker step {i}")
         # print(f"waiting command...")
         cmd = sc.wait_command()
@@ -216,32 +229,40 @@ def example_worker_func(sh : SharedEnvData, sc, worker_id, receiver):
         i += 1
         if cmd == b"step":
             with th.no_grad():
-                act = sh.wait_actions().detach().clone()
-            sh.fill_data(   env_idx = 0,
-                            consequent_observation={"obs": th.tensor([0.1,0.1])},
-                            action = th.tensor([0.01,0.01]),
+                act = sh.wait_actions()[worker_id].detach().clone().to(device = device)
+            obs = sh.data().observation_space().sample()
+            obs = map_tensor_tree(obs, lambda t: t.to(device=device))
+            info = {"obs_act_sum" : th.stack([th.sum(obs["obs"]), th.sum(act)])}
+            sh.fill_data(   env_idx = worker_id,
+                            consequent_observation=obs,
+                            action = act,
                             terminated = True,
                             truncated = True,
                             reward = 4,
-                            consequent_info = {"boh":th.tensor([i,i])},
-                            next_start_info=None,
-                            next_start_observation=None)
+                            consequent_info = info,
+                            next_start_info=info,
+                            next_start_observation=obs)
         elif cmd == b"reset":
-            sh.fill_data(   env_idx = 0,
-                            consequent_observation=None,
-                            action = None,
+            obs = sh.data().observation_space().sample()
+            act = sh.data().action_space().sample().to(device=device)
+            info = {"obs_act_sum" : th.stack([th.sum(obs["obs"]), th.sum(act)])}
+            sh.fill_data(   env_idx = worker_id,
+                            consequent_observation=obs,
+                            action = act,
                             terminated = None,
                             truncated = None,
                             reward = None,
-                            consequent_info = None,
-                            next_start_info={"boh":th.tensor([1,1])},
-                            next_start_observation={"obs": th.tensor([1,1])})
+                            consequent_info = info,
+                            next_start_info = info,
+                            next_start_observation=obs)
         elif cmd == b"close":
             running = False
         elif cmd == b"set_backend_data":
             # print(f"[{worker_id}] setting backend data")
             data : SharedData = receiver.recv()
             sh.set_data_struct(data)
+            sh.data().action_space().seed(worker_id)
+            sh.data().observation_space().seed(worker_id)
             # print(f"[{worker_id}] set backend data")
         if cmd is not None:
             sc.mark_done()
@@ -254,23 +275,28 @@ def example_worker_func(sh : SharedEnvData, sc, worker_id, receiver):
 if __name__ == "__main__":
     import time
     import numpy as np
+
     n_envs = 2
     steps = 100000
+    obs_shape = (3,64,64)
+    act_space = (8,)
+    th_device = th.device("cpu")
+
+
     ctx = mp_helper.get_context("forkserver")
-    info_example = {"boh":th.tensor([0.0,0])}
+    info_example = {"obs_act_sum":th.tensor([0.0,0])}
     info_space = space_from_tree(info_example)
     print(f"info_space = {info_space}")
-    sc = SimpleCommander(ctx, n_envs=n_envs)
+    sc = SimpleCommander(ctx, n_envs=n_envs, timeout_s=30)
     sh = SharedEnvData(n_envs=n_envs,timeout_s=5, mp_context=ctx)
     receivers, senders = zip(*[ctx.Pipe(duplex=False) for _ in range(n_envs)])
     workers = [ctx.Process(target=example_worker_func, args=(sh,sc,idx, receivers[idx])) for idx in range(n_envs)]
     for worker in workers:
         worker.start()
-
-    data = SharedData(observation_space=gym_spaces.Dict({"obs":gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0]))}),
-                       action_space=gym_spaces.Box(low = np.array([-1,-1]), high=np.array([1.0,1.0])),
+    data = SharedData(observation_space=gym_spaces.Dict({"obs":ThBox(low = th.ones(size=obs_shape, dtype=th.float32)*-1, high=th.ones(size=obs_shape, dtype=th.float32))}),
+                       action_space=ThBox(low = th.ones(size=act_space, dtype=th.float32)*-1, high=th.ones(size=act_space, dtype=th.float32)),
                        info_space=info_space,
-                    n_envs=n_envs, device=th.device("cpu"))
+                    n_envs=n_envs, device=th_device)
     
     sh.set_data_struct(data)
     sc.set_command("set_backend_data")
@@ -278,21 +304,38 @@ if __name__ == "__main__":
     print("sent backend data")
     sc.wait_done()
     print("backend data set")
-
+    print("Starting test")
     t0 = time.monotonic()
+    errors = 0
     for i in range(steps):
-        if i%100 == 0:
-            print(f"main step {i}")
+        if i>0 and i%10000 == 0:
+            tf = time.monotonic()
+            print(f"main step {i} # erorrs={errors} # {tf-t0:.2f}s, {i*n_envs/(tf-t0):.2f} fps, {(tf-t0)/(i*n_envs)}s per step")
         sc.set_command("step")
         sh.mark_waiting_data()
-        sh.fill_actions(th.tensor([1,1]))
+        sh.fill_actions(sh.data().action_space().sample())
         sc.wait_done()
 
         data = sh.wait_data()
+        data = map_tensor_tree(data, lambda t: t.to(device="cuda"))
+        # print(f"{th.sum(data[0]['obs'], dim=(1,2,3))} != {data[4]['obs_act_sum'][:,0]} =",th.sum(data[0]["obs"], dim=(1,2,3)) != data[4]["obs_act_sum"][:,0])
+        # cobss, rews, terms, truncs, infos, nobs, ninfo = data
+        # print(f"obs['obs'] shape = {cobss['obs'].size()}")
+        # print(f"obs['obs'][0] sum = {th.sum(cobss['obs'][0])}")
+        # print(f"obs['obs'][1] sum = {th.sum(cobss['obs'][1])}")
+        # print(f"infos['obs_act_sum'] shape = {infos['obs_act_sum'].size()}")
+        # print(f"{th.sum(data[0]['obs'], dim=(1,2,3))} != {data[4]['obs_act_sum']}")
+        if not is_all_finite(data):
+            print(f"Non-finite values in received data")
+            errors += 1
+        elif th.any(th.sum(data[0]["obs"], dim=(1,2,3)) != data[4]["obs_act_sum"][:,0]):
+            print(f" Obs checksum failed")
+            errors += 1
         # print(f"main step {i} end")
     tf = time.monotonic()
-    print(f"main(): took {tf-t0}, {steps/(tf-t0)} fps, {(tf-t0)/steps}s per step")
-    print(" # \n".join([str(d) for d in data]))
+    print(f"main(): took {tf-t0}, {steps*n_envs/(tf-t0)} fps, {(tf-t0)/(steps*n_envs)}s per step")
+    print(f" Errors: {errors}")
+    # print(" # \n".join([str(d) for d in data]))
     sh.mark_waiting_data()
     sc.set_command("reset")
     sh.wait_data()

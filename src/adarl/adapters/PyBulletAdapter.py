@@ -869,9 +869,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         ggLog.info("Physics engine parameters:"+str(pybullet.getPhysicsEngineParameters()))
 
-        pybullet.setAdditionalSearchPath(pybullet_data.getDataPath())
-        planeObjId = pybullet.loadURDF("plane.urdf")
-        pybullet.changeDynamics(planeObjId, -1, lateralFriction=1, restitution=0.5)
+        plane_model_name = self.spawn_model(model_file = pybullet_data.getDataPath()+"/plane.urdf",
+                                            model_name="ground_plane",
+                                            model_format = "urdf")
+        pybullet.changeDynamics(self._modelName_to_bodyId[plane_model_name], -1, lateralFriction=1, restitution=0.5)
         adarl.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
@@ -900,6 +901,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                          model_kwargs = {},
                          model_name = None,
                          spawn_pose_xyzxyzw : tuple[float, float, float, float, float, float, float] | None = (0,0,0,0,0,0,1)):
+        if spawn_pose_xyzxyzw is None:
+            spawn_pose_xyzxyzw = (0,0,0,0,0,0,1)
         compiled_file_path = None
         if model_definition_string is None and model_file_path is None or (model_definition_string is not None and model_file_path is not None):
             raise RuntimeError(f"One and only one of model_definition_string and model_file_path must be None, but they are {model_definition_string} and {model_file_path}")
@@ -1027,11 +1030,54 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._lightDiffuseCoeff = lightDiffuseCoeff
         self._lightSpecularCoeff = lightSpecularCoeff
     
-    def monitor_contacts(self, monitored_contacts : List[Tuple[Optional[str],
-                                                            Optional[str],
-                                                            Optional[Tuple[str,str]],
-                                                            Optional[Tuple[str,str]]]]):
-        self._monitored_contacts = monitored_contacts
+    def monitor_contacts(self, monitored_contacts : List[Tuple[ str | tuple[str,str] | None,
+                                                                str | tuple[str,str] | None]]):
+        """Sets up the contects to be monitor while stepping.
+        The argument is a list of monitored contact pairs.
+        Pairs can be [model,model], [model,link], [link,link], [model,None(=anything)], [link,None(=anything)]
+
+        Parameters
+        ----------
+        monitored_contacts : List[Tuple[ str  |  None, str  |  None, Tuple[str,str]  |  None, Tuple[str,str]  |  None]]
+            The contact pairs to monitor.
+        """
+        self._monitored_contacts = []
+        for pair in monitored_contacts:
+            elem_a, elem_b = pair
+            if isinstance(elem_a, str):
+                # then elem_a is a model
+                body_a_id = self._modelName_to_bodyId[elem_a]
+                link_a_id = None
+            elif isinstance(elem_a, tuple):
+                # then elem_a is a link
+                body_a_id = self._modelName_to_bodyId[elem_a[0]]
+                link_a_id = self._linkName_to_bodyLinkIds[elem_a]
+            elif elem_a is None:
+                body_a_id = None
+                link_a_id = None
+            else:
+                raise RuntimeError(f"Unexpected type for first element of pair {pair}")
+            if isinstance(elem_b, str):
+                #Then elem_b is a model
+                body_b_id = self._modelName_to_bodyId[elem_b]
+                link_b_id = None
+            elif isinstance(elem_b, tuple):
+                # then elem_a is a link
+                body_b_id = self._modelName_to_bodyId[elem_b[0]]
+                link_b_id = self._linkName_to_bodyLinkIds[elem_b]
+            elif elem_b is None:
+                body_b_id = None
+                link_b_id = None
+            else:
+                raise RuntimeError(f"Unexpected type for second element of pair {pair}")
+
+            if body_a_id is None:
+                # If body A is not set, then put body B in A
+                body_a_id = body_b_id
+                link_a_id = link_b_id
+                body_b_id = None
+                link_b_id = None
+            self._monitored_contacts.append((body_a_id, body_b_id, link_a_id, link_b_id))
 
     def get_contacts(self) -> List[List[    Tuple[  Tuple[str,str],
                                                     Tuple[str,str],
@@ -1039,6 +1085,11 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                                     float,
                                                     float]]]:
         """Returns the list of the contact readings for all the simulation steps in the last env step.
+
+        Returns
+        -------
+        List[List[    Tuple[  Tuple[str,str], Tuple[str,str], Tuple[float,float,float], float, float]]]
+            List of the lists contacts in each step, each element is a tuple (link1, link2, normal_2to1_xyz, force, duration)
         """
         return self._detected_contacts
 
@@ -1051,35 +1102,15 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
     def _read_new_contacts(self):
         new_contacts = []
-        for allowed_contacts in self._monitored_contacts:
-            contacts = self._get_contacts(*allowed_contacts)
-            new_contacts += contacts
+        for body_a_id, body_b_id, link_a_id, link_b_id in self._monitored_contacts:
+            new_contacts += self._get_contacts(body_a_id, body_b_id, link_a_id, link_b_id)
         self._detected_contacts.append(new_contacts)
 
     def _get_contacts(self, 
-                     model_a : Optional[str],
-                     model_b : Optional[str],
-                     link_a : Optional[Tuple[str,str]],
-                     link_b : Optional[Tuple[str,str]]) -> List[Tuple[Tuple[str,str],Tuple[str,str],Tuple[float,float,float],float]]:
-        if model_b and not model_a:
-            raise ValueError(f"model_b should only be set if model_a is set")
-        if link_b and not (link_a or model_a):
-            raise ValueError(f"link_b should only be set if link_a or model_a are set")
-        if link_a and model_a:
-            raise ValueError(f"can only set one of model_a or link_a")
-        if link_b and model_b:
-            raise ValueError(f"can only set one of model_b or link_b")
-        link_a_id, link_b_id = None, None
-        if link_a:
-            model_a = link_a[0]
-            link_a_id = self._linkName_to_bodyLinkIds[link_a]
-        if link_b:
-            model_b = link_b[0]
-            link_b_id = self._linkName_to_bodyLinkIds[link_b]
-
-        body_a_id = self._modelName_to_bodyId[model_a] if model_a is not None else None
-        body_b_id = self._modelName_to_bodyId[model_b] if model_b is not None else None
-        # ggLog.info(f"bodyA = {body_a_id}, bodyB = {body_b_id}, linkIndexA = {link_a_id}, linkIndexB = {link_b_id}")
+                     body_a_id : Optional[str],
+                     body_b_id : Optional[str],
+                     link_a_id : Optional[Tuple[str,str]],
+                     link_b_id : Optional[Tuple[str,str]]) -> List[Tuple[Tuple[str,str],Tuple[str,str],Tuple[float,float,float],float]]:
         kwargs = {}
         if body_a_id is not None: kwargs["bodyA"] = body_a_id
         if body_b_id is not None: kwargs["bodyB"] = body_b_id

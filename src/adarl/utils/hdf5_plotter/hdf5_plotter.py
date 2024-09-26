@@ -1,4 +1,5 @@
 #!/usr/bin/env python3 
+from __future__ import annotations
 import h5py
 import argparse
 import matplotlib.axes

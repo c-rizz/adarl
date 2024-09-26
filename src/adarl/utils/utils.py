@@ -129,48 +129,6 @@ class AverageKeeper:
 
 
 
-
-def quaternionDistance(q1 : quaternion.quaternion ,q2 : quaternion.quaternion ):
-    """ Returns the minimum angle that separates two orientations.
-
-    Parameters
-    ----------
-    q1 : quaternion.quaternion
-        Description of parameter `q1`.
-    q2 : quaternion.quaternion
-        Description of parameter `q2`.
-
-    Returns
-    -------
-    type
-        Description of returned object.
-
-    Raises
-    -------
-    ExceptionName
-        Why the exception is raised.
-
-    """
-    # q1a = quaternion.as_float_array(q1)
-    # q2a = quaternion.as_float_array(q2)
-    #
-    # return np.arccos(2*np.square(np.inner(q1a,q2a)) - 1)
-    return quaternion.rotation_intrinsic_distance(q1,q2)
-
-def buildQuaternion(x,y,z,w):
-    return quaternion.quaternion(w,x,y,z)
-
-def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
-    if isinstance(rotmat, th.Tensor):
-        rotmat_np = rotmat.cpu().numpy()
-    else:
-        rotmat_np = rotmat
-    quat_xyzw = quaternion.as_float_array(quaternion.from_rotation_matrix(rotmat_np))[...,[1,2,3,0]]
-    if isinstance(rotmat, th.Tensor):
-        return rotmat.new(quat_xyzw)
-    else:
-        return quat_xyzw
-
 from dataclasses import dataclass
 
 
@@ -755,16 +713,6 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
                 env_controller.run(step_duration_sec)
 
 
-def ros_rpy_to_quaternion_xyzw(rpy):
-    roll  = quaternion.from_rotation_vector([rpy[0], 0,      0])
-    pitch = quaternion.from_rotation_vector([0,      rpy[1], 0])
-    yaw   = quaternion.from_rotation_vector([0,      0,      rpy[2 ]])
-    # On fixed axes:
-    # First rotate around x (roll)
-    # Then rotate around y (pitch)
-    # Then rotate around z (yaw)
-    q = yaw*pitch*roll
-    return q.x, q.y, q.z, q.w
 
 
 def isinstance_noimport(obj, class_names):
@@ -844,19 +792,95 @@ def vector_projection(v1,v2):
     """
     return th.dot(v1,v2/v2.norm())*v2/v2.norm()
 
+
+
+
+def quaternionDistance(q1 : quaternion.quaternion, q2 : quaternion.quaternion ):
+    """ Returns the minimum angle that separates two orientations.
+    """
+    # q1a = quaternion.as_float_array(q1)
+    # q2a = quaternion.as_float_array(q2)
+    #
+    # return np.arccos(2*np.square(np.inner(q1a,q2a)) - 1)
+    return quaternion.rotation_intrinsic_distance(q1,q2)
+
+def buildQuaternion(x,y,z,w):
+    return quaternion.quaternion(w,x,y,z)
+
+def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
+    if isinstance(rotmat, th.Tensor):
+        rotmat_np = rotmat.cpu().numpy()
+    else:
+        rotmat_np = rotmat
+    quat_xyzw = quaternion.as_float_array(quaternion.from_rotation_matrix(rotmat_np))[...,[1,2,3,0]]
+    if isinstance(rotmat, th.Tensor):
+        return rotmat.new(quat_xyzw)
+    else:
+        return quat_xyzw
+
+def ros_rpy_to_quaternion_xyzw(rpy):
+    roll  = quaternion.from_rotation_vector([rpy[0], 0,      0])
+    pitch = quaternion.from_rotation_vector([0,      rpy[1], 0])
+    yaw   = quaternion.from_rotation_vector([0,      0,      rpy[2 ]])
+    # On fixed axes:
+    # First rotate around x (roll)
+    # Then rotate around y (pitch)
+    # Then rotate around z (yaw)
+    q = yaw*pitch*roll
+    return q.x, q.y, q.z, q.w
+
+
+
+def quat_conjugate(quaternion_xyzw : np.ndarray | th.Tensor):
+    if isinstance(quaternion_xyzw, th.Tensor):
+        quaternion_xyzw = quaternion_xyzw.cpu()
+    q = quaternion.from_float_array(quaternion_xyzw[...,[3,0,1,2]])
+    q = q.conjugate()
+    return quaternion.as_float_array(q)[...,[1,2,3,0]]
+
+def quat_rotate(vector_xyz : np.ndarray | th.Tensor, quaternion_xyzw : np.ndarray | th.Tensor):
+    if isinstance(quaternion_xyzw, th.Tensor):
+        quaternion_xyzw = quaternion_xyzw.cpu().numpy()
+    if isinstance(vector_xyz, th.Tensor):
+        vector_xyz = vector_xyz.cpu().numpy()
+    if len(quaternion_xyzw.shape)<2:
+        quaternion_xyzw = np.expand_dims(quaternion_xyzw, axis=0)
+        nonvec = True
+    else:
+        nonvec = False
+    q = quaternion.from_float_array(quaternion_xyzw[:,[3,0,1,2]])
+    qv = quaternion.from_vector_part(vector_xyz)
+    r = quaternion.as_vector_part(q*qv*q.conjugate())
+    if nonvec:
+        return r[0]
+    else:
+        return r
+
+def th_quat_combine(q_applied_first_xyzw : th.Tensor, q_applied_second_xyzw : th.Tensor):
+    return quat_mul_xyzw(q_applied_second_xyzw,q_applied_first_xyzw)
+
+def quat_mul_xyzw_np(q1_xyzw : np.ndarray, q2_xyzw : np.ndarray):
+    quat_mul_xyzw(th.as_tensor(q1_xyzw),
+                    quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
 @th.jit.script
-def quat_mul(q1_wxyz, q2_wxyz):
-    r1 = q1_wxyz[0]
-    v1 = q1_wxyz[1:4]
-    r2 = q2_wxyz[0]
-    v2 = q2_wxyz[1:4]
-    q = th.empty((4,), device = q1_wxyz.device)
-    q[0] = r1*r2 - th.dot(v1,v2)
-    q[1:4] = r1*v2 + r2*v1 + th.cross(v1,v2)
+def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):
+    r1 = q1_xyzw[3]
+    v1 = q1_xyzw[0:3]
+    r2 = q2_xyzw[3]
+    v2 = q2_xyzw[0:3]
+    q = th.empty((4,), device = q1_xyzw.device)
+    q[3] = r1*r2 - th.dot(v1,v2)
+    q[0:3] = r1*v2 + r2*v1 + th.cross(v1,v2)
     return q
 
 @th.jit.script
-def quat_swing_twist_decomposition(quat_wxyz : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
+def quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
+    """Gives the inverse rotation of q, usually denoted q^-1 or q'. Note that q*q' = 1
+    """
+    return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0], device=q_xyzw.device)
+
+@th.jit.script
+def quat_swing_twist_decomposition_xyzw(quat_xyzw : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
     """Decomposes the quaternion into a rotation around
     the axis (twist), and a rotation perpendicular to
     the axis (swing).
@@ -873,15 +897,15 @@ def quat_swing_twist_decomposition(quat_wxyz : th.Tensor, axis_xyz : th.Tensor) 
     Tuple[th.Tensor, th.Tensor]
         swing, twist
     """
-    quat_axis = quat_wxyz[1:4]
-    twist = th.empty(size=(4,), device=quat_axis.device)
-    twist[1:4] = vector_projection(quat_axis, axis_xyz)
-    twist[0] = quat_wxyz[0]
-    twist = twist/twist.norm()
-    swing = quat_mul(quat_wxyz,(twist*th.tensor([1.0,-1.0,-1.0,-1.0], device=twist.device)))
-    return swing, twist
+    quat_axis = quat_xyzw[0:3]
+    twist_xyzw = th.empty(size=(4,), device=quat_axis.device)
+    twist_xyzw[0:3] = vector_projection(quat_axis, axis_xyz)
+    twist_xyzw[3] = quat_xyzw[3]
+    twist_xyzw = twist_xyzw/twist_xyzw.norm()
+    swing_xyzw = quat_mul_xyzw(quat_xyzw,quat_conj(twist_xyzw))
+    return swing_xyzw, twist_xyzw
 
-def quat_angle(q_wxyz : th.Tensor) -> th.Tensor:
+def quat_angle_xyzw(q_xyzw : th.Tensor) -> th.Tensor:
     """Angle of the angle-axis representation of the quaternion
 
     Parameters
@@ -894,7 +918,7 @@ def quat_angle(q_wxyz : th.Tensor) -> th.Tensor:
     th.Tensor
         _description_
     """
-    return 2*th.atan2(th.norm(q_wxyz[1:4]),q_wxyz[0])
+    return 2*th.atan2(th.norm(q_xyzw[0:3]),q_xyzw[3])
 
 
 def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_val = 1) -> np.ndarray:
@@ -1067,12 +1091,22 @@ def unnormalize(v : _T, min : _T, max : _T) -> _T:
 def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
-dbg_checks_enabled = True
+printed_dbg_check_msg = False
 def dbg_check(is_check_passed : Callable[[],bool], build_msg : Callable[[],str]):
-    if dbg_checks_enabled and not is_check_passed():
-        raise RuntimeError(build_msg())
+    from adarl.utils.session import default_session
+    if default_session.debug_level>0:
+        global printed_dbg_check_msg
+        if not printed_dbg_check_msg:
+            ggLog.warn(f"dbg_check is enabled")
+            printed_dbg_check_msg = True
+        if not is_check_passed():
+            raise RuntimeError(build_msg())
     
-def dbg_check_finite(tensor_tree):
-    from adarl.utils.tensor_trees import is_all_finite
+def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf")):
+    from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite
     dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
-              build_msg=lambda: f"Non-finite values in tensor tree: {tensor_tree}")
+              build_msg=lambda: f"Non-finite values in tensor tree: isfinite = {map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite)}")
+    if min != float("-inf") or max != float("+inf"):
+        dbg_check(is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
+              build_msg=lambda: f"out of bounds values in tensor tree: {tensor_tree}")
+        

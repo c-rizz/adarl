@@ -1,5 +1,5 @@
 from __future__ import annotations
-from adarl.utils.spaces import gym_spaces
+from adarl.utils.spaces import gym_spaces, ThBox
 import torch as th
 from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar, Mapping
 import numpy as np
@@ -11,6 +11,7 @@ TensorMapping = Union[Mapping[Any,"TensorMapping[LeafType]"], LeafType]
 TensorTree = Union[Mapping[Any,"TensorTree[LeafType]"],
                    List["TensorTree[LeafType]"],
                    Tuple["TensorTree[LeafType]", ...],
+                   
                    LeafType]
 
 def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : bool, device : th.device) -> TensorTree[th.Tensor]:
@@ -134,6 +135,8 @@ def flatten_tensor_tree(src_tree : TensorTree[T]) -> dict[tuple,T]:
         src_tree = {f"T{i}":src_tree[i] for i in range(len(src_tree))}
     elif isinstance(src_tree, list):
         src_tree = {f"L{i}":src_tree[i] for i in range(len(src_tree))}
+    elif dataclasses.is_dataclass(src_tree):
+        src_tree = {f"D{k}":v for k,v in dataclasses.asdict(src_tree).items()}
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
@@ -202,10 +205,15 @@ def space_from_tree(tensor_tree):
         tensor_tree = th.as_tensor(tensor_tree)
     if isinstance(tensor_tree, (float, int)):
         tensor_tree = th.as_tensor(tensor_tree)
+    if isinstance(tensor_tree, np.ndarray):
+        return gym_spaces.Box(high=(np.ones_like(tensor_tree)*float("+inf")),
+                              low=(np.ones_like(tensor_tree)*float("-inf")),
+                              dtype=tensor_tree.dtype)
     if isinstance(tensor_tree, th.Tensor):
-        return gym_spaces.Box(high=(th.ones_like(tensor_tree)*float("+inf")).cpu().numpy(),
-                              low=(th.ones_like(tensor_tree)*float("-inf")).cpu().numpy(),
-                              dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype])
+        return ThBox(high=(th.ones_like(tensor_tree)*float("+inf")).cpu().numpy(),
+                    low=(th.ones_like(tensor_tree)*float("-inf")).cpu().numpy(),
+                    dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype],
+                    torch_device=tensor_tree.device)
     else:
         raise RuntimeError(f"Unexpected tree element type {type(tensor_tree)}")
     
@@ -218,7 +226,7 @@ def sizetree_from_space(space : gym_spaces.Space):
     else:
         raise NotImplemented(f"space {space} is not supported.")
     
-def _is_all_leaf_finite(tensor : th.Tensor | np.ndarray):
+def is_leaf_finite(tensor : th.Tensor | np.ndarray):
     if isinstance(tensor, th.Tensor):
         return th.all(th.isfinite(tensor))
     elif isinstance(tensor, np.ndarray):
@@ -227,7 +235,20 @@ def _is_all_leaf_finite(tensor : th.Tensor | np.ndarray):
         raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
 def is_all_finite(tree : TensorTree):
-    return all(flatten_tensor_tree(map_tensor_tree(tree, _is_all_leaf_finite)).values())
+    return all(flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).values())
+
+def is_leaf_bounded(tensor : th.Tensor | np.ndarray, min : th.Tensor, max : th.Tensor):
+    if isinstance(tensor, th.Tensor):
+        return th.all(tensor >= min) and th.all(tensor <= max)
+    elif isinstance(tensor, np.ndarray):
+        return np.all(tensor >= min) and np.all(tensor <= max)
+    else:
+        raise NotImplementedError(f"Unsupported type {type(tensor)}")
+
+def is_all_bounded(tree : TensorTree, min : th.Tensor, max : th.Tensor):
+    r = flatten_tensor_tree(map_tensor_tree(tree, lambda t: is_leaf_bounded(t,min=min,max=max))).values()
+    print(f"r = {r}")
+    return all(r)
 
 
 def to_contiguous_tensor(value):

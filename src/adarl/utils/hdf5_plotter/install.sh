@@ -15,7 +15,7 @@ fi
 
 echo "Created venv at $(which python3)" 
 pip install --upgrade pip
-pip install --upgrade setuputils
+pip install --upgrade setuptools
 pip install --upgrade wheel
 
 pip install -r "${dname}/requirements.txt"
