@@ -19,7 +19,7 @@ import psutil
 import random
 import time
 import torch as th
-import typing_extensions
+from typing_extensions import override
 import warnings
 
 # class ReplayBuffer_updatable(ReplayBuffer):
@@ -107,6 +107,10 @@ class BaseBuffer(ABC):
 
     @abstractmethod
     def update(self, buffer : ThDReplayBuffer):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def predict_memory_consumption(self) -> tuple[float,int | float]:
         raise NotImplementedError()
 
     
@@ -506,7 +510,7 @@ class ThDReplayBuffer(BaseBuffer):
         self._allocate_buffers(self.buffer_size)
         self._addcount = 0
         
-
+    @override
     def predict_memory_consumption(self):
         testRatio = 0.01
         self._allocate_buffers(buffer_size=int(self.buffer_size*testRatio))
@@ -520,6 +524,7 @@ class ThDReplayBuffer(BaseBuffer):
 
         return predicted_mem_usage, mem_available
 
+    @override
     def memory_size(self):
         obs_nbytes = 0
         for _, obs in self.observations.items():
@@ -575,7 +580,7 @@ class ThDReplayBuffer(BaseBuffer):
 
 
         
-
+    @override
     def add(
         self,
         obs: Dict[str, th.Tensor],
@@ -625,9 +630,11 @@ class ThDReplayBuffer(BaseBuffer):
             self.full = True
             self.pos = 0
 
+    @override
     def collected_frames(self):
         return self._addcount*self.n_envs
 
+    @override
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
@@ -672,15 +679,15 @@ class ThDReplayBuffer(BaseBuffer):
 
         return data
 
+    @override
     def storage_torch_device(self):
         return self._storage_torch_device
 
+    @override
     def stored_frames(self):
         return (self.buffer_size if self.full else self.pos)*self.n_envs
 
-    def size(self):
-        return self.stored_frames()
-
+    @override
     def update(self, buffer : ThDReplayBuffer):
 
         if (self.optimize_memory_usage or buffer.optimize_memory_usage):

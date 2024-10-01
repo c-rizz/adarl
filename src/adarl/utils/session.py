@@ -30,7 +30,8 @@ class Session():
         self._is_wandb_enabled = False
         self._wandb_wrapper = wandb_wrapper.default_wrapper
         self._id = f"{int(time.monotonic()*1000000)}_{int(random.random()*1000000000)}"
-        # ggLog.info(f"Created session {self._id}")
+        self._initialized = False
+        ggLog.info(f"Created session {self._id}")
 
     def reapply_globals(self):
         wandb_wrapper.default_wrapper = self._wandb_wrapper
@@ -46,6 +47,7 @@ class Session():
                         run_comment = "",
                         use_wandb = True):
         
+        self._initialized = True
         self._wandb_wrapper.start_worker()
         self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
@@ -58,6 +60,7 @@ class Session():
         self.debug_level = debug_level
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
+        ggLog.info(f"Initializing session {self} in process {os.getpid()}")
         self.run_info = {}
         self.run_info["comment"] = run_comment
         self.run_info["experiment_name"] = experiment_name
@@ -248,7 +251,7 @@ class Session():
 
 def set_current_session(session : Session):
     global default_session
-    # ggLog.info(f"Overwriting session {default_session._id} with {session._id}")
+    ggLog.info(f"Overwriting session {default_session._id} with {session._id} in process {os.getpid()}")
     default_session = session
     default_session.reapply_globals()
 
@@ -298,7 +301,7 @@ def adarl_startup( main_file_path : str,
                     run_comment = "",
                     use_wandb = True) -> Tuple[str, Session]:
     global default_session
-    default_session = Session()
+    # default_session = Session()
     default_session.initialize( main_file_path = main_file_path,
                                 currentframe = currentframe,
                                 using_pytorch = using_pytorch,

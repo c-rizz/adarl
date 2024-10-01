@@ -492,14 +492,14 @@ class AsyncVectorEnvShmem(VectorEnv):
         # reset's info (only updated at each reset)
         # reset_obss is not used as it is already in obss
         self._simple_commander.wait_done(timeout=timeout)
-        t1_step = time.monotonic()
+        # t1_step = time.monotonic()
         data = self._shared_env_data.wait_data()
-        t2_step = time.monotonic()
+        # t2_step = time.monotonic()
         if self._copy_data:
             data = copy.deepcopy(data)
         # observations, rewards, terminateds, truncateds, infos, reset_obss, reset_infos = data
         consequent_observations, rewards, terminations, truncations, consequent_infos, next_start_observations, next_start_infos = data
-        t3_step = time.monotonic()
+        # t3_step = time.monotonic()
         # self.reset_infos = reset_infos
         
         next_start_infos["final_observation"] = consequent_observations
@@ -527,7 +527,7 @@ class AsyncVectorEnvShmem(VectorEnv):
 
         self._state = AsyncState.DEFAULT
 
-        tf_step = time.monotonic()
+        # tf_step = time.monotonic()
         # ggLog.info(f"collection: {t1_step-self._t0_step} {t2_step-t1_step} {t3_step-t2_step} {tf_step-t3_step}")
 
 

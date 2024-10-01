@@ -627,6 +627,15 @@ class RobotStatsStateHelper(ThBoxStateHelper):
     def build_robot_limits(self, joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]):
         return super().build_limits(fields_minmax=self._build_fields_minmax(joint_limit_minmax_pve))
 
+    def state_names(self):
+        if self._state_names is None:
+            self._state_names = np.empty(shape=(self._history_length,self._fields_num)+self.field_size, dtype=object)
+            for h in range(self._history_length):
+                for fn in range(self._fields_num):
+                    for s in np.ndindex(self.field_size):
+                        jname = self.field_names[fn][1]
+                        self._state_names[(h,fn)+tuple(s)] = f"[{h},{jname},{self.subfield_names[s]}]"
+        return self._state_names
 
 
 class JointImpedanceActionHelper:

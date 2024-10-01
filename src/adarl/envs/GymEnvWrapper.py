@@ -311,7 +311,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._totalEpisodeReward += reward
         if self._total_sub_rewards is None:
             self._total_sub_rewards = {}
-        if sum(sub_rewards.values()) - reward > 0.001: raise RuntimeError(f"sub_rewards do not sum up to reward: {reward}!=sum({sub_rewards})")
+        if len(sub_rewards) > 0 and sum(sub_rewards.values()) - reward > 0.001: raise RuntimeError(f"sub_rewards do not sum up to reward: {reward}!=sum({sub_rewards})")
         for k,v in sub_rewards.items():
             self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
         

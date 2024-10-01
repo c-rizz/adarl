@@ -60,6 +60,15 @@ class SimpleCommander():
             # print(f"Sent command {self._cmds_sent_count}")
             self._new_cmd_cond.notify_all()
 
+    def current_command(self) -> str | None:
+        with self._cmd_done_cond:
+            done = self._cmds_done_count.value==self._cmds_sent_count.value*self._n_envs
+            if not done:
+                cmd = self._current_command.value.decode("utf-8")
+            else:
+                cmd = None
+        return cmd
+
 class SharedData():
     def __init__(self, observation_space : gym_spaces.Space,
                  action_space : gym_spaces.Space,

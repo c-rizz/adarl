@@ -120,7 +120,7 @@ class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter
         if keep_going:
             # ggLog.warn(f"{type(self)}: move timed out (ee_pos = {ee_pos}, target_position = {self._target_position}, err = {err})")
             self._move_fails_in_last_step += 1
-        self.clear_commands()
+        # self.clear_commands() Don't clear, to allow action delaying to work
         return elapsed_time
 
     def resetWorld(self):

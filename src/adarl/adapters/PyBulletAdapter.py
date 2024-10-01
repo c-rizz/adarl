@@ -208,7 +208,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._commanded_torques_by_body = {}
         self._commanded_torques_by_name = {}
         self._commanded_velocities_by_body : Dict[int, Tuple[List[int], List[float]]] = {}
-        self._last_step_commanded_torques_by_name = {}
+        self._last_sent_torques_by_name = {}
         self._commanded_trajectories = {}
         self._debug_gui = debug_gui
         self._reset_detected_contacts()
@@ -350,7 +350,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         """
         self._reset_joint_state_step_stats()
         stepLength = self.run(self._stepLength_sec)
-        self.clear_commands()
+        # self.clear_commands() Do not clear commands, if we clear them, action delaying doesn't work properly anymore as he doesn't know what to do
         return stepLength
 
     def run(self, duration_sec: float):
@@ -368,7 +368,6 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             wtps = time.monotonic()
             pybullet.stepSimulation()
             self._read_new_contacts()
-            self._last_step_commanded_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
             self._update_joint_state_step_stats()
             stepping_wtime += time.monotonic()-wtps
             self._simTime += self._bullet_stepLength_sec
@@ -378,6 +377,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                 if sleep_time > 0:
                     time.sleep(sleep_time*(1/self._real_time_factor))
             self._prev_step_end_wall_time = time.monotonic()
+        self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
+                                            for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
         self._stepping_wtime_since_build += stepping_wtime
         self._stepping_stime_since_build += self._simTime - t0
         self._run_time_since_build += time.monotonic()-tf0
@@ -658,8 +659,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             for bodyId, jids in requests.items():
                 for i in range(len(jids)):
                     joint_name = self._bodyAndJointIdToJointName[(bodyId,jids[i])]
-                    if joint_name in self._last_step_commanded_torques_by_name:
-                        effort = self._last_step_commanded_torques_by_name[joint_name]
+                    if joint_name in self._last_sent_torques_by_name:
+                        effort = self._last_sent_torques_by_name[joint_name]
                         state_pve[row,2] = effort
                     row += 1
             return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32)
@@ -675,8 +676,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                     pos, vel, effort = response[i]
                     # if the joint is commanded in torque the returned effort will be zero.
                     # But the actual effort is by definition the comanded one
-                    if joint_name in self._last_step_commanded_torques_by_name:
-                        effort = self._last_step_commanded_torques_by_name[joint_name]
+                    if joint_name in self._last_sent_torques_by_name:
+                        effort = self._last_sent_torques_by_name[joint_name]
                     allStates[self._getJointName(bodyId,jid)] = JointState([pos], [vel], [effort])
             return allStates
 
@@ -1004,7 +1005,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
         self._refresh_entities_ids(print_info=self._verbose)
-        ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
+        # ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],
                                                     pose.position, pose.orientation_xyzw)
