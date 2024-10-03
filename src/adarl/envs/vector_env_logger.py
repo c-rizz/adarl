@@ -1,6 +1,5 @@
 from __future__ import annotations
 import gymnasium as gym
-from gymnasium.core import ActType, ObsType, RenderFrame, WrapperObsType
 import numpy as np
 import torch as th
 from typing import Any, SupportsFloat, Tuple, Dict
@@ -8,6 +7,7 @@ import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.tensor_trees import unstack_tensor_tree
 import copy
 import adarl.utils.session as session
+import time
 
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
@@ -33,6 +33,9 @@ class VectorEnvLogger(
         self._logs_batch = {}
         self._logs_batch_size = 0
         self._logs_id = logs_id+"/" if logs_id is not None else ""
+        self.__step_count = 0
+        self._step_count_last_log = self.__step_count
+        self._time_last_log = time.monotonic()
 
 
     def step(
@@ -48,6 +51,7 @@ class VectorEnvLogger(
 
         """
         observation, reward, terminated, truncated, infos = self.env.step(action)
+        self.__step_count += 1
 
         info_list = unstack_tensor_tree(infos)
         if self._use_wandb:
@@ -89,8 +93,11 @@ class VectorEnvLogger(
                 wandb_log(wdblog)
                 ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
                            f" r={self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}"+
-                           f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"+
-                           f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}")
+                           f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"
+                           f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}"
+                           f" fps={(self.__step_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
+                self._step_count_last_log = self.__step_count
+                self._time_last_log = time.monotonic()
         return observation, reward, terminated, truncated, infos

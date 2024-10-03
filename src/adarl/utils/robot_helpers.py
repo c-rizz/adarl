@@ -249,7 +249,6 @@ class Robot():
                 p["type"] = Robot.JOINT_TYPES.FIXED # Not sure about this, but the universe joint that is added automatically apepars like this
             elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned","JointModelRevoluteUnboundedUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.REVOLUTE
-                print(f"Joint {jn} is revolute")
             elif j.shortname() in ["JointModelPX","JointModelPY","JointModelPZ","JointModelPrismaticUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.PRISMATIC
             elif j.shortname() in ["JointModelFreeFlyer"]:

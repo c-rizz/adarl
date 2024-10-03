@@ -438,7 +438,7 @@ def evaluateSavedModels(files : List[str], evaluator : Callable[[str],Dict[str,U
         neverWroteToCsv = True
 
         processes = maxProcs
-        print(f"Using {processes} parallel evaluators")
+        # print(f"Using {processes} parallel evaluators")
         argss = [[file,*args] for file in files]
         with multiprocessing.Pool(processes) as p:
             eval_results = p.map(evaluator, argss)

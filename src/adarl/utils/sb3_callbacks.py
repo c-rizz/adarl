@@ -147,8 +147,8 @@ class PrintLrRunInfo(BaseCallback):
         dones_sum = sum(self.locals["dones"])
         if dones_sum:
             self._episode_counter += dones_sum
-        adarl.utils.session.default_session.run_info["collected_episodes"].value = self._episode_counter
-        adarl.utils.session.default_session.run_info["collected_steps"].value = self._episode_counter
+        # adarl.utils.session.default_session.run_info["collected_episodes"].value = self._episode_counter
+        # adarl.utils.session.default_session.run_info["collected_steps"].value = self._episode_counter
         return True
     
     def _on_rollout_end(self) -> bool:

@@ -11,6 +11,7 @@ import adarl.utils.mp_helper as mp_helper
 import atexit
 import traceback
 from typing import Optional
+import adarl.utils.session as session
 
 class WandbWrapper():
     def __init__(self):
@@ -52,6 +53,7 @@ class WandbWrapper():
         if self._wandb_initialized:
             raise RuntimeError(f"Tried to initialize wandb wrapper twice (original pid {self._init_pid}, current pid = {os.getpid()}")
         self._init_pid = os.getpid()
+        wandb.require("core")
         wandb.init(**kwargs)
         self._wandb_initialized = True
         # self._worker_thread = threading.Thread(target=self._worker)
@@ -89,6 +91,8 @@ class WandbWrapper():
                 self.req_count += 1
                 self.last_sent_times_by_key[keys] = t
                 self.sent_count[keys] = self.sent_count.get(keys,0) + 1
+                log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
+                log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
                 try:
                     wandb.log(log_dict)
                 except Exception as e:

@@ -95,7 +95,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._observationDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._wallStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._lastStepEndSimTimeFromStart = 0
         self._lastValidStepWallTime = -1
@@ -138,7 +138,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
         self._dbg_info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
         self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
-        self._dbg_info["avg_obs_wall_duration"] = self._observationDurationAverage.getAverage()
+        self._dbg_info["avg_obs_wall_duration"] = self._getStateDurationAverage.getAverage()
         self._dbg_info["avg_step_sim_duration"] = avgSimTimeStepDuration
         self._dbg_info["tot_ep_wall_duration"] = totEpisodeWallDuration
         self._dbg_info["tot_ep_sim_duration"] = self._lastStepEndSimTimeFromStart
@@ -295,7 +295,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         #Get new observation
         t_preObs = time.monotonic()
         state = self._getStateCached()
-        self._observationDurationAverage.addValue(newValue = time.monotonic()-t_preObs)
+        self._getStateDurationAverage.addValue(newValue = time.monotonic()-t_preObs)
         self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
 
         # Assess the situation
@@ -410,7 +410,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._envStepDurationAverage.reset()
         self._submitActionDurationAverage.reset()
-        self._observationDurationAverage.reset()
+        self._getStateDurationAverage.reset()
         self._wallStepDurationAverage.reset()
         self._update_dbg_info()
 

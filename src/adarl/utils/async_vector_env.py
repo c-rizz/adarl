@@ -55,7 +55,7 @@ def _worker(
 ) -> None:
     if worker_init_fn is not None:
         worker_init_fn(**worker_init_kwargs)
-    ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
+    # ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
     setproctitle.setproctitle(mp.current_process().name)
     # th.cuda.memory._record_memory_history()
     # pr = cProfile.Profile()
@@ -267,7 +267,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device,
                     worker_init_fn, worker_init_kwargs)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=True)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=False)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()

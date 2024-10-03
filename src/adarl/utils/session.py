@@ -21,6 +21,7 @@ import atexit
 from adarl.utils.wandb_wrapper import wandb_init
 import adarl.utils.mp_helper as mp_helper
 import adarl.utils.wandb_wrapper as wandb_wrapper
+import signal
 faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
 
 class Session():
@@ -31,7 +32,7 @@ class Session():
         self._wandb_wrapper = wandb_wrapper.default_wrapper
         self._id = f"{int(time.monotonic()*1000000)}_{int(random.random()*1000000000)}"
         self._initialized = False
-        ggLog.info(f"Created session {self._id}")
+        # ggLog.info(f"Created session {self._id}")
 
     def reapply_globals(self):
         wandb_wrapper.default_wrapper = self._wandb_wrapper
@@ -60,7 +61,7 @@ class Session():
         self.debug_level = debug_level
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
-        ggLog.info(f"Initializing session {self} in process {os.getpid()}")
+        # ggLog.info(f"Initializing session {self} in process {os.getpid()}")
         self.run_info = {}
         self.run_info["comment"] = run_comment
         self.run_info["experiment_name"] = experiment_name
@@ -69,6 +70,7 @@ class Session():
         self.run_info["start_time"] = time.time()
         self.run_info["collected_episodes"] = mp_helper.get_context().Value("i",0)
         self.run_info["collected_steps"] = mp_helper.get_context().Value("i",0)
+        self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
         self.run_info["seed"] = seed
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
@@ -229,6 +231,18 @@ class Session():
         if len(active_threads)>1:
             ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 
+        all_children_terminated = False
+        while not all_children_terminated:
+            t0_chterm = time.monotonic()
+            child_procs = mp_helper.get_context().active_children()
+            all_children_terminated = len(child_procs)==0
+            if not all_children_terminated:
+                sig = signal.SIGINT if timeout-(time.monotonic()-t0_chterm) > 10 else signal.SIGKILL
+                ggLog.warn(f"Session is shutting down, but still have {len(child_procs)} child processes. Sending {sig} to all")
+                for p in child_procs:
+                    os.kill(p.pid, sig)
+                for p in child_procs:
+                    p.join(timeout = max(0,5-(time.monotonic()-t0_chterm)))
         # for t in threading.enumerate():
         #     if t != threading.main_thread():
         #         terminate the thread???
@@ -251,7 +265,7 @@ class Session():
 
 def set_current_session(session : Session):
     global default_session
-    ggLog.info(f"Overwriting session {default_session._id} with {session._id} in process {os.getpid()}")
+    # ggLog.info(f"Overwriting session {default_session._id} with {session._id} in process {os.getpid()}")
     default_session = session
     default_session.reapply_globals()
 

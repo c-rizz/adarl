@@ -224,9 +224,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._max_torques_pos_control = joints_max_torque_position_control
         self._max_torque_pos_control = global_max_torque_position_control
         self._restore_on_reset = restore_on_reset
-        self._stepping_wtime_since_build = 0
+        self._sim_stepping_wtime_since_build = 0
         self._stepping_stime_since_build = 0
-        self._run_time_since_build = 0
+        self._sim_step_count_since_build = 0
+        self._run_wtime_since_build = 0
         self._build_time = time.monotonic()
         self._verbose = verbose
         self._monitored_contacts = []
@@ -320,6 +321,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
     def resetWorld(self):
         self.clear_commands()
+        self._reset_detected_contacts()
         # ggLog.info(f"Resetting...")
         if self._restore_on_reset:
             pybullet.restoreState(self._startStateId)
@@ -328,8 +330,9 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._simTime = 0
         self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
+        self._reset_joint_state_step_stats()
         if self._verbose:
-            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_time_since_build}s")
+            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -349,6 +352,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         """
         self._reset_joint_state_step_stats()
+        self._reset_detected_contacts()
         stepLength = self.run(self._stepLength_sec)
         # self.clear_commands() Do not clear commands, if we clear them, action delaying doesn't work properly anymore as he doesn't know what to do
         return stepLength
@@ -356,7 +360,6 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
     def run(self, duration_sec: float):
         tf0 = time.monotonic()
 
-        self._reset_detected_contacts()
         #pybullet.setTimeStep(self._stepLength_sec) #This is here, but still, as stated in the pybulelt quickstart guide this should not be changed often
         self._sent_motor_torque_commands_by_bid_jid = {}
 
@@ -367,21 +370,21 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             self._apply_controls()
             wtps = time.monotonic()
             pybullet.stepSimulation()
+            self._sim_step_count_since_build += 1
+            stepping_wtime += time.monotonic()-wtps
             self._read_new_contacts()
             self._update_joint_state_step_stats()
-            stepping_wtime += time.monotonic()-wtps
             self._simTime += self._bullet_stepLength_sec
             if self._real_time_factor is not None and self._real_time_factor>0:
                 sleep_time = self._bullet_stepLength_sec - (time.monotonic()-self._prev_step_end_wall_time)
-                # print(f" sleep_time = {sleep_time}")
                 if sleep_time > 0:
                     time.sleep(sleep_time*(1/self._real_time_factor))
             self._prev_step_end_wall_time = time.monotonic()
         self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
                                             for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
-        self._stepping_wtime_since_build += stepping_wtime
+        self._sim_stepping_wtime_since_build += stepping_wtime
         self._stepping_stime_since_build += self._simTime - t0
-        self._run_time_since_build += time.monotonic()-tf0
+        self._run_wtime_since_build += time.monotonic()-tf0
 
         return self._simTime-t0
     
@@ -410,60 +413,6 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                 lightSpecularCoeff = self._lightSpecularCoeff)
             ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
         return ret
-
-    def _build_trajectory(self, t0, p0, v0, pf, samples, max_vel, max_acc):
-
-        # TODO: implement v0 use
-
-        t_a = max_vel/max_acc # acceleration duration
-        x_a = max_vel*max_vel/(2*max_acc) # space to accelerate to max_vel
-        d = abs(pf-p0)
-        if d < 0.0001:
-            trajectory_tpva = [(t0, pf, 0, 0)]
-            return np.array(trajectory_tpva, dtype = np.float64)
-        if d <= 2*x_a:
-            x_a = d/2
-            t_a = np.sqrt(((2*x_a)/max_acc))
-            max_vel = t_a*max_acc
-            t_coast = 0
-        else:
-            t_coast = (d-2*x_a)/max_vel # time spent at max speed
-        t_f = 2*t_a + t_coast # end time
-        t_d = t_f-t_a # time when deceleration starts
-        x_d = d-x_a # position where deceleration starts
-        if t_d<t_a: # may happen for numerical reasons
-            t_d = t_a
-        if np.isnan(t_f):
-            raise RuntimeError(f"t_f is nan: t_f={t_f}, t_a={t_a}, d={d}, x_a={x_a}, max_vel={max_vel}, max_acc={max_acc}, pf={pf}, p0={p0}")
-        # ggLog.info(f"{t0}, {p0}, {v0}, {pf}, {samples}, {max_vel}, {max_acc} : {t_a}, {x_a}, {t_coast}, {t_f}, {t_d}, {x_d}, {d}")
-        samples = int(t_f*100)+1 #100Hz plus one final sample
-        trajectory_tpva = [None] * samples
-        for i in range(samples-1):
-            t = t_f*(i/samples)
-            if t <= t_a:
-                x = 0.5*max_acc*t*t
-                v = max_acc*t
-                a = max_acc
-            elif t>=t_d:
-                td = t - t_d # time since deceleration start
-                x = x_d + (max_vel*td - 0.5*max_acc*td*td)
-                v = max_vel-max_acc*td
-                a = -max_acc
-            elif t >= t_a and t<=t_d:
-                x = x_a + (t-t_a)*max_vel
-                v = max_vel
-                a = 0
-            else:
-                raise RuntimeError(f"This should not happen: t = {t}, t_a={t_a}, t_d={t_d}, p0={p0}, pf={pf}")
-            trajectory_tpva[i] = (t, x, v, a)
-        trajectory_tpva[-1] = (0, 0, 0, 0)
-        if pf-p0<0:
-            trajectory_tpva = [[t,-p,-v,-a] for t,p,v,a in trajectory_tpva]
-        trajectory_tpva = [[t+t0,p+p0,v,a] for t,p,v,a in trajectory_tpva]
-        trajectory_tpva[-1] = (t_f+t0, pf, 0, 0)
-        return np.array(trajectory_tpva, dtype = np.float64)
-            
-
 
     def _apply_controls(self):
         self._apply_commanded_torques()
@@ -570,13 +519,12 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             if bodyId not in requests: #If we haven't created a request for this body yet
                 requests[bodyId] = []
             p0 = jointStates[joint].position[0]
-            traj_tpva = self._build_trajectory(t0 = t0,
-                                               p0 = p0,
-                                               v0 = jointStates[joint].rate[0],
-                                               pf = req_position,
-                                               samples = 100,
-                                               max_vel = max_velocity*velocity_scaling,
-                                               max_acc = max_acceleration*acceleration_scaling)
+            traj_tpva = adarl.utils.utils.build_quintic_trajectory( p0=p0.item(),
+                                                                    v0=jointStates[joint].rate[0].item(),
+                                                                    pf=req_position,
+                                                                    ctrl_freq_hz=1000,
+                                                                    max_vel=max_velocity*velocity_scaling,
+                                                                    max_acc=max_acceleration*acceleration_scaling)
             requests[bodyId].append((jointId, traj_tpva))
             # requests[bodyId][0].append(jointId) #requested joint
             # requests[bodyId][1].append(req_position) #requested position
@@ -720,6 +668,15 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._update_joint_state_step_stats() # rebuild and populate with current state
         self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because these actually belong to the previous step)
 
+    def _update_stat_tensors(self, joint_states_t : th.Tensor):
+        th.min(self._monitored_joints_min, joint_states_t, out=self._monitored_joints_min[:])
+        th.max(self._monitored_joints_max, joint_states_t, out=self._monitored_joints_max[:])
+        th.add(self._monitored_joints_sum, joint_states_t, out=self._monitored_joints_sum[:])
+        th.add(self._monitored_joints_sum_of_squares, joint_states_t.pow_(2), out=self._monitored_joints_sum_of_squares[:])
+        th.div(self._monitored_joints_sum, self._joint_stats_sample_count, out=self._monitored_joints_avg[:])
+        self._monitored_joints_std[:] = th.sqrt(th.clamp(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2,
+                                                          min=th.zeros_like(self._monitored_joints_avg)))
+        
     def _update_joint_state_step_stats(self):
         # ggLog.info(f"updating stats")
         if self._joint_stats_sample_count == 0: # if we are at zero whatever is in the current state is invalid
@@ -729,14 +686,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         joint_states_t = self.getJointsState()
         adarl.utils.utils.dbg_check_finite(joint_states_t)
         self._joint_stats_sample_count += 1
-        min = th.min(self._monitored_joints_min, joint_states_t)
-        self._monitored_joints_min[:] = min
-        self._monitored_joints_max[:] = th.max(self._monitored_joints_max, joint_states_t)
-        self._monitored_joints_sum[:] = self._monitored_joints_sum + joint_states_t
-        self._monitored_joints_sum_of_squares[:] = self._monitored_joints_sum_of_squares + joint_states_t**2
-        self._monitored_joints_avg[:] = self._monitored_joints_sum / self._joint_stats_sample_count
-        self._monitored_joints_std[:] = th.sqrt(th.clamp(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2,
-                                                          min=th.zeros_like(self._monitored_joints_avg)))
+
+        self._update_stat_tensors(joint_states_t)
         adarl.utils.utils.dbg_check_finite(self._monitored_joints_stats)
 
 
@@ -1105,6 +1056,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         new_contacts = []
         for body_a_id, body_b_id, link_a_id, link_b_id in self._monitored_contacts:
             new_contacts += self._get_contacts(body_a_id, body_b_id, link_a_id, link_b_id)
+        # ggLog.info(f"PyBulletAdapter: simstep {self._sim_step_count_since_build}: new_contacts = {new_contacts}")
         self._detected_contacts.append(new_contacts)
 
     def _get_contacts(self, 
@@ -1132,3 +1084,11 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         duration))
         return ret
 
+    def get_info(self):
+        return {"sim_stepping_wtime_since_build" : self._sim_stepping_wtime_since_build,
+                "sim_stepping_stime_since_build" : self._stepping_stime_since_build,
+                "sim_stepping_stime_since_build" : self._simulation_step,
+                "sim_step_count_since_build" : self._sim_step_count_since_build,
+                "run_wtime_since_build" : self._run_wtime_since_build,
+                "run_overhead_ratio" : self._run_wtime_since_build/self._sim_stepping_wtime_since_build,
+                "pure_sim_rt_factor" : self._stepping_stime_since_build/self._sim_stepping_wtime_since_build}

@@ -168,8 +168,8 @@ class SharedEnvData():
         if not isinstance(action_batch, th.Tensor):
             action_batch = th.as_tensor(action_batch, device=self._shared_data._device)
         fill_tensor_tree(None, action_batch, self._shared_data._actions, non_blocking=True)
-        if th.cuda.is_initialized(): # synchronize always unless cuda has never even been used (this way we save a lot of memory)
-            th.cuda.synchronize()
+        if th.cuda.is_initialized() and self._shared_data._device.type == "cuda": # synchronize always unless cuda has never even been used (this way we save a lot of memory)
+            th.cuda.synchronize(self._shared_data._device)
         with self._actions_filled_cond: # mark actions as available
             self._actions_filled.value = self._n_envs
             self._actions_filled_cond.notify_all()
