@@ -1,6 +1,4 @@
 from __future__ import annotations
-from cmath import inf
-from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer
 import numpy as np
 from gymnasium import spaces
 from typing import Union, List, Dict, Any, Optional
@@ -10,11 +8,9 @@ import psutil
 import warnings
 import time
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseBuffer
+from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer
 from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree
-import random
-import threading
-
+from typing_extensions import override
 
 def take_frames(buff, episodes, frames):
     # ggLog.info(f"episodes.size() = {episodes.size()}")
@@ -197,7 +193,7 @@ class EpisodeStorage():
     def size(self):
         return self.stored_frames()
     
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None) -> TransitionBatch:
+    def sample(self, batch_size: int, sample_duration = None) -> TransitionBatch:
         
         return_traj = sample_duration is not None
         if sample_duration is None:
@@ -370,38 +366,24 @@ class EpisodeStorage():
 
                 
 
-class ThDictEpReplayBuffer(BaseBuffer):
-    """
-    Dict Replay buffer used in off-policy algorithms like SAC/TD3.
-    Extends the ReplayBuffer to use dictionary observations
-    :param buffer_size: Max number of element in the buffer
-    :param observation_space: Observation space
-    :param action_space: Action space
-    :param device:
-    :param n_envs: Number of parallel environments
-    :param optimize_memory_usage: Enable a memory efficient variant
-        Disabled for now (see https://github.com/DLR-RM/stable-baselines3/pull/243#discussion_r531535702)
-    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
-        separately and treat the task as infinite horizon task.
-        https://github.com/DLR-RM/stable-baselines3/issues/284
-    """
-
+class ThDictEpReplayBuffer(BaseValidatingBuffer):
     def __init__(
         self,
         buffer_size: int,
         observation_space: spaces.Space,
         action_space: spaces.Space,
+        max_episode_duration : int | float,
         device: th.device = th.device("cpu"),
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         storage_torch_device: th.device = th.device("cpu"),
         fallback_to_cpu_storage: bool = True,
-        max_episode_duration : int | float = 1000,
         validation_buffer_size = 0,
         validation_holdout_ratio = 0,
         min_episode_duration = 0,
         disable_validation_set = True,
         fill_val_buffer_to_min_at_ep = float("+inf"),
+        fill_val_buffer_to_min_at_step = float("+inf"),
         val_buffer_min_size = 0
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
@@ -455,14 +437,17 @@ class ThDictEpReplayBuffer(BaseBuffer):
         self._collected_frames = 0
         self._added_eps_count = 0
         self._fill_val_buffer_to_min_at_ep = fill_val_buffer_to_min_at_ep
+        self._fill_val_buffer_to_min_at_step = fill_val_buffer_to_min_at_step
         self._val_buff_min_size = val_buffer_min_size
         
     def validation_set_enabled(self):
         return not self._disable_validation_set
     
+    @override
     def memory_size(self):
         return self._storage.memory_size() + self._validation_storage.memory_size()
     
+    @override
     def predict_memory_consumption(self):
         testRatio = 0.01
         self._allocate_buffers(int(self._max_episodes*testRatio), int(self._max_val_episodes*testRatio))
@@ -483,8 +468,7 @@ class ThDictEpReplayBuffer(BaseBuffer):
         self._last_eps_buffers = [EpisodeStorage(1, self._max_episode_duration, self, self._min_episode_duration) for _ in range(self.n_envs)]
 
 
-        
-
+    @override
     def add(self,
             obs: Dict[str, np.ndarray],
             next_obs: Dict[str, np.ndarray],
@@ -501,6 +485,8 @@ class ThDictEpReplayBuffer(BaseBuffer):
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.action_space, spaces.Discrete):
             action = action.reshape((self.n_envs, self.action_dim))
+        obs = {k:v for k,v in obs.items()} # shallow copy the observations
+        next_obs = {k:v for k,v in next_obs.items()} # shallow copy the observations
         for key in obs.keys():
             if isinstance(self.observation_space.spaces[key], spaces.Discrete):
                 obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
@@ -531,8 +517,9 @@ class ThDictEpReplayBuffer(BaseBuffer):
                 buf = self._last_eps_buffers[env_idx] 
                 # ggLog.info(f"ThDictEpReplayBuffer: idx {env_idx} ep terminated, copying to main storage")
                 r = np.random.random()
+                should_fill_up_validation = self._added_eps_count > self._fill_val_buffer_to_min_at_ep or self.stored_frames() > self._fill_val_buffer_to_min_at_step
                 if (r<self._validation_holdout_ratio or 
-                    (self._added_eps_count > self._fill_val_buffer_to_min_at_ep and self._val_buff_min_size > self._validation_storage.size())):
+                    (should_fill_up_validation and self._val_buff_min_size > self._validation_storage.size())):
                     store = self._validation_storage
                     # ggLog.info(f"Putting ep in validation storage")
                 else:
@@ -564,6 +551,7 @@ class ThDictEpReplayBuffer(BaseBuffer):
             pos = (pos+1) % self.buffer_size
 
             
+    @override
     def collected_frames(self):
         return self._collected_frames
 
@@ -576,6 +564,7 @@ class ThDictEpReplayBuffer(BaseBuffer):
         else:
             return self._storage.stored_episodes()+self._validation_storage.stored_episodes()
     
+    @override
     def stored_frames(self, validation_set = False, training_set = True):
         if validation_set and not self._disable_validation_set:
             return self._validation_storage.stored_frames()
@@ -584,10 +573,19 @@ class ThDictEpReplayBuffer(BaseBuffer):
         else:
             return self._storage.stored_frames()+self._validation_storage.stored_frames()
     
+    @override
     def size(self, validation_set = False, training_set = True):
         return self.stored_frames(validation_set=validation_set, training_set=training_set)
 
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, sample_duration = None, validation_set : bool = False) -> TransitionBatch:
+    @override
+    def sample_validation(self, batch_size: int, sample_duration = None):
+        return self._sample(batch_size=batch_size,sample_duration=sample_duration,validation_set=True)
+
+    @override
+    def sample(self, batch_size: int, sample_duration = None):
+        return self._sample(batch_size=batch_size,sample_duration=sample_duration,validation_set=False)
+
+    def _sample(self, batch_size: int, sample_duration = None, validation_set : bool = False) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
         :param batch_size: Number of element to sample
@@ -599,18 +597,20 @@ class ThDictEpReplayBuffer(BaseBuffer):
             raise RuntimeError("Memory optimization is not supported")
         if validation_set and not self._disable_validation_set:
             # ggLog.info(f"Sampling validation set")
-            return self._validation_storage.sample(batch_size, env, sample_duration)
+            return self._validation_storage.sample(batch_size, sample_duration)
         else:
-            return self._storage.sample(batch_size, env, sample_duration)
+            return self._storage.sample(batch_size, sample_duration)
 
     def _get_samples(self, sampled_episodes, sampled_start_frames, env: Optional[VecNormalize] = None, sample_duration = 1) -> TransitionBatch:
         raise NotImplementedError()
 
 
+    @override
     def storage_torch_device(self):
         return self._storage_torch_device
 
     
+    @override
     def update(self, src_buffer):
         if isinstance(src_buffer, ThDictEpReplayBuffer):
             self._storage.update(src_buffer._storage)

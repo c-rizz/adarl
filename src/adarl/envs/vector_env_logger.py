@@ -92,10 +92,10 @@ class VectorEnvLogger(
                 wdblog["vec_env_logger/session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                 wandb_log(wdblog)
                 ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
-                           f" r={self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}"+
+                           f" r= \033[1m{self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+
                            f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"
                            f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}"
-                           f" fps={(self.__step_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
+                           f" fps={self.num_envs*(self.__step_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
                 self._logs_batch = {}
                 self._logs_batch_size = 0
                 self._step_count_last_log = self.__step_count

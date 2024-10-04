@@ -10,7 +10,7 @@ from stable_baselines3.common.preprocessing import get_obs_shape
 from stable_baselines3.common.vec_env import VecNormalize, VecEnv
 from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
 from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
-from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple
+from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple, Mapping
 import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.mp_helper as mp_helper
 import ctypes
@@ -113,6 +113,10 @@ class BaseBuffer(ABC):
     def predict_memory_consumption(self) -> tuple[float,int | float]:
         raise NotImplementedError()
 
+class BaseValidatingBuffer(BaseBuffer):
+    @abstractmethod
+    def sample_validation(self, batch_size : int):
+        raise NotImplementedError()
     
 
 @dataclass
@@ -342,7 +346,7 @@ class BasicStorage():
 
     def add(
         self,
-        obs: Dict[str, th.Tensor | np.ndarray],
+        obs: Mapping[str, th.Tensor | np.ndarray],
         next_obs: Dict[str, th.Tensor],
         action: th.Tensor | np.ndarray,
         reward: th.Tensor | np.ndarray,
@@ -360,15 +364,17 @@ class BasicStorage():
         for key in self.observations.keys():
             # Reshape needed when using multiple envs with discrete observations
             # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+            obs_k = obs[key]
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
-                obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.observations[key][pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
+                obs_k = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
+            self.observations[key][pos].copy_(th.as_tensor(obs_k), non_blocking=True)
             if isinstance(obs,th.Tensor): devices_to_sync.add(obs.device)
 
         for key in self.next_observations.keys():
+            nobs_k = next_obs[key]
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
-                next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.next_observations[key][pos].copy_(th.as_tensor(next_obs[key]), non_blocking=True)
+                nobs_k = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
+            self.next_observations[key][pos].copy_(th.as_tensor(nobs_k), non_blocking=True)
             if isinstance(next_obs,th.Tensor): devices_to_sync.add(next_obs.device)
 
         if isinstance(terminated, np.ndarray):

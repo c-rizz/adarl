@@ -229,7 +229,8 @@ class AsyncVectorEnvShmem(VectorEnv):
         env_action_device = "numpy",
         copy_data = False,
         worker_init_fn = None,
-        worker_init_kwargs = {}
+        worker_init_kwargs = {},
+        daemonic_workers = True
     ):
         """Vectorized environment that runs multiple environments in parallel.
 
@@ -249,7 +250,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         self._shared_mem_device = shared_mem_device
         self._env_action_device = env_action_device
         self._copy_data = copy_data
-
+        self._daemonic_workers = daemonic_workers
         if context is None:
             # Fork is not a thread safe method (see issue #217)
             # but is more user friendly (does not require to wrap the code in
@@ -267,7 +268,7 @@ class AsyncVectorEnvShmem(VectorEnv):
             args = (work_remote, remote, cloudpickle.dumps(env_fn), self._simple_commander, self._shared_env_data, i, self._env_action_device,
                     worker_init_fn, worker_init_kwargs)
             # daemon=True: if the main process crashes, we should not cause things to hang
-            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=False)  # type: ignore[attr-defined]
+            process = ctx.Process(target=_worker, args=args, name=f"async_vector_env.worker{i}", daemon=self._daemonic_workers)  # type: ignore[attr-defined]
             process.start()
             self.processes.append(process)
             work_remote.close()
