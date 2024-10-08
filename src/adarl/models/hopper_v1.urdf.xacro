@@ -42,7 +42,7 @@
   <xacro:property name="foot_position_z" value="0" />
   <xacro:property name="foot_orientation" value="0 1.570795 0" />
 
-  <xacro:property name="max_effort" value="1000" />
+  <xacro:property name="max_effort" value="100" />
 
   <xacro:property name="spawn_height" value="0.001" />
   <xacro:property name="gear" value="200" />
@@ -347,7 +347,7 @@
   </transmission>
 
 
-  <link name="camera_link"/>
+  <!-- <link name="camera_link"/>
   <joint name="camera_joint" type="fixed">
     <origin xyz="0 -2.5 0.75" rpy="0 0 1.5707" />
     <parent link="mid"/>
@@ -381,6 +381,6 @@
         <update_rate>60</update_rate>
         <visualize>0</visualize>
     </sensor>
-  </gazebo>
+  </gazebo> -->
 
 </robot>

@@ -225,8 +225,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._max_torque_pos_control = global_max_torque_position_control
         self._restore_on_reset = restore_on_reset
         self._sim_stepping_wtime_since_build = 0
-        self._stepping_stime_since_build = 0
         self._sim_step_count_since_build = 0
+        self._simTime = 0
         self._run_wtime_since_build = 0
         self._build_time = time.monotonic()
         self._verbose = verbose
@@ -332,7 +332,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         super().resetWorld()
         self._reset_joint_state_step_stats()
         if self._verbose:
-            ggLog.info(f"tot_step_stime = {self._stepping_stime_since_build}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
+            ggLog.info(f"tot_step_stime = {self._simTime}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -383,7 +383,6 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
                                             for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
         self._sim_stepping_wtime_since_build += stepping_wtime
-        self._stepping_stime_since_build += self._simTime - t0
         self._run_wtime_since_build += time.monotonic()-tf0
 
         return self._simTime-t0
@@ -1086,9 +1085,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
     def get_info(self):
         return {"sim_stepping_wtime_since_build" : self._sim_stepping_wtime_since_build,
-                "sim_stepping_stime_since_build" : self._stepping_stime_since_build,
-                "sim_stepping_stime_since_build" : self._simulation_step,
+                "sim_stepping_stime_since_build" : self._simTime,
                 "sim_step_count_since_build" : self._sim_step_count_since_build,
                 "run_wtime_since_build" : self._run_wtime_since_build,
                 "run_overhead_ratio" : self._run_wtime_since_build/self._sim_stepping_wtime_since_build,
-                "pure_sim_rt_factor" : self._stepping_stime_since_build/self._sim_stepping_wtime_since_build}
+                "pure_sim_rt_factor" : self._simTime/self._sim_stepping_wtime_since_build}

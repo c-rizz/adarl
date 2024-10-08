@@ -13,7 +13,7 @@ import faulthandler
 from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
-from adarl.utils.utils import quat_mul_xyzw_np, quat_conj, quat_conjugate
+from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conjugate
 
 
 class JointProperties(TypedDict):

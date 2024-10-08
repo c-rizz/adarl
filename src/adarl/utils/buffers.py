@@ -118,6 +118,10 @@ class BaseValidatingBuffer(BaseBuffer):
     def sample_validation(self, batch_size : int):
         raise NotImplementedError()
     
+    @abstractmethod
+    def stored_validation_frames(self) -> int:
+        raise NotImplementedError()
+    
 
 @dataclass
 class TransitionBatch():

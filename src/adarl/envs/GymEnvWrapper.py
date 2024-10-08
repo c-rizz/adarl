@@ -85,7 +85,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
-        self._total_sub_rewards = None
+        self._total_sub_rewards = {}
         self._resetCount = 0
         self._init_time = time.monotonic()
         self._totalSteps = 0
@@ -96,7 +96,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._wallStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._getPrevStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._simStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._lastStepEndSimTimeFromStart = 0
         self._lastValidStepWallTime = -1
         self._timeSpentStepping_ep = 0
@@ -136,9 +138,11 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             # state = map_tensor_tree(state, func=lambda x: th.as_tensor(x))
 
         self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
-        self._dbg_info["avg_sim_step_wall_duration"] = self._wallStepDurationAverage.getAverage()
+        self._dbg_info["avg_sim_step_wall_duration"] = self._simStepWallDurationAverage.getAverage()
         self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
-        self._dbg_info["avg_obs_wall_duration"] = self._getStateDurationAverage.getAverage()
+        self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
+        self._dbg_info["avg_pst_wall_duration"] = self._getPrevStateDurationAverage.getAverage()
+        self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()
         self._dbg_info["avg_step_sim_duration"] = avgSimTimeStepDuration
         self._dbg_info["tot_ep_wall_duration"] = totEpisodeWallDuration
         self._dbg_info["tot_ep_sim_duration"] = self._lastStepEndSimTimeFromStart
@@ -161,7 +165,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._dbg_info["wall_fps_only_stepping"] = wall_fps_only_stepping
 
         # self._dbg_info.update(self._ggEnv.getInfo(state))
-        if self._total_sub_rewards is None: # at the first step and episode this must be populated to at leat know which field we'll have
+        if len(self._total_sub_rewards)==0: # at the first step and episode this must be populated to at leat know which fields we'll have
             sub_rewards = {}
             # Not really setting the rewards, just populating the fields with zeros
             try:
@@ -277,50 +281,44 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._totalSteps += 1
         # Get previous observation
-        previousState = self._getStateCached()
+
+        with self._getPrevStateDurationAverage:
+            previousState = self._getStateCached()
 
         # Setup action to perform
-        t_preAct = time.monotonic()
-        self._ggEnv.submitAction(action)
-        self._submitActionDurationAverage.addValue(newValue = time.monotonic()-t_preAct)
+        with self._submitActionDurationAverage:
+            self._ggEnv.submitAction(action)
 
         # Step the environment
-
-        self._lastStepStartEnvTime = self._ggEnv.getSimTimeFromEpStart()
-        t_preStep = time.monotonic()
-        self._ggEnv.performStep()
-        self._wallStepDurationAverage.addValue(newValue = time.monotonic()-t_preStep)
-        self._framesCounter+=1
+        with self._simStepWallDurationAverage:
+            self._lastStepStartEnvTime = self._ggEnv.getSimTimeFromEpStart()
+            self._ggEnv.performStep()
+            self._framesCounter+=1
 
         #Get new observation
-        t_preObs = time.monotonic()
-        state = self._getStateCached()
-        self._getStateDurationAverage.addValue(newValue = time.monotonic()-t_preObs)
-        self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
+        with self._getStateDurationAverage:
+            state = self._getStateCached()
+            self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
 
         # Assess the situation
-        truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
-        # ggLog.info(f"GymEnvWrapper(): reachedTerminalState({state})")
-        self._terminated = self._ggEnv.reachedTerminalState(previousState, state)
-        sub_rewards : Dict[str,th.Tensor] = {}
-        reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration(), sub_rewards = sub_rewards)
-        observation = self._ggEnv.getObservation(state)
-        # info.update({"gz_gym_base_env_reached_state" : state,
-        #             "gz_gym_base_env_previous_state" : previousState,
-        #             "gz_gym_base_env_action" : action})
-        self._totalEpisodeReward += reward
-        if self._total_sub_rewards is None:
-            self._total_sub_rewards = {}
-        if len(sub_rewards) > 0 and sum(sub_rewards.values()) - reward > 0.001: raise RuntimeError(f"sub_rewards do not sum up to reward: {reward}!=sum({sub_rewards})")
-        for k,v in sub_rewards.items():
-            self._total_sub_rewards[k] = self._total_sub_rewards.get(k,0.0) + v
+        with self._getObsRewDurationAverage:
+            truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited()
+            self._terminated = self._ggEnv.reachedTerminalState(previousState, state)
+            sub_rewards : Dict[str,th.Tensor] = {}
+            reward = self._ggEnv.computeReward(previousState, state, action, env_conf=self._ggEnv.get_configuration(), sub_rewards = sub_rewards)
+            observation = self._ggEnv.getObservation(state)
+            self._totalEpisodeReward += reward
+            # if self._total_sub_rewards is None:
+            #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
+            if len(sub_rewards) > 0 and sum(sub_rewards.values()) - reward > 0.001: raise RuntimeError(f"sub_rewards do not sum up to reward: {reward}!=sum({sub_rewards})")
+            for k,v in sub_rewards.items():
+                self._total_sub_rewards[k] += v
         
 
+        tf = time.monotonic()
         self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
-
-        self._lastValidStepWallTime = time.monotonic()
-
-        stepDuration = time.monotonic() - t0
+        self._lastValidStepWallTime = tf
+        stepDuration = tf - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)
         self._timeSpentStepping_ep += stepDuration
         if self._framesCounter>1:
@@ -370,7 +368,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                             f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
                             f" avgSimWt = {self._dbg_info['avg_sim_step_wall_duration']:f}"+
                             f" avgActWt = {self._dbg_info['avg_act_wall_duration']:f}"+
-                            f" avgObsWt = {self._dbg_info['avg_obs_wall_duration']:f}"+
+                            f" avgStaWt = {self._dbg_info['avg_sta_wall_duration']:f}"+
+                            f" avgObsWt = {self._dbg_info['avg_obs_rew_wall_duration']:f}"+
                             f" tstep%ftl = {self._dbg_info['ratio_time_spent_stepping_first_to_last']:.2f}"+
                             f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
                             f" wEpDur = {self._dbg_info['tot_ep_wall_duration']:.2f}"+
@@ -398,7 +397,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._lastStepGotState = -1
         self._lastState = None
         self._totalEpisodeReward = 0.0
-        self._total_sub_rewards = None
+        self._total_sub_rewards = {}
         self._lastValidStepWallTime = -1
         self._timeSpentStepping_ep = 0
 
@@ -411,7 +410,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         self._envStepDurationAverage.reset()
         self._submitActionDurationAverage.reset()
         self._getStateDurationAverage.reset()
-        self._wallStepDurationAverage.reset()
+        self._getPrevStateDurationAverage.reset()
+        self._getObsRewDurationAverage.reset()
+        self._simStepWallDurationAverage.reset()
         self._update_dbg_info()
 
         #ggLog.info("reset() return")

@@ -77,14 +77,24 @@ class BaseAdapter(ABC):
     def get_monitored_cameras(self):
         return self._monitored_cameras
 
-    @abstractmethod
     def startup(self):
-        """Start up the controller. This must be called after set_monitored_cameras, set_monitored_links and set_monitored_joints."""
-        raise NotImplementedError()
+        """Start up the controller."""
+        pass
 
     def stopController(self):
         pass
     
+    @abstractmethod
+    def build_scenario(self, **kwargs):
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        raise NotImplementedError()
+    
+
+    @abstractmethod
+    def destroy_scenario(self, **kwargs):
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        raise NotImplementedError()
+
     @abstractmethod
     def step(self) -> float:
         """Run a simulation step.
@@ -212,15 +222,15 @@ class BaseAdapter(ABC):
         """Get the current time within the simulation."""
         raise NotImplementedError()
 
-    def getEnvTimeFromReset(self) -> float:
-        """Get the current time within the simulation."""
-        return self.getEnvTimeFromStartup() - self.__lastResetTime
-
     @abstractmethod
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
         raise NotImplementedError()
 
+
+    def getEnvTimeFromReset(self) -> float:
+        """Get the current time within the simulation."""
+        return self.getEnvTimeFromStartup() - self.__lastResetTime
 
     def run_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
         # ggLog.info(f"run async loop")
@@ -266,17 +276,6 @@ class BaseAdapter(ABC):
             if not self._running_run_async:
                 return
             self._running_run_async = False
-
-    @abstractmethod
-    def build_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
-        raise NotImplementedError()
-    
-
-    @abstractmethod
-    def destroy_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
-        raise NotImplementedError()
 
 
     @property

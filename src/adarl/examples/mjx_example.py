@@ -6,27 +6,7 @@ os.environ["MUJOCO_GL"] = "egl"
 #@title Import MuJoCo, MJX, and Brax
 
 
-from datetime import datetime
-import functools
 import jax
-from jax import numpy as jp
-import numpy as np
-from typing import Any, Dict, Sequence, Tuple, Union
-
-from brax import base
-from brax import envs
-from brax import math
-from brax.base import Base, Motion, Transform
-from brax.envs.base import Env, MjxEnv, State
-from brax.mjx.base import State as MjxState
-from brax.training.agents.ppo import train as ppo
-from brax.training.agents.ppo import networks as ppo_networks
-from brax.io import html, mjcf, model
-
-from etils import epath
-from flax import struct
-from matplotlib import pyplot as plt
-from ml_collections import config_dict
 import mujoco
 from mujoco import mjx
 import time
@@ -158,8 +138,12 @@ def build_sim(render):
         renderer = None
     mujoco.mj_resetData(mj_model, mj_data)
 
-    mjx_model = mjx.put_model(mj_model)
-    mjx_data = mjx.put_data(mj_model, mj_data)
+    print(f"Model has {mj_model.njnt} joints")
+    print(f"Found joints {[mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid) for jid in range(mj_model.njnt)]}")
+    print(f"Found links {[mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, lid) for lid in range(mj_model.nbody)]}")
+
+    mjx_model = mjx.put_model(mj_model, device = jax.devices("gpu")[0])
+    mjx_data = mjx.put_data(mj_model, mj_data, device = jax.devices("gpu")[0])
 
     # enable joint visualization option:
     scene_option = mujoco.MjvOption()
@@ -173,21 +157,22 @@ def main():
 
     duration = 3  # (seconds)
     framerate = 60  # (Hz)
-    render = True
+    render = False
 
     mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
     ep_frames = duration/mj_model.opt.timestep
     d_mjc = run_classic_mujoco(duration, framerate, mj_model, mj_data, scene_option, renderer)
-    print(f"MJ classic took {d_mjc:6f}s, {ep_frames/d_mjc} fps")
+    dt = 0.002
+    print(f"MJ classic took {d_mjc:6f}s, {ep_frames/d_mjc} fps, {ep_frames*dt/d_mjc} sim/real")
 
     mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
     d_mjx1 = run_mjx(duration, framerate, mj_model, mjx_model, mjx_data, scene_option, renderer)
-    print(f"MJX took {d_mjx1:6f}s, {ep_frames/d_mjx1} fps")
+    print(f"MJX took {d_mjx1:6f}s, {ep_frames/d_mjx1} fps, {ep_frames*dt/d_mjx1} sim/real")
 
     for n in [1,2,10,100,1000,5000,10000,100000]:
         mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
         d_mjx = run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data, scene_option, renderer, numenvs=n)
-        print(f"MJX({n}) took {d_mjx:6f}s ({d_mjc/(d_mjx/n):6f}x higher throughput than mjc, {(ep_frames*n)/d_mjx} fps)")
+        print(f"MJX({n}) took {d_mjx:6f}s ({d_mjc/(d_mjx/n):6f}x higher throughput than mjc, {(ep_frames*n)/d_mjx} fps, {ep_frames*n*dt/d_mjx} sim/real)")
 
 
 

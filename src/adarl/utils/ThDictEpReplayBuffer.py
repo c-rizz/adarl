@@ -574,6 +574,10 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
             return self._storage.stored_frames()+self._validation_storage.stored_frames()
     
     @override
+    def stored_validation_frames(self) -> int:
+        return self.stored_frames(validation_set=True)
+
+    @override
     def size(self, validation_set = False, training_set = True):
         return self.stored_frames(validation_set=validation_set, training_set=training_set)
 

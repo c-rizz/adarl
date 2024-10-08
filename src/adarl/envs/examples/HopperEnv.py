@@ -11,6 +11,7 @@ from typing import Tuple, Dict, Any
 
 from adarl.envs.ControlledEnv import ControlledEnv
 from adarl.adapters.BaseAdapter import BaseAdapter
+from adarl.adapters.PyBulletAdapter import PyBulletAdapter
 #import tf2_py
 import adarl.utils
 import adarl.utils.dbg.ggLog as ggLog
@@ -22,12 +23,7 @@ class HopperEnv(ControlledEnv):
 
     """
 
-    action_high = np.array([1, 1, 1])
-    action_space = spaces.gym_spaces.Box(low=-action_high, high=action_high, dtype=np.float32)
-    # Observations are:
-    #  (pos_z, torso_thigh_joint_pos, thigh_leg_joint_pos, leg_foot_joint_pos, vel_x, vel_y, vel_z, torso_thigh_joint_vel, thigh_leg_joint_vel, leg_foot_joint_vel)
-    obs_high = np.full((15), float('inf'), dtype=np.float32)
-    observation_space = spaces.gym_spaces.Box(-obs_high, obs_high)
+    
     metadata = {'render.modes': ['rgb_array']}
 
 
@@ -89,11 +85,19 @@ class HopperEnv(ControlledEnv):
         self._envSeed = seed
         self._useMjcfFile = useMjcfFile
         self._spawned = False
+        action_high = np.array([1, 1, 1])        
+        # Observations are:
+        #  (pos_z, torso_thigh_joint_pos, thigh_leg_joint_pos, leg_foot_joint_pos, vel_x, vel_y, vel_z, torso_thigh_joint_vel, thigh_leg_joint_vel, leg_foot_joint_vel)
+        obs_high = np.full((15), 100.0, dtype=np.float32)
+        state_high = np.full((17), 100.0, dtype=np.float32)
+
         super().__init__(maxStepsPerEpisode = maxStepsPerEpisode,
                          stepLength_sec = stepLength_sec,
                          environmentController = simulatorController,
                          startSimulation = startSimulation,
-                         simulationBackend = simulationBackend)
+                         action_space = spaces.gym_spaces.Box(low=-action_high, high=action_high, dtype=np.float32),
+                         observation_space = spaces.gym_spaces.Box(-obs_high, obs_high),
+                         state_space=spaces.gym_spaces.Box(-state_high, state_high))
 
         #print("HopperEnv: action_space = "+str(self.action_space))
         #print("HopperEnv: action_space = "+str(self.action_space))
@@ -116,7 +120,7 @@ class HopperEnv(ControlledEnv):
 
         self._adapter.startup()
 
-    def submitAction(self, action : np.typing.NDArray[(3,), np.float32]) -> None:
+    def submitAction(self, action : np.ndarray) -> None:
         super().submitAction(action)
 
         if action.size!=3:
@@ -250,18 +254,18 @@ class HopperEnv(ControlledEnv):
 
 
     def buildSimulation(self, backend : str = "gazebo"):
-        if backend == "gazebo":
-            worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
-            self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
-                                                        launch_file_args={  "gui":"false",
-                                                                            "paused":"true",
-                                                                            "physics_engine":"ode",
-                                                                            "limit_sim_speed":"true",
-                                                                            "world_name":worldpath,
-                                                                            "gazebo_seed":f"{self._envSeed}",
-                                                                            "wall_sim_speed":"false"})
-            # time.sleep(10)
-        elif backend == "bullet":
+        # if backend == "gazebo":
+        #     worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
+        #     self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
+        #                                                 launch_file_args={  "gui":"false",
+        #                                                                     "paused":"true",
+        #                                                                     "physics_engine":"ode",
+        #                                                                     "limit_sim_speed":"true",
+        #                                                                     "world_name":worldpath,
+        #                                                                     "gazebo_seed":f"{self._envSeed}",
+        #                                                                     "wall_sim_speed":"false"})
+        #     # time.sleep(10)
+        if isinstance(self._adapter, PyBulletAdapter):
             if self._useMjcfFile:
                 self._adapter.build_scenario(adarl.utils.utils.pkgutil_get_path("adarl","models/hopper_mjcf_pybullet.xml"), format = "mjcf")
             else:

@@ -467,15 +467,15 @@ def pkgutil_get_path(package, resource = None)  -> str:
 
     spec = importlib.util.find_spec(package)
     if spec is None:
-        return None
-    loader = spec.loader
-    if loader is None or not hasattr(loader, 'get_data'):
-        return None # If this happens, maybe __init__.py is missing?
+        raise FileNotFoundError(f"Could not spec for package for ({package}, {resource})")
+    # loader = spec.loader
+    # if loader is None or not hasattr(loader, 'get_data'):
+    #     return None # If this happens, maybe __init__.py is missing?
     # XXX needs test
     mod = (sys.modules.get(package) or
            importlib._bootstrap._load(spec))
     if mod is None or not hasattr(mod, '__file__'):
-        return None
+        raise FileNotFoundError(f"Could not __file__ for package for ({package}, {resource})")
     
     if resource is None:
         return os.path.dirname(mod.__file__)
@@ -838,7 +838,7 @@ def quat_conjugate(quaternion_xyzw : np.ndarray | th.Tensor):
     q = q.conjugate()
     return quaternion.as_float_array(q)[...,[1,2,3,0]]
 
-def quat_rotate(vector_xyz : np.ndarray | th.Tensor, quaternion_xyzw : np.ndarray | th.Tensor):
+def quat_rotate_np(vector_xyz : np.ndarray | th.Tensor, quaternion_xyzw : np.ndarray | th.Tensor):
     if isinstance(quaternion_xyzw, th.Tensor):
         quaternion_xyzw = quaternion_xyzw.cpu().numpy()
     if isinstance(vector_xyz, th.Tensor):
@@ -855,29 +855,36 @@ def quat_rotate(vector_xyz : np.ndarray | th.Tensor, quaternion_xyzw : np.ndarra
         return r[0]
     else:
         return r
+    
+
 
 def th_quat_combine(q_applied_first_xyzw : th.Tensor, q_applied_second_xyzw : th.Tensor):
     return quat_mul_xyzw(q_applied_second_xyzw,q_applied_first_xyzw)
 
 def quat_mul_xyzw_np(q1_xyzw : np.ndarray, q2_xyzw : np.ndarray):
     quat_mul_xyzw(th.as_tensor(q1_xyzw),
-                    quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
+                    th_quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
 @th.jit.script
 def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):
-    r1 = q1_xyzw[3]
-    v1 = q1_xyzw[0:3]
-    r2 = q2_xyzw[3]
-    v2 = q2_xyzw[0:3]
-    q = th.empty((4,), device = q1_xyzw.device)
-    q[3] = r1*r2 - th.dot(v1,v2)
-    q[0:3] = r1*v2 + r2*v1 + th.cross(v1,v2)
+    r1 = q1_xyzw[...,3]
+    v1 = q1_xyzw[...,0:3]
+    r2 = q2_xyzw[...,3]
+    v2 = q2_xyzw[...,0:3]
+    q = th.empty_like(q1_xyzw)
+    q[...,3] = r1*r2 - th.dot(v1,v2)
+    q[...,0:3] = r1*v2 + r2*v1 + th.cross(v1,v2)
     return q
 
 @th.jit.script
-def quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
+def th_quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
     """Gives the inverse rotation of q, usually denoted q^-1 or q'. Note that q*q' = 1
     """
     return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0], device=q_xyzw.device)
+
+@th.jit.script
+def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
+    vector_xyzw = th.cat([vector_xyz, th.zeros(vector_xyz.size()[:-1]+(1,))], dim=-1)
+    return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
 
 @th.jit.script
 def quat_swing_twist_decomposition_xyzw(quat_xyzw : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
@@ -902,9 +909,10 @@ def quat_swing_twist_decomposition_xyzw(quat_xyzw : th.Tensor, axis_xyz : th.Ten
     twist_xyzw[0:3] = vector_projection(quat_axis, axis_xyz)
     twist_xyzw[3] = quat_xyzw[3]
     twist_xyzw = twist_xyzw/twist_xyzw.norm()
-    swing_xyzw = quat_mul_xyzw(quat_xyzw,quat_conj(twist_xyzw))
+    swing_xyzw = quat_mul_xyzw(quat_xyzw,th_quat_conj(twist_xyzw))
     return swing_xyzw, twist_xyzw
 
+@th.jit.script
 def quat_angle_xyzw(q_xyzw : th.Tensor) -> th.Tensor:
     """Angle of the angle-axis representation of the quaternion
 
