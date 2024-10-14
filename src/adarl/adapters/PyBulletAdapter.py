@@ -751,13 +751,13 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                 if use_com_frame:
                     linkState = LinkState(  position_xyz =     bodyStates[i][0][:3],
                                             orientation_xyzw = bodyStates[i][1][:4],
-                                            pos_velocity_xyz = bodyStates[i][6][:3],
+                                            pos_com_velocity_xyz = bodyStates[i][6][:3],
                                             ang_velocity_xyz = bodyStates[i][7][:3])
                 else:
                     # raise NotImplementedError()
                     linkState = LinkState(  position_xyz =     bodyStates[i][4][:3],
                                             orientation_xyzw = bodyStates[i][5][:4],
-                                            pos_velocity_xyz = bodyStates[i][6][:3], # this is the com velocity!
+                                            pos_com_velocity_xyz = bodyStates[i][6][:3], # this is the com velocity!
                                             ang_velocity_xyz = bodyStates[i][7][:3])
                 allStates[self._getLinkName(bodyId,linkId)] = linkState
         for bodyId in baserequests: #for each bodyId make a request
@@ -767,7 +767,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             if use_com_frame:
                 linkState = LinkState(  position_xyz = bodyPose[0][:3],
                                         orientation_xyzw = bodyPose[1][:4],
-                                        pos_velocity_xyz = bodyVelocity[0][:3],
+                                        pos_com_velocity_xyz = bodyVelocity[0][:3],
                                         ang_velocity_xyz = bodyVelocity[1][:3])
             else:
                 # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame

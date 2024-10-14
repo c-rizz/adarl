@@ -32,7 +32,7 @@ class BaseVecAdapter(BaseAdapter):
 
     
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]) -> tuple[th.Tensor, th.Tensor]:
+    def getRenderings(self, requestedCameras : List[str]) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
 
         Parameters
@@ -44,7 +44,8 @@ class BaseVecAdapter(BaseAdapter):
         -------
         tuple[th.Tensor, th.Tensor]
             A tuple with a batch of batches images in the first element and the sim time of each image in the second. The order is that of the requestedCameras argument.
-            The first tensor has shape (vec_size, len(requestedCameras),<image_shape>) and the second has shape(vec_size, len(requestedCameras))
+            The first element containin a list if length len(requestedCameras) containin tensors of shape
+             (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras))
 
         """
         raise NotImplementedError()
@@ -110,7 +111,7 @@ class BaseVecAdapter(BaseAdapter):
         -------
         th.Tensor
             Tensor of shape (vec_size, len(requestedJoints),13) containig the link state of each of the requested joints.
-            The link state is a concatenation of position_xyz,orientation_xyzw,linear_velocity_xyz,angular_velocity_xyz.
+            The link state is a concatenation of position_xyz,orientation_xyzw,linear_com_velocity_xyz,angular_velocity_xyz.
 
         """
         ...
@@ -127,6 +128,7 @@ class BaseVecAdapter(BaseAdapter):
 
         """
         ...
+        
     @abstractmethod
     @overload
     def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:

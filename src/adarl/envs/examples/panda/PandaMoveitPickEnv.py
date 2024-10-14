@@ -320,7 +320,7 @@ class PandaMoveitPickEnv(ControlledEnv):
         if isinstance(self._adapter, BaseSimulationAdapter):
             self._adapter.setLinksStateDirect({   ("cube","cube") : LinkState(position_xyz = (0.45, 0, 0.025),
                                                                                             orientation_xyzw = (0,0,0,1),
-                                                                                            pos_velocity_xyz = (0,0,0),
+                                                                                            pos_com_velocity_xyz = (0,0,0),
                                                                                             ang_velocity_xyz = (0,0,0))
                                                             })
         else:

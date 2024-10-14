@@ -203,17 +203,17 @@ class LinkState:
     ang_velocity_xyz : th.Tensor
 
     def __init__(self, position_xyz : th.Tensor | tuple, orientation_xyzw : th.Tensor | tuple ,
-                    pos_velocity_xyz : th.Tensor | tuple, ang_velocity_xyz : th.Tensor | tuple):
+                    pos_com_velocity_xyz : th.Tensor | tuple, ang_velocity_xyz : th.Tensor | tuple):
         if isinstance(position_xyz, tuple):
             position_xyz = th.as_tensor(position_xyz)
         if isinstance(orientation_xyzw, tuple):
             orientation_xyzw = th.as_tensor(orientation_xyzw)
-        if isinstance(pos_velocity_xyz, tuple):
-            pos_velocity_xyz = th.as_tensor(pos_velocity_xyz)
+        if isinstance(pos_com_velocity_xyz, tuple):
+            pos_com_velocity_xyz = th.as_tensor(pos_com_velocity_xyz)
         if isinstance(ang_velocity_xyz, tuple):
             ang_velocity_xyz = th.as_tensor(ang_velocity_xyz)
         self.pose = build_pose(position_xyz[0],position_xyz[1],position_xyz[2], orientation_xyzw[0],orientation_xyzw[1],orientation_xyzw[2],orientation_xyzw[3])
-        self.pos_velocity_xyz = pos_velocity_xyz
+        self.pos_velocity_xyz = pos_com_velocity_xyz
         self.ang_velocity_xyz = ang_velocity_xyz
 
 

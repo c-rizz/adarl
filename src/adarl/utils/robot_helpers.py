@@ -23,7 +23,8 @@ class Robot():
     JOINT_TYPES = Enum("JOINT_TYPES",["PRISMATIC",
                                   "REVOLUTE",
                                   "FIXED",
-                                  "FLOATING"])
+                                  "FLOATING",
+                                  "CONTINUOUS"])
     
     def __init__(self, model_urdf_string : str):
         self._urdf_string = model_urdf_string
@@ -253,6 +254,8 @@ class Robot():
                 p["type"] = Robot.JOINT_TYPES.PRISMATIC
             elif j.shortname() in ["JointModelFreeFlyer"]:
                 p["type"] = Robot.JOINT_TYPES.FLOATING
+            elif j.shortname() in ["JointModelRUBX","JointModelRUBY","JointModelRUBZ"]:
+                p["type"] = Robot.JOINT_TYPES.CONTINUOUS
             else:
                 raise RuntimeError(f"Unknown joint type {j.shortname()}")
             r[jn] = p

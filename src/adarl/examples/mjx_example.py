@@ -19,11 +19,15 @@ import jax
 def run_classic_mujoco(duration, framerate, mj_model, mj_data, scene_option, renderer):
     t0 = time.monotonic()
     print("------- RUN MUJOCO CASSIC -------")
+    print(f" gravity = {mj_model.opt.gravity}")
     print(f" qpos = {mj_data.qpos}")
+    mj_data.qpos[1] = 1 # to put it out of balance
+    # print(f" qpos = {mj_data.qpos}")
 
     render_count = 0
     for i in tqdm(range(int(duration/mj_model.opt.timestep))):
         mujoco.mj_step(mj_model, mj_data)
+        print(f"time = {mj_data.time} qpos = {mj_data.qpos}")
         if renderer is not None and render_count < mj_data.time * framerate:
             renderer.update_scene(mj_data, scene_option=scene_option)
             pixels = renderer.render()
@@ -59,7 +63,7 @@ def run_mjx(duration, framerate, mj_model, mjx_model, mjx_data, scene_option, re
     # media.show_video(frames, fps=framerate)
     return tf-t0
             
-def run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data, scene_option, renderer, numenvs):
+def run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data : mjx.Data, scene_option, renderer, numenvs):
     print(f"------- RUN MJX ({numenvs}) -------")
     print(f" qpos = {mjx_data.qpos}")
     frames = []
@@ -89,9 +93,10 @@ def run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data, scene_op
     render_count = 0
     for i in tqdm(range(int(duration/mj_model.opt.timestep))):
         data_batch = jit_step(mjx_model, data_batch)
+        print(f"{data_batch.qpos}")
         if renderer is not None and render_count < mj_model.opt.timestep*(i+1)*framerate:
             mj_data_batch = mjx.get_data(mj_model, data_batch)[0]
-            print(f"mj_data_batch = {mj_data_batch}")
+            # print(f"mj_data_batch = {mj_data_batch}")
             for e in range(numenvs):
                 mj_data = jax.tree_map(lambda l: l[e], mj_data_batch)
                 renderer.update_scene(mj_data, scene_option=scene_option)

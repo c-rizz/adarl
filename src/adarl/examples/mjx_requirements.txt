@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
 absl-py==2.1.0
 -e git+https://gitlab.com/crzz/adarl@c52180177faf7f01d6c75391b8cce7f707be716f#egg=adarl
 catkin-pkg==1.0.0
@@ -14,8 +15,8 @@ distro==1.9.0
 dm-env==1.6
 dm-tree==0.1.8
 dm_control==1.0.23
-dmc2gym==1.0.0
-dmc2gymnasium==0.1
+dmc2gym @ git+https://github.com/c-rizz/dmc2gym
+dmc2gymnasium @ git+https://github.com/imgeorgiev/dmc2gymnasium
 docker-pycreds==0.4.0
 docutils==0.21.2
 empy==3.3.4

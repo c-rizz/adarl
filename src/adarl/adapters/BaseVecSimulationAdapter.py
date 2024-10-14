@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
 from adarl.utils.utils import JointState, LinkState, Pose, build_pose
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
+from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
+
 import torch as th
 
 
-class BaseVecSimulationAdapter(BaseVecAdapter):
+class BaseVecSimulationAdapter(BaseVecAdapter, BaseSimulationAdapter):
 
     @abstractmethod
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):        

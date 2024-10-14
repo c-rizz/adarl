@@ -2,6 +2,15 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
 from adarl.utils.utils import JointState, LinkState, Pose, build_pose
 from adarl.adapters.BaseAdapter import BaseAdapter
+from dataclasses import dataclass
+
+@dataclass
+class ModelSpawnDef:
+    name : str
+    definition_string : str | None
+    format : str | None
+    pose : Pose | None
+    kwargs : dict[Any,Any]
 
 
 class BaseSimulationAdapter(BaseAdapter):
@@ -30,6 +39,10 @@ class BaseSimulationAdapter(BaseAdapter):
 
     @abstractmethod
     def setupLight(self):
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def build_scenario(self, models : list[ModelSpawnDef] = [], **kwargs):
         raise NotImplementedError()
 
     @abstractmethod
