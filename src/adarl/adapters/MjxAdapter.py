@@ -1,4 +1,8 @@
 from __future__ import annotations
+
+import os
+os.environ["MUJOCO_GL"] = "egl"
+
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from dataclasses import dataclass
@@ -18,7 +22,7 @@ from adarl.utils.utils import build_pose
 from dlpack import asdlpack
 import adarl.utils.dbg.ggLog as ggLog
 import torch.utils.dlpack as thdlpack
-
+import numpy as np
    
 
 class MjxAdapter(BaseVecSimulationAdapter):
@@ -48,6 +52,11 @@ class MjxAdapter(BaseVecSimulationAdapter):
         self.set_monitored_joints([])
         self.set_monitored_links([])
 
+    @staticmethod
+    def _mj_name_to_pair(mjname : str):
+        sep = mjname.find("_")
+        return mjname[:sep],mjname[sep+1:]
+
     @override
     def build_scenario(self, models : list[ModelSpawnDef]):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
@@ -55,19 +64,23 @@ class MjxAdapter(BaseVecSimulationAdapter):
         specs = []
         for model in models:
             mjSpec = mujoco.MjSpec()
-            if model.format == "urdf.xacro":
-                urdf_string = compile_xacro_string( model_definition_string=model.definition_string,
+            if model.format.strip().lower()[-6:] == ".xacro":
+                def_string = compile_xacro_string( model_definition_string=model.definition_string,
                                                                 model_kwargs=model.kwargs)
-            elif model.format == "urdf":
-                urdf_string = model.definition_string
+            elif model.format.strip().lower() in ("urdf","mjcf"):
+                def_string = model.definition_string
             else:
-                raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}")
-            mjSpec.from_string(urdf_string)
-            specs.append(mjSpec)
+                raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
+            mjSpec.from_string(def_string)
+            specs.append((model.name, mjSpec))
         big_spec = mujoco.MjSpec()
-        site = big_spec.worldbody.add_site()
-        for spec in specs:
-            site.attach(spec.worldbody, prefix="", suffix="")
+        frame = big_spec.worldbody.add_frame()
+        for mname, spec in specs:
+            # add all th bodies that are direct childern of worldbody
+            body = spec.worldbody.first_body()
+            while body is not None:
+                frame.attach_body(body, mname+"_", "")
+                body = spec.worldbody.next_body(body)
 
         self._mj_model = big_spec.compile()
 
@@ -92,7 +105,8 @@ class MjxAdapter(BaseVecSimulationAdapter):
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
         self._mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         ggLog.info(f"mjx_data.qpos.shape = {self._mjx_data.qpos.shape}")
-        self._mjx_data = jax.vmap(lambda: self._mjx_data, axis_size=self._vec_size)()
+        # self._mjx_data = jax.vmap(lambda: self._mjx_data, axis_size=self._vec_size)()
+        self._mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), self._mjx_data)
         ggLog.info(f"mjx_data.qpos.shape = {self._mjx_data.qpos.shape}")
 
         self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0)))
@@ -108,16 +122,20 @@ class MjxAdapter(BaseVecSimulationAdapter):
             # # enable joint visualization option:
             # scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
 
-        self._jid2jname : dict[int, tuple[str,str]] = {jid:(self._model_name, mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid)) 
+        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
                            for jid in range(self._mj_model.njnt)}
         self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
-        self._lid2lname : dict[int, tuple[str,str]] = {lid:(self._model_name, mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
+        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
                            for lid in range(self._mj_model.nbody)}
         self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
-        self._cid2cname : dict[int, str] = {jid:mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid)
+        ggLog.info(f"self._lname2lid = {self._lname2lid}")
+        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
                            for jid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
-        self._camera_sizes = {self._cid2cname[cid]:self._mj_model.cam_resolution[cid] for cid in self._cid2cname}
+        self._camera_sizes = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
+        self._renderers = {resolution:mujoco.Renderer(self._mj_model,height=resolution[0],width=resolution[1])
+                           for resolution in set(self._camera_sizes.values())}
+        # print(f"got cam resolutions {self._camera_sizes}")
 
 
     def detected_joints(self):
@@ -185,22 +203,36 @@ class MjxAdapter(BaseVecSimulationAdapter):
 
         return self._simTime-t0
     
+    @staticmethod
+    # @jax.jit
+    def _take_batch_element(batch, e):
+        mjx_data = jax.tree_map(lambda l: l[e], batch)
+        return mjx.get_data(mj_model, mjx_data)
+    
+    @staticmethod
+    # @jax.jit
+    def _tree_unstack(tree):
+        leaves, treedef = jax.tree.flatten(tree)
+        return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
     @override
     def getRenderings(self, requestedCameras : list[str]) -> tuple[list[th.Tensor], th.Tensor]:
         if self._renderer is None:
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
-        mj_data_batch = mjx.get_data(self._mj_model, self._mjx_data)
+        # mj_data_batch = mjx.get_data(self._mj_model, self._mjx_data)
         # print(f"mj_data_batch = {mj_data_batch}")
         times = th.as_tensor(self._simTime).repeat((self._vec_size,len(requestedCameras)))
-        images = [th.empty(size=(self._vec_size,)+self._camera_sizes[cam]) for cam in requestedCameras]
+        images = [np.empty(shape=(self._vec_size,)+self._camera_sizes[cam]+(3,)) for cam in requestedCameras]
+        # print(f"images.shapes = {[i.shape for i in images]}")
         for env in range(self._vec_size):
-            mj_data = jax.tree_map(lambda l: l[env], mj_data_batch)
+            mj_data = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[env], self._mjx_data))
             for i in range(len(requestedCameras)):
                 cam = requestedCameras[i]
-                self._renderer.update_scene(mj_data, self._cname2cid[cam], scene_option=self._render_scene_option)
-                images[i][env] = th.as_tensor(self._renderer.render())
-        return images, times
+                # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
+                renderer = self._renderers[images[i][env].shape[:2]]
+                # renderer.update_scene(mj_data, self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                renderer.render(out=images[i][env])
+        return [th.as_tensor(img_batch) for img_batch in images], times
 
 
     @override

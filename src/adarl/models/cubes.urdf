@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"  ?>
+<robot name="cube">
+
+
+	<!-- * * * Link Definitions * * * -->
+  	<!-- * * * Define World Link to fix the foot rail to the world * * * -->
+    <link name="world"/>
+	<link name="cube_link">
+		<visual>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<box size="1 1 1"/>
+			</geometry>
+	   </visual>
+		<collision>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<box size="1 1 1"/>
+			</geometry>
+	   </collision>
+	</link>
+
+	<joint name="fixed" type="fixed">
+        <parent link="world"/>
+        <child link="cube_link"/>
+    </joint>
+
+	<link name="cube_link2">
+		<visual>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<box size="1 1 1"/>
+			</geometry>
+	   </visual>
+		<collision>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<geometry>
+				<box size="1 1 1"/>
+			</geometry>
+	   </collision>
+	</link>
+
+	<joint name="joint2" type="revolute">
+		<origin xyz="0 0 1" rpy="0 0 0"/>
+        <parent link="cube_link"/>
+        <child link="cube_link2"/>
+		<limit effort="30" velocity="10.0" lower="-3.14159" upper="3.14159" />
+    </joint>
+
+
+
+
+
+
+
+</robot>

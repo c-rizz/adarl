@@ -947,7 +947,7 @@ def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_
     else:
         raise AttributeError(f"Unsupported image shape {imgTorch.size()}")
     
-    if imgTorch.dtype == th.float32:
+    if imgTorch.dtype in (th.float32, th.float64):
         imgTorch = (imgTorch + (-min_val))/(max_val-min_val) * 255
         imgTorch = imgTorch.to(dtype=th.uint8)
     elif imgTorch.dtype == th.uint8:

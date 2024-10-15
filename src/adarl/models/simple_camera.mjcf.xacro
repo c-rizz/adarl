@@ -1,0 +1,16 @@
+<mujoco xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="camera_width" default="1920"/>
+  <xacro:arg name="camera_height" default="1080"/>
+  <xacro:arg name="camera_name"  default="simple_camera"/>
+  <xacro:property name="camera_width" value="$(arg camera_width)" />
+  <xacro:property name="camera_height" value="$(arg camera_height)" />
+  <xacro:property name="camera_name" value="$(arg camera_name)" />
+    <worldbody>
+        <body name="simple_camera_link">
+          <camera name="${camera_name}"
+                  fovy="${69.4*3.14159/180*camera_height/camera_width}"
+                  resolution="${camera_width} ${camera_height}"
+          />
+        </body>
+    </worldbody>
+</mujoco>

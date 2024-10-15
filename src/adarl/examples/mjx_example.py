@@ -3,9 +3,6 @@
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-#@title Import MuJoCo, MJX, and Brax
-
-
 import jax
 import mujoco
 from mujoco import mjx
