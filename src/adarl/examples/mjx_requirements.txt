@@ -118,3 +118,4 @@ Werkzeug==3.0.4
 xacro @ git+https://github.com/c-rizz/xacro_standalone.git@e3a2e90a55f9b63a7f4c8e510d8c0edea322efe5
 xmltodict==0.13.0
 zipp==3.20.2
+pydlpack==0.2.1
