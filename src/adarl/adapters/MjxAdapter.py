@@ -6,11 +6,12 @@ os.environ["MUJOCO_GL"] = "egl"
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from dataclasses import dataclass
-from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path
+from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str
 from typing import Any
 import jax
 import mujoco
 from mujoco import mjx
+import mujoco.viewer
 from pathlib import Path
 import time
 from typing_extensions import override
@@ -23,7 +24,32 @@ from dlpack import asdlpack
 import adarl.utils.dbg.ggLog as ggLog
 import torch.utils.dlpack as thdlpack
 import numpy as np
-   
+import copy
+from typing import Iterable
+
+def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
+    if type(src) != type(dst):
+        raise RuntimeError(f"src and dst should be of same class, but they are respectively {type(src)} {type(dst)}")
+    exclude = set(exclude)
+    attrs = [a for a in dir(src) if not a.startswith('__') and not callable(getattr(src, a))]
+    src_copy = copy.deepcopy(src) # deepcopy fails if copying the attibutes one by one
+    for attr in attrs:
+        if attr not in exclude:
+            try:
+                setattr(dst, attr, getattr(src_copy, attr))
+            except AttributeError as e:
+                if not strict:
+                    ggLog.warn(f"Error setting attribute '{attr}': {e}")
+                else:
+                    raise e
+mj_data_copy_exclude = [
+    "island_dofadr","island_dofind","tendon_efcadr","_address","contact","dof_island","dof_islandind","efc_AR","efc_AR_colind","efc_AR_rowadr",
+    "efc_AR_rownnz","efc_D","efc_J","efc_JT","efc_JT_colind","efc_JT_rowadr","efc_JT_rownnz","efc_JT_rowsuper","efc_J_colind","efc_J_rowadr",
+    "efc_J_rownnz","efc_J_rowsuper","efc_KBIP","efc_R","efc_aref","efc_b","efc_diagApprox","efc_force","efc_frictionloss","efc_id","efc_island",
+    "efc_margin","efc_pos","efc_state","efc_type","efc_vel","island_dofadr","island_dofind","tendon_efcadr","warning","timer","solver","model",
+    "island_efcnum","island_efcind","island_efcadr","island_dofnum"]
+
+
 
 class MjxAdapter(BaseVecSimulationAdapter):
     def __init__(self, vec_size : int,
@@ -31,7 +57,9 @@ class MjxAdapter(BaseVecSimulationAdapter):
                         jax_device : jax.Device,
                         sim_step_dt : float = 2/1024,
                         step_length_sec : float = 10/1024,
-                        realtime_factor : float | None = None):
+                        realtime_factor : float | None = None,
+                        show_gui : bool = False,
+                        gui_env_index : int = 0):
         super().__init__(vec_size=vec_size)
         self._enable_rendering = enable_rendering
         self._jax_device = jax_device
@@ -47,6 +75,8 @@ class MjxAdapter(BaseVecSimulationAdapter):
         self._mjx_data : mjx.Data
         self._renderer : mujoco.Renderer | None = None
         self._check_sizes = True
+        self._show_gui = show_gui
+        self._gui_env_index = gui_env_index
 
 
         self.set_monitored_joints([])
@@ -122,6 +152,10 @@ class MjxAdapter(BaseVecSimulationAdapter):
             # # enable joint visualization option:
             # scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
 
+        if self._show_gui:
+            self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data))
+            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
+
         self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
                            for jid in range(self._mj_model.njnt)}
         self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
@@ -133,8 +167,11 @@ class MjxAdapter(BaseVecSimulationAdapter):
                            for jid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
         self._camera_sizes = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
-        self._renderers = {resolution:mujoco.Renderer(self._mj_model,height=resolution[0],width=resolution[1])
-                           for resolution in set(self._camera_sizes.values())}
+        if self._enable_rendering:
+            self._renderers = {resolution:mujoco.Renderer(self._mj_model,height=resolution[0],width=resolution[1])
+                            for resolution in set(self._camera_sizes.values())}
+        else:
+            self._renderers = {}
         # print(f"got cam resolutions {self._camera_sizes}")
 
 
@@ -156,11 +193,6 @@ class MjxAdapter(BaseVecSimulationAdapter):
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_links(linksToObserve)
         self._monitored_lids = jnp.array([self._lname2lid[ln] for ln in self._monitored_links], device=self._jax_device)
-
-    @override
-    def destroy_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment when closing."""
-        pass
 
     @override
     def step(self) -> float:
@@ -196,6 +228,9 @@ class MjxAdapter(BaseVecSimulationAdapter):
                 if sleep_time > 0:
                     time.sleep(sleep_time*(1/self._realtime_factor))
             self._prev_step_end_wall_time = time.monotonic()
+            if self._show_gui:
+                inplace_deepcopy(self._viewer_mj_data, mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data)),
+                                 exclude=mj_data_copy_exclude)
         # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
         #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
         self._sim_stepping_wtime_since_build += stepping_wtime
@@ -224,13 +259,13 @@ class MjxAdapter(BaseVecSimulationAdapter):
         times = th.as_tensor(self._simTime).repeat((self._vec_size,len(requestedCameras)))
         images = [np.empty(shape=(self._vec_size,)+self._camera_sizes[cam]+(3,)) for cam in requestedCameras]
         # print(f"images.shapes = {[i.shape for i in images]}")
+        mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._mjx_data)
         for env in range(self._vec_size):
-            mj_data = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[env], self._mjx_data))
             for i in range(len(requestedCameras)):
                 cam = requestedCameras[i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[images[i][env].shape[:2]]
-                # renderer.update_scene(mj_data, self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                # renderer.update_scene(mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
                 renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in images], times
 
@@ -391,3 +426,7 @@ class MjxAdapter(BaseVecSimulationAdapter):
             Name of the model to be removed
         """
         raise NotImplementedError()
+    
+    @override
+    def destroy_scenario(self, **kwargs):
+        self._viewer.close()

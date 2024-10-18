@@ -1,3 +1,4 @@
+from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Any, Optional
 from adarl.utils.utils import JointState, LinkState, Pose, build_pose

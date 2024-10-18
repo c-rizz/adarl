@@ -8,7 +8,7 @@ import torch as th
 import cv2
 from adarl.utils.utils import imgToCvIntRgb
 
-def test_sim_adapter(adapter : BaseVecSimulationAdapter):
+def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool):
     adapter.build_scenario([ModelSpawnDef( name="cartpole",
                                            definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
                                            format="urdf.xacro",
@@ -53,13 +53,14 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter):
     os.makedirs("test_sim_adapter", exist_ok=True)
     for t in range(1000):
         dt = adapter.step()
-        img = adapter.getRenderings(["simple_camera"])[0][0][0]
-        print(f"img = {img}")
-        img = imgToCvIntRgb(img, min_val=0, max_val=1)
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        r = cv2.imwrite(f"test_sim_adapter/frame-{t}.png",img_bgr)
-        if not r:
-            print("couldn't save image")
+        if render:
+            img = adapter.getRenderings(["simple_camera"])[0][0][0]
+            print(f"img = {img}")
+            img = imgToCvIntRgb(img, min_val=0, max_val=1)
+            img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            r = cv2.imwrite(f"test_sim_adapter/frame-{t}.png",img_bgr)
+            if not r:
+                print("couldn't save image")
         # time.sleep(100/1024)
         # print(f"stepped of {dt}s")
 
@@ -68,7 +69,6 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter):
 
         # print(f"link states = {adapter.getLinksState()}")
         # print(f"cart link state = {adapter.getLinksState([('cartpole','base_link')])}")
-        adapter.getRenderings
 
     adapter.destroy_scenario()
 
@@ -76,10 +76,13 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter):
 from adarl.adapters.MjxAdapter import MjxAdapter
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 import jax
+render = False
 test_sim_adapter(MjxAdapter(vec_size=10,
-                            enable_rendering=True,
+                            enable_rendering=render,
                             jax_device=jax.devices("gpu")[0],
                             sim_step_dt=2/1024,
                             step_length_sec=100/1024,
-                            realtime_factor=-1))
+                            realtime_factor=-1,
+                            show_gui=True),
+                            render = render)
 
