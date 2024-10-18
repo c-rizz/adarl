@@ -34,7 +34,8 @@ class Robot():
                                                                        pinocchio.GeometryType.COLLISION)
         self._model_data = self._model.createData()
         # self._joint_position = pinocchio.randomConfiguration(self._model)
-        self._joint_position = np.zeros(shape=(self._model.njoints-1,))
+        q_size = sum([self._model.joints[jid].nq for jid in range(1,self._model.njoints)])
+        self._joint_position = np.zeros(shape=(q_size,))
         self._collision_object_count = 0
         self._collision_objects = {}
 
@@ -46,13 +47,17 @@ class Robot():
         self._frame_names = [frame.name for frame in self._model.frames]
         self._frame_name_to_idx = {n:self._frame_names.index(n) for n in self._frame_names}
         self._frame_idx_to_name = {idx:name for name,idx in self._frame_name_to_idx.items()}
-        self._joints_to_frame_names = {}
+        self._joints_to_frame_names : dict[str,list[str]] = {}
         for i in range(len(self._joint_names)):
             jname = self._model.names[i]
             self._joints_to_frame_names[jname] = []
             for link in self._model.frames:
                 if link.parent == i:
                     self._joints_to_frame_names[jname].append(link.name)
+        self._frame_names_to_parent_joint_names : dict[str,str] = {}
+        for jn,fns in self._joints_to_frame_names.items():
+            for fn in fns:
+                self._frame_names_to_parent_joint_names[fn] = jn
         self._joint_to_geoms = {frame:[] for frame in self._joint_names}
         for geom_obj in self._collision_geom_model.geometryObjects:
             self._joint_to_geoms[self._joint_idx_to_name[geom_obj.parentJoint]].append(geom_obj.name)
@@ -244,7 +249,8 @@ class Robot():
         if joint_names is None:
             joint_names = self._joint_names
         for jn in joint_names:
-            j = self._model.joints[self._joint_name_to_idx[jn]]
+            jid = self._joint_name_to_idx[jn]
+            j = self._model.joints[jid]
             p = {}
             if j.idx_q < 0 or j.idx_v<0:
                 p["type"] = Robot.JOINT_TYPES.FIXED # Not sure about this, but the universe joint that is added automatically apepars like this
@@ -258,8 +264,15 @@ class Robot():
                 p["type"] = Robot.JOINT_TYPES.CONTINUOUS
             else:
                 raise RuntimeError(f"Unknown joint type {j.shortname()}")
+            p["nq"] = j.nq
+            p["nv"] = j.nv
+            p["parent"] = self._joint_idx_to_name[self._model.parents[jid]]
+            p["pinname"] = j.shortname()
             r[jn] = p
         return r
+    
+    def get_parent_joint(self, frame_name : str):
+        return self._frame_names_to_parent_joint_names[frame_name]
     
     def get_frame_names(self) -> list[str]:
         return self._frame_names
@@ -278,9 +291,17 @@ class Robot():
     def set_joint_pose_by_names(self, joints : dict[str,np.ndarray]):
         for name in self.get_joint_names():
             if name in joints:
-                self._joint_position = joints[name]
+                q_idx = self._model.joints[self._joint_name_to_idx[name]].idx_q
+                nq = self._model.joints[self._joint_name_to_idx[name]].nq
+                self._joint_position[q_idx:q_idx+nq] = joints[name]
+        self._need_to_recompute_forward_kin = True
+        self._need_to_place_geoms = True
 
-    def disable_tree_self_collisions(self, root_joint : str):
+    def disable_tree_self_collisions(self, root_joint : str | None = None, root_frame : str | None = None):
+        if root_joint is None:
+            if root_frame is None:
+                raise RuntimeError(f"You must specify either root_joint or root_link")
+            root_joint = self._frame_names_to_parent_joint_names[root_frame]
         tree_joints = self.get_tree_joint_names_under_joint(root_joint)
         leg_geoms = list(itertools.chain.from_iterable(self.get_geoms_under_joints(tree_joints)))
         self_collision_pairs = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]

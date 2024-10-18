@@ -783,16 +783,32 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         return allStates
 
     def setLinksStateDirect(self, linksStates: Dict[Tuple[str, str], LinkState]):
-        requests = {}
+        base_requests = {}
         for ln, ls in linksStates.items():
             bodyId, linkId = self._getBodyAndLinkId(ln)
-            if bodyId not in requests: #If we haven't created a request for this body yet
-                requests[bodyId] = []
-            if linkId != -1: # could also check if the base joint is a free-floating one, and use the joint to move the first link
-                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln} (base link is {self._getLinkName(bodyId,-1)})")
-            requests[bodyId].append(ls)
+            if bodyId not in base_requests: #If we haven't created a request for this body yet
+                base_requests[bodyId] = []
+            if linkId == -1: # if it is the root of a body
+                base_requests[bodyId].append(ls)
+            else:
+                parent_jointId = linkId
+                parent_jinfo = pybullet.getJointInfo(bodyId,parent_jointId)
+                if parent_jinfo[2] == pybullet.JOINT_FIXED:
+                    # Pybullet replaced root floating joints with fixed joints (see https://github.com/bulletphysics/bullet3/issues/1148)
+                    parent_linkId = parent_jinfo[16]
+                    parent_transform_pos = np.array(parent_jinfo[14])
+                    parent_transform_orient = np.array(parent_jinfo[15])
+                    if parent_linkId == -1 and (parent_transform_pos == 0).all() and (parent_transform_orient == np.array([0.,0,0,1])).all():
+                        base_requests[bodyId].append(ls) # then just move the parent
+                        parent_parent_jointId = parent_linkId
+                        # print(f"parent_jinfo = {parent_jinfo}")
+                        # parent_parent_jinfo = pybullet.getJointInfo(bodyId,parent_parent_jointId)
+                        # print(f"parent_parent_jinfo = {parent_parent_jinfo}")
+                        continue                        
+                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln} (base link is {self._getLinkName(bodyId,-1)}), parent jointinfo={pybullet.getJointInfo(bodyId,parent_jointId)}")
 
-        for bodyId, states in requests.items():
+
+        for bodyId, states in base_requests.items():
             for state in states:
                 pybullet.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.orientation_xyzw)
 
@@ -846,6 +862,36 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._cameras[camera.camera_name] = camera
         ggLog.info(f"Registered camera with name {camera.camera_name} at link {camera.link_name}")
 
+    def _remove_floating_joint_from_urdf(self, urdf_string : str):
+        parsed_urdf = xmltodict.parse(urdf_string)
+        top_elems = parsed_urdf["robot"]
+        joints_to_remove = []
+        if "joint" in top_elems: # if it has joints
+            print(f"top_elems = {top_elems.keys()}")
+            joints = top_elems["joint"] # get joint or joints
+            if not isinstance(joints, list): # if there's only one make a list anyway
+                joints = [joints]
+            for i,joint in enumerate(joints):
+                if joint["parent"]["@link"] =="world" and joint["@type"] == "floating":
+                    joints_to_remove.append(i)
+                    ggLog.warn(f"Removing joint {joint['@name']} from pybullet urdf")
+            for idx in reversed(joints_to_remove):
+                joints.pop(idx)
+            top_elems["joint"] = joints
+            if len(joints_to_remove) > 0:
+                # also remove the world link
+                links = top_elems["link"]
+                if not isinstance(links, list): # if there's only one make a list anyway
+                    links = [links]
+                for i,link in enumerate(links):
+                    if link["@name"] == "world":
+                        links.pop(i)
+                        break
+                top_elems["link"] = links
+            urdf_string = xmltodict.unparse(parsed_urdf, pretty = True)
+        return urdf_string, len(joints_to_remove) > 0
+
+
     def _loadModel(self, model_definition_string : str | None = None,
                          model_file_path : str | None = None,
                          format : str = "urdf",
@@ -857,6 +903,15 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         compiled_file_path = None
         if model_definition_string is None and model_file_path is None or (model_definition_string is not None and model_file_path is not None):
             raise RuntimeError(f"One and only one of model_definition_string and model_file_path must be None, but they are {model_definition_string} and {model_file_path}")
+        
+        if format == "urdf.xacro" or format=="urdf":
+            if model_file_path is not None:
+                model_definition_string = Path(model_file_path).read_text()
+            fixed_string, did_fix = self._remove_floating_joint_from_urdf(model_definition_string)
+            if did_fix:
+                model_definition_string = fixed_string
+                model_file_path = None
+
         if format.split(".")[-1] == "xacro":
             if model_file_path is not None and model_definition_string is None:
                 model_definition_string = Path(model_file_path).read_text()
@@ -875,7 +930,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         if format == "urdf":
             bodyId = pybullet.loadURDF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION|pybullet.URDF_PRINT_URDF_INFO,
                                        basePosition = spawn_pose_xyzxyzw[:3],
-                                       baseOrientation = spawn_pose_xyzxyzw[3:7])
+                                       baseOrientation = spawn_pose_xyzxyzw[3:7],
+                                       useFixedBase=0)
         elif format == "mjcf":
             bodyId = pybullet.loadMJCF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
         elif format == "sdf":
@@ -902,7 +958,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         if format == "sdf":
             parsed_sdf = xmltodict.parse(Path(model_file_path).read_text())
-            ggLog.info(f"{parsed_sdf}")
+            # ggLog.info(f"{parsed_sdf}")
             if "world" in parsed_sdf["sdf"]:
                 world = parsed_sdf["sdf"]["world"]
             else:
