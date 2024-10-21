@@ -2,13 +2,19 @@
   <xacro:arg name="camera_width" default="1920"/>
   <xacro:arg name="camera_height" default="1080"/>
   <xacro:arg name="camera_name"  default="simple_camera"/>
+  <xacro:arg name="position_xyz"  default="0 0 0"/>
+  <xacro:arg name="orientation_wxyz"  default="1 0 0 0"/>
   <xacro:property name="camera_width" value="$(arg camera_width)" />
   <xacro:property name="camera_height" value="$(arg camera_height)" />
   <xacro:property name="camera_name" value="$(arg camera_name)" />
+  <xacro:property name="position_xyz" value="$(arg position_xyz)" />
+  <xacro:property name="orientation_wxyz" value="$(arg orientation_wxyz)" />
+    <compiler angle="radian"/>
     <worldbody>
-        <body name="simple_camera_link">
+        <body name="simple_camera_link" pos="${position_xyz}"  quat="${orientation_wxyz}">
+        <!-- xyaxes="-1 0 0 0 0 1"> -->        
           <camera name="${camera_name}"
-                  fovy="${69.4*3.14159/180*camera_height/camera_width}"
+                  fovy="${70*camera_height/camera_width}"
                   resolution="${camera_width} ${camera_height}"
           />
         </body>
