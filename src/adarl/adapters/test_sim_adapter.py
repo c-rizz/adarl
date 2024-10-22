@@ -1,4 +1,5 @@
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
+from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from pathlib import Path
 import adarl.utils.utils
@@ -64,9 +65,9 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool):
     n = "\n"
     adapter.set_monitored_joints([("cartpole","cartpole_joint"),("cartpole","foot_joint")])
     adapter.set_monitored_links([("cartpole","bar_link"),("cartpole","base_link"),("camera","simple_camera_link")])
-    adapter.setLinksStateDirect([("camera","simple_camera_link")],th.as_tensor([0.0, 20.0, 1.0,
-                                                                                0.0, 0.0, 0.0, 1.0,
-                                                                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).repeat((10,1,13)))
+    # adapter.setLinksStateDirect([("camera","simple_camera_link")],th.as_tensor([0.0, 20.0, 1.0,
+    #                                                                             0.0, 0.0, 0.0, 1.0,
+    #                                                                             0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).repeat((10,1,13)))
     adapter.setLinksStateDirect([("ball","ball")],th.as_tensor([0.0, 3.0, 1.0,
                                                                 0.0, 0.0, 0.0, 1.0,
                                                                 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]).repeat((10,1,13)))
@@ -79,12 +80,16 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool):
     print(f"link states = {adapter.getLinksState()}")
     # print(f"cart link state = {adapter.getLinksState([('cartpole','base_link')])}")
 
-    adapter.setJointsStateDirect([("cartpole","cartpole_joint")], th.cat([th.randn(size=(10,1,1), device = "cuda")*1.0,
+    adapter.setJointsStateDirect([("cartpole","cartpole_joint")], th.cat([th.randn(size=(10,1,1), device = "cuda")*0.05,
                                                                           th.zeros(size=(10,1,2), device = "cuda")], dim=2))
     print(f"joint states = {adapter.getJointsState()}")
 
     os.makedirs("test_sim_adapter", exist_ok=True)
     for t in range(100):
+        if isinstance(adapter,BaseVecJointEffortAdapter):
+            a = 50.0*adapter.getJointsState([('cartpole','cartpole_joint')])[:,:,0]
+            print(f"commanding {a}")
+            adapter.setJointsEffortCommand([("cartpole","foot_joint")], a)
         dt = adapter.step()
         if render:
             img = adapter.getRenderings(["simple_camera"])[0][0][0]
@@ -97,9 +102,12 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool):
         # time.sleep(100/1024)
         # print(f"stepped of {dt}s")
 
+        js = adapter.getJointsState([('cartpole','cartpole_joint'),('cartpole','foot_joint')])[:,:]
         # print(f"joint states = {adapter.getJointsState()}")
-        print(f"t = {adapter.getEnvTimeFromStartup():.3f} revolute joint state = {adapter.getJointsState([('cartpole','cartpole_joint')])[:,:]}")
-        print(f"link states = {adapter.getLinksState(use_com_frame=False)}")
+        print(f"t = {adapter.getEnvTimeFromStartup():.3f}\n"
+              f"revolute joint state = {js[:,0,:]}\n"
+              f"linear   joint state = {js[:,1,:]}")
+        # print(f"link states = {adapter.getLinksState(use_com_frame=False)}")
 
         # print(f"link states = {adapter.getLinksState()}")
         # print(f"cart link state = {adapter.getLinksState([('cartpole','base_link')])}")
@@ -109,13 +117,14 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool):
 
 from adarl.adapters.MjxAdapter import MjxAdapter
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 import jax
 render = False
 test_sim_adapter(MjxAdapter(vec_size=10,
                             enable_rendering=render,
                             jax_device=jax.devices("gpu")[0],
                             sim_step_dt=1/1024,
-                            step_length_sec=10/1024,
+                            step_length_sec=50/1024,
                             realtime_factor=-1,
                             show_gui=True),
                             render = render)
