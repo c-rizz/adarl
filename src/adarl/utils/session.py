@@ -235,16 +235,15 @@ class Session():
         while not all_children_terminated:
             t0_chterm = time.monotonic()
             child_procs : list[multiprocessing.Process] = mp_helper.get_context().active_children()
+            child_procs = [p for p in child_procs if not p.daemon] # exclude daemonic process
             all_children_terminated = len(child_procs)==0
             if not all_children_terminated:
                 sig = signal.SIGINT if timeout-(time.monotonic()-t0_chterm) > 10 else signal.SIGKILL
                 ggLog.warn(f"Session is shutting down, but still have {len(child_procs)} child processes. Sending {sig} to all")
                 for p in child_procs:
-                    if not p.daemon:
-                        os.kill(p.pid, sig)
+                    os.kill(p.pid, sig)
                 for p in child_procs:
-                    if not p.daemon:
-                        p.join(timeout = max(0,5-(time.monotonic()-t0_chterm)))
+                    p.join(timeout = max(0,5-(time.monotonic()-t0_chterm)))
         # for t in threading.enumerate():
         #     if t != threading.main_thread():
         #         terminate the thread???

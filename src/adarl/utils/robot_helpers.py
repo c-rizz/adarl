@@ -80,6 +80,9 @@ class Robot():
         self._collision_geom_model.setCollisionPairs(collision_matrix)
         self._collision_geom_model_data = pinocchio.GeometryData(self._collision_geom_model)
 
+    def get_enabled_collision_pairs(self):
+        return copy.deepcopy(self._current_collision_geom_pairs)
+
     def add_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]]):
         geom_pairs = self._current_collision_geom_pairs.union(geom_pairs)
         self.set_collision_pairs(geom_pairs)
@@ -205,7 +208,7 @@ class Robot():
                                     geometry_data = self._collision_geom_model_data,
                                     q = self._joint_position,
                                     stop_at_first_collision = False)
-        ret = []
+        ret : list[tuple[str,str]] = []
         for k in range(len(self._collision_geom_model.collisionPairs)):
             cr = self._collision_geom_model_data.collisionResults[k]
             cp = self._collision_geom_model.collisionPairs[k]
@@ -287,6 +290,9 @@ class Robot():
         self._need_to_recompute_forward_kin = True
         self._need_to_place_geoms = True
 
+    def get_joint_pose(self):
+        return copy.deepcopy(self._joint_position)
+
 
     def set_joint_pose_by_names(self, joints : dict[str,np.ndarray]):
         for name in self.get_joint_names():
@@ -344,6 +350,27 @@ class Robot():
             limits_minmax_pve[jn] = np.stack([p_minmax[:,q_idx], v_minmax[:,v_idx], e_minmax[:,v_idx]]).transpose()
         return limits_minmax_pve
 
+    def detect_always_present_collisions(self, moving_joints : Sequence[str], fixed_joints_pose : dict[str,np.ndarray], samples : int = 10000):
+        original_joint_pose = self.get_joint_pose()
+        original_collision_pairs = self.get_enabled_collision_pairs()
+        self.set_collision_pairs("all")
+        always_present_collisions = set()
+        self.set_joint_pose_by_names(fixed_joints_pose)
+
+        for i in range(samples):
+            rand_pos = np.random.random(size=(len(moving_joints),))*2-1
+            limits = self.get_joint_limits(moving_joints)
+            limits_minmax = np.stack([limits[jn][:,0] for jn in moving_joints], axis = 1)
+            pose = rand_pos*(limits_minmax[1]-limits_minmax[0])+limits_minmax[0]
+            
+            self.set_joint_pose_by_names({jn[1]:pose[i] for i,jn in enumerate(moving_joints)})
+            collisions = self.get_all_collisions()
+            if i == 0:
+                always_present_collisions = set(collisions)
+            always_present_collisions = always_present_collisions.intersection(set(collisions))
+        self.set_joint_pose(original_joint_pose)
+        self.set_collision_pairs(original_collision_pairs)
+        return always_present_collisions
 
 
 

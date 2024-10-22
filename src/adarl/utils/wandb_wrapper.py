@@ -12,6 +12,7 @@ import atexit
 import traceback
 from typing import Optional
 import adarl.utils.session as session
+from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys
 
 class WandbWrapper():
     def __init__(self):
@@ -66,6 +67,11 @@ class WandbWrapper():
             # traceback.print_stack()
             return
         try:
+            if not is_all_finite(log_dict):
+                ggLog.warn(f"Non-finite values in wandb log. \n"
+                           f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
+                           f"Stacktrace:\n{''.join(traceback.format_stack())}")
+
             if os.getpid()==self._init_pid:
                 # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
                 if callable(log_dict):            
