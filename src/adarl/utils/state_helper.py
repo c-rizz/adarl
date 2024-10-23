@@ -596,15 +596,19 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                         obs_dtype : th.dtype,
                         th_device : th.device,
                         history_length : int = 1):
-        subfield_names = [  "minpos","minvel","mineff",
-                            "maxpos","maxvel","maxeff",
-                            "avgpos","avgvel","avgeff",
-                            "stdpos","stdvel","stdeff"]
-        super().__init__(   field_names = list(joint_limit_minmax_pve.keys()),
+        subfield_names = [  "minpos","minvel","minacc","mineff",
+                            "maxpos","maxvel","maxacc","maxeff",
+                            "avgpos","avgvel","avgacc","avgeff",
+                            "stdpos","stdvel","stdacc","stdeff"]
+        joint_limit_minmax_pve = {k:th.as_tensor(v) for k,v in joint_limit_minmax_pve.items()}
+        jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2],
+                                        th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1),
+                                        minmax_pve[:,[2]]], dim=1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
+        super().__init__(   field_names = list(jlims_minmax_pvae.keys()),
                             obs_dtype = obs_dtype,
                             th_device = th_device,
                             field_size = (len(subfield_names),),
-                            fields_minmax= self._build_fields_minmax(joint_limit_minmax_pve),
+                            fields_minmax= self._build_fields_minmax(jlims_minmax_pvae),
                             history_length = history_length,
                             subfield_names = subfield_names)
 
@@ -613,7 +617,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
         ret = {}
         for joint,limits_minmax_pve in joint_limit_minmax_pve.items():
             limits_minmax_pve = th.as_tensor(limits_minmax_pve)
-            if limits_minmax_pve.size() != (2,3):
+            if limits_minmax_pve.size() != (2,4):
                 raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be (2,3), but it's {limits_minmax_pve.size()}")
             std_max_pve = th.sqrt((limits_minmax_pve[0]**2+limits_minmax_pve[1]**2)/2 - (limits_minmax_pve[0]+limits_minmax_pve[1])**2/2)
             std_min_pve = th.zeros_like(limits_minmax_pve[0])
@@ -624,9 +628,6 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                                     std_minmax_pve], dim=1)
         return ret
         
-    def build_robot_limits(self, joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]):
-        return super().build_limits(fields_minmax=self._build_fields_minmax(joint_limit_minmax_pve))
-
     def state_names(self):
         if self._state_names is None:
             self._state_names = np.empty(shape=(self._history_length,self._fields_num)+self.field_size, dtype=object)

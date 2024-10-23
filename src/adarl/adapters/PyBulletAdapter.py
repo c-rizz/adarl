@@ -242,6 +242,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             lightSpecularCoeff = 0.1)
 
         self.clear_commands()
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
         self._sent_motor_torque_commands_by_bid_jid = {}
 
@@ -295,6 +297,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._startStateId = pybullet.saveState()
         self._simTime = 0
 
+
     def set_monitored_joints(self, jointsToObserve: Sequence[Tuple[str,str]]):
         self._default_joint_state_requests = self._build_joint_state_requests(jointsToObserve)
         req_joint_names = []
@@ -302,6 +305,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             req_joint_names.extend([self._getJointName(body_id,jid) for jid in joint_ids])
         self._default_joint_state_request_ordering = np.array([req_joint_names.index(jn) for jn in jointsToObserve])
         super().set_monitored_joints(jointsToObserve)
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
 
 
@@ -330,6 +335,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._simTime = 0
         self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
         if self._verbose:
             ggLog.info(f"tot_step_stime = {self._simTime}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
@@ -369,7 +376,9 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         while self._simTime-t0 < duration_sec:
             self._apply_controls()
             wtps = time.monotonic()
+            self._prev_joint_state_pve_th = self._current_joint_state_pve_th
             pybullet.stepSimulation()
+            self._current_joint_state_pve_th = self.getJointsState()
             self._sim_step_count_since_build += 1
             stepping_wtime += time.monotonic()-wtps
             self._read_new_contacts()
@@ -599,6 +608,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         responses_pve = [np.array([[jr[0],jr[1],jr[3]] for jr in r]) for r in responses]
         
         if requestedJoints is None:
+            if len(responses_pve) == 0:
+                return th.empty(size=(0,3))
             state_pve = np.concatenate(responses_pve,axis=0)
             # we have to correct the torque value for the joints that are commanded in torque, pybullet returns zero for those,
             # instead we use the commanded torque
@@ -630,23 +641,13 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
-        """Returns the stats in a tensor of size (4,len(monitored_joints),3)
-        The four elements of the first dimension are (min,max,avg,std)
-        The second dimensin iterateson the monitored joints.
-        The last dimension contains position,velocity and effort.
-
-        Returns
-        -------
-        th.Tensor
-            The stats tensor
-        """
         return self._monitored_joints_stats[:4]
 
 
     def _build_joint_state_step_stats(self):
         self._joint_stats_sample_count = 0
-        jstate_pve_size = (len(self._monitored_joints),3)
-        self._monitored_joints_stats = th.zeros((6,)+jstate_pve_size, dtype=th.float32)
+        jstate_pvae_size = (len(self._monitored_joints),4)
+        self._monitored_joints_stats = th.zeros((6,)+jstate_pvae_size, dtype=th.float32)
         self._monitored_joints_min = self._monitored_joints_stats[0]
         self._monitored_joints_max = self._monitored_joints_stats[1]
         self._monitored_joints_avg = self._monitored_joints_stats[2]
@@ -667,11 +668,11 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._update_joint_state_step_stats() # rebuild and populate with current state
         self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because these actually belong to the previous step)
 
-    def _update_stat_tensors(self, joint_states_t : th.Tensor):
-        th.min(self._monitored_joints_min, joint_states_t, out=self._monitored_joints_min[:])
-        th.max(self._monitored_joints_max, joint_states_t, out=self._monitored_joints_max[:])
-        th.add(self._monitored_joints_sum, joint_states_t, out=self._monitored_joints_sum[:])
-        th.add(self._monitored_joints_sum_of_squares, joint_states_t.pow_(2), out=self._monitored_joints_sum_of_squares[:])
+    def _update_stat_tensors(self, joint_states_pvae_t : th.Tensor):
+        th.min(self._monitored_joints_min, joint_states_pvae_t, out=self._monitored_joints_min[:])
+        th.max(self._monitored_joints_max, joint_states_pvae_t, out=self._monitored_joints_max[:])
+        th.add(self._monitored_joints_sum, joint_states_pvae_t, out=self._monitored_joints_sum[:])
+        th.add(self._monitored_joints_sum_of_squares, joint_states_pvae_t.pow_(2), out=self._monitored_joints_sum_of_squares[:])
         th.div(self._monitored_joints_sum, self._joint_stats_sample_count, out=self._monitored_joints_avg[:])
         self._monitored_joints_std[:] = th.sqrt(th.clamp(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2,
                                                           min=th.zeros_like(self._monitored_joints_avg)))
@@ -682,11 +683,11 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             self._build_joint_state_step_stats()
         if len(self._monitored_joints) == 0:
             return
-        joint_states_t = self.getJointsState()
-        adarl.utils.utils.dbg_check_finite(joint_states_t)
         self._joint_stats_sample_count += 1
-
-        self._update_stat_tensors(joint_states_t)
+        joint_states_pvae_th = th.cat([self._current_joint_state_pve_th[:,:2], # pos,vel
+                                       (self._current_joint_state_pve_th[:,[1]]-self._prev_joint_state_pve_th[:,[1]])/self._simulation_step, # acc
+                                       self._current_joint_state_pve_th[:,[2]]], dim=1) # eff
+        self._update_stat_tensors(joint_states_pvae_th)
         adarl.utils.utils.dbg_check_finite(self._monitored_joints_stats)
 
 

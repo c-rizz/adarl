@@ -165,7 +165,7 @@ class BaseAdapter(ABC):
         Returns
         -------
         th.Tensor
-            Torch tensor of size (4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
+            Torch tensor of size (4,len(monitored_joints),4) containing min,max,average,std of the position,velocity, acceleration
              and effort of each monitored joint. The joints are in the order use din set_monitored_joints.
         """
         ...
