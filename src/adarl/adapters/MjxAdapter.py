@@ -163,8 +163,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"mjx_data.qpos.shape = {self._mjx_data.qpos.shape}")
 
         ggLog.info(f"Compiling mjx.step....")
-        self._mjx_step2_step1 = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0)))
-        _ = self._mjx_step2_step1(self._mjx_model, self._mjx_data) # trigger jit compile
+        self._mjx_step2_step1 = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
+        _ = self._mjx_step2_step1(self._mjx_model, copy.deepcopy(self._mjx_data)) # trigger jit compile
         ggLog.info(f"Compiling mjx.forward....")
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         self._mjx_data = self._mjx_forward(self._mjx_model, self._mjx_data) # compute initial mjData
@@ -240,6 +240,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         stepLength = self.run(self._step_length_sec)
         return stepLength
 
+    def _apply_commands(self):
+        self._apply_torque_cmds()
+
+    def _apply_torque_cmds(self):
+        self._mjx_data = self._mjx_data.replace(qfrc_applied=self._requested_qfrc_applied)
+
     @override
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
@@ -251,8 +257,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         t0 = self._simTime
         while self._simTime-t0 < duration_sec:
             wtps = time.monotonic()
+            self._apply_commands()
             # ggLog.info(f"qfrc_applied0 = {self._mjx_data.qfrc_applied}")
-            self._mjx_data = self._mjx_data.replace(qfrc_applied=self._requested_qfrc_applied)
             # ggLog.info(f"qfrc_applied1 = {self._mjx_data.qfrc_applied}")
             # ggLog.info(f"nu = {self._mj_model.nu}")
             self._mjx_data = self._mjx_step2_step1(self._mjx_model,self._mjx_data)
@@ -332,14 +338,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if len(jids) == 0:
             return th.empty(size=(self._vec_size,self._mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
-            qpadr = self._mj_model.jnt_qposadr[jids]
-            qvadr = self._mj_model.jnt_dofadr[jids]
-            t = jnp.stack([self._mjx_data.qpos[:,qpadr],
-                           self._mjx_data.qvel[:,qvadr],
-                           self._mjx_data.qfrc_smooth[:,qvadr]], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
-                             axis = 2)
+           t = self._get_vec_joint_states_pve(self._mjx_model, self._mjx_data, jids)
         return thdlpack.from_dlpack(asdlpack(t))
-
+    
+    @staticmethod
+    # @jax.jit
+    def _get_vec_joint_states_pve(mjx_model, mjx_data, jids : jnp.ndarray):
+        return MjxAdapter._get_vec_joint_states_raw_pve(mjx_model.jnt_qposadr[jids],
+                                                        mjx_model.jnt_dofadr[jids],
+                                                        mjx_data)
+    
+    @staticmethod
+    @jax.jit
+    def _get_vec_joint_states_raw_pve(qpadr, qvadr, mjx_data):
+        return jnp.stack([  mjx_data.qpos[:,qpadr],
+                            mjx_data.qvel[:,qvadr],
+                            mjx_data.qfrc_smooth[:,qvadr]], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
+                            axis = 2)
 
     def get_joints_state_step_stats(self) -> th.Tensor:
         """Returns joint state statistics over the last step for the monitored joints. The value of these statistics after a call to run()
@@ -432,8 +447,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         model_body_quat = self._mjx_model.body_quat
         data_joint_pos = self._mjx_data.qpos
         data_joint_vel = self._mjx_data.qvel
-        print(f"self._mjx_data.qpos = {self._mjx_data.qpos}")        
-        print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")
         for i, link_name in enumerate(link_names):
             ggLog.info(f"setting link state for {link_name}")
             lid = self._lname2lid[link_name]
@@ -530,7 +543,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._viewer.close()
 
     @override
-    def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]], efforts : th.Tensor) -> None:
+    def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]] | None, efforts : th.Tensor) -> None:
         """Set the efforts to be applied on a set of joints.
 
         Effort means either a torque or a force, depending on the type of joint.
@@ -544,6 +557,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """
         jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
         qeff = jnp.from_dlpack(thdlpack.to_dlpack(efforts))
-        qvadr = self._mj_model.jnt_dofadr[jids]
-        self._requested_qfrc_applied = self._requested_qfrc_applied.at[:,qvadr].set(qeff[:,:])
+        self._set_effort_command(jids,qeff)
         # ggLog.info(f"self._requested_qfrc_applied = {self._requested_qfrc_applied}")
+
+    def _set_effort_command(self, jids : jnp.ndarray, qefforts : jnp.ndarray, sims_mask : jnp.ndarray | None = None) -> None:
+        """Set the efforts to be applied on a set of joints.
+
+        Effort means either a torque or a force, depending on the type of joint.
+
+        Parameters
+        ----------
+        joint_names : jnp.ndarray
+            Array with the joint ids for each effort command, 1-dimensional
+        efforts : th.Tensor
+            Tensor of shape (vec_size, len(jids)) containing the effort for each joint in each environment.
+        """
+        qvadr = self._mj_model.jnt_dofadr[jids]
+        if sims_mask is None:
+            self._requested_qfrc_applied = self._requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
+        else:
+            sims_indexes = jnp.nonzero(sims_mask)[0]
+            self._requested_qfrc_applied = self._requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
