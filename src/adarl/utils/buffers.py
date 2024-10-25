@@ -5,7 +5,6 @@ from adarl.utils.utils import dbg_check_finite
 from cmath import inf
 from dataclasses import dataclass
 from gymnasium import spaces
-from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
 from stable_baselines3.common.preprocessing import get_obs_shape
 from stable_baselines3.common.vec_env import VecNormalize, VecEnv
 from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
@@ -132,91 +131,92 @@ class TransitionBatch():
     rewards : th.Tensor
 
 
-class RandomHoldoutBuffer(DictReplayBuffer):
-    def __init__(self,
-                buffer_size: int,
-                observation_space: spaces.Space,
-                action_space: spaces.Space,
-                device: Union[th.device, str] = "cpu",
-                n_envs: int = 1,
-                optimize_memory_usage: bool = False,
-                handle_timeout_termination: bool = True,
-                storage_torch_device: str = "cpu",
-                buffer_class : type = None,
-                validation_ratio : float = 0.1,
-                disable : bool = False):
-        super().__init__(buffer_size = buffer_size,
-                         observation_space = observation_space,
-                         action_space = action_space,
-                         device = device,
-                         n_envs = n_envs,
-                         optimize_memory_usage = optimize_memory_usage,
-                         handle_timeout_termination = handle_timeout_termination)
-        self._storage_torch_device = storage_torch_device
-        self._validation_ratio = validation_ratio
-        self._train_buffer = buffer_class(buffer_size=buffer_size,
-                                            observation_space = observation_space,
-                                            action_space = action_space,
-                                            device = device,
-                                            n_envs = n_envs,
-                                            optimize_memory_usage = optimize_memory_usage,
-                                            handle_timeout_termination = handle_timeout_termination,
-                                            storage_torch_device = storage_torch_device)
-        self._disable = disable
-        if disable:
-            self._validation_buffer = None
-        else:                                            
-            self._validation_buffer = buffer_class( buffer_size=int(buffer_size),
-                                                    observation_space = observation_space,
-                                                    action_space = action_space,
-                                                    device = device,
-                                                    n_envs = n_envs,
-                                                    optimize_memory_usage = optimize_memory_usage,
-                                                    handle_timeout_termination = handle_timeout_termination,
-                                                    storage_torch_device = storage_torch_device)
+# from stable_baselines3.common.buffers import DictReplayBuffer, DictReplayBufferSamples
+# class RandomHoldoutBuffer(DictReplayBuffer):
+#     def __init__(self,
+#                 buffer_size: int,
+#                 observation_space: spaces.Space,
+#                 action_space: spaces.Space,
+#                 device: Union[th.device, str] = "cpu",
+#                 n_envs: int = 1,
+#                 optimize_memory_usage: bool = False,
+#                 handle_timeout_termination: bool = True,
+#                 storage_torch_device: str = "cpu",
+#                 buffer_class : type = None,
+#                 validation_ratio : float = 0.1,
+#                 disable : bool = False):
+#         super().__init__(buffer_size = buffer_size,
+#                          observation_space = observation_space,
+#                          action_space = action_space,
+#                          device = device,
+#                          n_envs = n_envs,
+#                          optimize_memory_usage = optimize_memory_usage,
+#                          handle_timeout_termination = handle_timeout_termination)
+#         self._storage_torch_device = storage_torch_device
+#         self._validation_ratio = validation_ratio
+#         self._train_buffer = buffer_class(buffer_size=buffer_size,
+#                                             observation_space = observation_space,
+#                                             action_space = action_space,
+#                                             device = device,
+#                                             n_envs = n_envs,
+#                                             optimize_memory_usage = optimize_memory_usage,
+#                                             handle_timeout_termination = handle_timeout_termination,
+#                                             storage_torch_device = storage_torch_device)
+#         self._disable = disable
+#         if disable:
+#             self._validation_buffer = None
+#         else:                                            
+#             self._validation_buffer = buffer_class( buffer_size=int(buffer_size),
+#                                                     observation_space = observation_space,
+#                                                     action_space = action_space,
+#                                                     device = device,
+#                                                     n_envs = n_envs,
+#                                                     optimize_memory_usage = optimize_memory_usage,
+#                                                     handle_timeout_termination = handle_timeout_termination,
+#                                                     storage_torch_device = storage_torch_device)
 
-    def size(self):
-        if self._disable:
-            return self._train_buffer.size()
-        else:
-            return self._train_buffer.size() + self._validation_buffer.size()
+#     def size(self):
+#         if self._disable:
+#             return self._train_buffer.size()
+#         else:
+#             return self._train_buffer.size() + self._validation_buffer.size()
 
 
-    def memory_size(self):
-        if self._disable:
-            return self._train_buffer.memory_size()
-        else:
-            return self._train_buffer.memory_size() + self._validation_buffer.memory_size()
+#     def memory_size(self):
+#         if self._disable:
+#             return self._train_buffer.memory_size()
+#         else:
+#             return self._train_buffer.memory_size() + self._validation_buffer.memory_size()
 
-    def add(self,
-            obs: np.ndarray,
-            next_obs: np.ndarray,
-            action: np.ndarray,
-            reward: np.ndarray,
-            done: np.ndarray,
-            infos: List[Dict[str, Any]]) -> None:
-        if random.random() > self._validation_ratio or self._disable:
-            buffer_to_use = self._train_buffer
-        else:
-            buffer_to_use = self._validation_buffer
+#     def add(self,
+#             obs: np.ndarray,
+#             next_obs: np.ndarray,
+#             action: np.ndarray,
+#             reward: np.ndarray,
+#             done: np.ndarray,
+#             infos: List[Dict[str, Any]]) -> None:
+#         if random.random() > self._validation_ratio or self._disable:
+#             buffer_to_use = self._train_buffer
+#         else:
+#             buffer_to_use = self._validation_buffer
 
-        buffer_to_use.add(obs,next_obs, action, reward, done, infos)
+#         buffer_to_use.add(obs,next_obs, action, reward, done, infos)
 
-    def update(self, buffer : DictReplayBuffer):
-        self._train_buffer.update(buffer._train_buffer)
-        if not self._disable: # if not disabled
-            self._validation_buffer.update(buffer._validation_buffer)
+#     def update(self, buffer : DictReplayBuffer):
+#         self._train_buffer.update(buffer._train_buffer)
+#         if not self._disable: # if not disabled
+#             self._validation_buffer.update(buffer._validation_buffer)
     
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> DictReplayBufferSamples:
-        if validation_set and not self._disable:
-            buffer_to_use = self._validation_buffer
-        else:
-            buffer_to_use = self._train_buffer
+#     def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> DictReplayBufferSamples:
+#         if validation_set and not self._disable:
+#             buffer_to_use = self._validation_buffer
+#         else:
+#             buffer_to_use = self._train_buffer
 
-        return buffer_to_use.sample(batch_size=batch_size, env=env)
+#         return buffer_to_use.sample(batch_size=batch_size, env=env)
 
-    def storage_torch_device(self):
-        return self._storage_torch_device
+#     def storage_torch_device(self):
+#         return self._storage_torch_device
 
 
 # from https://github.com/pytorch/pytorch/blob/ac79c874cefee2f8bc1605eed9a924d80c0b3542/torch/testing/_internal/common_utils.py#L349

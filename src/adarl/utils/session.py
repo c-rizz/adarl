@@ -234,7 +234,8 @@ class Session():
         all_children_terminated = False
         while not all_children_terminated:
             t0_chterm = time.monotonic()
-            child_procs = mp_helper.get_context().active_children()
+            child_procs : list[multiprocessing.Process] = mp_helper.get_context().active_children()
+            child_procs = [p for p in child_procs if not p.daemon] # exclude daemonic process
             all_children_terminated = len(child_procs)==0
             if not all_children_terminated:
                 sig = signal.SIGINT if timeout-(time.monotonic()-t0_chterm) > 10 else signal.SIGKILL

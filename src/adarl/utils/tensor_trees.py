@@ -229,13 +229,16 @@ def sizetree_from_space(space : gym_spaces.Space):
 def is_leaf_finite(tensor : th.Tensor | np.ndarray):
     if isinstance(tensor, th.Tensor):
         return th.all(th.isfinite(tensor))
-    elif isinstance(tensor, np.ndarray):
+    elif isinstance(tensor, (np.ndarray, int, float)):
         return np.all(np.isfinite(tensor))
     else:
         raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
 def is_all_finite(tree : TensorTree):
     return all(flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).values())
+
+def non_finite_flat_keys(tree : TensorTree):
+    return [k for k,v in flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).items() if not v]
 
 def is_leaf_bounded(tensor : th.Tensor | np.ndarray, min : th.Tensor, max : th.Tensor):
     if isinstance(tensor, th.Tensor):
