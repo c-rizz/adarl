@@ -162,6 +162,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), self._mjx_data)
         ggLog.info(f"mjx_data.qpos.shape = {self._mjx_data.qpos.shape}")
 
+
+        self._original_mjx_data = copy.deepcopy(self._mjx_data)
+        self._original_mjx_model = copy.deepcopy(self._mjx_model)
+        self._original_mj_data = copy.deepcopy(self._mj_data)
+        self._original_mj_model = copy.deepcopy(self._mj_model)
+
         ggLog.info(f"Compiling mjx.step....")
         self._mjx_step2_step1 = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
         _ = self._mjx_step2_step1(self._mjx_model, copy.deepcopy(self._mjx_data)) # trigger jit compile
@@ -405,6 +411,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         """
         self.__lastResetTime = self.getEnvTimeFromStartup()
+
+        self._mjx_data = copy.deepcopy(self._original_mjx_data)
+        self._mjx_model = copy.deepcopy(self._original_mjx_model)
+        self._mj_data = copy.deepcopy(self._original_mj_data)
+        self._mj_model = copy.deepcopy(self._original_mj_model)
 
 
     @override
