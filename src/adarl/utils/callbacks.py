@@ -63,8 +63,7 @@ class EvalCallback(TrainingCallback):
         eval_name : str = "eval"
     ):
         if not isinstance(eval_env, gym.vector.VectorEnv):
-            eval_env = gym.vector.SyncVectorEnv([lambda: eval_env], copy = False)
-            raise NotImplementedError(f"eval_env can only be a gym.Env for now")
+            raise NotImplementedError(f"eval_env can only be a gym.vector.VectorEnv for now, it's a {type(eval_env)}")
         self.n_eval_episodes = n_eval_episodes
         self.eval_freq_ep = eval_freq_ep
         self.deterministic = deterministic
@@ -226,9 +225,9 @@ class CheckpointCallbackRB(TrainingCallback):
 
         if self._success_ratio > self._best_success_ratio and self._save_best:
             self._save_model(is_best=True, count_ep=False)
-        if self.save_freq is not None and self._step_counter - self._step_last_model_checkpoint >= self.save_freq:
+        if self.save_freq is not None and self.save_freq>0 and self._step_counter - self._step_last_model_checkpoint >= self.save_freq:
             self._save_model(is_best=False, count_ep=False)
-        if self.save_freq_ep is not None and self._episode_counter - self._ep_last_model_checkpoint >= self.save_freq_ep:
+        if self.save_freq_ep is not None and self.save_freq_ep>0 and self._episode_counter - self._ep_last_model_checkpoint >= self.save_freq_ep:
             self._save_model(is_best=False, count_ep=True)
         return True
     

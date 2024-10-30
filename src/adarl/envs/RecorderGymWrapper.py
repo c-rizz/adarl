@@ -12,7 +12,7 @@ from typing import Callable, Optional, Any
 import h5py
 import lzma
 import pickle
-from adarl.utils.tensor_trees import flatten_tensor_tree, map_tensor_tree, stack_tensor_tree
+from adarl.utils.tensor_trees import flatten_tensor_tree, map_tensor_tree, stack_tensor_tree, is_all_bounded, is_all_finite
 import torch as th
 import adarl.utils.tensor_trees as tt
 
@@ -262,6 +262,12 @@ class RecorderGymWrapper(gym.Wrapper):
         self._frameBuffer = []
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
+
+
+        if not is_all_finite(obs):
+            raise RuntimeError(f"Non-finite values in obs {obs}")
+        if not is_all_bounded(obs, min=-10, max=10):
+            raise RuntimeError(f"Values over 100 in obs {obs}")
 
         if self._vec_obs_key is not None:
             vecobs = obs[self._vec_obs_key]

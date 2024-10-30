@@ -12,7 +12,31 @@ import atexit
 import traceback
 from typing import Optional
 import adarl.utils.session as session
-from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys
+from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_tensor_tree
+import numpy as np
+
+def _fix_histogram_range(value):
+    """ In case there are nan/inf values in an array/tensor wandb drops the entire log, because it fails to
+        detect the range. This doesnt make much sense.
+        So I compute the range myself, excuding infs and nans, and produce a numpy histogram.
+    """
+    if isinstance(value, (th.Tensor | np.ndarray)):
+        if isinstance(value, th.Tensor):
+            value = value.cpu().numpy()
+        if value.ndim>0 and len(value) > 1:
+            finite_values = value[np.isfinite(value)]
+            value = np.histogram(value, range=(finite_values.min(), finite_values.max()))
+        else:
+            return value
+    else:
+        return value
+
+def _detach_th(value):
+    if isinstance(value, th.Tensor):
+        value = value.detach().cpu().numpy()
+    return value
+
+
 
 class WandbWrapper():
     def __init__(self):
@@ -62,53 +86,56 @@ class WandbWrapper():
         
 
     def wandb_log(self, log_dict, throttle_period = 0):
-        if not self._wandb_initialized:
-            ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
-            # traceback.print_stack()
-            return
-        try:
-            if not is_all_finite(log_dict):
-                ggLog.warn(f"Non-finite values in wandb log. \n"
-                           f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
-                           f"Stacktrace:\n{''.join(traceback.format_stack())}")
+        with th.no_grad():
+            if not self._wandb_initialized:
+                ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
+                # traceback.print_stack()
+                return
+            try:
+                log_dict = map_tensor_tree(log_dict, _detach_th)
+                if not is_all_finite(log_dict):
+                    ggLog.warn(f"Non-finite values in wandb log. \n"
+                            f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
+                            f"Stacktrace:\n{''.join(traceback.format_stack())}")
 
-            if os.getpid()==self._init_pid:
-                # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
-                if callable(log_dict):            
-                    log_dict = log_dict()
-                
-                t = time.monotonic()
-                keys = tuple(log_dict.keys())
-                last_logged = self.last_sent_times_by_key.get(keys,0)
+                if os.getpid()==self._init_pid:
+                    # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
+                    if callable(log_dict):            
+                        log_dict = log_dict()
+                    
+                    t = time.monotonic()
+                    keys = tuple(log_dict.keys())
+                    last_logged = self.last_sent_times_by_key.get(keys,0)
 
-                # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
-                if t-last_logged<throttle_period:
-                    # ggLog.info(f"[{str(keys)[:10]}]: Throttling")
-                    return
-                # ggLog.info(f"[{str(keys)[:10]}]: Sending")
+                    # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
+                    if t-last_logged<throttle_period:
+                        # ggLog.info(f"[{str(keys)[:10]}]: Throttling")
+                        return
+                    # ggLog.info(f"[{str(keys)[:10]}]: Sending")
 
-                t_50reqs_ago = self.last_send_to_server_times[(self.req_count+1)%self.max_reqs_per_min]
-                if t-t_50reqs_ago<60:
-                    if t-self.last_warn_time > 60:
-                        ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log for keys {list(log_dict.keys())}. Sent logs counters = {self.sent_count}")
-                        self.last_warn_time = t
-                    return
-                self.last_send_to_server_times[self.req_count%self.max_reqs_per_min] = t
-                self.req_count += 1
-                self.last_sent_times_by_key[keys] = t
-                self.sent_count[keys] = self.sent_count.get(keys,0) + 1
-                log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
-                log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
-                try:
-                    wandb.log(log_dict)
-                except Exception as e:
-                    ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
-            else:
-                # ggLog.info(f"wandb_log called from non-main process")
-                # raise NotImplementedError()
-                self._queue.put((log_dict, throttle_period), block=False)
-        except Exception as e:
-            ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
+                    t_50reqs_ago = self.last_send_to_server_times[(self.req_count+1)%self.max_reqs_per_min]
+                    if t-t_50reqs_ago<60:
+                        if t-self.last_warn_time > 60:
+                            ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log for keys {list(log_dict.keys())}. Sent logs counters = {self.sent_count}")
+                            self.last_warn_time = t
+                        return
+                    self.last_send_to_server_times[self.req_count%self.max_reqs_per_min] = t
+                    self.req_count += 1
+                    self.last_sent_times_by_key[keys] = t
+                    self.sent_count[keys] = self.sent_count.get(keys,0) + 1
+                    log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
+                    log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
+                    log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
+                    try:
+                        wandb.log(log_dict)
+                    except Exception as e:
+                        ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
+                else:
+                    # ggLog.info(f"wandb_log called from non-main process")
+                    # raise NotImplementedError()
+                    self._queue.put((log_dict, throttle_period), block=False)
+            except Exception as e:
+                ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
 
     def wandb_log_hists(self, d, throttle_period = 0):
         keys = tuple(d.keys())

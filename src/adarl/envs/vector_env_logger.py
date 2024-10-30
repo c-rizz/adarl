@@ -89,7 +89,6 @@ class VectorEnvLogger(
                 self._logs_batch.update(new_elems)
                 wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
                 wdblog = {self._logs_id+k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
-                wdblog["vec_env_logger/session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                 wandb_log(wdblog)
                 ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self.num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
                            f" r= \033[1m{self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+

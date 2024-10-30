@@ -325,7 +325,7 @@ def evaluatePolicy(env,
 
 
 def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
-                   model,
+                   model : th.nn.Module,
                    episodes : int,
                    on_ep_done_callback : Callable[[float, int,int],Any] | None = None,
                    predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
@@ -335,6 +335,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                    extra_info_stats : list[str] = [],
                    deterministic : bool = False):
     with th.no_grad():
+        is_training = model.training
+        model.eval()
         if predict_func is None:
             predict_func_ = model.predict
         else:
@@ -395,6 +397,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "collected_episodes" : collected_eps}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
+        model.train(is_training)
     return eval_results
 
 def fileGlobToList(fileGlobStr : str):

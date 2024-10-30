@@ -14,7 +14,8 @@ class ThBox(gym.spaces.Box):
                     shape: Sequence[int] | None = None,
                     dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype = np.float32,
                     seed: int | np.random.Generator | None = None,
-                    torch_device : th.device = th.device("cpu")):
+                    torch_device : th.device = th.device("cpu"),
+                    labels : np.ndarray | None = None):
         self._th_device = torch_device
         if isinstance(low,th.Tensor):
             low = low.cpu().numpy()
@@ -27,6 +28,8 @@ class ThBox(gym.spaces.Box):
             numpy_dtype = dtype
             torch_dtype = numpy_to_torch_dtype_dict[dtype]
         # self.torch_dtype = torch_dtype # yaml cannot save this for some reason, see https://github.com/pytorch/pytorch/issues/78720
+        self.labels = labels
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
+
     def sample(self):
         return th.as_tensor(super().sample(), device = self._th_device)

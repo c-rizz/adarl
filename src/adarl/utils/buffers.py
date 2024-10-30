@@ -82,7 +82,7 @@ class BaseBuffer(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> TransitionBatch:
+    def sample(self, batch_size: int) -> TransitionBatch:
         raise NotImplementedError()
 
     @abstractmethod

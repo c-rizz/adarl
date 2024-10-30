@@ -2,7 +2,7 @@ from typing import Tuple, Union
 
 import torch as th
 import adarl.utils.dbg.ggLog as ggLog
-
+from adarl.utils.tensor_trees import is_all_finite, is_all_bounded
 
 
 class RunningMeanStd(object):
@@ -20,7 +20,7 @@ class RunningMeanStd(object):
         self._epsilon = epsilon
         self.mean = th.zeros(tensor_size, device=torch_device, dtype=dtype)
         self.var = th.ones(tensor_size, device=torch_device, dtype=dtype)
-        self.count = th.tensor(epsilon, device=torch_device, dtype=th.float64)
+        self.count = th.tensor(0, device=torch_device, dtype=th.int64)
 
     def copy(self) -> "RunningMeanStd":
         """
@@ -61,15 +61,14 @@ class RunningMeanStd(object):
 
     def update_from_moments(self, batch_mean, batch_var, batch_size: Union[int, float]) -> None:
         delta = batch_mean - self.mean
-        tot_count = self.count + batch_size
+        new_count = self.count + batch_size
+        new_count_ep = new_count + self._epsilon
 
-        new_mean = self.mean + delta * batch_size / tot_count
+        new_mean = self.mean + delta * batch_size / new_count_ep
         m_a = self.var * self.count
         m_b = batch_var * batch_size
-        m_2 = m_a + m_b + th.square(delta) * self.count * batch_size / (self.count + batch_size)
-        new_var = m_2 / (self.count + batch_size)
-
-        new_count = batch_size + self.count
+        m_2 = m_a + m_b + th.square(delta) * self.count * batch_size / new_count_ep
+        new_var = m_2 / new_count_ep
         
         # skip if there are infs and nans
         if th.all(th.isfinite(new_mean)) and th.all(th.isfinite(new_var)) and th.all(th.isfinite(new_count)):
@@ -78,7 +77,9 @@ class RunningMeanStd(object):
             self.var.copy_(new_var)
             self.count.copy_(new_count)
         else:
-            ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping")
+            ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping (new_mean:{th.all(th.isfinite(new_mean))} "
+                       f"new_var:{th.all(th.isfinite(new_var))} "
+                       f"new_count:{new_count}). Good samples up to now: {self.count}.")
 
 
 

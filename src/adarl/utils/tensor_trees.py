@@ -232,7 +232,8 @@ def is_leaf_finite(tensor : th.Tensor | np.ndarray):
     elif isinstance(tensor, (np.ndarray, int, float)):
         return np.all(np.isfinite(tensor))
     else:
-        raise NotImplementedError(f"Unsupported type {type(tensor)}")
+        return True
+        # raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
 def is_all_finite(tree : TensorTree):
     return all(flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).values())
@@ -240,7 +241,9 @@ def is_all_finite(tree : TensorTree):
 def non_finite_flat_keys(tree : TensorTree):
     return [k for k,v in flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).items() if not v]
 
-def is_leaf_bounded(tensor : th.Tensor | np.ndarray, min : th.Tensor, max : th.Tensor):
+def is_leaf_bounded(tensor : th.Tensor | np.ndarray | float,
+                    min : th.Tensor | np.ndarray | float,
+                    max : th.Tensor | np.ndarray | float):
     if isinstance(tensor, th.Tensor):
         return th.all(tensor >= min) and th.all(tensor <= max)
     elif isinstance(tensor, np.ndarray):
@@ -248,9 +251,11 @@ def is_leaf_bounded(tensor : th.Tensor | np.ndarray, min : th.Tensor, max : th.T
     else:
         raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
-def is_all_bounded(tree : TensorTree, min : th.Tensor, max : th.Tensor):
+def is_all_bounded(tree : TensorTree,
+                    min : th.Tensor | np.ndarray | float,
+                    max : th.Tensor | np.ndarray | float):
     r = flatten_tensor_tree(map_tensor_tree(tree, lambda t: is_leaf_bounded(t,min=min,max=max))).values()
-    print(f"r = {r}")
+    # print(f"r = {r}")
     return all(r)
 
 
