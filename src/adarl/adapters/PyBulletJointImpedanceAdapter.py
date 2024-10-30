@@ -74,12 +74,16 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
     def _apply_commanded_joint_impedances(self):
         # get the newest command with a time less or equal to now
         cmd = {}
-        tcmd = float("-inf")
+        tcmd = float("-inf") # time of most recent past command found
         future_commands = {} # Commands to be applied in the future
         t = self.getEnvTimeFromStartup()
         # ggLog.info(f"t = {t}")
         # ggLog.info(f"self._commanded_joint_impedances = {self._commanded_joint_impedances}")
         for tc,c in self._commanded_joint_impedances.items():
+            # TODO: this actually has a bug: if a command is in the queue, it is in the past
+            #       but is not the most recent one, then it is discarded. But it shouldn't!
+            #       the most recent comand may be missing a joint that is present in this not-last
+            #       one. The command for this joint should be applied from the not most-recent one.
             if tc > t:
                 future_commands[tc] = c
             if tc <= t and tc >= tcmd:

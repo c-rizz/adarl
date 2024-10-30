@@ -30,6 +30,8 @@ class BaseVecAdapter(BaseAdapter):
         self._vec_size = vec_size
         super().__init__()
 
+    def vec_size(self):
+        return self._vec_size
     
     @abstractmethod
     def getRenderings(self, requestedCameras : List[str]) -> tuple[list[th.Tensor], th.Tensor]:
@@ -76,7 +78,7 @@ class BaseVecAdapter(BaseAdapter):
         Returns
         -------
         th.Tensor
-            Tensor of shape (vec_size, len(requestedJoints),3) containig respecitvely position, velocity and effort for each joint in set_monitored_joints()
+            Tensor of shape (vec_size, len(monitored_joints),3) containig respecitvely position, velocity and effort for each joint in set_monitored_joints()
 
         """
         ...
