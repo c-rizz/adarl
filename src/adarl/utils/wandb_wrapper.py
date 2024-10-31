@@ -124,6 +124,7 @@ class WandbWrapper():
                     self.last_sent_times_by_key[keys] = t
                     self.sent_count[keys] = self.sent_count.get(keys,0) + 1
                     log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
+                    log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
                     log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
                     log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
                     try:

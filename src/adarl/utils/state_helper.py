@@ -126,7 +126,8 @@ class ThBoxStateHelper(StateHelper):
         lmax = self._limits_minmax[1]
         hlmax = lmax.expand(self._history_length, *lmax.size())
         self._state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_size)
-        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size, dtype=self._obs_dtype)
+        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size, dtype=self._obs_dtype,
+                                       labels=self.observation_names())
 
     def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
         new_minmax = {}
@@ -301,23 +302,29 @@ class StateNoiseGenerator:
         if isinstance(step_std,(list,tuple,float)):
             step_std = th.as_tensor(step_std)
         if isinstance(episode_mu_std,th.Tensor):
+            required_size = (2,self._fields_num)+self._field_size
             if episode_mu_std.size() == (2,):
                 self._episode_mu_std = episode_mu_std.expand(*((self._fields_num,)+self._field_size+(2,))).permute(2,0,1)
-            elif episode_mu_std.size() == ((2,self._fields_num)+self._field_size):
+            elif episode_mu_std.size() == ((2,)+self._field_size):
+                self._episode_mu_std = episode_mu_std.unsqueeze(1).expand(*required_size)
+            elif episode_mu_std.size() == required_size:
                 self._episode_mu_std = episode_mu_std
             else:
-                raise RuntimeError(f"Unexpected episode_mu_std size {episode_mu_std.size()}, should either be (2,) or ((2,fields_num)+field_size)")
+                raise RuntimeError(f"Unexpected episode_mu_std size {episode_mu_std.size()}, should either be (2,) or {required_size}")
             self._episode_mu_std = self._episode_mu_std.to(dtype=self._dtype,device=self._device)
         elif isinstance(episode_mu_std,Mapping):
             self._episode_mu_std = th.as_tensor([episode_mu_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).permute(1,0)
 
         if isinstance(step_std,th.Tensor):
+            required_size = (self._fields_num,)+self._field_size
             if step_std.numel() == 1:
                 self._step_std = step_std.expand(*((self._fields_num,)+self._field_size))
-            elif step_std.size() == ((self._fields_num,)+self._field_size):
+            elif step_std.size() == self._field_size:
+                self._step_std = step_std.unsqueeze(0).expand(*required_size)
+            elif step_std.size() == required_size:
                 self._step_std = step_std
             else:
-                raise RuntimeError(f"Unexpected step_std size {step_std.size()}, should either be (1,),(,) or ((fields_num,)+field_size)")
+                raise RuntimeError(f"Unexpected step_std size {step_std.size()}, should either be (1,),(,) or {required_size}")
             self._step_std = self._step_std.to(dtype=self._dtype,device=self._device)
         elif isinstance(step_std,Mapping):
             self._step_std = th.as_tensor([step_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).reshape(self._noise_shape)
@@ -325,12 +332,12 @@ class StateNoiseGenerator:
         assert self._episode_mu_std.size() == (2,)+self._noise_shape
         assert self._step_std.size() == self._noise_shape
 
-        # ggLog.info(f"Noise generator got [{self._episode_mu_std},{self._step_std}]")
+        # # ggLog.info(f"Noise generator got [{self._episode_mu_std},{self._step_std}]")
         state_limits = state_helper.get_limits()
         self._fields_scale = state_limits[1]-state_limits[0]
-        self._episode_mu_std = self._episode_mu_std*self._fields_scale.expand(2, *self._fields_scale.size())
-        self._step_std = self._step_std*self._fields_scale
-        # ggLog.info(f"Noise generator unnormalized to [{self._episode_mu_std},{self._step_std}]")
+        # self._episode_mu_std = self._episode_mu_std*self._fields_scale.expand(2, *self._fields_scale.size())
+        # self._step_std = self._step_std*self._fields_scale
+        # # ggLog.info(f"Noise generator unnormalized to [{self._episode_mu_std},{self._step_std}]")
 
 
         # At the beginning of each episode a mu is sampled

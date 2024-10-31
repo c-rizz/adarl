@@ -45,7 +45,8 @@ class RecorderGymWrapper(gym.Wrapper):
         self._only_video = only_video
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
-        self._episodeCounter = 0
+        self._episode_counter = 0
+        self._step_counter = 0
         self._outFolder = outFolder
         ggLog.info(f"outFolder = {outFolder}")
         self._saveBestEpisodes = saveBestEpisodes
@@ -76,7 +77,7 @@ class RecorderGymWrapper(gym.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info =  self.env.step(action)
-        if self._may_episode_be_saved(self._episodeCounter):
+        if self._may_episode_be_saved(self._episode_counter):
             img = self.render()
             if img is not None:
                 self._frameBuffer.append(img)
@@ -98,6 +99,7 @@ class RecorderGymWrapper(gym.Wrapper):
             #     self._vecBuffer.append([obs, rew, done, info])
         self._epReward += reward
         self._epStepCount += 1
+        self._step_counter += 1
         return obs, reward, terminated, truncated, info
 
     def _update_vecbuffer(self, vecobs, action, reward, terminated, truncated):
@@ -238,8 +240,9 @@ class RecorderGymWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         if self._epStepCount > 0:
-            ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episodeCounter
-            fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward:09.9g}"
+            ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episode_counter
+            step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._step_counter
+            fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{step_count:010d}_{self._epReward:09.9g}"
             if self._epReward > self._bestReward:
                 self._bestReward = self._epReward
                 if self._saveBestEpisodes:
@@ -256,7 +259,7 @@ class RecorderGymWrapper(gym.Wrapper):
         if self._epReward>self._bestReward:
             self._bestReward = self._epReward
         if self._epStepCount>0:
-            self._episodeCounter += 1
+            self._episode_counter += 1
         self._epReward = 0.0
         self._epStepCount = 0        
         self._frameBuffer = []
@@ -278,7 +281,7 @@ class RecorderGymWrapper(gym.Wrapper):
         self._update_vecbuffer(vecobs, None, None, None, None)
         self._infoBuffer.append(info)
         
-        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episodeCounter
+        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episode_counter
         if self._may_episode_be_saved(ep_count):
             img = self.render()
             if img is not None:
@@ -288,7 +291,7 @@ class RecorderGymWrapper(gym.Wrapper):
     def close(self):
         # ggLog.info(f"self._outFolder = {self._outFolder}")
         # self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}".zfill(6)+f"_{self._epReward}.mp4"))
-        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episodeCounter
+        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._episode_counter
         fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._epReward:09.9g}"
         self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self.env.close()

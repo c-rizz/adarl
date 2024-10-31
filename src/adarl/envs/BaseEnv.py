@@ -65,6 +65,7 @@ class BaseEnv(ABC):
         self._envSeed : int = 0
         self._is_timelimited = th.as_tensor(is_timelimited)
         self._closed = False
+        self._resetCounter = 0
 
         if startSimulation:
             self.buildSimulation()
@@ -205,6 +206,7 @@ class BaseEnv(ABC):
         """
         self._stepCounter = 0
         self._actionsCounter = 0
+        self._resetCounter += 1
 
 
     @abstractmethod
