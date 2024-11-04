@@ -217,7 +217,7 @@ class Session():
         t0 = time.monotonic()
         timeout = 30
         if threading.current_thread() == threading.main_thread():
-            active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
+            active_threads = [t for t in threading.enumerate() if t.name!="MainThread" and not t.isDaemon()]
             elapsed = 0
             while len(active_threads)>0 and elapsed < timeout:
                 elapsed = time.monotonic() - t0

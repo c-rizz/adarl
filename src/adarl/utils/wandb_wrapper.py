@@ -11,7 +11,6 @@ import adarl.utils.mp_helper as mp_helper
 import atexit
 import traceback
 from typing import Optional
-import adarl.utils.session as session
 from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_tensor_tree
 import numpy as np
 
@@ -123,6 +122,7 @@ class WandbWrapper():
                     self.req_count += 1
                     self.last_sent_times_by_key[keys] = t
                     self.sent_count[keys] = self.sent_count.get(keys,0) + 1
+                    import adarl.utils.session as session
                     log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                     log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
                     log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
