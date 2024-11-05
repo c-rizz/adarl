@@ -183,9 +183,9 @@ class CheckpointCallbackRB(TrainingCallback):
     def _save_model(self, is_best, count_ep):
         self._best_success_ratio = max(self._best_success_ratio, self._success_ratio)
         if is_best:
-            path = os.path.join(self.save_path, f"best_{self.name_prefix}_{self._episode_counter}_{self._step_counter}_{int(self._success_ratio*100)}_steps")
+            path = os.path.join(self.save_path, f"best_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_{int(self._success_ratio*100)}_steps")
         else:
-            path = os.path.join(self.save_path, f"{self.name_prefix}_{self._episode_counter}_{self._step_counter}_{int(self._success_ratio*100)}_steps")
+            path = os.path.join(self.save_path, f"{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_{int(self._success_ratio*100)}_steps")
         self._model.save(path)
         if not is_best:
             if count_ep:
@@ -198,9 +198,9 @@ class CheckpointCallbackRB(TrainingCallback):
 
     def _save_replay_buffer(self, is_best):
         if is_best:
-            path = os.path.join(self.save_path, f"best_{self.name_prefix}_replay_buffer_{self._episode_counter}_{self._step_counter}_steps")+".pkl"
+            path = os.path.join(self.save_path, f"best_{self.name_prefix}_replay_buffer_{self._episode_counter:09d}_{self._step_counter:09d}_steps")+".pkl"
         else:
-            path = os.path.join(self.save_path, f"{self.name_prefix}_replay_buffer_{self._episode_counter}_{self._step_counter}_steps")+".pkl"
+            path = os.path.join(self.save_path, f"{self.name_prefix}_replay_buffer_{self._episode_counter:09d}_{self._step_counter:09d}_steps")+".pkl"
         t0 = time.monotonic()
         if self._buffer is not None:
             ggLog.info(f"Saving replay buffer with transitions {self._buffer.replay_buffer.size()}/{self._buffer.replay_buffer.buffer_size}...")

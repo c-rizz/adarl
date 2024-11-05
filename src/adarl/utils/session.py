@@ -23,6 +23,7 @@ import adarl.utils.mp_helper as mp_helper
 import adarl.utils.wandb_wrapper as wandb_wrapper
 import signal
 faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
+import dataclasses 
 
 class Session():
     def __init__(self):
@@ -184,6 +185,9 @@ class Session():
                 experiment_name = os.path.basename(file)
             try:
                 ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
+                config_s = "\n".join([str(t) for t in config.items()])
+                ggLog.info(f"config = {config_s}")
+                config = {k: dataclasses.asdict(v) if dataclasses.is_dataclass(v) else v for k,v in config.items()} # dataclasses have some issue with json serialization
                 wandb_init( project=experiment_name,
                             config = config,
                             name = f"{run_id}_{comment.strip().replace(' ','_')}",
