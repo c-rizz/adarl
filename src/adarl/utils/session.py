@@ -24,6 +24,8 @@ import adarl.utils.wandb_wrapper as wandb_wrapper
 import signal
 faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
 import dataclasses 
+import socket
+import cpuinfo
 
 class Session():
     def __init__(self):
@@ -73,6 +75,9 @@ class Session():
         self.run_info["collected_steps"] = mp_helper.get_context().Value("i",0)
         self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
         self.run_info["seed"] = seed
+        self.run_info["hostname"] = socket.gethostname()
+        self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
+        self.run_info["gpu"] = ""
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
                                                    folderName=folderName,
@@ -89,6 +94,7 @@ class Session():
         setupSigintHandler()
         if using_pytorch:
             import torch as th
+            self.run_info["gpu"] = th.cuda.get_device_name()
             th.set_printoptions(linewidth=160)
             pyTorch_makeDeterministic(seed)
             if debug_level>0:
