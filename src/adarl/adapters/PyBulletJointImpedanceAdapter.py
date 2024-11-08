@@ -94,10 +94,10 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         # ggLog.info(f"future_commands = {future_commands}")        
         self._commanded_joint_impedances = future_commands # keep commands not applied yet
         if len(cmd)>0:
-            self._compute_and_apply_joint_effort(th.as_tensor([cmd[jn] for jn in self._jimpedance_controlled_joints]))
+            self._compute_and_apply_joint_effort(th.stack([th.as_tensor(cmd[jn]) for jn in self._jimpedance_controlled_joints]))
 
     @override
-    def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]]):
+    def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]] | th.Tensor):
         self.setJointsImpedanceCommand(joint_impedances_pvesd=joint_impedances_pvesd)
         self._apply_commanded_joint_impedances()
 

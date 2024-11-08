@@ -1,14 +1,14 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
-from typing import Dict, Tuple, Any, Optional
-from adarl.utils.utils import JointState, LinkState, Pose, build_pose
+from abc import abstractmethod
+from typing import Any
+from adarl.utils.utils import Pose, build_pose
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
-from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
+from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 
 import torch as th
 
 
-class BaseVecSimulationAdapter(BaseVecAdapter, BaseSimulationAdapter):
+class BaseVecSimulationAdapter(BaseVecAdapter):
 
     @abstractmethod
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):        
@@ -44,12 +44,16 @@ class BaseVecSimulationAdapter(BaseVecAdapter, BaseSimulationAdapter):
         raise NotImplementedError()
 
     @abstractmethod
+    def build_scenario(self, models : list[ModelSpawnDef] = [], **kwargs):
+        raise NotImplementedError()
+        
+    @abstractmethod
     def spawn_model(self,   model_name : str,
-                            model_definition_string : Optional[str] = None,
-                            model_format : Optional[str] = None,
-                            model_file : Optional[str] = None,
+                            model_definition_string : str | None = None,
+                            model_format : str | None = None,
+                            model_file : str | None = None,
                             pose : Pose = build_pose(0,0,0,0,0,0,1),
-                            model_kwargs : Dict[Any,Any] = {}) -> str:
+                            model_kwargs : dict[Any,Any] = {}) -> str:
         """Spawn a model in the simulation in all of the simulations.
 
         Parameters

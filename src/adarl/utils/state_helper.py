@@ -730,7 +730,7 @@ class JointImpedanceActionHelper:
         return spaces.gym_spaces.Box(-np.ones(self.action_len()),np.ones(self.action_len()), seed=seed)
 
     def _pvesd_to_action(self, cmds_pvesd : dict[tuple[str,str], tuple[float,float,float,float,float]]):
-        cmd_joints_pvesd = th.as_tensor([cmds_pvesd[j] for j in self._joints])
+        cmd_joints_pvesd = th.stack([th.as_tensor(cmds_pvesd[j]) for j in self._joints])
         cmd_joints_pvesd = normalize(cmd_joints_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
         action = cmd_joints_pvesd[:,self._act_to_pvesd_idx].flatten()
         return action
