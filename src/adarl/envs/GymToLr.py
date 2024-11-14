@@ -172,7 +172,7 @@ class GymToLr(BaseEnv, Generic[ObsType]):
 
 
     def getUiRendering(self) -> Tuple[np.ndarray, float]:
-        return self._openaiGym_env.render(), self.getSimTimeFromEpStart()
+        return self._openaiGym_env.render(), self.getSimTimeSinceBuild()
 
     def getInfo(self,state=None) -> Dict[str,Any]:
         """To be implemented in subclass.
@@ -196,26 +196,26 @@ class GymToLr(BaseEnv, Generic[ObsType]):
     #     """
     #     raise NotImplementedError()
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         """To be implemented in subclass.
 
         Build a simulation for the environment.
         """
         pass
 
-    def _destroySimulation(self):
+    def _destroy(self):
         """To be implemented in subclass.
 
         Destroy a simulation built by buildSimulation.
         """
         pass
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         """Get the elapsed time since the episode start."""
         return self._stepCount * self._stepSimDuration_sec
 
     def close(self):
-        self._destroySimulation()
+        self._destroy()
 
     def seed(self, seed=None):
         if seed is not None:

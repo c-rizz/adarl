@@ -85,5 +85,5 @@ class ControlledEnv(Generic[EnvControllerType], BaseEnv):
         self.initializeEpisode(options)
 
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         return self._adapter.getEnvTimeFromStartup()

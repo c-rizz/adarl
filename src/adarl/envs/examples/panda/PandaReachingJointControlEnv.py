@@ -258,7 +258,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
 
         return np.array(state,dtype=np.float32)
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         if backend == "gazebo":
             self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "gui":"false",
@@ -276,7 +276,7 @@ class PandaReachingJointControlEnv(ControlledEnv):
         else:
             raise NotImplementedError("Backend '"+backend+"' not supported")
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
     def getInfo(self,state=None):

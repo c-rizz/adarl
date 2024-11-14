@@ -34,7 +34,7 @@ class BaseAdapter(ABC):
         self._monitored_links = []
         self._monitored_cameras = []
 
-    def set_monitored_joints(self, jointsToObserve : Sequence[JointName]):
+    def set_monitored_joints(self, jointsToObserve : Sequence[tuple[str,str]]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -46,7 +46,7 @@ class BaseAdapter(ABC):
         self._monitored_joints = list(jointsToObserve)
 
 
-    def set_monitored_links(self, linksToObserve : Sequence[LinkName]):
+    def set_monitored_links(self, linksToObserve : Sequence[tuple[str,str]]):
         """Set which links should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -117,8 +117,8 @@ class BaseAdapter(ABC):
 
         Returns
         -------
-        List[sensor_msgs.msg.Image]
-            List contyaining the images for the cameras specified in requestedCameras, in the same order
+        Dict[str, Tuple[th.Tensor, float]]
+            Dict containing the resulting images and the simulation time of their renderings
 
         """
         raise NotImplementedError()

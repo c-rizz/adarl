@@ -45,9 +45,10 @@ class BaseVecAdapter(BaseAdapter):
         Returns
         -------
         tuple[th.Tensor, th.Tensor]
-            A tuple with a batch of batches images in the first element and the sim time of each image in the second. The order is that of the requestedCameras argument.
-            The first element containin a list if length len(requestedCameras) containin tensors of shape
-             (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras))
+            A tuple with a batch of batches of images in the first element and the sim time of each image
+            in the second. The order is that of the requestedCameras argument.
+            The first element contains a list of length len(requestedCameras) containing tensors of shape
+            (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras), len(requestedCameras))
 
         """
         raise NotImplementedError()
@@ -94,25 +95,27 @@ class BaseVecAdapter(BaseAdapter):
         Returns
         -------
         th.Tensor
-            Torch tensor of size (vec_size, 4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
-             and effort of each monitored joint. The joints are in the order specified in set_monitored_joints.
+            Torch tensor of size (vec_size, 4,len(monitored_joints),4) containing min,max,average,std of the position,velocity,
+            acceleration and effort of each monitored joint. The joints are in the order specified in set_monitored_joints.
         """
         ...
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_frame : bool = False) -> th.Tensor:
         """Get the state of the requested links.
 
         Parameters
         ----------
         linkNames : List[str]
             Names of the link to get the state of
+        use_com_frame : bool
+            Defines if th elink information should be referring to the frame pose or the center of mass pose
 
         Returns
         -------
         th.Tensor
-            Tensor of shape (vec_size, len(requestedJoints),13) containig the link state of each of the requested joints.
+            Tensor of shape (vec_size, len(linkNames),13) containig the link state of each of the requested joints.
             The link state is a concatenation of position_xyz,orientation_xyzw,linear_com_velocity_xyz,angular_velocity_xyz.
 
         """

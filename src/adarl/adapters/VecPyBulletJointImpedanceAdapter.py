@@ -1,87 +1,111 @@
 from __future__ import annotations
 
+from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing_extensions import override
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
+from adarl.adapters.PyBulletJointImpedanceAdapter import PyBulletJointImpedanceAdapter
 from typing import Sequence, Any
-from adarl.utils.utils import Pose, build_pose
+from adarl.utils.utils import Pose, build_pose, JointState, LinkState
 import torch as th
 
 class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImpedanceAdapter):
     
+    def __init__(self,  vec_size : int,
+                        th_device : th.device,
+                        stepLength_sec : float = 0.004166666666,
+                        restore_on_reset = True,
+                        debug_gui : bool = False,
+                        real_time_factor : float | None = None,
+                        global_max_torque_position_control : float = 100,
+                        joints_max_torque_position_control : dict[tuple[str,str],float] = {},
+                        global_max_velocity_position_control : float = 1,
+                        joints_max_velocity_position_control : dict[tuple[str,str],float] = {},
+                        global_max_acceleration_position_control : float = 10,
+                        joints_max_acceleration_position_control : dict[tuple[str,str],float] = {},
+                        simulation_step = 1/960,
+                        enable_rendering = True):
+        self._sub_adapter = PyBulletJointImpedanceAdapter(  stepLength_sec = stepLength_sec,
+                                                            restore_on_reset  = restore_on_reset,
+                                                            debug_gui  = debug_gui,
+                                                            real_time_factor  = real_time_factor,
+                                                            global_max_torque_position_control  = global_max_torque_position_control,
+                                                            joints_max_torque_position_control  = joints_max_torque_position_control,
+                                                            global_max_velocity_position_control  = global_max_velocity_position_control,
+                                                            joints_max_velocity_position_control  = joints_max_velocity_position_control,
+                                                            global_max_acceleration_position_control  = global_max_acceleration_position_control,
+                                                            joints_max_acceleration_position_control  = joints_max_acceleration_position_control,
+                                                            simulation_step  = simulation_step,
+                                                            enable_rendering  = enable_rendering)
+        self._vec_size = vec_size
+        self._th_device = th_device
+        if vec_size!=1: 
+            raise NotImplementedError()
+
+
     @override
     def getRenderings(self, requestedCameras : list[str]) -> tuple[list[th.Tensor], th.Tensor]:
-        """Get the images for the specified cameras.
-
-        Parameters
-        ----------
-        requestedCameras : List[str]
-            List containing the names of the cameras to get the images of
-
-        Returns
-        -------
-        tuple[th.Tensor, th.Tensor]
-            A tuple with a batch of batches images in the first element and the sim time of each image in the second. The order is that of the requestedCameras argument.
-            The first element containin a list if length len(requestedCameras) containin tensors of shape
-             (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras))
-
-        """
-        raise NotImplementedError()
+        rdict = self._sub_adapter.getRenderings(requestedCameras=requestedCameras)
+        imgs =  [th.as_tensor(rdict[n][0], device=self._th_device).unsqueeze(0) for n in requestedCameras]
+        times = th.stack([th.as_tensor(rdict[n][1], device=self._th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
+        return imgs, times
         
     @override
     def getJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
-        raise NotImplementedError()
+        if requestedJoints is None:
+            requestedJoints = self._monitored_joints
+        jstate = self._sub_adapter.getJointsState(requestedJoints)
+        return th.stack([th.as_tensor([ jstate[k].position.item(),
+                                        jstate[k].rate.item(),
+                                        jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0)
 
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
-        """Returns joint state statistics over the last step for the monitored joints. The value of these statistics after a call to run()
-        is currently undefined.
-
-        Returns
-        -------
-        th.Tensor
-            Torch tensor of size (vec_size, 4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
-             and effort of each monitored joint. The joints are in the order specified in set_monitored_joints.
-        """
-        ...
+        return self._sub_adapter.get_joints_state_step_stats().unsqueeze(0)
         
     @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
-        raise NotImplementedError()
+        if requestedLinks is None:
+            requestedLinks = self._monitored_links
+        ls = self._sub_adapter.getLinksState(requestedLinks)
+        r = th.stack([th.cat([ ls[k].pose.position,
+                                ls[k].pose.orientation_xyzw,
+                                ls[k].pos_velocity_xyz,
+                                ls[k].ang_velocity_xyz])
+                        for k in requestedLinks]).unsqueeze(0)
+        return r
 
 
     @override
-    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):        
-        """Set the state for a set of joints
-
-
-        Parameters
-        ----------
-        joint_names : list[tuple[str,str]]
-            The names of the joints to set the state for
-        joint_states_pve : th.Tensor
-            A tensor of shape (vec_size, len(joint_names), 3) containins, position,velocity and effort for each joint
-            
-        """
-        raise NotImplementedError()
+    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):
+        self._sub_adapter.setJointsStateDirect({n:JointState(position = joint_states_pve[0,i,0],
+                                                             rate =     joint_states_pve[0,i,1],
+                                                             effort =   joint_states_pve[0,i,2]) 
+                                                for i,n in enumerate(joint_names)})
     
     @override
     def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor):
-        """Set the state for a set of links
-
-
-        Parameters
-        ----------
-        link_names : list[tuple[str,str]]
-            The names of the links to set the state for
-        link_states_pose_vel : th.Tensor
-            A tensor of shape (vec_size, len(link_names), 13), containing, for each joint, position_xyz, orientation_xyzw, linear_velocity_xyz, angular_velocity_xyz
-        """
-        raise NotImplementedError()
+        self._sub_adapter.setLinksStateDirect({n:LinkState(position_xyz         = link_states_pose_vel[0,i, 0:3],
+                                                           orientation_xyzw     = link_states_pose_vel[0,i, 3:7],
+                                                           pos_com_velocity_xyz = link_states_pose_vel[0,i, 7:10],
+                                                           ang_velocity_xyz     = link_states_pose_vel[0,i,10:13])
+                                               for i,n in  enumerate(link_names)})
 
     @override
-    def setupLight(self):
-        raise NotImplementedError()
+    def setupLight(self,    lightDirection,
+                            lightColor,
+                            lightDistance,
+                            enable_shadows,
+                            lightAmbientCoeff,
+                            lightDiffuseCoeff,
+                            lightSpecularCoeff):
+        self._sub_adapter.setupLight(lightDirection = lightDirection,
+                                     lightColor = lightColor,
+                                     lightDistance = lightDistance,
+                                     enable_shadows = enable_shadows,
+                                     lightAmbientCoeff = lightAmbientCoeff,
+                                     lightDiffuseCoeff = lightDiffuseCoeff,
+                                     lightSpecularCoeff = lightSpecularCoeff)
 
     @override
     def spawn_model(self,   model_name : str,
@@ -90,29 +114,12 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                             model_file : str | None = None,
                             pose : Pose = build_pose(0,0,0,0,0,0,1),
                             model_kwargs : dict[Any,Any] = {}) -> str:
-        """Spawn a model in the simulation in all of the simulations.
-
-        Parameters
-        ----------
-        model_definition_string : str
-            Model definition specified in as a string. e.g. an SDF definition
-        model_format : str
-            Format of the model definition. E.g. 'sdf' or 'urdf'
-        model_file : _type_
-            File to load the model definition from
-        model_name : str
-            Name to give to the spawned model
-        pose : Pose
-            Pose to spawn the model at
-        model_kwargs : Dict[Any,Any]
-            Arguments to use in interpreting the model definition
-
-        Returns
-        -------
-        str
-            The model name
-        """
-        raise NotImplementedError()
+        return self._sub_adapter.spawn_model(   model_name = model_name,
+                                                model_definition_string = model_definition_string,
+                                                model_format = model_format,
+                                                model_file = model_file,
+                                                pose = pose,
+                                                model_kwargs = model_kwargs)
 
     @override
     def delete_model(self, model_name : str):
@@ -122,63 +129,66 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
         model_name : str
             Name of the model to be removed
         """
-        raise NotImplementedError()
+        self._sub_adapter.delete_model(model_name)
     
     @override
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor, delay_sec : th.Tensor | float = 0.0, joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        raise NotImplementedError()
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
+                                        delay_sec : th.Tensor | float = 0.0,
+                                        joint_names : Sequence[tuple[str,str]] | None = None) -> None:
+        if isinstance(delay_sec,th.Tensor):
+            delay_sec = delay_sec.item()
+        if joint_names is None:
+            self._sub_adapter.setJointsImpedanceCommand(joint_impedances_pvesd[0],delay_sec)
+        else:
+            self._sub_adapter.setJointsImpedanceCommand({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)},
+                                                        delay_sec=delay_sec)
+
     
     @override
     def reset_joint_impedances_commands(self):
-        """Reset any internal queue of joint impedances commands. Makes it such as if no commands were ever sent.
-        """
-        ...
+        self._sub_adapter.clear_commands()
 
     @override
     def set_current_joint_impedance_command(self,   joint_impedances_pvesd : th.Tensor,
                                                     joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        """Sets the current joint impedance command. This command will be applied immediately, however it may be overridden
-            by any previously sent command that is supposed to be applied at a simtime 
-            simultaneous or previous to the current one. 
-
-        Parameters
-        ----------
-        joint_impedances_pvesd : th.Tensor
-            Tensor of size (vec_size, len(joint_names), 5), containing the command for each joint in each environment.
-            The last dimension contains respectively (<position_reference>,<velocity_reference>,<effort_reference>,<position_gain>,<velocity_gain>)
-        joint_names : Sequence[tuple[str,str]] | None, optional
-            The joint to apply the commands to. If None then it is assumed it is equal to all impedance_controlled_joints.
-
-        Raises
-        ------
-        NotImplementedError
-            _description_
-        NotImplementedError
-            _description_
-        """
-        ...
+        if joint_names is None:
+            self._sub_adapter.apply_joint_impedances(joint_impedances_pvesd[0])
+        else:
+            self._sub_adapter.apply_joint_impedances({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)})
     
     @override
     def set_impedance_controlled_joints(self, joint_names : Sequence[tuple[str,str]]):
-        """Set the joints that will be controlled by the adapter
-
-        Parameters
-        ----------
-        joint_names : Sequence[Tuple[str,str]]
-            List of the controlled joint names
-
-        """
-        raise NotImplementedError()
+        self._sub_adapter.set_impedance_controlled_joints(joint_names)
     
 
     @override
     def get_impedance_controlled_joints(self) -> list[tuple[str,str]]:
-        """Get the names of the joints that are controlled by this adapter
+        return self.get_impedance_controlled_joints()
+    
+    @override
+    def build_scenario(self, models: Sequence[ModelSpawnDef], **kwargs):
+        return self._sub_adapter.build_scenario(models, **kwargs)
+    
+    @override
+    def destroy_scenario(self, **kwargs):
+        return self._sub_adapter.destroy_scenario(**kwargs)
+    
+    @override
+    def run(self, duration_sec : float):
+        self._sub_adapter.run(duration_sec)
 
-        Returns
-        -------
-        List[Tuple[str,str]]
-            The list of the joint names
-
-        """
-        raise NotImplementedError()
+    @override
+    def step(self) -> float:
+        return self._sub_adapter.step()
+    
+    @override
+    def resetWorld(self):
+        return self._sub_adapter.resetWorld()
+    
+    @override
+    def getEnvTimeFromStartup(self) -> float:
+        return self._sub_adapter.getEnvTimeFromStartup()
+    
+    @override
+    def getEnvTimeFromReset(self) -> float:
+        return self._sub_adapter.getEnvTimeFromReset()

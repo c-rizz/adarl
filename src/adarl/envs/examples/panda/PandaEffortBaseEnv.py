@@ -229,7 +229,7 @@ class PandaEffortBaseEnv(ControlledEnv):
 
 
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         if backend != "gazebo":
             raise NotImplementedError("Backend "+backend+" not supported")
 
@@ -238,7 +238,7 @@ class PandaEffortBaseEnv(ControlledEnv):
                                                                         "gazebo_seed":f"{self._envSeed}",
                                                                         "load_gripper":"false"})
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
     def _normalizedJointPositions(self, state):

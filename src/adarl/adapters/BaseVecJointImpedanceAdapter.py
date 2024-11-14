@@ -1,10 +1,10 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Dict, Mapping, Sequence, overload
-from adarl.adapters.BaseAdapter import BaseAdapter
+from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 import torch as th
 
-class BaseVecJointImpedanceAdapter(BaseAdapter):
+class BaseVecJointImpedanceAdapter(BaseVecAdapter):
 
     @overload
     @abstractmethod
@@ -56,9 +56,9 @@ class BaseVecJointImpedanceAdapter(BaseAdapter):
     @abstractmethod
     def set_current_joint_impedance_command(self,   joint_impedances_pvesd : th.Tensor,
                                                     joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        """Sets the current joint impedance command. This command will be applied immediately, however it may be overridden
-            by any previously sent command that is supposed to be applied at a simtime 
-            simultaneous or previous to the current one. 
+        """Sets the current joint impedance command. This command will be applied immediately, however
+            it may be overridden by any previously sent command that is supposed to be applied at a 
+            simtime simultaneous or previous to the current one (due to action delaying). 
 
         Parameters
         ----------

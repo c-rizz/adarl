@@ -388,7 +388,7 @@ class PandaMoveitPickEnv(ControlledEnv):
 
         return np.array(state,dtype=np.float32)
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         if backend == "gazebo":
             self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/panda_moveit_pick.launch"),
                                                         launch_file_args={  "gui":"false",
@@ -405,8 +405,8 @@ class PandaMoveitPickEnv(ControlledEnv):
         #rospy.sleep(10)
 
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         return self._adapter.getEnvTimeFromStartup()

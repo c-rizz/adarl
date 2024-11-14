@@ -11,6 +11,7 @@ import adarl.utils.spaces as spaces
 from typing import Tuple, Dict, Any, Sequence, Dict, Union, Optional, final
 from abc import ABC, abstractmethod
 import torch as th
+from typing_extensions import deprecated
 
 class BaseEnv(ABC):
     """This is a base-class for implementing adarl environments.
@@ -68,7 +69,7 @@ class BaseEnv(ABC):
         self._resetCounter = 0
 
         if startSimulation:
-            self.buildSimulation()
+            self.build()
 
 
 
@@ -210,13 +211,18 @@ class BaseEnv(ABC):
 
 
     @abstractmethod
-    def getUiRendering(self) -> Tuple[Union[np.ndarray, th.Tensor], float]:
+    def getUiRendering(self) -> Tuple[th.Tensor, th.Tensor]:
+
         """To be implemented in subclass.
 
-        This method is called by the render method to get the environment rendering
+        This method is called by the render method to get the environment rendering for he user to watch (not for agent observation)
+
+        Returns
+        -------
+        Tuple[th.Tensor, th.Tensor]
+            The first tensor is the image, the second is the simulation time at which the image was rendered.
 
         """
-
         raise NotImplementedError()
 
     @abstractmethod
@@ -236,30 +242,33 @@ class BaseEnv(ABC):
         """Get the maximum number of frames of one episode, as set by the constructor (1-element tensor)."""
         self._maxStepsPerEpisode = max_steps
 
+
+    @deprecated("Do not implement this, just call whatever you need in the __init__ of the env")
     @abstractmethod
-    def buildSimulation(self, backend : str = "gazebo") -> None:
+    def build(self, backend : str = "gazebo") -> None:
         """To be implemented in subclass.
 
-        Build a simulation for the environment.
-        """
-        raise NotImplementedError() #TODO: Move this into the environmentControllers
-
-    @abstractmethod
-    def _destroySimulation(self) -> None:
-        """To be implemented in subclass.
-
-        Destroy a simulation built by buildSimulation.
+        Build the environment.
         """
         pass
 
     @abstractmethod
-    def getSimTimeFromEpStart(self) -> th.Tensor:
+    def _destroy(self) -> None:
+        """To be implemented in subclass.
+
+        Destroy the environment, releasing whatever resource it may be holding.
+        Called at the end of the environment lifecycle (i.e. when close gets called)
+        """
+        pass
+
+    @abstractmethod
+    def getSimTimeSinceBuild(self) -> th.Tensor:
         """Get the elapsed time since the episode start."""
         raise NotImplementedError()
 
     def close(self) -> None:
         if not self._closed:
-            self._destroySimulation()
+            self._destroy()
             self._closed = True
 
     def seed(self, seed : int) -> None:

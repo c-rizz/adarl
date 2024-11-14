@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod
-from typing import Any
+from typing import Any, Sequence
 from adarl.utils.utils import Pose, build_pose
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
@@ -11,31 +11,32 @@ import torch as th
 class BaseVecSimulationAdapter(BaseVecAdapter):
 
     @abstractmethod
-    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):        
+    def setJointsStateDirect(self, joint_names : Sequence[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None):        
         """Set the state for a set of joints
-
 
         Parameters
         ----------
-        joint_names : list[tuple[str,str]]
+        joint_names : Sequence[tuple[str,str]]
             The names of the joints to set the state for
         joint_states_pve : th.Tensor
             A tensor of shape (vec_size, len(joint_names), 3) containins, position,velocity and effort for each joint
-            
+        vec_mask : th.Tensor
+            Tensor of size (vec_size,), indicating which simulators to use or not use. If None, apply to all
         """
         raise NotImplementedError()
     
     @abstractmethod
-    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor):
+    def setLinksStateDirect(self, link_names : Sequence[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None):
         """Set the state for a set of links
-
 
         Parameters
         ----------
-        link_names : list[tuple[str,str]]
+        link_names : Sequence[tuple[str,str]]
             The names of the links to set the state for
         link_states_pose_vel : th.Tensor
-            A tensor of shape (vec_size, len(link_names), 13), containing, for each joint, position_xyz, orientation_xyzw, linear_velocity_xyz, angular_velocity_xyz
+            A tensor of shape (vec_size, len(link_names), 13), containing, for each link, position_xyz, orientation_xyzw, linear_velocity_xyz, angular_velocity_xyz
+        vec_mask : th.Tensor
+            Tensor of size (vec_size,), indicating which simulators to use or not use. If None, apply to all
         """
         raise NotImplementedError()
 
@@ -44,7 +45,7 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         raise NotImplementedError()
 
     @abstractmethod
-    def build_scenario(self, models : list[ModelSpawnDef] = [], **kwargs):
+    def build_scenario(self, models : Sequence[ModelSpawnDef] = [], **kwargs):
         raise NotImplementedError()
         
     @abstractmethod

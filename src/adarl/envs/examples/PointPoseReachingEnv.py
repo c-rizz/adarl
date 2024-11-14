@@ -277,14 +277,14 @@ class PointPoseReachingEnv(BaseEnv):
 
         return np.array(state,dtype=np.float32)
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         pass
 
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         return self._simTime
 
     def setGoalInState(self, state, goal):

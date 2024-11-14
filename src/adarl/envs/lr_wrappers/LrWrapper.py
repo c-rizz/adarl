@@ -51,14 +51,14 @@ class LrWrapper(BaseEnv):
     def get_max_episode_steps(self, *args,**kwargs):
         return self.env.get_max_episode_steps(*args,**kwargs)
 
-    def buildSimulation(self, *args,**kwargs):
-        return self.env.buildSimulation(*args,**kwargs)
+    def build(self, *args,**kwargs):
+        return self.env.build(*args,**kwargs)
 
-    def _destroySimulation(self, *args,**kwargs):
-        return self.env._destroySimulation(*args,**kwargs)
+    def _destroy(self, *args,**kwargs):
+        return self.env._destroy(*args,**kwargs)
 
-    def getSimTimeFromEpStart(self, *args,**kwargs):
-        return self.env.getSimTimeFromEpStart(*args,**kwargs)
+    def getSimTimeSinceBuild(self, *args,**kwargs):
+        return self.env.getSimTimeSinceBuild(*args,**kwargs)
 
     def close(self, *args,**kwargs):
         return self.env.close(*args,**kwargs)

@@ -274,7 +274,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             reward = 0
             terminated = True
             truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited() # If this env is time-limited this is not a truncation, it's the proper ending
-            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeSinceBuild()
             self._alltime_stepping_time += time.monotonic() - t0
             info = self._build_info()
             return (observation, reward, terminated, truncated, info)
@@ -291,14 +291,14 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         # Step the environment
         with self._simStepWallDurationAverage:
-            self._lastStepStartEnvTime = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepStartEnvTime = self._ggEnv.getSimTimeSinceBuild()
             self._ggEnv.performStep()
             self._framesCounter+=1
 
         #Get new observation
         with self._getStateDurationAverage:
             state = self._getStateCached()
-            self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepEndEnvTime = self._ggEnv.getSimTimeSinceBuild()
 
         # Assess the situation
         with self._getObsRewDurationAverage:
@@ -316,7 +316,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         
 
         tf = time.monotonic()
-        self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
+        self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeSinceBuild()
         self._lastValidStepWallTime = tf
         stepDuration = tf - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)

@@ -4,7 +4,7 @@ import numpy as np
 import time
 import cv2
 import collections
-from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, Literal, TypeVar
+from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, Literal, TypeVar, Sequence
 import os
 import quaternion
 import datetime
@@ -1082,7 +1082,7 @@ def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.G
                     device=t.device)*std + mu
 
 def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
-                     squash_sigma = -1):
+                     squash_sigma : float = -1.0):
     noise =  th.randn(size=mu_std[0].size(),
                     generator=generator,
                     dtype=mu_std.dtype,
@@ -1120,4 +1120,8 @@ def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf")):
     if min != float("-inf") or max != float("+inf"):
         dbg_check(is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
               build_msg=lambda: f"out of bounds values in tensor tree: {tensor_tree}")
+    
+def dbg_check_size(tensor : th.Tensor, size : Sequence[int], msg : str = ""):
+    dbg_check(is_check_passed=lambda: tensor.size()==size, 
+              build_msg=lambda: f"Unexpected tensor size: {tensor.size()} instead of {size}. "+msg)
         
