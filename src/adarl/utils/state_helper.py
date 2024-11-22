@@ -490,7 +490,7 @@ class DictStateHelper(StateHelper):
         return obs
 
     @override    
-    def observation_names(self):
+    def observation_names(self) -> dict[str,np.ndarray]:
         flattened_parts_names = []
         obs_names = {}
         for k in self._observable_fields:
@@ -500,7 +500,7 @@ class DictStateHelper(StateHelper):
                 obs_names[k] = self.sub_helpers[k].observation_names()
         if len(flattened_parts_names) > 0:
             # ggLog.info(f"flattened_parts_names = {flattened_parts_names}")
-            obs_names[self._flatten_part_name] = flattened_parts_names
+            obs_names[self._flatten_part_name] = np.array(flattened_parts_names)
         return obs_names
 
     

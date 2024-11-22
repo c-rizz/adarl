@@ -11,7 +11,7 @@ import adarl.utils.dbg.ggLog as ggLog
 
 class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
 
-    def __init__(self, stepLength_sec : float = 0.004166666666,
+    def __init__(self,  stepLength_sec : float = 0.004166666666,
                         restore_on_reset = True,
                         debug_gui : bool = False,
                         real_time_factor : Optional[float] = None,
@@ -27,6 +27,8 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
 
         """
         self._jimpedance_controlled_joints : list[tuple[str,str]] = []
+        self._null_cmd = th.zeros((len(self._jimpedance_controlled_joints), 5))
+        self._last_applied_jimp_cmd = self._null_cmd
         super().__init__(
             stepLength_sec = stepLength_sec,
             restore_on_reset = restore_on_reset,
@@ -94,7 +96,11 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         # ggLog.info(f"future_commands = {future_commands}")        
         self._commanded_joint_impedances = future_commands # keep commands not applied yet
         if len(cmd)>0:
-            self._compute_and_apply_joint_effort(th.stack([th.as_tensor(cmd[jn]) for jn in self._jimpedance_controlled_joints]))
+            jimp_cmd = th.stack([th.as_tensor(cmd[jn]) for jn in self._jimpedance_controlled_joints])
+            self._compute_and_apply_joint_effort(jimp_cmd)
+        else:
+            jimp_cmd = self._null_cmd
+        self._last_applied_jimp_cmd = jimp_cmd
 
     @override
     def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]] | th.Tensor):
@@ -154,3 +160,7 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
             self._commanded_joint_impedances[cmd_time] = dict(zip(self._jimpedance_controlled_joints, joint_impedances_pvesd))
         else:
             raise RuntimeError(f"Unexpected joint_impedances_pvesd type {type(joint_impedances_pvesd)}")
+        
+    @override
+    def get_last_applied_command(self) -> th.Tensor:
+        return self._last_applied_jimp_cmd

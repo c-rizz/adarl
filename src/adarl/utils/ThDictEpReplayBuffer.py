@@ -378,13 +378,13 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         optimize_memory_usage: bool = False,
         storage_torch_device: th.device = th.device("cpu"),
         fallback_to_cpu_storage: bool = True,
-        validation_buffer_size = 0,
-        validation_holdout_ratio = 0,
-        min_episode_duration = 0,
-        disable_validation_set = True,
-        fill_val_buffer_to_min_at_ep = float("+inf"),
-        fill_val_buffer_to_min_at_step = float("+inf"),
-        val_buffer_min_size = 0
+        validation_buffer_size : int = 0,
+        validation_holdout_ratio : float = 0.0,
+        min_episode_duration : int = 0,
+        disable_validation_set : bool = True,
+        fill_val_buffer_to_min_at_ep : float = float("+inf"),
+        fill_val_buffer_to_min_at_step : float = float("+inf"),
+        val_buffer_min_size : int = 0
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 

@@ -9,7 +9,7 @@ from adarl.utils.utils import JointState, LinkState, Pose, build_pose, buildQuat
 import adarl.utils.sigint_handler
 from adarl.adapters.BaseAdapter import BaseAdapter
 from adarl.adapters.BaseJointEffortAdapter import BaseJointEffortAdapter
-from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
+from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter, ModelSpawnDef
 from adarl.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
 from adarl.adapters.BaseJointVelocityAdapter import BaseJointVelocityAdapter
 import numpy as np
@@ -25,6 +25,7 @@ import pkgutil
 egl = pkgutil.get_loader('eglRenderer')
 import pybullet_data
 import torch as th
+import dataclasses
 
 
 
@@ -816,7 +817,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
 
-    def build_scenario(self, file_path = None, format = "urdf"):
+    def build_scenario(self, models : Sequence[ModelSpawnDef] = [], file_path = None, format = "urdf"):
         if self._debug_gui:
             self._client_id = pybullet.connect(pybullet.GUI)
             pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 1)
@@ -844,6 +845,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         adarl.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
+        for m in models:
+            self.spawn_model(**dataclasses.asdict(m))
         self._bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
 
 

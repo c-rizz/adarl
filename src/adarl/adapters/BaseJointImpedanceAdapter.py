@@ -76,3 +76,14 @@ class BaseJointImpedanceAdapter(BaseAdapter):
         """
         raise NotImplementedError()
 
+
+    @abstractmethod
+    def get_last_applied_command(self) -> th.Tensor:
+        """Returns the last command that was applied to the controlled joints.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of size (len(impedance_controlled_joints), 5)
+        """
+        ...

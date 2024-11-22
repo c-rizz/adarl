@@ -44,10 +44,14 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
 
 
     @override
-    def getRenderings(self, requestedCameras : list[str]) -> tuple[list[th.Tensor], th.Tensor]:
-        rdict = self._sub_adapter.getRenderings(requestedCameras=requestedCameras)
-        imgs =  [th.as_tensor(rdict[n][0], device=self._th_device).unsqueeze(0) for n in requestedCameras]
-        times = th.stack([th.as_tensor(rdict[n][1], device=self._th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
+    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
+        if vec_mask.item():
+            rdict = self._sub_adapter.getRenderings(requestedCameras=requestedCameras)
+            imgs =  [th.as_tensor(rdict[n][0], device=self._th_device).unsqueeze(0) for n in requestedCameras]
+            times = th.stack([th.as_tensor(rdict[n][1], device=self._th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
+        else:
+            imgs  = [th.empty((0,3,9,16), dtype = th.uint8, device=self._th_device)]
+            times = th.empty((0,1), dtype = th.float32, device=self._th_device)
         return imgs, times
         
     @override
@@ -64,10 +68,10 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
         return self._sub_adapter.get_joints_state_step_stats().unsqueeze(0)
         
     @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_frame : bool = False) -> th.Tensor:
         if requestedLinks is None:
             requestedLinks = self._monitored_links
-        ls = self._sub_adapter.getLinksState(requestedLinks)
+        ls = self._sub_adapter.getLinksState(requestedLinks, use_com_frame=use_com_frame)
         r = th.stack([th.cat([ ls[k].pose.position,
                                 ls[k].pose.orientation_xyzw,
                                 ls[k].pos_velocity_xyz,
@@ -77,19 +81,21 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
 
 
     @override
-    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):
-        self._sub_adapter.setJointsStateDirect({n:JointState(position = joint_states_pve[0,i,0],
-                                                             rate =     joint_states_pve[0,i,1],
-                                                             effort =   joint_states_pve[0,i,2]) 
-                                                for i,n in enumerate(joint_names)})
+    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor):
+        if vec_mask.item():
+            self._sub_adapter.setJointsStateDirect({n:JointState(position = joint_states_pve[0,i,0],
+                                                                rate =     joint_states_pve[0,i,1],
+                                                                effort =   joint_states_pve[0,i,2]) 
+                                                    for i,n in enumerate(joint_names)})
     
     @override
-    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor):
-        self._sub_adapter.setLinksStateDirect({n:LinkState(position_xyz         = link_states_pose_vel[0,i, 0:3],
-                                                           orientation_xyzw     = link_states_pose_vel[0,i, 3:7],
-                                                           pos_com_velocity_xyz = link_states_pose_vel[0,i, 7:10],
-                                                           ang_velocity_xyz     = link_states_pose_vel[0,i,10:13])
-                                               for i,n in  enumerate(link_names)})
+    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor):
+        if vec_mask.item():
+            self._sub_adapter.setLinksStateDirect({n:LinkState(position_xyz         = link_states_pose_vel[0,i, 0:3],
+                                                            orientation_xyzw     = link_states_pose_vel[0,i, 3:7],
+                                                            pos_com_velocity_xyz = link_states_pose_vel[0,i, 7:10],
+                                                            ang_velocity_xyz     = link_states_pose_vel[0,i,10:13])
+                                                for i,n in  enumerate(link_names)})
 
     @override
     def setupLight(self,    lightDirection,
@@ -134,14 +140,16 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
     @override
     def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor | float = 0.0,
+                                        vec_mask : th.Tensor | None = None,
                                         joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        if isinstance(delay_sec,th.Tensor):
-            delay_sec = delay_sec.item()
-        if joint_names is None:
-            self._sub_adapter.setJointsImpedanceCommand(joint_impedances_pvesd[0],delay_sec)
-        else:
-            self._sub_adapter.setJointsImpedanceCommand({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)},
-                                                        delay_sec=delay_sec)
+        if vec_mask is None or vec_mask.item():
+            if isinstance(delay_sec,th.Tensor):
+                delay_sec = delay_sec.item()
+            if joint_names is None:
+                self._sub_adapter.setJointsImpedanceCommand(joint_impedances_pvesd[0],delay_sec)
+            else:
+                self._sub_adapter.setJointsImpedanceCommand({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)},
+                                                            delay_sec=delay_sec)
 
     
     @override
@@ -150,11 +158,13 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
 
     @override
     def set_current_joint_impedance_command(self,   joint_impedances_pvesd : th.Tensor,
+                                                    vec_mask : th.Tensor | None = None,
                                                     joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        if joint_names is None:
-            self._sub_adapter.apply_joint_impedances(joint_impedances_pvesd[0])
-        else:
-            self._sub_adapter.apply_joint_impedances({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)})
+        if vec_mask is None or vec_mask.item():
+            if joint_names is None:
+                self._sub_adapter.apply_joint_impedances(joint_impedances_pvesd[0])
+            else:
+                self._sub_adapter.apply_joint_impedances({n:tuple(joint_impedances_pvesd[0,i].tolist()) for i,n in enumerate(joint_names)})
     
     @override
     def set_impedance_controlled_joints(self, joint_names : Sequence[tuple[str,str]]):
@@ -162,11 +172,23 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
     
 
     @override
+    def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str, str]]):
+        return self._sub_adapter.set_monitored_joints(jointsToObserve)
+    
+    @override
+    def set_monitored_links(self, linksToObserve: Sequence[tuple[str, str]]):
+        return self._sub_adapter.set_monitored_links(linksToObserve)
+    
+    @override
+    def set_monitored_cameras(self, camera_names: Sequence[tuple[str, str]]):
+        return self._sub_adapter.set_monitored_joints(camera_names)
+    
+    @override
     def get_impedance_controlled_joints(self) -> list[tuple[str,str]]:
         return self.get_impedance_controlled_joints()
     
     @override
-    def build_scenario(self, models: Sequence[ModelSpawnDef], **kwargs):
+    def build_scenario(self, models: Sequence[ModelSpawnDef] = [], **kwargs):
         return self._sub_adapter.build_scenario(models, **kwargs)
     
     @override
@@ -192,3 +214,7 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
     @override
     def getEnvTimeFromReset(self) -> float:
         return self._sub_adapter.getEnvTimeFromReset()
+    
+    @override
+    def get_last_applied_command(self) -> th.Tensor:
+        return self._sub_adapter.get_last_applied_command().unsqueeze(0)

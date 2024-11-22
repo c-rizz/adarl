@@ -886,7 +886,7 @@ def th_quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
 
 @th.jit.script
 def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
-    vector_xyzw = th.cat([vector_xyz, th.zeros(vector_xyz.size()[:-1]+(1,))], dim=-1)
+    vector_xyzw = th.cat([vector_xyz, th.zeros_like(vector_xyz[...,0].unsqueeze(-1))], dim=-1)
     return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
 
 @th.jit.script
@@ -1082,8 +1082,11 @@ def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.G
                     device=t.device)*std + mu
 
 def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
-                     squash_sigma : float = -1.0):
-    noise =  th.randn(size=mu_std[0].size(),
+                     squash_sigma : float = -1.0,
+                     size : Sequence[int] | None = None):
+    if size is None:
+        size = mu_std[0].size()
+    noise =  th.randn(size=size,
                     generator=generator,
                     dtype=mu_std.dtype,
                     device=mu_std.device)
@@ -1103,7 +1106,7 @@ def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
 printed_dbg_check_msg = False
-def dbg_check(is_check_passed : Callable[[],bool], build_msg : Callable[[],str]):
+def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str]):
     from adarl.utils.session import default_session
     if default_session.debug_level>0:
         global printed_dbg_check_msg

@@ -57,16 +57,16 @@ class BaseAdapter(ABC):
         """
         self._monitored_links = list(linksToObserve)
 
-    def set_monitored_cameras(self, camerasToRender : Sequence[str] = []):
+    def set_monitored_cameras(self, camera_names : Sequence[str] = []):
         """Set which camera should be rendered after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
         ----------
-        camerasToRender : List[str]
+        camera_names : List[str]
             List of the names of the cameras
 
         """
-        self._monitored_cameras = list(camerasToRender)
+        self._monitored_cameras = list(camera_names)
 
     def get_monitored_joints(self):
         return self._monitored_joints

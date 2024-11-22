@@ -34,7 +34,7 @@ class BaseVecAdapter(BaseAdapter):
         return self._vec_size
     
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str]) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : List[str], vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
 
         Parameters
@@ -48,7 +48,7 @@ class BaseVecAdapter(BaseAdapter):
             A tuple with a batch of batches of images in the first element and the sim time of each image
             in the second. The order is that of the requestedCameras argument.
             The first element contains a list of length len(requestedCameras) containing tensors of shape
-            (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras), len(requestedCameras))
+            (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras))
 
         """
         raise NotImplementedError()

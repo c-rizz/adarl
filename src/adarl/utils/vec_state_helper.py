@@ -83,13 +83,13 @@ class StateHelper(ABC):
 class ThBoxStateHelper(StateHelper):
     def __init__(self,  field_names : Sequence[FieldName], obs_dtype : th.dtype,
                         th_device : th.device, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
-                        field_size : list[int] | tuple[int,...], 
+                        field_size : list[int] | tuple[int,...],
+                        vec_size : int, 
                         history_length : int = 1,
                         observable_fields : list[str|int] | None = None,
                         subfield_names : list[str] | np.ndarray | None = None,
                         flatten_observation = False,
-                        obs_history_length : int = 1,
-                        vec_size : int = 1):
+                        obs_history_length : int = 1):
         self.field_names = field_names
         self.field_size = tuple(field_size)
         if subfield_names is not None:
@@ -137,7 +137,7 @@ class ThBoxStateHelper(StateHelper):
         self._single_state_space = spaces.ThBox(low=hlmin[0], high=hlmax[0], shape=self._state_size[1:])
         self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size,
                                        dtype=self._obs_dtype, labels=self.observation_names())
-        self._single_obs_space = spaces.ThBox(low=self.observe(hlmin[0]), high=self.observe(hlmax[0]), shape=self._obs_size[1:],
+        self._single_obs_space = spaces.ThBox(low=self.observe(hlmin)[0], high=self.observe(hlmax)[0], shape=self._obs_size[1:],
                                               dtype=self._obs_dtype, labels=self.observation_names())
 
     def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
@@ -156,7 +156,7 @@ class ThBoxStateHelper(StateHelper):
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:
         instantaneous_state = {k:th.as_tensor(v).view(self._vec_size, *self.field_size) for k,v in instantaneous_state.items()}
-        return th.stack([instantaneous_state[k] for k in self.field_names])
+        return th.stack([instantaneous_state[k] for k in self.field_names], dim = -len(self.field_size)-1) # stack along the field dimension
 
     @override
     def reset_state(self, initial_values : th.Tensor | SupportsFloat | Mapping[FieldName,th.Tensor | float | Sequence[float]] | None= None):
@@ -164,6 +164,7 @@ class ThBoxStateHelper(StateHelper):
             initial_values = th.tensor(0.0)
         if isinstance(initial_values,Mapping):
             initial_values = self._mapping_to_tensor(initial_values)
+            ggLog.info(f"resetting from mapping: initial_values = {initial_values}, size = {initial_values.size()}")
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
         initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype)
@@ -285,7 +286,24 @@ class ThBoxStateHelper(StateHelper):
             return th.as_tensor([int(typing.cast(int, n)) for n in subfield_names], device=device)
 
     def get_limits(self):
+        """_summary_
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of size (2, len(field_names), field_size)
+        """
         return self._limits_minmax
+    
+    def get_flattened_limits(self):
+        """_summary_
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of size (2, len(field_names)*field_size)
+        """
+        return self._limits_minmax.flatten(start_dim=1)
 
 class StateNoiseGenerator:
     def __init__(self, state_helper : ThBoxStateHelper, generator : th.Generator, 
@@ -293,6 +311,7 @@ class StateNoiseGenerator:
                         step_std : Mapping[FieldName,th.Tensor] | th.Tensor | list[float] | tuple[float] | float,
                         dtype : th.dtype, device : th.device,
                         squash_sigma : float = 3.0):
+        ggLog.info(f"building noise for helper of size: {state_helper.get_vec_space().shape}")
         self._state_helper = state_helper
         self._field_names = state_helper.field_names
         self._fields_num = len(self._field_names)
@@ -335,8 +354,8 @@ class StateNoiseGenerator:
         elif isinstance(step_std,Mapping):
             self._step_std = th.as_tensor([step_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).reshape(self._noise_shape)
 
-        assert self._episode_mu_std.size() == (2,)+self._noise_shape
-        assert self._step_std.size() == self._noise_shape
+        assert self._episode_mu_std.size() == (2,)+self._noise_shape[1:], f"{self._episode_mu_std.size()} != {(2,)+self._noise_shape}"
+        assert self._step_std.size() == self._noise_shape[1:]
 
         # # ggLog.info(f"Noise generator got [{self._episode_mu_std},{self._step_std}]")
         state_limits = state_helper.get_limits()
@@ -361,11 +380,15 @@ class StateNoiseGenerator:
         return self._vec_state_space
 
     def _resample_mu(self):
-        self._current_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std, generator=self._rng),
-                                           self._step_std])
+        self._current_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std,
+                                                                              size = self._noise_shape,
+                                                                              generator=self._rng,
+                                                                              squash_sigma=self._squash_sigma),
+                                           self._step_std.expand(self._noise_shape)])
 
     def _generate_noise(self):
         return adarl.utils.utils.randn_from_mustd(self._current_ep_mustd,
+                                                  size = self._noise_shape,
                                                   generator=self._rng,
                                                   squash_sigma = self._squash_sigma)
 
@@ -405,7 +428,7 @@ class DictStateHelper(StateHelper):
         for k in self.noise_generators:
             if k not in self.sub_helpers:
                 raise RuntimeError(f"Received noise for state '{k}', but no state '{k}' was specified.")
-        self._vec_size = state_helpers[0]._vec_size
+        self._vec_size = next(iter(state_helpers.values()))._vec_size
         for k,sh in state_helpers.items():
             if sh._vec_size != self._vec_size:
                 raise RuntimeError(f"Unmatched vec_size found in state_helpers. Found {sh._vec_size} and {self._vec_size}")
@@ -430,11 +453,10 @@ class DictStateHelper(StateHelper):
                 if d != flattened_dtype:
                     raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
                                        f"but {self._flatten_in_obs[0]} has {flattened_dtype} and {k} has {d}")
-            flattened_minmax = th.cat([self.sub_helpers[k].get_limits() for k in self._flatten_in_obs ], dim=1)
-            vec_obs_subspaces[self._flatten_part_name] = spaces.ThBox(low = flattened_minmax[0], high = flattened_minmax[1],
+            vec_obs_subspaces[self._flatten_part_name] = spaces.ThBox(low = -1.0, high = 1.0,
                                                                       shape=(self._vec_size, self._single_flattened_part_size,),
                                                                       dtype=flattened_dtype)            
-            single_obs_subspaces[self._flatten_part_name] = spaces.ThBox(   low = flattened_minmax[0], high = flattened_minmax[1],
+            single_obs_subspaces[self._flatten_part_name] = spaces.ThBox(   low = -1.0, high = 1.0,
                                                                             shape=(self._single_flattened_part_size,),
                                                                             dtype=flattened_dtype)
         self._vec_obs_space = spaces.gym_spaces.Dict(vec_obs_subspaces)
@@ -470,7 +492,7 @@ class DictStateHelper(StateHelper):
         
     
     @override
-    def reset_state(self, initial_values: Mapping[str,th.Tensor] | None = None) -> Mapping[str, th.Tensor]:
+    def reset_state(self, initial_values: Mapping[str,th.Tensor|Mapping[FieldName,th.Tensor | float | Sequence[float]]] | None = None) -> dict[str, th.Tensor]:
         if initial_values is None:
             initial_values = {k:th.tensor(0.0) for k in self.sub_helpers.keys()}
         state = {k:self.sub_helpers[k].reset_state(v) for k,v in initial_values.items()}
@@ -486,7 +508,7 @@ class DictStateHelper(StateHelper):
             ng.update(state[k+"_n"])        
 
     @override
-    def normalize(self, state : dict[str,th.Tensor]):
+    def normalize(self, state : Mapping[str,th.Tensor]):
         ret = {k:sh.normalize(state[k]) for k,sh in self.sub_helpers.items()}
         ret.update({k+"_n":ng.normalize(state[k+"_n"]) for k,ng in self.noise_generators.items()})
         return ret
@@ -498,7 +520,7 @@ class DictStateHelper(StateHelper):
         return ret
 
     @override
-    def observe(self, state:  dict[str,th.Tensor]):
+    def observe(self, state:  Mapping[str,th.Tensor]):
         # ggLog.info(f"observing state {state}")
         state = self.normalize(state)
         # ggLog.info(f"normalized state = {state}")
@@ -586,6 +608,7 @@ class RobotStateHelper(ThBoxStateHelper):
                         damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
+                        vec_size : int,
                         history_length : int = 1,
                         obs_history_length : int = 1):
         subfield_names = ["pos","vel","eff","refpos","refvel","refeff","stiff","damp"]
@@ -597,7 +620,8 @@ class RobotStateHelper(ThBoxStateHelper):
                             fields_minmax= self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax),
                             history_length=history_length,
                             subfield_names = subfield_names,
-                            obs_history_length=obs_history_length)
+                            obs_history_length=obs_history_length,
+                            vec_size=vec_size)
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
@@ -639,6 +663,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
     def __init__(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
+                        vec_size : int,
                         history_length : int = 1):
         subfield_names = [  "minpos","minvel","minacc","mineff",
                             "maxpos","maxvel","maxacc","maxeff",
@@ -654,7 +679,8 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                             field_size = (len(subfield_names),),
                             fields_minmax= self._build_fields_minmax(jlims_minmax_pvae),
                             history_length = history_length,
-                            subfield_names = subfield_names)
+                            subfield_names = subfield_names,
+                            vec_size=vec_size)
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]
                              ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
@@ -731,29 +757,29 @@ class JointImpedanceActionHelper:
         if self._control_mode == self.CONTROL_MODES.VELOCITY:
             act_to_pvesd =  [1]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")]).expand(pvesd_shape).clone()
-            self._base_v_j_pvesd[:,4] = d
+            self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION:
             act_to_pvesd =  [0]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
-            self._base_v_j_pvesd[:,3] = s
-            self._base_v_j_pvesd[:,4] = d
+            self._base_v_j_pvesd[:,:,3] = s
+            self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
             act_to_pvesd =  [0,2]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
-            self._base_v_j_pvesd[:,3] = s
-            self._base_v_j_pvesd[:,4] = d
+            self._base_v_j_pvesd[:,:,3] = s
+            self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
             act_to_pvesd =  [0,1,2]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
-            self._base_v_j_pvesd[:,3] = s
-            self._base_v_j_pvesd[:,4] = d
+            self._base_v_j_pvesd[:,:,3] = s
+            self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
             act_to_pvesd =  [0,1,2,3,4]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0]).expand(pvesd_shape).clone()
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
             act_to_pvesd =  [0,3]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")]).expand(pvesd_shape).clone()
-            self._base_v_j_pvesd[:,4] = d
+            self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.TORQUE:
             act_to_pvesd =  [2]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0]).expand(pvesd_shape).clone()
@@ -766,11 +792,11 @@ class JointImpedanceActionHelper:
     def single_action_len(self):
         return self.action_lengths[self._control_mode]*self._joints_num
     
-    def single_action_space(self, seed : int):
+    def get_single_action_space(self, seed : int):
         max_act = np.ones(self.single_action_len())
         return spaces.gym_spaces.Box(-max_act,max_act, seed=seed)
     
-    def vec_action_space(self, seed : int):
+    def get_vec_action_space(self, seed : int):
         max_act = np.broadcast_to(np.ones(self.single_action_len()), (self._vec_size, self.single_action_len()))
         return spaces.gym_spaces.Box(-max_act,max_act, seed=seed)
 
@@ -811,7 +837,7 @@ class JointImpedanceActionHelper:
         """
 
         cmd_vec_joint_pvesd = self._base_v_j_pvesd.detach().clone()
-        cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action.view(self._vec_size, self._joints_num, self.single_action_len())
+        cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action.view(self._vec_size, self._joints_num, self.action_lengths[self._control_mode])
         cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
         dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,[3,4]] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}")
         return cmd_vec_joint_pvesd
