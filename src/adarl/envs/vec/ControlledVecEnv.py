@@ -5,7 +5,7 @@ Base-class for cresting GAzebo-based gym environments.
 The provided class must be extended to define a specific environment
 """
 
-from adarl.envs.BaseVecEnv import BaseVecEnv, Observation
+from adarl.envs.vec.BaseVecEnv import BaseVecEnv, Observation
 from typing import TypeVar, Generic
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 import adarl.utils.spaces as spaces
@@ -21,6 +21,7 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
     def __init__(self,  single_action_space : spaces.gym_spaces.Space,
                         single_observation_space : spaces.gym_spaces.Space,
                         single_state_space : spaces.gym_spaces.Space,
+                        info_space : spaces.gym_spaces.Space,
                         step_duration_sec : float,
                         adapter : EnvAdapterType,
                         th_device : th.device,
@@ -43,6 +44,7 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                             single_action_space = single_action_space,
                             single_observation_space = single_observation_space,
                             single_state_space = single_state_space,
+                            info_space = info_space,
                             th_device = th_device,
                             single_reward_space = single_reward_space,
                             metadata = metadata,

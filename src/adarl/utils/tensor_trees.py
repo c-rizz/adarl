@@ -1,15 +1,16 @@
 from __future__ import annotations
 from adarl.utils.spaces import gym_spaces, ThBox
 import torch as th
-from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar, Mapping
+from typing import Optional, Any, List, Dict, Tuple, Union, Callable, TypeVar, Mapping, Sequence
 import numpy as np
 from adarl.utils.utils import torch_to_numpy_dtype_dict
 import dataclasses
+import adarl.utils.dbg.ggLog as ggLog
 
 LeafType = TypeVar("LeafType")
 TensorMapping = Union[Mapping[Any,"TensorMapping[LeafType]"], LeafType]
 TensorTree = Union[Mapping[Any,"TensorTree[LeafType]"],
-                   List["TensorTree[LeafType]"],
+                   Sequence["TensorTree[LeafType]"],
                    Tuple["TensorTree[LeafType]", ...],
                    
                    LeafType]
@@ -57,24 +58,61 @@ def fill_tensor_tree(env_idx : Optional[int], src_tree : TensorTree, dst_tree : 
 
 T = TypeVar('T')
 U = TypeVar('U')
-def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T]) -> TensorTree[T]:
+def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T], _key = "") -> TensorTree[T]:
     if isinstance(src_tree, dict):
         r = {}
         for k in src_tree.keys():
-            r[k] = map_tensor_tree(src_tree[k], func = func)
+            r[k] = map_tensor_tree(src_tree[k], func = func, _key = _key+f".{k}")
         return r
     elif isinstance(src_tree, tuple):
-        r = tuple([map_tensor_tree(e, func = func) for e in src_tree])
+        r = tuple([map_tensor_tree(e, func = func, _key = _key+f".T{i}") for i,e in enumerate(src_tree)])
         return r
     elif isinstance(src_tree, list):
-        return [map_tensor_tree(e, func = func) for e in src_tree]
+        return [map_tensor_tree(e, func = func, _key = _key+f".L{i}") for i,e in enumerate(src_tree)]
     elif dataclasses.is_dataclass(src_tree):
-        mapped_fields = {field.name: map_tensor_tree(getattr(src_tree, field.name), func = func)
+        mapped_fields = {field.name: map_tensor_tree(getattr(src_tree, field.name), func = func, _key = _key+f"{field.name}")
                           for field in dataclasses.fields(src_tree)}
         return src_tree.__class__(**mapped_fields)
     else:
-        return func(src_tree)
+        try:
+            return func(src_tree)
+        except Exception as e:
+            RuntimeError(f"Exception at element {_key}: {e}")
 
+
+_discarded = object()
+def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _already_filtered : dict = {}) -> TensorTree[U]:
+    if isinstance(src_tree, dict):
+        if id(src_tree) in _already_filtered:
+            return _already_filtered[id(src_tree)]
+        filtered = {}
+        _already_filtered[id(src_tree)] = filtered
+        _filtered = {k:filter_tensor_tree(v, keep=keep) for k,v in src_tree.items()}
+        _filtered = {k:v for k,v in filtered.items() if v is not _discarded}
+        filtered.update(_filtered)
+        return filtered
+    elif isinstance(src_tree, tuple):
+        if id(src_tree) in _already_filtered:
+            return tuple(_already_filtered[id(src_tree)])
+        filtered = []
+        _already_filtered[id(src_tree)] = filtered
+        _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+        _filtered = [v for v in filtered if v is not _discarded]
+        filtered.extend(filtered)
+        return tuple(filtered)
+    elif isinstance(src_tree, list):
+        if id(src_tree) in _already_filtered:
+            return _already_filtered[id(src_tree)]
+        filtered = []
+        _already_filtered[id(src_tree)] = filtered
+        _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+        _filtered = [v for v in filtered if v is not _discarded]
+        filtered.extend(_filtered)
+        return filtered
+    elif dataclasses.is_dataclass(src_tree):
+        raise RuntimeError(f"Cannot filter dataclasses")
+    else:
+        return src_tree if keep(src_tree) else _discarded
 
 T = TypeVar('T')
 U = TypeVar('U')
@@ -175,17 +213,23 @@ def index_select_tensor_tree(src_tree: TensorTree, indexes : th.Tensor) -> Tenso
 
 
 
-def unstack_tensor_tree(src_tree : TensorTree) -> list:
+def unstack_tensor_tree(src_tree : TensorTree, _key = "", _already_unstacked : dict = {}) -> list:
     if isinstance(src_tree, dict):
         # print(f"src_tree = {src_tree}")
         dictlist = []
+        if id(src_tree) in _already_unstacked:
+            raise RuntimeError(f"Cycle in tensor tree at {_key}")
+            dictlist = _already_unstacked[id(src_tree)]
         for k in src_tree.keys():
-            unstacked_subtree = unstack_tensor_tree(src_tree[k])
+            unstacked_subtree = unstack_tensor_tree(src_tree[k], _key=_key+f".{k}", _already_unstacked=_already_unstacked)
             stack_size = len(unstacked_subtree)
             if len(dictlist)==0:
-                dictlist = [{} for _ in range(stack_size)]
+                dictlist.extend([{} for _ in range(stack_size)])
             for i in range(stack_size):
-                dictlist[i][k] = unstacked_subtree[i]
+                try:
+                    dictlist[i][k] = unstacked_subtree[i]
+                except Exception as e:
+                    raise RuntimeError(f"exception at {_key+'.'+k}[{i}]: {e}")
         # print(f"src_tree = {src_tree}, unstacked = {dictlist}")
         return dictlist
     elif isinstance(src_tree, th.Tensor):
@@ -193,13 +237,16 @@ def unstack_tensor_tree(src_tree : TensorTree) -> list:
         # print(f"src_tree = {src_tree}, unstacked = {ret}")
         return ret
     else:
-        raise RuntimeError(f"Unexpected tree element type {type(src_tree)}")
+        raise RuntimeError(f"Unexpected tree element type {type(src_tree)} at key {_key}")
 
 def space_from_tree(tensor_tree):
     if isinstance(tensor_tree, dict):
         subspaces = {}
         for k in tensor_tree.keys():
-            subspaces[k] = space_from_tree(tensor_tree[k])
+            try:
+                subspaces[k] = space_from_tree(tensor_tree[k])
+            except RuntimeError as e:
+                raise RuntimeError(f"{k}.{e}")    
         return gym_spaces.Dict(subspaces)
     if isinstance(tensor_tree, np.ndarray):
         tensor_tree = th.as_tensor(tensor_tree)

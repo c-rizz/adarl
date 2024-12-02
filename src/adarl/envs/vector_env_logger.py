@@ -4,7 +4,7 @@ import numpy as np
 import torch as th
 from typing import Any, SupportsFloat, Tuple, Dict
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.tensor_trees import unstack_tensor_tree
+from adarl.utils.tensor_trees import unstack_tensor_tree, filter_tensor_tree
 import copy
 import adarl.utils.session as session
 import time
@@ -20,12 +20,6 @@ class VectorEnvLogger(
         use_wandb : bool = True,
         logs_id : str | None = None
     ):
-        """Initializes the :class:`TimeLimit` wrapper with an environment and the number of steps after which truncation will occur.
-
-        Args:
-            env: The environment to apply the wrapper
-            max_episode_steps: An optional max episode steps (if ``None``, ``env.spec.max_episode_steps`` is used)
-        """
         gym.Wrapper.__init__(self, env)
         self._current_infos = []
         self._tot_ep_count = 0
@@ -53,13 +47,23 @@ class VectorEnvLogger(
         observation, reward, terminated, truncated, infos = self.env.step(action)
         self.__step_count += 1
 
-        info_list = unstack_tensor_tree(infos)
+        # ggLog.info(f"infos = {infos}")
+        # ggLog.info(f"terminated,truncated = {terminated,truncated}")
+        # vec_infos = filter_tensor_tree(infos,    keep = lambda t:     (isinstance(t, th.Tensor) and t.dim()>0 and t.size()[0] == self.num_envs))
+        # nonvec_infos = filter_tensor_tree(infos, keep = lambda t: not (isinstance(t, th.Tensor) and t.dim()>0 and t.size()[0] == self.num_envs))
+        # ggLog.info(f"vec_infos = {vec_infos}")
+        # ggLog.info(f"nonvec_infos = {nonvec_infos}")
+        final_infos = infos["final_info"]
+        final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
+        # infos.pop("final_infos")
+        # info_list = unstack_tensor_tree(infos)
+        final_info_list = unstack_tensor_tree(final_infos)
         if self._use_wandb:
             from adarl.utils.wandb_wrapper import wandb_log
-            for i in range(len(terminated)):
-                if terminated[i] or truncated[i]:
+            for i in range(self.num_envs):
+                if terminated[i] or truncated[i]: # we only log the info of the last step
                     self._tot_ep_count += 1
-                    info = info_list[i]["final_info"]
+                    info = final_info_list[i]
                     logs = {}
                     for k,v in info.items():
                         k = "VecEnvLogger/lastinfo."+k

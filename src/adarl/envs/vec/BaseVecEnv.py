@@ -5,7 +5,7 @@ import torch as th
 from typing import final, TypeVar, Mapping, Generic
 from gymnasium.vector.utils.spaces import batch_space
 
-State = dict[str | tuple[str,...], th.Tensor]
+State = Mapping[str | tuple[str,...], th.Tensor]
 Observation = TypeVar("Observation", bound=Mapping[str | tuple[str,...], th.Tensor])
 Action = th.Tensor
 
@@ -14,6 +14,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
                         single_action_space : spaces.gym_spaces.Space,
                         single_observation_space : spaces.gym_spaces.Space,
                         single_state_space : spaces.gym_spaces.Space,
+                        info_space : spaces.gym_spaces.Space,
                         th_device : th.device,
                         single_reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
                         metadata = {},
@@ -24,6 +25,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self.single_observation_space = single_observation_space
         self.single_state_space = single_state_space
         self.single_reward_space = single_reward_space
+        self.info_space = info_space
         self.vec_action_space = batch_space(single_action_space, n=num_envs)
         self.vec_observation_space = batch_space(single_observation_space, n=num_envs)
         self.vec_state_space = batch_space(single_state_space, n=num_envs)
@@ -202,9 +204,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
         -------
         tuple[th.Tensor, th.Tensor]
             A tuple with a batch of batches of images in the first element and the sim time of each image
-            in the second. The order is that of the requestedCameras argument.
-            The first element contains a list of length len(requestedCameras) containing tensors of shape
-            (vec_size, <image_shape>) and the second has shape(vec_size, len(requestedCameras))
+            in the second.
+            The first element contains a list of length len(ui_cameras) containing tensors of shape
+            (th.count_nonzero(vec_size), <image_shape>) and the second has shape(th.count_nonzero(vec_size), len(ui_cameras))
         """
         ...
 

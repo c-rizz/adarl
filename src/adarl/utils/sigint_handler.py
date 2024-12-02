@@ -29,22 +29,26 @@ def close_shm():
     ggLog.info(f"closing shm")
     shared_memory_list.shm.close()
 
+last_printed_st : str | None = None
+
 def sigint_handler(signal_num, stackframe):
     global sigint_received
     global sigint_counter
     global sigint_max
     global original_sigint_handler
+    global last_printed_st
     sigint_received = True
     sigint_counter += 1
     print(f"\n"+
             f"-----------------------------------------------------------------------------------------------------\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
             f"Received sigint, will halt at first opportunity. ({sigint_max-sigint_counter} presses to hard SIGINT, pid = {os.getpid()})\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
             f"-----------------------------------------------------------------------------------------------------\n\n")
     # print(f"current handler = {signal.getsignal(signal.SIGINT)}")
     # print(f"stackframe = {stackframe}")
-    traceback.print_stack()
+    st = ''.join(traceback.format_stack())
+    if st != last_printed_st:
+        print(st)
+    last_printed_st = st
     if sigint_counter>sigint_max:
         session.default_session.mark_shutting_down()
         shared_memory_list[0] = "shutdown"

@@ -164,7 +164,7 @@ class ThBoxStateHelper(StateHelper):
             initial_values = th.tensor(0.0)
         if isinstance(initial_values,Mapping):
             initial_values = self._mapping_to_tensor(initial_values)
-            ggLog.info(f"resetting from mapping: initial_values = {initial_values}, size = {initial_values.size()}")
+            # ggLog.info(f"resetting from mapping: initial_values = {initial_values}, size = {initial_values.size()}")
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
         initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype)
@@ -750,39 +750,40 @@ class JointImpedanceActionHelper:
         self._safe_stiffness = safe_stiffness
         self._th_device = th_device
         self._vec_size = vec_size
+        self._dtype = th.float32
 
         pvesd_shape = (self._vec_size, self._joints_num, 5)
         s = normalize(self._safe_stiffness, min=self._minmax_joints_pvesd[0,:,3],max=self._minmax_joints_pvesd[1,:,3])
         d = normalize(self._safe_damping,   min=self._minmax_joints_pvesd[0,:,4],max=self._minmax_joints_pvesd[1,:,4])
         if self._control_mode == self.CONTROL_MODES.VELOCITY:
             act_to_pvesd =  [1]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION:
             act_to_pvesd =  [0]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
             act_to_pvesd =  [0,2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
             act_to_pvesd =  [0,1,2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
             act_to_pvesd =  [0,1,2,3,4]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0], dtype=self._dtype).expand(pvesd_shape).clone()
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
             act_to_pvesd =  [0,3]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.TORQUE:
             act_to_pvesd =  [2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0]).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0], dtype=self._dtype).expand(pvesd_shape).clone()
         else:
             raise RuntimeError(f"Invalid control mode {self._control_mode}")
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
