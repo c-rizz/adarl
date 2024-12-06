@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-from adarl.adapters.MjxAdapter import MjxAdapter
+from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing import Any
@@ -18,9 +18,7 @@ import torch as th
 import jax.numpy as jnp
 import jax.scipy.spatial.transform
 from adarl.utils.utils import build_pose
-from dlpack import asdlpack
 import adarl.utils.dbg.ggLog as ggLog
-import torch.utils.dlpack as thdlpack
 import jax.core
 from functools import partial
 
@@ -29,12 +27,14 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def __init__(self, vec_size : int,
                         enable_rendering : bool,
                         jax_device : jax.Device,
+                        output_th_device : th.device,
                         sim_step_dt : float = 2/1024,
                         step_length_sec : float = 10/1024,
                         realtime_factor : float | None = None,
                         show_gui : bool = False,
                         gui_frequency : float = 15,
                         gui_env_index : int = 0,
+                        default_max_joint_impedance_ctrl_torque : float = 100.0,
                         max_joint_impedance_ctrl_torques : dict[tuple[str,str],float] = {}):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
@@ -44,19 +44,26 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         realtime_factor = realtime_factor,
                         show_gui = show_gui,
                         gui_frequency = gui_frequency,
-                        gui_env_index = gui_env_index)
+                        gui_env_index = gui_env_index,
+                        output_th_device=output_th_device)
         self._queue_size = 100
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
+        self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
         self.set_impedance_controlled_joints([]) # initialize attributes
         self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds","cmds_times"]))
         self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds","cmds_times"]), in_axes=(0,0,None))
         self._compute_impedance_torques_vec = jax.vmap(jax.jit(self._compute_impedance_torques), in_axes=(0,0,None))
 
-    def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor, delay_sec : th.Tensor | float = 0.0, joint_names : Sequence[tuple[str,str]] | None = None) -> None:
+    def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
+                                        delay_sec : th.Tensor | float = 0.0,
+                                        vec_mask : th.Tensor | None = None,
+                                        joint_names : Sequence[tuple[str,str]] | None = None) -> None:
         if delay_sec < 0:
             raise RuntimeError(f"Cannot have a negative command delay") # actually we could, but it would mess up the logic of set_current_joint_impedance_command
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
+        if vec_mask is not None and not th.all(vec_mask):
+            raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay_sec)
 
@@ -64,7 +71,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._reset_cmd_queue()
 
     def set_current_joint_impedance_command(self,   joint_impedances_pvesd : th.Tensor,
-                                                    joint_names : Sequence[tuple[str,str]] | None = None) -> None:
+                                                    joint_names : Sequence[tuple[str,str]] | None = None,
+                                        vec_mask : th.Tensor | None = None) -> None:
         
         """ Applies a joint impedance command immediately.
             Meant to be used outside of the normal control loop, just for resetting/initializing.
@@ -81,19 +89,24 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         RuntimeError
             _description_
         """
-        # The queue always contains commands with time greater or equal of the current time
-        # except for the initial command which is placed at time -inf
-        # We want this command to be placed after -inf and the current time
+        # The queue always contains commands that are in the future, i.e. with time greater or 
+        # equal to the current time. Except for the initial command which is placed at time -inf.
+        # To have this new command be applied as soon as possible we put it in the past, where
+        # it should have already been applied, so at the next loop it gets applied immediately.
+        # So we want this command to be placed after -inf and before the current time, so with 
+        # a sizable negative delay.
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
+        if vec_mask is not None and not th.all(vec_mask):
+            raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=-1000)
         
     def _add_impedance_command(self,    joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor | float = 0.0) -> None:
         # No support for having commands that don't contain all joints
-        joint_impedances_pvesd_jax = jnp.from_dlpack(thdlpack.to_dlpack(joint_impedances_pvesd))
-        delay_sec_j = jnp.from_dlpack(thdlpack.to_dlpack(th.as_tensor(delay_sec, device = joint_impedances_pvesd.device)))
+        joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
+        delay_sec_j = th2jax(th.as_tensor(delay_sec, device = joint_impedances_pvesd.device), self._jax_device)
         jids = self._imp_control_jids
 
         # Create a command, commands are always of the size of _imp_control_jids
@@ -176,7 +189,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         """
         self._imp_controlled_joint_names = tuple(joint_names)
         imp_control_jids = [self._jname2jid[jn] for jn in joint_names]
-        self._imp_control_max_torque = jnp.array([self._max_joint_impedance_ctrl_torques[jn]
+        self._imp_control_max_torque = jnp.array([self._max_joint_impedance_ctrl_torques.get(jn, self._default_max_joint_impedance_ctrl_torque)
                                                     for jn in self._imp_controlled_joint_names], device=self._jax_device)
         self._imp_control_jids = jnp.array(imp_control_jids, device=self._jax_device)
         if len(imp_control_jids) != 0:
@@ -264,3 +277,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         ret = super().resetWorld()
         self.reset_joint_impedances_commands()
         return ret
+    
+    @override
+    def get_last_applied_command(self) -> th.Tensor:
+        return self._last_applied_jimp_cmd

@@ -2,31 +2,30 @@ from __future__ import annotations
 
 import os
 os.environ["MUJOCO_GL"] = "egl"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
-from dataclasses import dataclass
 from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str
 from typing import Any
 import jax
 import mujoco
 from mujoco import mjx
 import mujoco.viewer
-from pathlib import Path
 import time
 from typing_extensions import override
 from typing import overload, Sequence, Mapping
 import torch as th
 import jax.numpy as jnp
 import jax.scipy.spatial.transform
-from adarl.utils.utils import build_pose
-from dlpack import asdlpack
 import adarl.utils.dbg.ggLog as ggLog
 import torch.utils.dlpack as thdlpack
 import numpy as np
 import copy
 from typing import Iterable
+from functools import partial
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
 #     if type(src) != type(dst):
@@ -46,6 +45,33 @@ from typing import Iterable
 
 from mujoco.mjx._src.forward import euler, forward
 
+def th2jax(tensor : th.Tensor, jax_device : jax.Device):
+    # apparently there are issues with non-contiguous tensors (https://github.com/jax-ml/jax/issues/7657)
+    # and with CPU tensors (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
+    return jnp.from_dlpack(tensor.contiguous().cuda()).to_device(jax_device)
+                                                    
+def jax2th(array : jnp.ndarray, th_device : th.device):
+    return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device)
+
+devices_th2jax = {}
+devices_jax2th = {}
+
+def _build_th2jax_dev_mapping():
+    global devices_th2jax
+    global devices_jax2th
+    th_devs : Sequence[th.device] = [th.device("cuda", i) for i in range(th.cuda.device_count())]
+    th_devs.append(th.device("cpu"))
+    devices_th2jax = {}
+    for dev in th_devs:
+        z = th.zeros((1,), device=dev, dtype=th.float32)
+        jz = jnp.from_dlpack(z)
+        devices_th2jax[dev] = jz.device
+    devices_jax2th = {v:k for k,v in devices_th2jax.items()}
+
+_build_th2jax_dev_mapping()
+    
+
+
 def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
     """First integrate the physics, then compute forward kinematics/dynamics.
         This is a flipped-around version of mjx.step(), essentially doing mj_step2 and then mj_step1.
@@ -57,18 +83,81 @@ def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
     d = forward(m, d)
     return d
 
+def set_rows_cols(array : jnp.ndarray,
+                  index_arrs : Sequence[jnp.ndarray],
+                  vals : jnp.ndarray):
+    """Sets values in the specified subarray. index_arrs indicates which indexes of each dimension to set
+       the values in. For example you can write in a 2D array at the rows [2,3,4] and columns [0,3,5,7] 
+       (which identify a 3x4 array) by setting index_arrs=(jnp.array([2,3,4]), jnp.array([0,3,5,7])) and
+       passing a 3x4 array in vals.
+
+    Parameters
+    ----------
+    array : jnp.ndarray
+        The array to be modified (Will not be written to)
+    index_arrs : Sequence[jnp.ndarray]
+        The indexes in each dimension.
+    vals : jnp.ndarray
+        The values to write
+
+    Returns
+    -------
+    jnp.ndarray
+        The edited array
+    """
+    ggLog.info(f"set_rows_cols(\n"
+               f"{array}\n"
+               f"{index_arrs}\n"
+               f"{vals}\n"
+               f")")
+    index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]    for ia in index_arrs]
+    return array.at[jnp.ix_(*index_arrs)].set(vals)
+
+def get_rows_cols(array : jnp.ndarray,
+                  index_arrs : Sequence[jnp.ndarray | Sequence[int] | int]):
+    """Gets values of the specified subarray. index_arrs indicates which indexes of each dimension to get
+       the values from. For example you can read from a 2D array at the rows [2,3,4] and columns [0,3,5,7] 
+       (which identify a 3x4 array) by setting index_arrs=(jnp.array([2,3,4]), jnp.array([0,3,5,7])). Or you
+       for example:
+            get_rows_cols(jnp.arange(0,24).reshape(2,3,4),
+                         (jnp.array([0]), jnp.array([1,2]), jnp.array([0,4])))
+            Gives:
+            Array([[[ 4,  7],
+                    [ 8, 11]]], dtype=int32)
+
+    Parameters
+    ----------
+    array : jnp.ndarray
+        The array to be read
+    index_arrs : Sequence[jnp.ndarray]
+        The indexes in each dimension.
+
+    Returns
+    -------
+    jnp.ndarray
+        The selected array
+    """
+    index_arrs = [ia if isinstance(ia, jnp.ndarray) else jnp.array(ia)  for ia in index_arrs]
+    zerodim_axes = [i for i in range(len(index_arrs)) if index_arrs[i].ndim==0]
+    index_arrs = [ia if ia.ndim>0 else jnp.expand_dims(ia,0)            for ia in index_arrs]
+    index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]          for ia in index_arrs]
+    return array[jnp.ix_(*index_arrs)].squeeze(zerodim_axes)
+
+model_element_separator = "#"
 
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def __init__(self, vec_size : int,
                         enable_rendering : bool,
                         jax_device : jax.Device,
+                        output_th_device : th.device,
                         sim_step_dt : float = 2/1024,
                         step_length_sec : float = 10/1024,
                         realtime_factor : float | None = None,
                         show_gui : bool = False,
                         gui_frequency : float = 15,
                         gui_env_index : int = 0):
-        super().__init__(vec_size=vec_size)
+        super().__init__(vec_size=vec_size,
+                         output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
         self._jax_device = jax_device
         self._sim_step_dt = sim_step_dt
@@ -89,16 +178,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._gui_freq = gui_frequency
         self._prev_step_end_wtime = 0.0
         self._viewer = None
-
-        self.set_monitored_joints([])
-        self.set_monitored_links([])
+        self._all_vecs = jnp.ones((vec_size,), dtype=bool, device=self._jax_device)
+        self._no_vecs = jnp.zeros((vec_size,), dtype=bool, device=self._jax_device)
+        self._all_vecs_th = th.ones((vec_size,), dtype=th.bool, device=self._out_th_device)
+        self._no_vecs_th = th.zeros((vec_size,), dtype=th.bool, device=self._out_th_device)
+        self._all_vecs_thcpu = th.ones((vec_size,), dtype=th.bool, device="cpu")
+        self._no_vecs_thcpu = th.zeros((vec_size,), dtype=th.bool, device="cpu")
 
     @staticmethod
     def _mj_name_to_pair(mjname : str):
         if mjname == "world":
             return mjname,mjname
-        sep = mjname.find("_")
-        return mjname[:sep],mjname[sep+1:]
+        sep = mjname.find(model_element_separator)
+        if mjname.count(model_element_separator) != 1:
+            raise RuntimeError(f"Invalid mjName: must contain one and only one '{model_element_separator}' substring, but it's {mjname}")
+        return mjname[:sep],mjname[sep+len(model_element_separator):]
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef]):
@@ -122,12 +216,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         frame = big_speck.worldbody.add_frame()
         big_speck.degree = False
         for mname, spec in specs:
+            if model_element_separator in mname:
+                raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
             # add all th bodies that are direct childern of worldbody
             body = spec.worldbody.first_body()
             if spec.degree:
                 raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
             while body is not None:
-                frame.attach_body(body, mname+"_", "")
+                frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
 
         self._mj_model = big_speck.compile()
@@ -176,6 +272,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_data = self._mjx_forward(self._mjx_model, self._mjx_data) # compute initial mjData
         ggLog.info(f"Compiled MJX.")
         
+        self.set_monitored_joints([])
+        self.set_monitored_links([])
+        self._reset_joint_state_step_stats()
 
 
         if self._enable_rendering:
@@ -199,7 +298,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
                            for jid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
-        self._camera_sizes = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
+        self._camera_sizes :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         if self._enable_rendering:
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:mujoco.Renderer(self._mj_model,height=resolution[0],width=resolution[1])
                             for resolution in set(self._camera_sizes.values())}
@@ -228,6 +327,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_joints(jointsToObserve)
         self._monitored_jids = jnp.array([self._jname2jid[jn] for jn in self._monitored_joints], device=self._jax_device)
+        self._monitored_qpadr = self._mjx_model.jnt_qposadr[self._monitored_jids]
+        self._monitored_qvadr = self._mjx_model.jnt_dofadr[self._monitored_jids]
+        self._reset_joint_state_step_stats()
+
 
     @override
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str,str]]):
@@ -242,7 +345,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         -------
         float
             Duration of the step in simulation time (in seconds)"""
-
+        self._reset_joint_state_step_stats()
         stepLength = self.run(self._step_length_sec)
         return stepLength
 
@@ -268,6 +371,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             # ggLog.info(f"qfrc_applied1 = {self._mjx_data.qfrc_applied}")
             # ggLog.info(f"nu = {self._mj_model.nu}")
             self._mjx_data = self._mjx_step2_step1(self._mjx_model,self._mjx_data)
+            self._update_joint_state_step_stats()
             # ggLog.info(f"qfrc_applied2 = {self._mjx_data.qfrc_applied}")
             stepping_wtime += time.monotonic()-wtps
             self._sim_step_count_since_build += 1
@@ -305,35 +409,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
     @override
-    def getRenderings(self, requestedCameras : list[str]) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None) -> tuple[list[th.Tensor], th.Tensor]:
         if self._renderer is None:
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
+        if vec_mask is None:
+            vec_mask = self._all_vecs_thcpu
+        selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu")
+        nvecs = selected_vecs.shape[0]
+        
         # mj_data_batch = mjx.get_data(self._mj_model, self._mjx_data)
         # print(f"mj_data_batch = {mj_data_batch}")
-        times = th.as_tensor(self._simTime).repeat((self._vec_size,len(requestedCameras)))
-        image_batches = [np.ones(shape=(self._vec_size,)+self._camera_sizes[cam]+(3,), dtype=np.uint8) for cam in requestedCameras]
+        times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras)))
+        image_batches = [np.ones(shape=(nvecs,)+self._camera_sizes[cam]+(3,), dtype=np.uint8) for cam in requestedCameras]
         # print(f"images.shapes = {[i.shape for i in images]}")
         mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._mjx_data)
-        for env in range(self._vec_size):
+        for env_i,env in enumerate(selected_vecs):
             for i in range(len(requestedCameras)):
                 cam = requestedCameras[i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
-                renderer = self._renderers[image_batches[i][env].shape[:2]]
+                renderer = self._renderers[self._camera_sizes[cam]]
                 renderer.update_scene(mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
-                image_batches[i][env] = renderer.render()
+                image_batches[i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in image_batches], times
 
-
-    @override
-    @overload
-    def getJointsState(self, requestedJoints : Sequence[tuple[str,str]]) -> th.Tensor:
-        ...
-
-    @override
-    @overload
-    def getJointsState(self) -> th.Tensor:
-        ...
 
     @override
     def getJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
@@ -345,7 +444,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             return th.empty(size=(self._vec_size,self._mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
            t = self._get_vec_joint_states_pve(self._mjx_model, self._mjx_data, jids)
-        return thdlpack.from_dlpack(asdlpack(t))
+        return jax2th(t, th_device=self._out_th_device)
     
     @staticmethod
     # @jax.jit
@@ -361,28 +460,67 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             mjx_data.qvel[:,qvadr],
                             mjx_data.qfrc_smooth[:,qvadr]], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
                             axis = 2)
+    
+    @staticmethod
+    @jax.jit
+    def _get_vec_joint_states_raw_pvea(qpadr, qvadr, mjx_data):
+        return jnp.stack([  mjx_data.qpos[:,qpadr],
+                            mjx_data.qvel[:,qvadr],
+                            mjx_data.qfrc_smooth[:,qvadr], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
+                            mjx_data.qacc[:,qvadr]],
+                            axis = 2)
+
+
+    def _build_joint_state_step_stats(self):
+        self._joint_stats_sample_count = 0
+        self._monitored_joints_stats = self._init_stats(jnp.zeros(shape=(self._vec_size, 4, len(self._monitored_joints),4),
+                                                                  dtype=jnp.float32,
+                                                                  device=self._jax_device))
+
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["stats_array"])
+    def _init_stats(stats_array : jnp.ndarray):
+        stats_array.at[:,0].set(float("-inf"))
+        stats_array.at[:,1].set(float("+inf"))
+        stats_array.at[:,2].set(float("nan"))
+        stats_array.at[:,3].set(float("nan"))
+        stats_array.at[:,4].set(0)
+        stats_array.at[:,5].set(0)
+        return stats_array
+
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["stats_array"])
+    def _update_joint_state_step_stats_arrs(current_jstate : jnp.ndarray,
+                                            stats_array : jnp.ndarray,
+                                            sample_count : jnp.ndarray):
+        
+        stats_array.at[:,4].set(jnp.add(    stats_array[:,4], current_jstate)) # sum of values
+        stats_array.at[:,5].set(jnp.add(    stats_array[:,5], jnp.square(current_jstate))) # sum of squares
+
+        stats_array.at[:,0].set(jnp.minimum(stats_array[:,0], current_jstate))
+        stats_array.at[:,1].set(jnp.maximum(stats_array[:,1], current_jstate))
+        stats_array.at[:,2].set(stats_array[:,4]/sample_count) # average values
+        stats_array.at[:,3].set(jnp.sqrt(jnp.clip(stats_array[:,5]/sample_count-jnp.square(stats_array[:,2]),min=0))) # standard deviation
+        return stats_array
+
+    def _update_joint_state_step_stats(self):
+        if self._joint_stats_sample_count == 0: # if we are at zero whatever is in the current state is invalid
+            self._build_joint_state_step_stats()
+        if len(self._monitored_joints) == 0:
+            return
+        self._joint_stats_sample_count += 1
+        jstate_pvea = self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._mjx_data)
+        self._monitored_joints_stats = self._update_joint_state_step_stats_arrs(jstate_pvea, self._monitored_joints_stats, self._joint_stats_sample_count)
+
+    def _reset_joint_state_step_stats(self):
+        # ggLog.info(f"resetting stats")
+        self._joint_stats_sample_count = 0 # set to zero so the update rebuilds the stats
+        self._update_joint_state_step_stats() # rebuild and populate with current state
+        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because the value we just wrote actually belong to the previous step)
 
     def get_joints_state_step_stats(self) -> th.Tensor:
-        """Returns joint state statistics over the last step for the monitored joints. The value of these statistics after a call to run()
-        is currently undefined.
+        return jax2th(self._monitored_joints_stats[:,:4], self._out_th_device)
 
-        Returns
-        -------
-        th.Tensor
-            Torch tensor of size (4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
-             and effort of each monitored joint. The joints are in the order use din set_monitored_joints.
-        """
-        raise NotImplementedError()
-
-    @override
-    @overload
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]], use_com_frame : bool = False) -> th.Tensor:
-        ...
-
-    @override
-    @overload
-    def getLinksState(self, requestedLinks : None = None, use_com_frame : bool = False) -> th.Tensor:
-        ...
 
     @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None = None, use_com_frame : bool = False) -> th.Tensor:
@@ -398,7 +536,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             t = jnp.concatenate([self._mjx_data.xpos[:,body_ids], # frame position
                                  self._mjx_data.xquat[:,body_ids][:,:,self._wxyz2xyzw], # frame orientation
                                  self._mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # frame linear and angular velocity
-        return thdlpack.from_dlpack(asdlpack(t))
+        return jax2th(t, th_device=self._out_th_device)
 
     @override
     def resetWorld(self):
@@ -416,6 +554,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_model = copy.deepcopy(self._original_mjx_model)
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
+        self._reset_joint_state_step_stats()
 
 
     @override
@@ -425,35 +564,43 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
     @override    
-    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor):
+    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):
         if self._check_sizes and joint_states_pve.size() != (self._vec_size,len(joint_names),3):
             raise RuntimeError(f"joint_states_pve should have size {(self._vec_size,len(joint_names),3)}, but it's {joint_states_pve.size()}")
         jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
-        js_pve = jnp.from_dlpack(thdlpack.to_dlpack(joint_states_pve))
+        # contiguous_js = joint_states_pve.contiguous()
+        ggLog.info(f"joint_states_pve.size() = {joint_states_pve.size()}")
+        # ggLog.info(f"joint_states_pve.dim_order() = {joint_states_pve.dim_order()}")
+        # ggLog.info(f"joint_states_pve.stride() = {joint_states_pve.stride()}")
+        # ggLog.info(f"contiguous_js.size() = {contiguous_js.size()}")
+        # ggLog.info(f"contiguous_js.dim_order() = {contiguous_js.dim_order()}")
+        # ggLog.info(f"contiguous_js.stride() = {contiguous_js.stride()}")
+        js_pve = th2jax(joint_states_pve, jax_device=self._jax_device)
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
+        ggLog.info(f"js_pve.shape = {js_pve.shape}")
+
         jtypes = self._mj_model.jnt_type[jids]
         if not jnp.all(jnp.logical_or(jtypes == mujoco.mjtJoint.mjJNT_HINGE, jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
             raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names,jtypes))}")
         qpadr = self._mj_model.jnt_qposadr[jids]
         qvadr = self._mj_model.jnt_dofadr[jids]
-        qpos = self._mjx_data.qpos.at[:,qpadr].set(js_pve[:,:,0])
-        qvel = self._mjx_data.qvel.at[:,qvadr].set(js_pve[:,:,1])
-        qeff = self._mjx_data.qfrc_applied.at[:,qvadr].set(js_pve[:,:,2])
+        ggLog.info(f"self._mjx_data.qpos.at[{vec_mask_jnp},{qpadr}].shape = {self._mjx_data.qpos[vec_mask_jnp,qpadr].shape}")
+        ggLog.info(f"js_pve[vec_mask_jnp,:,0].shape = {js_pve[vec_mask_jnp,:,0].shape}")
+        qpos = set_rows_cols(self._mjx_data.qpos,           (vec_mask_jnp,qpadr), js_pve[vec_mask_jnp,:,0])
+        qvel = set_rows_cols(self._mjx_data.qvel,           (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,1])
+        qeff = set_rows_cols(self._mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
         self._mjx_data = self._mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
     
     @override
-    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor):
-        """Set the state for a set of links
-
-
-        Parameters
-        ----------
-        link_names : list[tuple[str,str]]
-            The names of the links to set the state for
-        link_states_pose_vel : th.Tensor
-            A tensor of shape (vec_size, len(link_names), 13), containing, for each joint, position_xyz, orientation_xyzw, linear_velocity_xyz, angular_velocity_xyz
-        """
-        # js_pve = jnp.from_dlpack(thdlpack.to_dlpack(joint_states_pve))
-        link_states_pose_vel_jnp = jnp.from_dlpack(thdlpack.to_dlpack(link_states_pose_vel)).to_device(self._jax_device)
+    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
+        link_states_pose_vel_jnp = th2jax(link_states_pose_vel, jax_device=self._jax_device)
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
         model_body_pos = self._mjx_model.body_pos
         model_body_quat = self._mjx_model.body_quat
         data_joint_pos = self._mjx_data.qpos
@@ -476,10 +623,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             parent_body_id = self._mj_model.body_parentid[lid]
             if parent_joints_num == 0 and parent_body_id==0: # if it has no parent joints
                 ggLog.info(f"changing 'fixed joint'")
-                if jnp.any(link_states_pose_vel_jnp[:,i] != link_states_pose_vel_jnp[0,i]):
-                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations."
-                                       f"This because MJX does not vectorize the MjModel, all vec simulations use the same model,"
-                                       f" and fixed joints are represented as fixed transforms in the model.")
+                #    Fixed joints cannot be set to different positions across the vectorized simulations.
+                #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
+                #     and fixed joints are represented as fixed transforms in the model.
+                if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], link_states_pose_vel_jnp[[0],i],equal_nan=True)):
+                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.")
+                if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
+                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.")
                 model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
                 model_body_quat = model_body_quat.at[lid].set(link_states_pose_vel_jnp[0,i,[6,3,4,5]])
                 # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")
@@ -488,8 +638,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 jtype = self._mj_model.jnt_type[jid]
                 if jtype == mujoco.mjtJoint.mjJNT_FREE:
                     ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
-                    data_joint_pos = data_joint_pos.at[:,self._mj_model.jnt_qposadr[jid]:self._mj_model.jnt_qposadr[jid]+7].set(link_states_pose_vel_jnp[:,i,[0,1,2,6,3,4,5]])
-                    data_joint_vel = data_joint_vel.at[:,self._mj_model.jnt_dofadr[jid]:self._mj_model.jnt_dofadr[jid]+6].set(link_states_pose_vel_jnp[:,i,7:13])
+                    qadr = self._mj_model.jnt_qposadr[jid]
+                    dadr = self._mj_model.jnt_dofadr[jid]
+                    data_joint_pos = set_rows_cols(data_joint_pos,
+                                                   (vec_mask_jnp, jnp.arange(qadr, qadr+7)),
+                                                   get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,[0,1,2,6,3,4,5])))
+                    data_joint_vel = set_rows_cols(data_joint_vel,
+                                                   (vec_mask_jnp, jnp.arange(dadr, dadr+6)),
+                                                   link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]) #get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,jnp.arange(7,13))))
+                    # data_joint_pos = (data_joint_pos.at[vec_mask_jnp,qadr:qadr+7]
+                    #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,[0,1,2,6,3,4,5]]))
+                    # data_joint_vel = (data_joint_vel.at[vec_mask_jnp,dadr:dadr+6]
+                    #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]))
                     # raise NotImplementedError()
                 else:
                     raise NotImplementedError(f"Cannot set link state for link {link_name} with parent joint of type {jtype} (see mjtJoint enum)")
@@ -508,34 +668,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         raise NotImplementedError()
 
     @override
-    def spawn_model(self,   model_name : str,
-                            model_definition_string : str | None = None,
-                            model_format : str | None = None,
-                            model_file : str  | None = None,
-                            pose : Pose = build_pose(0,0,0,0,0,0,1),
-                            model_kwargs : dict[Any,Any] = {}) -> str:
-        """Spawn a model in the simulation in all of the simulations.
-
-        Parameters
-        ----------
-        model_definition_string : str
-            Model definition specified in as a string. e.g. an SDF definition
-        model_format : str
-            Format of the model definition. E.g. 'sdf' or 'urdf'
-        model_file : _type_
-            File to load the model definition from
-        model_name : str
-            Name to give to the spawned model
-        pose : Pose
-            Pose to spawn the model at
-        model_kwargs : Dict[Any,Any]
-            Arguments to use in interpreting the model definition
-
-        Returns
-        -------
-        str
-            The model name
-        """
+    def spawn_models(self, models : Sequence[ModelSpawnDef]) -> list[str]:
         raise NotImplementedError("Cannot spawn after simulation setup")
 
     @override
@@ -555,19 +688,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]] | None, efforts : th.Tensor) -> None:
-        """Set the efforts to be applied on a set of joints.
-
-        Effort means either a torque or a force, depending on the type of joint.
-
-        Parameters
-        ----------
-        joint_names : Sequence[tuple[str,str]]
-            List of the joint names
-        efforts : th.Tensor
-            Tensor of shape (vec_size, len(joint_names)) containing the effort for each joint in each environment.
-        """
         jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
-        qeff = jnp.from_dlpack(thdlpack.to_dlpack(efforts))
+        qeff = th2jax(efforts, jax_device=self._jax_device)
         self._set_effort_command(jids,qeff)
         # ggLog.info(f"self._requested_qfrc_applied = {self._requested_qfrc_applied}")
 

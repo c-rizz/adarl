@@ -201,6 +201,12 @@ class ThBoxStateHelper(StateHelper):
         ret = normalize(state, limits[0], limits[1])
         if warn_limits_violation and th.any(th.abs(ret) > 1.1):
             ggLog.warn(f"Normalization exceeded [-1.1,1.1] range: {state} with {limits[0]} & {limits[1]} = {ret}")
+        if not th.all(th.isfinite(ret)):
+            ggLog.info( f"Nonfinite normalized vals:\n"
+                        f"limits:\n"
+                        f"{limits}\n"
+                        f"ret:\n"
+                        f"{ret}\n")
         return ret
     
     @override
@@ -689,13 +695,14 @@ class RobotStatsStateHelper(ThBoxStateHelper):
             limits_minmax_pve = th.as_tensor(limits_minmax_pve)
             if limits_minmax_pve.size() != (2,4):
                 raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be (2,3), but it's {limits_minmax_pve.size()}")
-            std_max_pve = th.sqrt((limits_minmax_pve[0]**2+limits_minmax_pve[1]**2)/2 - (limits_minmax_pve[0]+limits_minmax_pve[1])**2/2)
+            std_max_pve = th.sqrt((limits_minmax_pve[0]**2+limits_minmax_pve[1]**2)/2 - ((limits_minmax_pve[0]+limits_minmax_pve[1])/2)**2)
             std_min_pve = th.zeros_like(limits_minmax_pve[0])
             std_minmax_pve = th.stack([std_min_pve,std_max_pve])
             ret[joint] = th.concat([limits_minmax_pve,
                                     limits_minmax_pve,
                                     limits_minmax_pve,
                                     std_minmax_pve], dim=1)
+        ggLog.info(f"stats minmax = \n{ret}")
         return ret
         
     def state_names(self):

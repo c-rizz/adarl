@@ -11,7 +11,7 @@ import torch as th
 class BaseVecSimulationAdapter(BaseVecAdapter):
 
     @abstractmethod
-    def setJointsStateDirect(self, joint_names : Sequence[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None):        
+    def setJointsStateDirect(self, joint_names : Sequence[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):        
         """Set the state for a set of joints
 
         Parameters
@@ -26,7 +26,7 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         raise NotImplementedError()
     
     @abstractmethod
-    def setLinksStateDirect(self, link_names : Sequence[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None):
+    def setLinksStateDirect(self, link_names : Sequence[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
         """Set the state for a set of links
 
         Parameters
@@ -49,33 +49,19 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         raise NotImplementedError()
         
     @abstractmethod
-    def spawn_model(self,   model_name : str,
-                            model_definition_string : str | None = None,
-                            model_format : str | None = None,
-                            model_file : str | None = None,
-                            pose : Pose = build_pose(0,0,0,0,0,0,1),
-                            model_kwargs : dict[Any,Any] = {}) -> str:
-        """Spawn a model in the simulation in all of the simulations.
+    def spawn_models(self, models : Sequence[ModelSpawnDef]) -> list[str]:
+        """Spawn models in all of the simulations. Each model in the provided list will be spawned in all simulations.
+
 
         Parameters
         ----------
-        model_definition_string : str
-            Model definition specified in as a string. e.g. an SDF definition
-        model_format : str
-            Format of the model definition. E.g. 'sdf' or 'urdf'
-        model_file : _type_
-            File to load the model definition from
-        model_name : str
-            Name to give to the spawned model
-        pose : Pose
-            Pose to spawn the model at
-        model_kwargs : Dict[Any,Any]
-            Arguments to use in interpreting the model definition
+        models : Sequence[ModelSpawnDef]
+            The models to spawn
 
         Returns
         -------
-        str
-            The model name
+        list[str]
+            The names of the spawned models
         """
         raise NotImplementedError()
 

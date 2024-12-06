@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class ModelSpawnDef:
     name : str
     definition_string : str | None
-    format : str | None
+    format : str
     pose : Pose | None
     kwargs : dict[Any,Any]
 

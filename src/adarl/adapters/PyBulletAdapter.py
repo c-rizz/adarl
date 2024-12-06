@@ -667,7 +667,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         # ggLog.info(f"resetting stats")
         self._joint_stats_sample_count = 0 # set to zero so the update rebuilds the stats
         self._update_joint_state_step_stats() # rebuild and populate with current state
-        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because these actually belong to the previous step)
+        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because the value we just wrote actually belong to the previous step)
 
     def _update_stat_tensors(self, joint_states_pvae_t : th.Tensor):
         th.min(self._monitored_joints_min, joint_states_pvae_t, out=self._monitored_joints_min[:])
@@ -846,7 +846,11 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
         for m in models:
-            self.spawn_model(**dataclasses.asdict(m))
+            self.spawn_model(model_name=m.name,
+                             model_definition_string=m.definition_string,
+                             model_format=m.format,
+                             model_kwargs=m.kwargs,
+                             pose=m.pose)
         self._bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
 
 

@@ -120,7 +120,10 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
         stime = adapter.getEnvTimeFromStartup()
         tf = time.monotonic()
         wtime = tf - t0
-        print(f"[{step}] t = {stime:.3f} # single sim rt = {stime/wtime:.5f} # vec rt = {(stime * adapter.vec_size())/wtime:.5f} # inst rt {dt/(tf-t1):.5f}")
+        print(f"[{step}] t = {stime:.3f} "
+              f"    # tot single rt = {stime/wtime:.5f} "
+              f"    # tot vec rt = {(stime * adapter.vec_size())/wtime:.5f} "
+              f"    # inst single rt {dt/(tf-t1):.5f}")
         if print_state:
             js = adapter.getJointsState([('cartpole','cartpole_joint'),('cartpole','foot_joint')])[:,:]
             print(  f"revolute joint state = {js[:,0,:]}\n"
@@ -136,6 +139,7 @@ render = False
 test_sim_adapter(MjxJointImpedanceAdapter(  vec_size=1000,
                                             enable_rendering=render,
                                             jax_device=jax.devices("gpu")[0],
+                                            output_th_device=th.device("cuda",0),
                                             sim_step_dt=1/1024,
                                             step_length_sec=50/1024,
                                             realtime_factor=-1,

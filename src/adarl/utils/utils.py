@@ -721,7 +721,11 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
 def isinstance_noimport(obj, class_names):
     if isinstance(class_names, str):
         class_names = [class_names]
-    return type(obj).__name__ in class_names
+    # return type(obj).__name__ in class_names
+    for superclass in type(obj).__mro__:
+        if superclass.__name__ in class_names:
+            return True
+    return False
 
 
 

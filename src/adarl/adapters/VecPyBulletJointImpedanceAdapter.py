@@ -114,18 +114,15 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                                      lightSpecularCoeff = lightSpecularCoeff)
 
     @override
-    def spawn_model(self,   model_name : str,
-                            model_definition_string : str | None = None,
-                            model_format : str | None = None,
-                            model_file : str | None = None,
-                            pose : Pose = build_pose(0,0,0,0,0,0,1),
-                            model_kwargs : dict[Any,Any] = {}) -> str:
-        return self._sub_adapter.spawn_model(   model_name = model_name,
-                                                model_definition_string = model_definition_string,
-                                                model_format = model_format,
-                                                model_file = model_file,
-                                                pose = pose,
-                                                model_kwargs = model_kwargs)
+    def spawn_models(self, models : Sequence[ModelSpawnDef]) -> list[str]:
+        names = []
+        for model_def in models:
+            names.append( self._sub_adapter.spawn_model(    model_name = model_def.name,
+                                                            model_definition_string = model_def.definition_string,
+                                                            model_format = model_def.format,
+                                                            pose = model_def.pose,
+                                                            model_kwargs = model_def.kwargs))
+        return names
 
     @override
     def delete_model(self, model_name : str):

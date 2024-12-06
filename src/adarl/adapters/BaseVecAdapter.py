@@ -24,17 +24,22 @@ class BaseVecAdapter(BaseAdapter):
     It is an abstract class, it is meant to be extended with sub-classes for specific environments
     """
 
-    def __init__(self, vec_size : int):
+    def __init__(self, vec_size : int,
+                       output_th_device : th.device):
         """Initialize the adapter.
         """
         self._vec_size = vec_size
+        self._out_th_device = output_th_device
         super().__init__()
 
     def vec_size(self):
         return self._vec_size
     
+    def output_th_device(self) -> th.device:
+        return self._out_th_device
+    
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str], vec_mask : th.Tensor = None) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : List[str], vec_mask : th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
 
         Parameters
