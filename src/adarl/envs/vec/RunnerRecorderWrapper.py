@@ -18,6 +18,8 @@ import adarl.utils.tensor_trees as tt
 from typing_extensions import override
 from adarl.envs.vec.VecRunnerInterface import VecRunnerInterface, ObsType
 from adarl.envs.vec.VecRunnerWrapper import VecRunnerWrapper
+import adarl.utils.dbg.dbg_img
+import adarl.utils.dbg.dbg_img as dbg_img 
 
 class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
     """Wraps the environment to allow a modular transformation.
@@ -39,8 +41,13 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
                         overlay_text_height = 0.04,
                         overlay_text_color_rgb = (20,20,255),
                         use_global_ep_count = True,
-                        only_video = False):
+                        only_video = False,
+                        publish : bool = False,
+                        stream : bool = False):
         super().__init__(runner=runner)
+        if stream:
+            adarl.utils.dbg.dbg_img.helper.enable_web_dbg(True)
+        self._publish_imgs = publish
         self._env_idx = env_index
         self._use_global_ep_count = use_global_ep_count
         self._outFps = fps
@@ -108,7 +115,8 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         self._ep_rewards += rewards
         self._ep_step_counts += 1
         self._tot_vstep_counter += 1
-        if self._may_episode_be_saved(self._ep_counts):
+        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
+        if self._may_episode_be_saved(ep_count):
             (consequent_observation, next_start_observation,
                 reward, terminated, truncated, consequent_info,
                 next_start_info, reinit_done) = map_tensor_tree(vstep_ret_tuple, lambda tensor: tensor[self._env_idx])
@@ -116,6 +124,8 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
                 # Then, a reset just happened; action, terminated and truncated are invalid
                 action, terminated, truncated = None,None,None
             img = self._runner.get_ui_renderings()[0][self._env_idx]
+            if self._publish_imgs:
+                dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
             self._record_step(img, next_start_observation, action, next_start_info, reward, terminated, truncated)
         return vstep_ret_tuple
 
@@ -123,10 +133,12 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
     def reset(self, seed = None, options = {}) -> tuple[ObsType, TensorTree[th.Tensor]]:
         # ggLog.info(f"rec.reset()")
         obss, infos = super().reset(seed=seed, options=options)
-        obs  =  map_tensor_tree(obss, lambda tensor: tensor[self._env_idx])
-        info =  map_tensor_tree(infos, lambda tensor: tensor[self._env_idx])
-        img = self._runner.get_ui_renderings()[0][self._env_idx]        
-        self._record_step(img=img, obs = obs, action = None, info = info, reward=None, terminated=None, truncated=None)
+        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
+        if self._may_episode_be_saved(ep_count):
+            obs  =  map_tensor_tree(obss, lambda tensor: tensor[self._env_idx])
+            info =  map_tensor_tree(infos, lambda tensor: tensor[self._env_idx])
+            img = self._runner.get_ui_renderings()[0][self._env_idx]        
+            self._record_step(img=img, obs = obs, action = None, info = info, reward=None, terminated=None, truncated=None)
         return obss, infos
 
     def _update_buffers(self, img, vecobs, action, reward, terminated, truncated, info):
@@ -274,8 +286,8 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         
         return img_hwc
 
-    def _may_episode_be_saved(self, ep_counts):
-        return self._saveFrequency_ep==1 or (self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_counts % self._saveFrequency_ep == 0))
+    def _may_episode_be_saved(self, ep_count):
+        return (self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0)) or self._publish_imgs
 
     def _on_ep_end(self,    envs_ended_mask : th.Tensor,
                             last_observations : ObsType,

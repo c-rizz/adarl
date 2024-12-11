@@ -77,7 +77,9 @@ class StateHelper(ABC):
     def field_idx(self, field_names : Sequence[FieldName], device : th.device) -> th.Tensor:
         ...
 
-
+    @abstractmethod
+    def check_size(self, instantaneous_state_th : th.Tensor | None, state_th : th.Tensor | None):
+        ...
 
 
 class ThBoxStateHelper(StateHelper):
@@ -155,6 +157,7 @@ class ThBoxStateHelper(StateHelper):
         return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._obs_dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:
+        # ggLog.info(f"self._vec_size = {self._vec_size}, self.field_size = {self.field_size}, instantaneous_state = {instantaneous_state}")
         instantaneous_state = {k:th.as_tensor(v).view(self._vec_size, *self.field_size) for k,v in instantaneous_state.items()}
         return th.stack([instantaneous_state[k] for k in self.field_names], dim = -len(self.field_size)-1) # stack along the field dimension
 
@@ -181,9 +184,21 @@ class ThBoxStateHelper(StateHelper):
             instantaneous_state = self._mapping_to_tensor(instantaneous_state)
         for i in range(1,state.size()[1]):
             state[:,i] = state[:,i-1]
-        state[0] = instantaneous_state.view(self._vec_size,self._fields_num,*self.field_size)
+        state[:,0] = instantaneous_state.view(self._vec_size,self._fields_num,*self.field_size)
         return state
     
+    @override
+    def check_size(self, instantaneous_state : th.Tensor | Mapping[str,th.Tensor] | None = None,
+                         state_th : th.Tensor | None = None):
+        if instantaneous_state is not None:
+            if isinstance(instantaneous_state, th.Tensor):
+                dbg_check_size(instantaneous_state, (self._vec_size,self._fields_num,*self.field_size))
+            else:
+                for k,t in instantaneous_state.items():
+                    dbg_check_size(t, self.field_size, msg=f"Field {k}: ")
+        if state_th is not None:
+            dbg_check_size(state_th, (self._vec_size,self._history_length, self._fields_num,*self.field_size))
+        
     @override
     def flatten(self, state : th.Tensor):
         return state.flatten(start_dim=1)
@@ -201,12 +216,12 @@ class ThBoxStateHelper(StateHelper):
         ret = normalize(state, limits[0], limits[1])
         if warn_limits_violation and th.any(th.abs(ret) > 1.1):
             ggLog.warn(f"Normalization exceeded [-1.1,1.1] range: {state} with {limits[0]} & {limits[1]} = {ret}")
-        if not th.all(th.isfinite(ret)):
-            ggLog.info( f"Nonfinite normalized vals:\n"
-                        f"limits:\n"
-                        f"{limits}\n"
-                        f"ret:\n"
-                        f"{ret}\n")
+        # if not th.all(th.isfinite(ret)):
+        #     ggLog.info( f"Nonfinite normalized vals:\n"
+        #                 f"limits:\n"
+        #                 f"{limits}\n"
+        #                 f"ret:\n"
+        #                 f"{ret}\n")
         return ret
     
     @override
@@ -403,7 +418,7 @@ class StateNoiseGenerator:
         return th.stack([self._generate_noise() for _ in range(self._history_length)], dim=1)
     
     def update(self, state):
-        for i in range(1,state.size()[0]):
+        for i in range(1,self._history_length):
             state[:,i] = state[:,i-1]
         state[:,0] = self._generate_noise()
         return state
@@ -519,6 +534,13 @@ class DictStateHelper(StateHelper):
         ret.update({k+"_n":ng.normalize(state[k+"_n"]) for k,ng in self.noise_generators.items()})
         return ret
     
+    @override
+    def check_size(self, instantaneous_state : Mapping[str,th.Tensor|Mapping[str,th.Tensor]] | None = None,
+                         state_th : Mapping[str,th.Tensor] | None = None):
+        for k,sh in self.sub_helpers.items():
+            sh.check_size(instantaneous_state=instantaneous_state[k] if instantaneous_state is not None else None,
+                          state_th=state_th[k] if state_th is not None else None)
+
     @override
     def unnormalize(self, state : dict[str,th.Tensor]):
         ret = {k:sh.unnormalize(state[k]) for k,sh in self.sub_helpers.items()}
@@ -764,33 +786,33 @@ class JointImpedanceActionHelper:
         d = normalize(self._safe_damping,   min=self._minmax_joints_pvesd[0,:,4],max=self._minmax_joints_pvesd[1,:,4])
         if self._control_mode == self.CONTROL_MODES.VELOCITY:
             act_to_pvesd =  [1]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION:
             act_to_pvesd =  [0]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
             act_to_pvesd =  [0,2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
             act_to_pvesd =  [0,1,2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
             act_to_pvesd =  [0,1,2,3,4]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
         elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
             act_to_pvesd =  [0,3]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d
         elif self._control_mode == self.CONTROL_MODES.TORQUE:
             act_to_pvesd =  [2]
-            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0], dtype=self._dtype).expand(pvesd_shape).clone()
+            self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, -1.0], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
         else:
             raise RuntimeError(f"Invalid control mode {self._control_mode}")
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,

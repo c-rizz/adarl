@@ -81,15 +81,16 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._cached_states : dict[str,th.Tensor] | None = None
         self._cache_ep_step_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
         self._cache_ep_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
-        self._tot_vstep_count = 0
         self._ep_step_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
         self._ep_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
         self._build_time = time.monotonic()
         self._dbg_info = {}
+        self._vec_ep_info = {}
 
         self._reset_count = 0
         self._total_vsteps = 0
         self._last_step_end_wtime = -1
+        self._log_freq = 10
 
 
         self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
@@ -97,9 +98,10 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._getPrevStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._simStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._adarlStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_tot = 0
+        self._wtime_spent_stepping_adarl_tot = 0
 
         self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env.th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
@@ -127,8 +129,10 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
             self._adarl_env.submit_actions(actions)
 
         # Step the environment
-        with self._simStepWallDurationAverage:
+        with self._adarlStepWallDurationAverage:
+            t_prestep = time.monotonic()
             self._adarl_env.step()
+            self._wtime_spent_stepping_adarl_tot += time.monotonic()-t_prestep
             self._ep_step_counts+=1
 
         #Get new observation
@@ -179,6 +183,8 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._wtime_spent_stepping_tot += stepDuration
 
         self._fill_dbg_info()
+        if self._total_vsteps%self._log_freq==0:
+            self.print_dbg_info()
         # ggLog.info(f"Finishing step # {self._total_vsteps-1} ep_step_counts={self._ep_step_counts-1} terminateds,truncateds = {terminateds, truncateds}")
         return consequent_observations, next_start_observations, rewards, terminateds, truncateds, consequent_infos, next_start_infos, reinit_done
 
@@ -209,6 +215,17 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         next_start_infos = self._build_info(next_start_states)
         return next_start_observations, next_start_infos
 
+    def print_dbg_info(self):
+        msg =  (f"vsteps = {self._dbg_info['vsteps']:d}"+
+                f" wHz = {self._dbg_info['wall_fps']:.3f}"+
+                f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
+                f" avgSimWt = {self._dbg_info['avg_adarl_step_wall_duration']:f}"+
+                f" avgActWt = {self._dbg_info['avg_act_wall_duration']:f}"+
+                f" avgStaWt = {self._dbg_info['avg_sta_wall_duration']:f}"+
+                f" avgObsWt = {self._dbg_info['avg_obs_rew_wall_duration']:f}"+
+                f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
+                f" tstep%sim = {self._dbg_info['ratio_time_spent_simulating']:.2f}")
+        ggLog.info(msg)
     @override
     def reset(self, seed = None, options = {}) -> tuple[ObsType, TensorTree[th.Tensor]]:
         if options is None:
@@ -220,32 +237,32 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
 
         if self._reset_count > 0:
             self._fill_dbg_info()
-            if self._ep_step_counts == 0:
-                ggLog.info(f"No step executed in episode {self._reset_count-1}")
-            else:
-                if self._verbose:
-                    for k,v in self._dbg_info.items():
-                        ggLog.info(k," = ",v)
-                elif not self._quiet:
-                    msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
-                            f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
-                            f" stps = {self._dbg_info['ep_frames_count']:d}"+
-                            f" wHz = {self._dbg_info['wall_fps']:.3f}"+
-                            f" wHzFtl = {self._dbg_info['wall_fps_first_to_last']:.3f}"+
-                            f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
-                            f" avgSimWt = {self._dbg_info['avg_sim_step_wall_duration']:f}"+
-                            f" avgActWt = {self._dbg_info['avg_act_wall_duration']:f}"+
-                            f" avgStaWt = {self._dbg_info['avg_sta_wall_duration']:f}"+
-                            f" avgObsWt = {self._dbg_info['avg_obs_rew_wall_duration']:f}"+
-                            f" tstep%ftl = {self._dbg_info['ratio_time_spent_stepping_first_to_last']:.2f}"+
-                            f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
-                            f" wEpDur = {self._dbg_info['tot_ep_wall_duration']:.2f}"+
-                            f" sEpDur = {self._dbg_info['tot_ep_sim_duration']:.2f}")
-                    if "success_ratio" in self._dbg_info.keys():
-                            msg += f" succ_ratio = {self._dbg_info['success_ratio']:.2f}"
-                    if "success" in self._dbg_info.keys():
-                            msg += f" succ = {self._dbg_info['success']:.2f}"
-                    ggLog.info(msg)
+            # if self._ep_step_counts == 0:
+            #     ggLog.info(f"No step executed in episode {self._reset_count-1}")
+            # else:
+            #     if self._verbose:
+            #         for k,v in self._dbg_info.items():
+            #             ggLog.info(k," = ",v)
+            #     elif not self._quiet:
+            #         msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
+            #                 f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
+            #                 f" stps = {self._dbg_info['ep_frames_count']:d}"+
+            #                 f" wHz = {self._dbg_info['wall_fps']:.3f}"+
+            #                 f" wHzFtl = {self._dbg_info['wall_fps_first_to_last']:.3f}"+
+            #                 f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
+            #                 f" avgSimWt = {self._dbg_info['avg_adarl_step_wall_duration']:f}"+
+            #                 f" avgActWt = {self._dbg_info['avg_act_wall_duration']:f}"+
+            #                 f" avgStaWt = {self._dbg_info['avg_sta_wall_duration']:f}"+
+            #                 f" avgObsWt = {self._dbg_info['avg_obs_rew_wall_duration']:f}"+
+            #                 f" tstep%ftl = {self._dbg_info['ratio_time_spent_stepping_first_to_last']:.2f}"+
+            #                 f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
+            #                 f" wEpDur = {self._dbg_info['tot_ep_wall_duration']:.2f}"+
+            #                 f" sEpDur = {self._dbg_info['tot_ep_sim_duration']:.2f}")
+            #         if "success_ratio" in self._dbg_info.keys():
+            #                 msg += f" succ_ratio = {self._dbg_info['success_ratio']:.2f}"
+            #         if "success" in self._dbg_info.keys():
+            #                 msg += f" succ = {self._dbg_info['success']:.2f}"
+            #         ggLog.info(msg)
 
 
         states = self._get_states_caching()
@@ -275,7 +292,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._getStateDurationAverage.reset()
         self._getPrevStateDurationAverage.reset()
         self._getObsRewDurationAverage.reset()
-        self._simStepWallDurationAverage.reset()
+        self._adarlStepWallDurationAverage.reset()
         self._fill_dbg_info()
 
         states = self._get_states_caching()
@@ -331,12 +348,18 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
 
 
         t = time.monotonic()
-        # self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
-        # self._dbg_info["avg_sim_step_wall_duration"] = self._simStepWallDurationAverage.getAverage()
-        # self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
-        # self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
-        # self._dbg_info["avg_pst_wall_duration"] = self._getPrevStateDurationAverage.getAverage()
-        # self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()
+        self._dbg_info["vsteps"] = self._total_vsteps
+        self._dbg_info["ratio_time_spent_stepping"] = self._wtime_spent_stepping_tot/(t-self._build_time)
+        self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/(t-self._build_time)
+        self._dbg_info["wall_fps"] = self._total_vsteps/(t-self._build_time)
+        self._dbg_info["fps_only_sim"] = self._total_vsteps/self._wtime_spent_stepping_adarl_tot if self._wtime_spent_stepping_adarl_tot!=0 else float("nan")
+        self._dbg_info["fps_only_env"] = self._total_vsteps/self._wtime_spent_stepping_tot if self._wtime_spent_stepping_tot!=0 else float("nan")
+        self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
+        self._dbg_info["avg_adarl_step_wall_duration"] = self._adarlStepWallDurationAverage.getAverage()
+        self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
+        self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
+        self._dbg_info["avg_pst_wall_duration"] = self._getPrevStateDurationAverage.getAverage()
+        self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()
         # self._dbg_info["tot_ep_sim_duration"] = self._last_step_end_etime
         # self._dbg_info["reset_count"] = self._reset_count
         # self._dbg_info["time_from_start"] = t - self._build_time
@@ -346,8 +369,8 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         # self._dbg_info["alltime_fps"] = self._total_vsteps*self.num_envs/(t-self._build_time)
         # self._dbg_info["alltime_stepping_fps"] = self._total_vsteps*self.num_envs/self._wtime_spent_stepping_tot if self._wtime_spent_stepping_tot>0 else float("nan")
 
-        self._dbg_info["ep_frames_count"] = self._ep_step_counts
-        self._dbg_info["ep_reward"] = self._tot_ep_rewards
+        self._vec_ep_info["ep_frames_count"] = self._ep_step_counts
+        self._vec_ep_info["ep_reward"] = self._tot_ep_rewards
         # self._dbg_info.update(self._ggEnv.getInfo(state))
         if len(self._tot_ep_sub_rewards)==0: # at the first step and episode this must be populated to at least know which fields we'll have
             sub_rewards = {}
@@ -358,7 +381,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
                 pass
             self._tot_ep_sub_rewards = {k: v*0.0 for k,v in sub_rewards.items()}
         # ggLog.info(f'self._total_sub_rewards = {self._total_sub_rewards}')
-        self._dbg_info.update({"ep_sub_"+k:v for k,v in self._tot_ep_sub_rewards.items()})
+        self._vec_ep_info.update({"ep_sub_"+k:v for k,v in self._tot_ep_sub_rewards.items()})
 
     def _build_info(self, states):
         info = {}
@@ -370,7 +393,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         adarl_env_info = self._adarl_env.get_infos(states)
         adarl_env_info["is_success"] = adarl_env_info.get("success",
                                             th.as_tensor(False, device=self._adarl_env.th_device).expand((self._adarl_env.num_envs,)))
-        info.update({k:th.as_tensor(v) for k,v in self._dbg_info.items()})
+        info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
         return copy.deepcopy(info)
     

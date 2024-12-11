@@ -90,7 +90,7 @@ def run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data : mjx.Dat
     render_count = 0
     for i in tqdm(range(int(duration/mj_model.opt.timestep))):
         data_batch = jit_step(mjx_model, data_batch)
-        print(f"{data_batch.qpos}")
+        # print(f"{data_batch.qpos}")
         if renderer is not None and render_count < mj_model.opt.timestep*(i+1)*framerate:
             mj_data_batch = mjx.get_data(mj_model, data_batch)[0]
             # print(f"mj_data_batch = {mj_data_batch}")
@@ -130,6 +130,8 @@ def build_sim(render):
     # """
     model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
                                                                         model_kwargs={})
+    # model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")).read_text(),
+    #                                                                     model_kwargs={"use_cylinders" : False})
     xml = model_definition_string
     # Make model, data, and renderer
     mj_model = mujoco.MjModel.from_xml_string(xml)
@@ -164,7 +166,8 @@ def main():
     mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
     ep_frames = duration/mj_model.opt.timestep
     d_mjc = run_classic_mujoco(duration, framerate, mj_model, mj_data, scene_option, renderer)
-    dt = 0.002
+    dt = mj_model.opt.timestep
+    print(f"mj_model.opt.timestep = {mj_model.opt.timestep}")
     print(f"MJ classic took {d_mjc:6f}s, {ep_frames/d_mjc} fps, {ep_frames*dt/d_mjc} sim/real")
 
     mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
@@ -174,7 +177,7 @@ def main():
     for n in [1,2,10,100,1000,5000,10000,100000]:
         mj_model, mj_data, renderer, mjx_model, mjx_data, scene_option = build_sim(render)
         d_mjx = run_mjx_batched(duration, framerate, mj_model, mjx_model, mjx_data, scene_option, renderer, numenvs=n)
-        print(f"MJX({n}) took {d_mjx:6f}s ({d_mjc/(d_mjx/n):6f}x higher throughput than mjc, {(ep_frames*n)/d_mjx} fps, {ep_frames*n*dt/d_mjx} sim/real)")
+        print(f"MJX({n}) took {d_mjx:6f}s ({d_mjc/(d_mjx/n):6f}x higher throughput than mjc, {(ep_frames*n)/d_mjx} fps, {ep_frames*n*dt/d_mjx} sim/real, single fps = {ep_frames/d_mjx})")
 
 
 

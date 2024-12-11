@@ -825,16 +825,20 @@ def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
     else:
         return quat_xyzw
 
-def ros_rpy_to_quaternion_xyzw(rpy):
-    roll  = quaternion.from_rotation_vector([rpy[0], 0,      0])
-    pitch = quaternion.from_rotation_vector([0,      rpy[1], 0])
-    yaw   = quaternion.from_rotation_vector([0,      0,      rpy[2 ]])
+def ros_rpy_to_quaternion_xyzw_th(rpy):
+    rpy = th.as_tensor(rpy)
+    roll  = th.as_tensor([th.sin(rpy[0]/2),  0.0,               0.0,                th.cos(rpy[0]/2)], device=rpy.device)
+    pitch = th.as_tensor([0.0,               th.cos(rpy[1]/2),  0.0,                th.cos(rpy[1]/2)], device=rpy.device)
+    yaw   = th.as_tensor([0.0,               0.0,               th.cos(rpy[2]/2),   th.cos(rpy[2]/2)], device=rpy.device)
     # On fixed axes:
     # First rotate around x (roll)
     # Then rotate around y (pitch)
     # Then rotate around z (yaw)
-    q = yaw*pitch*roll
-    return q.x, q.y, q.z, q.w
+    return quat_mul_xyzw(yaw, quat_mul_xyzw(pitch, roll))
+
+def ros_rpy_to_quaternion_xyzw(rpy):
+    q = ros_rpy_to_quaternion_xyzw_th(rpy)
+    return q[0].item(), q[1].item(), q[2].item(), q[3].item()
 
 
 
@@ -871,8 +875,22 @@ def th_quat_combine(q_applied_first_xyzw : th.Tensor, q_applied_second_xyzw : th
 def quat_mul_xyzw_np(q1_xyzw : np.ndarray, q2_xyzw : np.ndarray):
     quat_mul_xyzw(th.as_tensor(q1_xyzw),
                     th_quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
-@th.jit.script
+# @th.jit.script
 def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):
+    """Performs a quaternion multiplication, computing, q1*q2, which is equivalent to rotating by q2 and then by q1
+
+    Parameters
+    ----------
+    q1_xyzw : th.Tensor
+        Quaternoin q1
+    q2_xyzw : th.Tensor
+        Quaternoin q2
+
+    Returns
+    -------
+    th.Tensor
+        Quaternoin q1*q2
+    """
     r1 = q1_xyzw[...,3]
     v1 = q1_xyzw[...,0:3]
     r2 = q2_xyzw[...,3]
@@ -888,10 +906,15 @@ def th_quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
     """
     return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0], device=q_xyzw.device)
 
-@th.jit.script
-def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
+
+def th_quat_rotate_py(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
     vector_xyzw = th.cat([vector_xyz, th.zeros_like(vector_xyz[...,0].unsqueeze(-1))], dim=-1)
     return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
+
+@th.jit.script
+def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
+    return th_quat_rotate_py(vector_xyz=vector_xyz, quaternion_xyzw=quaternion_xyzw)
+
 
 @th.jit.script
 def quat_swing_twist_decomposition_xyzw(quat_xyzw : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:

@@ -8,7 +8,7 @@ os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
-from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str
+from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose
 from typing import Any
 import jax
 import mujoco
@@ -105,11 +105,11 @@ def set_rows_cols(array : jnp.ndarray,
     jnp.ndarray
         The edited array
     """
-    ggLog.info(f"set_rows_cols(\n"
-               f"{array}\n"
-               f"{index_arrs}\n"
-               f"{vals}\n"
-               f")")
+    # ggLog.info(f"set_rows_cols(\n"
+    #            f"{array}\n"
+    #            f"{index_arrs}\n"
+    #            f"{vals}\n"
+    #            f")")
     index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]    for ia in index_arrs]
     return array.at[jnp.ix_(*index_arrs)].set(vals)
 
@@ -155,7 +155,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         realtime_factor : float | None = None,
                         show_gui : bool = False,
                         gui_frequency : float = 15,
-                        gui_env_index : int = 0):
+                        gui_env_index : int = 0,
+                        add_ground : bool = True,
+                        log_freq : int = 1):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -166,6 +168,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_step_count_since_build = 0
         self._sim_stepping_wtime_since_build = 0
         self._run_wtime_since_build = 0
+        self._add_ground = add_ground
+        self._log_freq = log_freq
 
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
@@ -197,7 +201,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def build_scenario(self, models : list[ModelSpawnDef]):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
-        
+        if self._add_ground:
+            models.append(ModelSpawnDef( name="ground",
+                                           definition_string="""<mujoco>
+                                                                    <compiler angle="radian"/>
+                                                                    <asset>
+                                                                        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+                                                                        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+                                                                        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+                                                                    </asset>
+                                                                    <worldbody>
+                                                                        <body name="ground_link">
+                                                                            <light pos="0 0 10" dir="0 0 -1" directional="true" />
+                                                                            <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" />
+                                                                        </body>
+                                                                    </worldbody>
+                                                                </mujoco>""",
+                                           format="mjcf",
+                                           pose=build_pose(0,0,0,0,0,0,1),
+                                           kwargs={}))
         specs = []
         for model in models:
             mjSpec = mujoco.MjSpec()
@@ -227,6 +249,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 body = spec.worldbody.next_body(body)
 
         self._mj_model = big_speck.compile()
+        self._mj_model.opt.timestep = self._sim_step_dt
         ggLog.info(f"big_speck.degree = {big_speck.degree}")
         ggLog.info(f"Spawing: \n{big_speck.to_xml()}")
 
@@ -245,10 +268,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
         self._mj_data = mujoco.MjData(self._mj_model)
-        if self._enable_rendering:
-            self._renderer = mujoco.Renderer(self._mj_model)
-        else:
-            self._renderer = None
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
@@ -264,9 +283,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._original_mj_data = copy.deepcopy(self._mj_data)
         self._original_mj_model = copy.deepcopy(self._mj_model)
 
-        ggLog.info(f"Compiling mjx.step....")
-        self._mjx_step2_step1 = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
-        _ = self._mjx_step2_step1(self._mjx_model, copy.deepcopy(self._mjx_data)) # trigger jit compile
+        ggLog.info(f"Compiling mjx_integrate_and_forward....")
+        self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
+        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(self._mjx_data)) # trigger jit compile
+        # ggLog.info(f"Compiling mjx.step....")
+        # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
+        # _ = self._mjx_step(self._mjx_model, copy.deepcopy(self._mjx_data)) # trigger jit compile
         ggLog.info(f"Compiling mjx.forward....")
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         self._mjx_data = self._mjx_forward(self._mjx_model, self._mjx_data) # compute initial mjData
@@ -282,6 +304,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._render_scene_option = mujoco.MjvOption()
             # # enable joint visualization option:
             # scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
+        else:
+            self._renderer = None
 
         if self._show_gui:
             self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data))
@@ -300,7 +324,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
         self._camera_sizes :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         if self._enable_rendering:
-            self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:mujoco.Renderer(self._mj_model,height=resolution[0],width=resolution[1])
+            def make_renderer(h,w):
+                ggLog.info(f"Making renderer for size {h}x{w}")
+                return mujoco.Renderer(self._mj_model,height=h,width=w)
+            self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
                             for resolution in set(self._camera_sizes.values())}
         else:
             self._renderers = {}
@@ -363,38 +390,49 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._sent_motor_torque_commands_by_bid_jid = {}
 
         stepping_wtime = 0
-        t0 = self._simTime
-        while self._simTime-t0 < duration_sec:
+        simulating_wtime = 0
+        control_wtime = 0
+        vsteps_done = 0
+        st0 = self._simTime
+        while self._simTime-st0 < duration_sec:
             wtps = time.monotonic()
             self._apply_commands()
-            # ggLog.info(f"qfrc_applied0 = {self._mjx_data.qfrc_applied}")
-            # ggLog.info(f"qfrc_applied1 = {self._mjx_data.qfrc_applied}")
-            # ggLog.info(f"nu = {self._mj_model.nu}")
-            self._mjx_data = self._mjx_step2_step1(self._mjx_model,self._mjx_data)
+
+            wt1 = time.monotonic()
+            control_wtime += wt1-wtps
+            self._mjx_data = self._mjx_integrate_and_forward(self._mjx_model,self._mjx_data)
+            simulating_wtime += time.monotonic()-wt1
+
             self._update_joint_state_step_stats()
-            # ggLog.info(f"qfrc_applied2 = {self._mjx_data.qfrc_applied}")
             stepping_wtime += time.monotonic()-wtps
             self._sim_step_count_since_build += 1
+            vsteps_done += 1
             # self._read_new_contacts()
-            # self._update_joint_state_step_stats()
+            
             self._simTime += self._sim_step_dt
             if self._realtime_factor is not None and self._realtime_factor>0:
                 sleep_time = self._sim_step_dt*(1/self._realtime_factor) - (time.monotonic()-self._prev_step_end_wtime)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
             self._prev_step_end_wtime = time.monotonic()
-            if self._show_gui and time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq:
-                # inplace_deepcopy(self._viewer_mj_data, mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data)),
-                #                  exclude=mj_data_copy_exclude)
-                mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data))
-                self._last_gui_update_wtime = time.monotonic()
-                self._viewer.sync()
+            self._update_gui()
         # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
         #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
+        self._stats = { "wtime_stepping":    stepping_wtime,
+                        "wtime_simulating":  simulating_wtime,
+                        "wtime controlling": control_wtime,
+                        "rt_factor_vec": self._vec_size*(self._simTime-st0)/stepping_wtime,
+                        "rt_factor_single": (self._simTime-st0)/stepping_wtime,
+                        "stime_step" : self._simTime-st0,
+                        "stime" : self._simTime,
+                        "fps_vec" :    self._vec_size*vsteps_done/stepping_wtime,
+                        "fps_single" : vsteps_done/stepping_wtime}
+        if self._log_freq > 0 and self._sim_step_count_since_build % self._log_freq == 0:
+            ggLog.info( "\n".join([str(k)+' : '+str(v) for k,v in self._stats.items()]))
         self._sim_stepping_wtime_since_build += stepping_wtime
         self._run_wtime_since_build += time.monotonic()-tf0
 
-        return self._simTime-t0
+        return self._simTime-st0
     
     @staticmethod
     # @jax.jit
@@ -565,11 +603,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override    
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):
+        # ggLog.info(f"setJointsStateDirect(\n{joint_names}, \n{joint_states_pve}, \n{vec_mask})")
+
         if self._check_sizes and joint_states_pve.size() != (self._vec_size,len(joint_names),3):
             raise RuntimeError(f"joint_states_pve should have size {(self._vec_size,len(joint_names),3)}, but it's {joint_states_pve.size()}")
         jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
         # contiguous_js = joint_states_pve.contiguous()
-        ggLog.info(f"joint_states_pve.size() = {joint_states_pve.size()}")
+        # ggLog.info(f"joint_states_pve.size() = {joint_states_pve.size()}")
         # ggLog.info(f"joint_states_pve.dim_order() = {joint_states_pve.dim_order()}")
         # ggLog.info(f"joint_states_pve.stride() = {joint_states_pve.stride()}")
         # ggLog.info(f"contiguous_js.size() = {contiguous_js.size()}")
@@ -580,22 +620,34 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
-        ggLog.info(f"js_pve.shape = {js_pve.shape}")
+        # ggLog.info(f"js_pve.shape = {js_pve.shape}")
 
         jtypes = self._mj_model.jnt_type[jids]
         if not jnp.all(jnp.logical_or(jtypes == mujoco.mjtJoint.mjJNT_HINGE, jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
             raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names,jtypes))}")
         qpadr = self._mj_model.jnt_qposadr[jids]
         qvadr = self._mj_model.jnt_dofadr[jids]
-        ggLog.info(f"self._mjx_data.qpos.at[{vec_mask_jnp},{qpadr}].shape = {self._mjx_data.qpos[vec_mask_jnp,qpadr].shape}")
-        ggLog.info(f"js_pve[vec_mask_jnp,:,0].shape = {js_pve[vec_mask_jnp,:,0].shape}")
+        # ggLog.info(f"self._mjx_data.qpos[{vec_mask_jnp},{qpadr}].shape = {get_rows_cols(self._mjx_data.qpos, [vec_mask_jnp,qpadr]).shape}")
+        # ggLog.info(f"js_pve[vec_mask_jnp,:,0].shape = {js_pve[vec_mask_jnp,:,0].shape}")
         qpos = set_rows_cols(self._mjx_data.qpos,           (vec_mask_jnp,qpadr), js_pve[vec_mask_jnp,:,0])
         qvel = set_rows_cols(self._mjx_data.qvel,           (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,1])
         qeff = set_rows_cols(self._mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
         self._mjx_data = self._mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
-    
+        self._mjx_data = self._mjx_forward(self._mjx_model,self._mjx_data)    
+        self._update_gui(force=True)
+        # ggLog.info(f"setted_jstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._mjx_data)}")
+
+
+    def _update_gui(self, force : bool = False):
+        if self._show_gui and (time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq or force):
+            mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._mjx_data))
+            self._last_gui_update_wtime = time.monotonic()
+            self._viewer.sync()
+
     @override
     def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
+        # ggLog.info(f"setJointsStateDirect(\n{link_names}, \n{link_states_pose_vel}, \n{vec_mask})")
+
         link_states_pose_vel_jnp = th2jax(link_states_pose_vel, jax_device=self._jax_device)
         if vec_mask is not None:
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
@@ -606,7 +658,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         data_joint_pos = self._mjx_data.qpos
         data_joint_vel = self._mjx_data.qvel
         for i, link_name in enumerate(link_names):
-            ggLog.info(f"setting link state for {link_name}")
+            # ggLog.info(f"setting link state for {link_name}")
             lid = self._lname2lid[link_name]
             root_body_id = self._mj_model.body_rootid[lid]
             if lid != root_body_id:
@@ -622,12 +674,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             parent_joints_num = self._mj_model.body_jntnum[lid]
             parent_body_id = self._mj_model.body_parentid[lid]
             if parent_joints_num == 0 and parent_body_id==0: # if it has no parent joints
-                ggLog.info(f"changing 'fixed joint'")
+                # ggLog.info(f"changing 'fixed joint'")
                 #    Fixed joints cannot be set to different positions across the vectorized simulations.
                 #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
                 #     and fixed joints are represented as fixed transforms in the model.
-                if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], link_states_pose_vel_jnp[[0],i],equal_nan=True)):
-                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.")
+                if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
+                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
+                                       f"{link_states_pose_vel_jnp[0,i]}\n"
+                                       f"!=\n"
+                                       f"{link_states_pose_vel_jnp[:,i]}")
                 if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
                     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.")
                 model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
@@ -637,7 +692,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 jid = self._mj_model.body_jntadr[lid]
                 jtype = self._mj_model.jnt_type[jid]
                 if jtype == mujoco.mjtJoint.mjJNT_FREE:
-                    ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
+                    # ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
                     qadr = self._mj_model.jnt_qposadr[jid]
                     dadr = self._mj_model.jnt_dofadr[jid]
                     data_joint_pos = set_rows_cols(data_joint_pos,
@@ -658,9 +713,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_model = self._mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
         self._mjx_data = self._mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
         # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")        
-        print(f"self._mjx_data.qpos = {self._mjx_data.qpos}")        
+        # print(f"self._mjx_data.qpos = {self._mjx_data.qpos}")        
         # self._mjx_model = mjx.put_model(self._mj_model, device=self._jax_device)
-        self._mjx_forward(self._mjx_model,self._mjx_data)
+        self._mjx_data = self._mjx_forward(self._mjx_model,self._mjx_data)
+        self._update_gui(True)
+        # ggLog.info(f"setted_lstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._mjx_data)}")
             
 
     @override
