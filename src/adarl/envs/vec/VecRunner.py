@@ -102,6 +102,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_tot = 0
         self._wtime_spent_stepping_adarl_tot = 0
+        self._wtime_first_step = time.monotonic() # for now fill it with a reasonable time
 
         self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env.th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
@@ -118,6 +119,8 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         if autoreset is None:
             autoreset = self.autoreset
         t0 = time.monotonic()
+        if self._total_vsteps == 0:
+            self._wtime_first_step = t0
         if self._reinit_needed:
             ggLog.warn(f"Calling step on terminated/truncated episodes")
 
@@ -226,6 +229,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
                 f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
                 f" tstep%sim = {self._dbg_info['ratio_time_spent_simulating']:.2f}")
         ggLog.info(msg)
+
     @override
     def reset(self, seed = None, options = {}) -> tuple[ObsType, TensorTree[th.Tensor]]:
         if options is None:
@@ -350,7 +354,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         t = time.monotonic()
         self._dbg_info["vsteps"] = self._total_vsteps
         self._dbg_info["ratio_time_spent_stepping"] = self._wtime_spent_stepping_tot/(t-self._build_time)
-        self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/(t-self._build_time)
+        self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/(t-self._wtime_first_step)
         self._dbg_info["wall_fps"] = self._total_vsteps/(t-self._build_time)
         self._dbg_info["fps_only_sim"] = self._total_vsteps/self._wtime_spent_stepping_adarl_tot if self._wtime_spent_stepping_adarl_tot!=0 else float("nan")
         self._dbg_info["fps_only_env"] = self._total_vsteps/self._wtime_spent_stepping_tot if self._wtime_spent_stepping_tot!=0 else float("nan")

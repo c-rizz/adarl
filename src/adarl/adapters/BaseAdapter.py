@@ -277,6 +277,8 @@ class BaseAdapter(ABC):
                 return
             self._running_run_async = False
 
+    def get_debug_info(self) -> dict[str,th.Tensor]:
+        return {}
 
     @property
     @deprecated("Just for back compatibility, do not use",)
