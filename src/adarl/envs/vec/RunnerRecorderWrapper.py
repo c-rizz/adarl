@@ -117,6 +117,7 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         self._tot_vstep_counter += 1
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
+            ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
             (consequent_observation, next_start_observation,
                 reward, terminated, truncated, consequent_info,
                 next_start_info, reinit_done) = map_tensor_tree(vstep_ret_tuple, lambda tensor: tensor[self._env_idx])
@@ -287,7 +288,7 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         return img_hwc
 
     def _may_episode_be_saved(self, ep_count):
-        return (self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0)) or self._publish_imgs
+        return self._saveBestEpisodes or (self._saveFrequency_ep>0 and ep_count % self._saveFrequency_ep == 0) or self._publish_imgs
 
     def _on_ep_end(self,    envs_ended_mask : th.Tensor,
                             last_observations : ObsType,
@@ -335,6 +336,6 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self._runner.close()
 
-    def setSaveAllEpisodes(self, enable : bool, disable_after_one_episode : bool = False):
-        self._saveAllEpisodes = enable
-        self._disableAfterEp = disable_after_one_episode
+    # def setSaveAllEpisodes(self, enable : bool, disable_after_one_episode : bool = False):
+    #     self._saveAllEpisodes = enable
+    #     self._disableAfterEp = disable_after_one_episode

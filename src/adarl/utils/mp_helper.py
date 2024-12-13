@@ -3,7 +3,7 @@ from typing import Literal
 
 context = None
 context_type = ""
-def get_context(method : Literal["fork","spwan","forkserver"] = "forkserver"):
+def get_context(method : Literal["fork","spawn","forkserver"] = "forkserver"):
     global context
     global context_type
     if context is None:

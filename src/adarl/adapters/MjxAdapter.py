@@ -172,7 +172,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_frequency : float = 15,
                         gui_env_index : int = 0,
                         add_ground : bool = True,
-                        log_freq : int = -1):
+                        log_freq : int = 1):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -229,7 +229,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                                     </asset>
                                                                         <worldbody>
                                                                         <body name="ground_link">
-                                                                            <light pos="0 0 10" dir="0.1 0.1 -1" directional="true" />
+                                                                            <light pos="0 0 10" dir="0.3 0.3 -1" directional="true" 
+                                                                                    ambient="0.2 0.2 0.2"
+                                                                                    diffuse="0.7 0.7 0.7"
+                                                                                    specular="0.5 0.5 0.5"
+                                                                                    castshadow="true"/>
                                                                             <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" />
                                                                         </body>
                                                                     </worldbody>
@@ -445,14 +449,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._dbg_info.fps_vec =     self._vec_size*vsteps_done/stepping_wtime
         self._dbg_info.fps_single =  vsteps_done/stepping_wtime
         if self._log_freq > 0 and self._sim_step_count_since_build % self._log_freq == 0:
-            ggLog.info( "\n".join([str(k)+' : '+str(v) for k,v in self._dbg_info.items()]))
+            ggLog.info( "\n".join([str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
         self._sim_stepping_wtime_since_build += stepping_wtime
         self._run_wtime_since_build += time.monotonic()-tf0
 
         return self._simTime-st0
     
     def get_debug_info(self) -> dict[str,th.Tensor]:
-        return {k:th.as_tensor(v) for k,v in dataclasses.asdict(self._dbg_info)}
+        return {k:th.as_tensor(v) for k,v in dataclasses.asdict(self._dbg_info).items()}
 
     @staticmethod
     # @jax.jit

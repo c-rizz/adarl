@@ -12,10 +12,11 @@
     <compiler angle="radian"/>
     <worldbody>
         <body name="simple_camera_link" pos="${position_xyz}"  quat="${orientation_wxyz}">
-        <!-- xyaxes="-1 0 0 0 0 1"> -->        
+          <!-- Make it so that, in the camera_link frame, the camera looks toward x, with z pointing up and y left -->        
           <camera name="${camera_name}"
                   fovy="${70*camera_height/camera_width}"
                   resolution="${camera_width} ${camera_height}"
+                  xyaxes="0 -1 0 0 0 1"
           />
         </body>
     </worldbody>

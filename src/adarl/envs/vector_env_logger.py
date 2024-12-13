@@ -4,7 +4,7 @@ import numpy as np
 import torch as th
 from typing import Any, SupportsFloat, Tuple, Dict
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.tensor_trees import unstack_tensor_tree, filter_tensor_tree
+from adarl.utils.tensor_trees import unstack_tensor_tree, filter_tensor_tree, TensorTree, TensorMapping
 import copy
 import adarl.utils.session as session
 import time
@@ -45,7 +45,15 @@ class VectorEnvLogger(
             The environment step ``(observation, reward, terminated, truncated, info)``
 
         """
+        t0 = time.monotonic()
+        terminated : th.Tensor
+        truncated : th.Tensor
+        reward : th.Tensor
+        observation : TensorMapping[th.Tensor]
+        infos : TensorMapping[th.Tensor]
         observation, reward, terminated, truncated, infos = self.env.step(action)
+        t1 = time.monotonic()
+
         self.__step_count += 1
 
         # ggLog.info(f"infos = {infos}")
@@ -58,31 +66,32 @@ class VectorEnvLogger(
         final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
         # infos.pop("final_infos")
         # info_list = unstack_tensor_tree(infos)
-        final_info_list = unstack_tensor_tree(final_infos)
         if self._use_wandb:
             from adarl.utils.wandb_wrapper import wandb_log
-            for i in range(self._num_envs):
-                if terminated[i] or truncated[i]: # we only log the info of the last step
-                    self._tot_ep_count += 1
-                    info = final_info_list[i]
-                    logs = {}
-                    for k,v in info.items():
-                        k = "VecEnvLogger/lastinfo."+k
-                        if isinstance(v,dict):
-                            # ggLog.info(f"flattening {k}:{v}")
-                            for k1,v1 in v.items():
-                                logs[k+"."+k1] = v1
-                        else:
-                            if type(v) is bool:
-                                v = int(v)
-                            logs[k] = v
-                    logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
-                    logs = copy.deepcopy(logs) # avoid issues with references (yes, it does happen)
-                    for k in logs.keys():
-                        if k not in self._logs_batch:
-                            self._logs_batch[k] = []
-                        self._logs_batch[k].append(logs[k])
-                    self._logs_batch_size +=1
+            if th.any(th.logical_or(terminated, truncated)):
+                final_info_list = unstack_tensor_tree(final_infos)
+                for i in range(self._num_envs):
+                    if terminated[i] or truncated[i]: # we only log the info of the last step
+                        self._tot_ep_count += 1
+                        info = final_info_list[i]
+                        logs = {}
+                        for k,v in info.items():
+                            k = "VecEnvLogger/lastinfo."+k
+                            if isinstance(v,dict):
+                                # ggLog.info(f"flattening {k}:{v}")
+                                for k1,v1 in v.items():
+                                    logs[k+"."+k1] = v1
+                            else:
+                                if type(v) is bool:
+                                    v = int(v)
+                                logs[k] = v
+                        logs["VecEnvLogger/vec_ep_count"] = self._tot_ep_count
+                        logs = copy.deepcopy(logs) # avoid issues with references (yes, it does happen)
+                        for k in logs.keys():
+                            if k not in self._logs_batch:
+                                self._logs_batch[k] = []
+                            self._logs_batch[k].append(logs[k])
+                        self._logs_batch_size +=1
             if self._logs_batch_size >= self._num_envs:
                 new_elems = {}
                 for k,v in self._logs_batch.items():
@@ -103,4 +112,7 @@ class VectorEnvLogger(
                 self._logs_batch_size = 0
                 self._step_count_last_log = self.__step_count
                 self._time_last_log = time.monotonic()
+        tf = time.monotonic()
+        # ggLog.info(f"Logger overhead: {tf-t1:.9f}/{t1-t0:.9f} = {(tf-t1)/(t1-t0):.9f}")
+
         return observation, reward, terminated, truncated, infos
