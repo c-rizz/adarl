@@ -32,11 +32,11 @@ import torch as th
 import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
-from adarl.envs.vec.VecRunnerInterface import VecRunnerInterface
+from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
 
 ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
-class VecRunner(VecRunnerInterface, Generic[ObsType]):
+class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
     spec = None
 
@@ -46,7 +46,8 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
                  quiet : bool = False,
                  episodeInfoLogFile : Optional[str] = None,
                  render_envs : list[int] = [],
-                 autoreset : bool = True):
+                 autoreset : bool = True,
+                 log_freq : int = -1):
         
         super().__init__(num_envs=env.num_envs,
                          vec_observation_space=env.vec_observation_space,
@@ -89,8 +90,10 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
 
         self._reset_count = 0
         self._total_vsteps = 0
-        self._last_step_end_wtime = -1
-        self._log_freq = 10
+        self._last_step_end_wtime = time.monotonic()
+        self._end_to_end_step_wtime = 1
+        self._end_to_end_step_etime = 1
+        self._log_freq = log_freq
 
 
         self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
@@ -124,6 +127,7 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
             ggLog.warn(f"Calling step on terminated/truncated episodes")
 
         self._total_vsteps += 1
+        etime_step_start = th.sum(self._adarl_env.get_times_since_build())
 
         # Setup action to perform
         self._last_actions = actions.detach().clone()
@@ -181,6 +185,8 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         stepDuration = tf - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)
         self._last_step_end_etime = self._adarl_env.get_times_since_build()
+        self._end_to_end_step_wtime = tf- self._last_step_end_wtime
+        self._end_to_end_step_etime = th.sum(self._adarl_env.get_times_since_build()) - etime_step_start
         self._last_step_end_wtime = tf
         self._wtime_spent_stepping_tot += stepDuration
 
@@ -218,16 +224,16 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         return next_start_observations, next_start_infos
 
     def print_dbg_info(self):
-        msg =  (f"vsteps = {self._dbg_info['vsteps']:d}"+
-                f" wHz = {self._dbg_info['wall_fps']:.3f}"+
-                f" rt = {self._dbg_info['rtfactor']:.3g}"+
-                f" avgStpWt = {self._dbg_info['avg_env_step_wall_duration']:f}"+
-                f" avgSimWt = {self._dbg_info['avg_adarl_step_wall_duration']:f}"+
-                f" avgActWt = {self._dbg_info['avg_act_wall_duration']:f}"+
-                f" avgStaWt = {self._dbg_info['avg_sta_wall_duration']:f}"+
-                f" avgObsWt = {self._dbg_info['avg_obs_rew_wall_duration']:f}"+
-                f" tstep% = {self._dbg_info['ratio_time_spent_stepping']:.2f}"+
-                f" tstep%sim = {self._dbg_info['ratio_time_spent_simulating']:.2f}")
+        msg =  (f"EnvRunner: vsteps={self._dbg_info['vsteps']:d}"+
+                f" wHz={self._dbg_info['wall_fps']:.4g}"+
+                f" rt={self._dbg_info['rtfactor']:.3g}"+
+                f" aStpWt={self._dbg_info['avg_env_step_wall_duration']:.6g}"+
+                f" aSimWt={self._dbg_info['avg_adarl_step_wall_duration']:.6g}"+
+                f" aActWt={self._dbg_info['avg_act_wall_duration']:.6g}"+
+                f" aStaWt={self._dbg_info['avg_sta_wall_duration']:.6g}"+
+                f" aObsWt={self._dbg_info['avg_obs_rew_wall_duration']:.6g}"+
+                f" tstep%wt={self._dbg_info['ratio_time_spent_stepping']:.2f}"+
+                f" tstep%st={self._dbg_info['ratio_time_spent_simulating']:.2f}")
         ggLog.info(msg)
 
     @override
@@ -356,7 +362,9 @@ class VecRunner(VecRunnerInterface, Generic[ObsType]):
         self._dbg_info["ratio_time_spent_stepping"] = self._wtime_spent_stepping_tot/wtime_since_simstart
         self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/wtime_since_simstart
         self._dbg_info["wall_fps"] = self._adarl_env.num_envs*self._total_vsteps/wtime_since_simstart
-        self._dbg_info["rtfactor"] = th.sum(self._adarl_env.get_times_since_build())/wtime_since_simstart
+        self._dbg_info["rtfactor"] = self._end_to_end_step_etime/self._end_to_end_step_wtime
+        self._dbg_info["rtfactor_step"] = th.sum(self._adarl_env.get_times_since_build())/self._wtime_spent_stepping_adarl_tot
+        self._dbg_info["rtfactor_tot"] = th.sum(self._adarl_env.get_times_since_build())/wtime_since_simstart
         self._dbg_info["fps_only_sim"] = self._total_vsteps/self._wtime_spent_stepping_adarl_tot if self._wtime_spent_stepping_adarl_tot!=0 else float("nan")
         self._dbg_info["fps_only_env"] = self._total_vsteps/self._wtime_spent_stepping_tot if self._wtime_spent_stepping_tot!=0 else float("nan")
         self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()

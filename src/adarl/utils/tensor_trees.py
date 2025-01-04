@@ -229,7 +229,7 @@ def unstack_tensor_tree(src_tree : TensorTree, _key = "", _already_unstacked : d
                 try:
                     dictlist[i][k] = unstacked_subtree[i]
                 except Exception as e:
-                    raise RuntimeError(f"exception at {_key+'.'+k}[{i}]: {e}")
+                    raise RuntimeError(f"exception at {_key+'.'+k if _key != '' else k}[{i}]: {e}")
         # print(f"src_tree = {src_tree}, unstacked = {dictlist}")
         return dictlist
     elif isinstance(src_tree, th.Tensor):
@@ -239,12 +239,12 @@ def unstack_tensor_tree(src_tree : TensorTree, _key = "", _already_unstacked : d
     else:
         raise RuntimeError(f"Unexpected tree element type {type(src_tree)} at key {_key}")
 
-def space_from_tree(tensor_tree):
+def space_from_tree(tensor_tree, labels = None):
     if isinstance(tensor_tree, dict):
         subspaces = {}
         for k in tensor_tree.keys():
             try:
-                subspaces[k] = space_from_tree(tensor_tree[k])
+                subspaces[k] = space_from_tree(tensor_tree[k], labels.get(k,None) if labels is not None else None)
             except RuntimeError as e:
                 raise RuntimeError(f"{k}.{e}")    
         return gym_spaces.Dict(subspaces)
@@ -260,7 +260,8 @@ def space_from_tree(tensor_tree):
         return ThBox(high=(th.ones_like(tensor_tree)*float("+inf")).cpu().numpy(),
                     low=(th.ones_like(tensor_tree)*float("-inf")).cpu().numpy(),
                     dtype=torch_to_numpy_dtype_dict[tensor_tree.dtype],
-                    torch_device=tensor_tree.device)
+                    torch_device=tensor_tree.device,
+                    labels=labels)
     else:
         raise RuntimeError(f"Unexpected tree element type {type(tensor_tree)}")
     

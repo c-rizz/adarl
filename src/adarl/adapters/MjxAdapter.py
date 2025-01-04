@@ -29,6 +29,11 @@ from functools import partial
 import dataclasses
 from dataclasses import dataclass 
 
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+# jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
 #     if type(src) != type(dst):
 #         raise RuntimeError(f"src and dst should be of same class, but they are respectively {type(src)} {type(dst)}")
@@ -53,7 +58,7 @@ def th2jax(tensor : th.Tensor, jax_device : jax.Device):
     return jnp.from_dlpack(tensor.contiguous().cuda()).to_device(jax_device)
                                                     
 def jax2th(array : jnp.ndarray, th_device : th.device):
-    return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device)
+    return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
 
 devices_th2jax = {}
 devices_jax2th = {}
@@ -115,6 +120,38 @@ def set_rows_cols(array : jnp.ndarray,
     index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]    for ia in index_arrs]
     return array.at[jnp.ix_(*index_arrs)].set(vals)
 
+@jax.jit
+def set_rows_cols_masks(array : jnp.ndarray,
+                        masks : Sequence[jnp.ndarray],
+                        vals : jnp.ndarray):
+    """Sets values in the specified subarray. index_arrs indicates which indexes of each dimension to set
+       the values in. For example you can write in a 2D array at the rows [2,3,4] and columns [0,3,5,7] 
+       (which identify a 3x4 array) by setting index_arrs=(jnp.array([2,3,4]), jnp.array([0,3,5,7])) and
+       passing a 3x4 array in vals.
+
+    Parameters
+    ----------
+    array : jnp.ndarray
+        The array to be modified (Will not be written to)
+    index_arrs : Sequence[jnp.ndarray]
+        The indexes in each dimension.
+    vals : jnp.ndarray
+        The values to write
+
+    Returns
+    -------
+    jnp.ndarray
+        The edited array
+    """
+    # ggLog.info(f"set_rows_cols(\n"
+    #            f"{array}\n"
+    #            f"{index_arrs}\n"
+    #            f"{vals}\n"
+    #            f")")
+    # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
+    index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), -1) for mask in masks]
+    return array.at[jnp.ix_(*index_arrs)].set(vals)
+
 def get_rows_cols(array : jnp.ndarray,
                   index_arrs : Sequence[jnp.ndarray | Sequence[int] | int]):
     """Gets values of the specified subarray. index_arrs indicates which indexes of each dimension to get
@@ -147,6 +184,11 @@ def get_rows_cols(array : jnp.ndarray,
 
 model_element_separator = "#"
 
+class SimState:
+    mjx_data : mjx.Data
+    requested_qfrc_applied : jnp.ndarray
+
+
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @dataclass
@@ -172,7 +214,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_frequency : float = 15,
                         gui_env_index : int = 0,
                         add_ground : bool = True,
-                        log_freq : int = 1):
+                        log_freq : int = -1):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -229,7 +271,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                                     </asset>
                                                                         <worldbody>
                                                                         <body name="ground_link">
-                                                                            <light pos="0 0 10" dir="0.3 0.3 -1" directional="true" 
+                                                                            <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
                                                                                     ambient="0.2 0.2 0.2"
                                                                                     diffuse="0.7 0.7 0.7"
                                                                                     specular="0.5 0.5 0.5"
@@ -242,6 +284,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                            pose=build_pose(0,0,0,0,0,0,1),
                                            kwargs={}))
         specs = []
+        ggLog.info(f"Spawning models: {[model.name for model in models]}")
         for model in models:
             mjSpec = mujoco.MjSpec()
             if model.format.strip().lower()[-6:] == ".xacro":
@@ -251,7 +294,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 def_string = model.definition_string
             else:
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
-            ggLog.info(f"Adding model: \n{def_string}")
+            ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec.from_string(def_string)
             specs.append((model.name, mjSpec))
         big_speck = mujoco.MjSpec()
@@ -396,10 +439,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._reset_joint_state_step_stats()
         stepLength = self.run(self._step_length_sec)
         return stepLength
-
+    
+    @partial(jax.jit, static_argnums=(0,))
     def _apply_commands(self):
         self._apply_torque_cmds()
 
+    @partial(jax.jit, static_argnums=(0,))
     def _apply_torque_cmds(self):
         self._mjx_data = self._mjx_data.replace(qfrc_applied=self._requested_qfrc_applied)
 
@@ -490,6 +535,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 cam = requestedCameras[i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes[cam]]
+                mujoco.mj_camlight(self._mj_model, mj_datas[env]) # see https://github.com/google-deepmind/mujoco/issues/1806
                 renderer.update_scene(mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
                 image_batches[i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
@@ -508,6 +554,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
            t = self._get_vec_joint_states_pve(self._mjx_model, self._mjx_data, jids)
         return jax2th(t, th_device=self._out_th_device)
     
+    @override
+    def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
+        if requestedJoints is None:
+            jids = self._monitored_jids
+        else:
+            jids = jnp.array([self._jname2jid[jn] for jn in requestedJoints], device=self._jax_device)
+        if len(jids) == 0:
+            return th.empty(size=(self._vec_size,self._mjx_data.qpos.shape[1],0,3), dtype=th.float32)
+        else:
+           t = self._get_vec_joint_states_pveae(self._mjx_model, self._mjx_data, jids)
+        return jax2th(t, th_device=self._out_th_device)
+    
+    @staticmethod
+    # @jax.jit
+    def _get_vec_joint_states_pveae(mjx_model, mjx_data, jids : jnp.ndarray):
+        return MjxAdapter._get_vec_joint_states_raw_pveae(mjx_model.jnt_qposadr[jids],
+                                                        mjx_model.jnt_dofadr[jids],
+                                                        mjx_data)
+    
     @staticmethod
     # @jax.jit
     def _get_vec_joint_states_pve(mjx_model, mjx_data, jids : jnp.ndarray):
@@ -517,10 +582,37 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     
     @staticmethod
     @jax.jit
-    def _get_vec_joint_states_raw_pve(qpadr, qvadr, mjx_data):
+    def _get_vec_joint_states_raw_pveae(qpadr, qvadr, mjx_data):
+        # What should we use as torque readings?
+        # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
+        #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
+        # - We also could use qfrc_applied, which is the torque we are applying, I think thin in most cases this should be correct
+        # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
+        #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
+        #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_smooth[:,qvadr]], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
+                            mjx_data.qfrc_applied[:,qvadr],
+                            mjx_data.qacc[:,qpadr],
+                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]], 
+                            axis = 2)
+    @staticmethod
+    @jax.jit
+    def _get_vec_joint_states_raw_pve(qpadr, qvadr, mjx_data):
+        # What should we use as torque readings?
+        # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
+        #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
+        # - We also could use qfrc_applied, which is the torque we are applying, I think thin in most cases this should be correct
+        # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
+        #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
+        #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
+        return jnp.stack([  mjx_data.qpos[:,qpadr],
+                            mjx_data.qvel[:,qvadr],
+                            mjx_data.qfrc_applied[:,qvadr]], 
                             axis = 2)
     
     @staticmethod
@@ -528,7 +620,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _get_vec_joint_states_raw_pvea(qpadr, qvadr, mjx_data):
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_smooth[:,qvadr], # is this the right one? Should I just use my own qfrc_applied? qfrc_smooth? qfrc_inverse?
+                            mjx_data.qfrc_applied[:,qvadr], 
                             mjx_data.qacc[:,qvadr]],
                             axis = 2)
 
@@ -708,7 +800,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        f"!=\n"
                                        f"{link_states_pose_vel_jnp[:,i]}")
                 if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
-                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.")
+                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
                 model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
                 model_body_quat = model_body_quat.at[lid].set(link_states_pose_vel_jnp[0,i,[6,3,4,5]])
                 # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")
@@ -790,5 +882,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if sims_mask is None:
             self._requested_qfrc_applied = self._requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
         else:
-            sims_indexes = jnp.nonzero(sims_mask)[0]
-            self._requested_qfrc_applied = self._requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
+            # sims_indexes = jnp.nonzero(sims_mask)[0]
+            # self._requested_qfrc_applied = self._requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
+            self._requested_qfrc_applied = set_rows_cols_masks(self._requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:])

@@ -16,12 +16,13 @@ from adarl.utils.tensor_trees import flatten_tensor_tree, map_tensor_tree, stack
 import torch as th
 import adarl.utils.tensor_trees as tt
 from typing_extensions import override
-from adarl.envs.vec.VecRunnerInterface import VecRunnerInterface, ObsType
-from adarl.envs.vec.VecRunnerWrapper import VecRunnerWrapper
+from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
+from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 import adarl.utils.dbg.dbg_img
 import adarl.utils.dbg.dbg_img as dbg_img 
+from adarl.utils.spaces import get_space_labels
 
-class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
+class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     """Wraps the environment to allow a modular transformation.
     This class is the base class for all wrappers. The subclass could override
     some methods to change the behavior of the original environment without touching the
@@ -29,7 +30,7 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
     .. note::
         Don't forget to call ``super().__init__(env)`` if the subclass overrides :meth:`__init__`.
     """
-    def __init__(self,  runner : VecRunnerInterface[ObsType],
+    def __init__(self,  runner : EnvRunnerInterface[ObsType],
                         fps : float,
                         outFolder : str,
                         env_index : int,
@@ -86,6 +87,10 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         self._saved_best_eps_count = 0
         self._stored_steps = 0
 
+        labels = get_space_labels(self._runner.info_space)
+        self._info_labels = flatten_tensor_tree(labels)
+        self._info_labels = map_tensor_tree(self._info_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+
         self.add_on_ep_end_callback(self._on_ep_end)
 
         os.makedirs(self._outFolder, exist_ok=True)
@@ -117,7 +122,7 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         self._tot_vstep_counter += 1
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
-            ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
+            # ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
             (consequent_observation, next_start_observation,
                 reward, terminated, truncated, consequent_info,
                 next_start_info, reinit_done) = map_tensor_tree(vstep_ret_tuple, lambda tensor: tensor[self._env_idx])
@@ -232,7 +237,11 @@ class RunnerRecorderWrapper(VecRunnerWrapper[ObsType]):
         hd_filename = out_filename+".hdf5"
         with h5py.File(hd_filename, "w") as f:
             for k,v in infos.items():
-                f.create_dataset(".".join(k), data=v)
+                field_name = ".".join(k)
+                f.create_dataset(field_name, data=v)
+                if k in self._info_labels and self._info_labels[k] is not None:
+                    f.create_dataset(field_name+"_labels", data=self._info_labels[k])
+
         
     def _write_vecbuffer(self, out_filename, vecbuffer):
         out_filename += ".hdf5"

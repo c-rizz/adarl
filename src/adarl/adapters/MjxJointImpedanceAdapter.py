@@ -250,12 +250,13 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         current_cmd, sim_has_cmd, cmds, cmds_times = self._get_cmd_and_cleanup_vec( cmds,
                                                                                 cmds_times,
                                                                                 sim_time)
-        vec_jstate = self._get_vec_joint_states_raw_pve(qpadr,
+        vec_jstate = self._get_vec_joint_states_raw_pve(qpadr, 
                                                         qvadr,
                                                         mjx_data)
         vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
         return vec_efforts, sim_has_cmd, cmds, cmds_times
 
+    @partial(jax.jit, static_argnums=(0,))
     def _apply_impedance_cmds(self):
         # current_cmd, has_cmd, self._cmds_queue, self._cmds_queue_times = self._get_cmd_and_cleanup_vec( self._cmds_queue,
         #                                                                                                 self._cmds_queue_times,

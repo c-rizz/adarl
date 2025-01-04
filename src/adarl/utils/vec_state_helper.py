@@ -171,7 +171,7 @@ class ThBoxStateHelper(StateHelper):
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
         initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype)
-        dbg_check_size(initial_values, self._state_size[1:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
+        dbg_check_size(initial_values, (self._state_size[0],)+self._state_size[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
         state = initial_values.unsqueeze(1).expand(*self._state_size).clone() # repeat along the history dimension
         # state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))
         assert state.size() == self._state_size,    f"Unexpected resulting state size {state.size()}, should be {self._state_size}."\
@@ -188,14 +188,15 @@ class ThBoxStateHelper(StateHelper):
         return state
     
     @override
-    def check_size(self, instantaneous_state : th.Tensor | Mapping[str,th.Tensor] | None = None,
-                         state_th : th.Tensor | None = None):
+    def check_size(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor] | None = None,
+                         state_th : th.Tensor | None = None,
+                         state_name : str = ""):
         if instantaneous_state is not None:
             if isinstance(instantaneous_state, th.Tensor):
                 dbg_check_size(instantaneous_state, (self._vec_size,self._fields_num,*self.field_size))
             else:
                 for k,t in instantaneous_state.items():
-                    dbg_check_size(t, self.field_size, msg=f"Field {k}: ")
+                    dbg_check_size(t, (self._vec_size,) + self.field_size, msg="At state " + state_name + f" field {k} ({self.field_names[k] if isinstance(k,int) else None}): ")
         if state_th is not None:
             dbg_check_size(state_th, (self._vec_size,self._history_length, self._fields_num,*self.field_size))
         
@@ -536,10 +537,18 @@ class DictStateHelper(StateHelper):
     
     @override
     def check_size(self, instantaneous_state : Mapping[str,th.Tensor|Mapping[str,th.Tensor]] | None = None,
-                         state_th : Mapping[str,th.Tensor] | None = None):
-        for k,sh in self.sub_helpers.items():
+                         state_th : Mapping[str,th.Tensor] | None = None,
+                         ignore_missing : bool = False):
+        if ignore_missing:
+            helpers = instantaneous_state.keys()
+        else:
+            helpers = self.sub_helpers.keys()
+        for k in helpers:
+            sh = self.sub_helpers[k]
             sh.check_size(instantaneous_state=instantaneous_state[k] if instantaneous_state is not None else None,
-                          state_th=state_th[k] if state_th is not None else None)
+                          state_th=state_th[k] if state_th is not None else None,
+                          state_name=str(k))
+            # ggLog.info(f"Checked {k}")
 
     @override
     def unnormalize(self, state : dict[str,th.Tensor]):
@@ -869,5 +878,5 @@ class JointImpedanceActionHelper:
         cmd_vec_joint_pvesd = self._base_v_j_pvesd.detach().clone()
         cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action.view(self._vec_size, self._joints_num, self.action_lengths[self._control_mode])
         cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
-        dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,[3,4]] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}")
+        dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,:,[3,4]] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}")
         return cmd_vec_joint_pvesd

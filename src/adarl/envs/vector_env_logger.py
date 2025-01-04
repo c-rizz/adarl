@@ -26,11 +26,11 @@ class VectorEnvLogger(
         self._use_wandb = use_wandb
         self._logs_batch = {}
         self._logs_batch_size = 0
-        self._logs_id = logs_id+"/" if logs_id is not None else ""
+        self._logs_id = logs_id+"/" if (logs_id is not None and logs_id!="") else ""
         self.__step_count = 0
         self._step_count_last_log = self.__step_count
         self._time_last_log = time.monotonic()
-        self._num_envs = env.num_envs
+        self._num_envs = env.unwrapped.num_envs
 
 
     def step(
@@ -101,7 +101,7 @@ class VectorEnvLogger(
                             new_elems[k.replace("VecEnvLogger/","VecEnvLogger/max.")] = max(v)
                             new_elems[k.replace("VecEnvLogger/","VecEnvLogger/min.")] = min(v)
                 self._logs_batch.update(new_elems)
-                wdblog = {k: v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
+                wdblog = {f"{self._logs_id}{k}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
                 wandb_log(wdblog)
                 ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_ep_count} veceps={int(self._tot_ep_count/self._num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
                            f" r= \033[1m{self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+

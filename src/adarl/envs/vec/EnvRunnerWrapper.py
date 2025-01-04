@@ -34,15 +34,15 @@ from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from abc import ABC, abstractmethod
 from adarl.utils.spaces import gym_spaces
-from adarl.envs.vec.VecRunnerInterface import VecRunnerInterface, ObsType
+from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 
 
-class VecRunnerWrapper(VecRunnerInterface[ObsType], Generic[ObsType]):
+class EnvRunnerWrapper(EnvRunnerInterface[ObsType], Generic[ObsType]):
 
     spec = None
 
     def __init__(self,
-                 runner : VecRunnerInterface[ObsType]):
+                 runner : EnvRunnerInterface[ObsType]):
         self._runner = runner
         super().__init__(   num_envs = runner.num_envs,
                             autoreset = runner.autoreset,

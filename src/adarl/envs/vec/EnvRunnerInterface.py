@@ -38,7 +38,7 @@ from adarl.utils.spaces import gym_spaces
 ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
 
-class VecRunnerInterface(ABC, Generic[ObsType]):
+class EnvRunnerInterface(ABC, Generic[ObsType]):
 
     class OnEpEndCallbackProtocol(Protocol):
         def __call__(self,  envs_ended_mask : th.Tensor,
@@ -57,7 +57,7 @@ class VecRunnerInterface(ABC, Generic[ObsType]):
                  vec_observation_space : gym_spaces.Space,
                  vec_action_space : gym_spaces.Space,
                  vec_reward_space : gym_spaces.Space,
-                 info_space : gym_spaces.Space,
+                 info_space : gym_spaces.Dict,
                  single_observation_space : gym_spaces.Space,
                  single_action_space : gym_spaces.Space,
                  single_reward_space : gym_spaces.Space,

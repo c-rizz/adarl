@@ -32,8 +32,8 @@ import torch as th
 import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
-from adarl.envs.vec.VecRunnerInterface import VecRunnerInterface
-from adarl.envs.vec.VecRunner import VecRunner
+from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
+from adarl.envs.vec.EnvRunner import EnvRunner
 
 ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
@@ -42,7 +42,7 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
     spec = None
 
     def __init__(self,
-                 runner : VecRunnerInterface[ObsType],
+                 runner : EnvRunnerInterface[ObsType],
                  verbose : bool = False,
                  quiet : bool = False,
                  render_cam_index : int = 0,
@@ -53,7 +53,7 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         self.observation_space = runner.vec_observation_space
         self.single_action_space = runner.single_action_space
         self.single_observation_space = runner.single_observation_space
-        if isinstance(runner, VecRunner):
+        if isinstance(runner, EnvRunner):
             self.metadata = runner.get_base_env().metadata
         else:
             self.metadata = None

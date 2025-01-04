@@ -15,7 +15,7 @@ class ThBox(gym.spaces.Box):
                     dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype = np.float32,
                     seed: int | np.random.Generator | None = None,
                     torch_device : th.device = th.device("cpu"),
-                    labels : np.ndarray | None = None):
+                    labels : th.Tensor | None = None):
         self._th_device = torch_device
         if isinstance(low,th.Tensor):
             low = low.cpu().numpy()
@@ -33,3 +33,12 @@ class ThBox(gym.spaces.Box):
 
     def sample(self):
         return th.as_tensor(super().sample(), device = self._th_device)
+    
+
+def get_space_labels(space : gym_spaces.Dict | ThBox):
+    if isinstance(space, ThBox):
+        return space.labels
+    elif isinstance(space, gym_spaces.Dict):
+        return {k: get_space_labels(space.spaces[k]) for k in space.spaces}
+    else:
+        raise NotImplemented(f"Cannot get labels from space of type {type(space)}")

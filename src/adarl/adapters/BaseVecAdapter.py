@@ -93,6 +93,45 @@ class BaseVecAdapter(BaseAdapter):
     @abstractmethod
     def getJointsState(self, requestedJoints : Sequence[JointName] | None = None) -> th.Tensor:
         raise NotImplementedError()
+    
+
+    @abstractmethod
+    @overload
+    def getExtendedJointsState(self, requestedJoints : Sequence[Tuple[str,str]]) -> th.Tensor:
+        """Get the state of the requested joints.
+
+        Parameters
+        ----------
+        requestedJoints : List[Tuple[str,str]]
+            Joints to tget the state of. Each element of the list represents a joint in the format [model_name, joint_name]
+
+        Returns
+        -------
+        th.Tensor
+            A tensor of shape (vec_size, len(requestedJoints),5) containig respecitvely position, velocity, applied effort,
+             acceleration, measured effort for each requested joint
+
+        """
+        ...
+
+    @abstractmethod
+    @overload
+    def getExtendedJointsState(self) -> th.Tensor:
+        """Get the state of the monitored joints.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of shape (vec_size, len(monitored_joints),3) containig respecitvely position, velocity, applied effort,
+             acceleration, measured effort for each joint in set_monitored_joints()
+
+        """
+        ...
+
+    @abstractmethod
+    def getExtendedJointsState(self, requestedJoints : Sequence[JointName] | None = None) -> th.Tensor:
+        raise NotImplementedError()
+    
 
     @abstractmethod
     def get_joints_state_step_stats(self) -> th.Tensor:

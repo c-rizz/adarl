@@ -470,12 +470,12 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
 
     @override
     def add(self,
-            obs: Dict[str, np.ndarray],
-            next_obs: Dict[str, np.ndarray],
-            action: np.ndarray,
-            reward: np.ndarray,
-            terminated: np.ndarray,
-            truncated: np.ndarray) -> None:
+            obs: Dict[str, th.Tensor],
+            next_obs: Dict[str, th.Tensor],
+            action: th.Tensor,
+            reward: th.Tensor,
+            terminated: th.Tensor,
+            truncated: th.Tensor) -> None:
         # All inputs are batches of size n_envs
         # All should be copied to avoid modification by reference
 
