@@ -63,6 +63,18 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                                         jstate[k].rate.item(),
                                         jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0)
 
+
+    @override
+    def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
+        if requestedJoints is None:
+            requestedJoints = self._monitored_joints
+        jstate = self._sub_adapter.getJointsState(requestedJoints)
+        return th.stack([th.as_tensor([ jstate[k].position.item(),
+                                        jstate[k].rate.item(),
+                                        jstate[k].effort.item(),
+                                        acceleration,
+                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0)
+    
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
         return self._sub_adapter.get_joints_state_step_stats().unsqueeze(0)

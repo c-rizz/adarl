@@ -455,7 +455,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_torque_cmds(self, sim_state : SimState) -> SimState:
-        sim_state.mjx_data = sim_state.mjx_data.replace(qfrc_applied=self._sim_state.requested_qfrc_applied)
+        sim_state.mjx_data = sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied)
         return sim_state
 
     @override
@@ -903,4 +903,26 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             #                       set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:]))
             sim_state.requested_qfrc_applied = set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:])
         return sim_state
-    
+
+    # def _set_effort_command(self,   sim_state : SimState,
+    #                                 jids : jnp.ndarray,
+    #                                 qefforts : jnp.ndarray,
+    #                                 sims_mask : jnp.ndarray | None = None) -> SimState:
+    #     """Set the efforts to be applied on a set of joints.
+
+    #     Effort means either a torque or a force, depending on the type of joint.
+
+    #     Parameters
+    #     ----------
+    #     joint_names : jnp.ndarray
+    #         Array with the joint ids for each effort command, 1-dimensional
+    #     efforts : th.Tensor
+    #         Tensor of shape (vec_size, len(jids)) containing the effort for each joint in each environment.
+    #     """
+    #     qvadr = self._mj_model.jnt_dofadr[jids]
+    #     if sims_mask is None:
+    #         sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
+    #     else:
+    #         sims_indexes = jnp.nonzero(sims_mask)[0]
+    #         sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
+    #     return sim_state
