@@ -1,4 +1,4 @@
-from typing import Union, Optional, List
+from typing import Union, Optional, List, Any, Callable
 import gymnasium as gym
 import numpy as np
 import os
@@ -60,7 +60,8 @@ class EvalCallback(TrainingCallback):
         best_model_save_path: Optional[str] = None,
         deterministic: bool = True,
         verbose: int = 1,
-        eval_name : str = "eval"
+        eval_name : str = "eval",
+        random_eval_at_start: bool = True
     ):
         if not isinstance(eval_env, gym.vector.VectorEnv):
             raise NotImplementedError(f"eval_env can only be a gym.vector.VectorEnv for now, it's a {type(eval_env)}")
@@ -71,6 +72,7 @@ class EvalCallback(TrainingCallback):
         self._model = model
         self.eval_env = eval_env
         self.best_model_save_path = best_model_save_path
+        self._random_eval_at_start = random_eval_at_start
 
         self._episode_counter = 0
         self._last_evaluation_episode = float("-inf")
@@ -93,46 +95,50 @@ class EvalCallback(TrainingCallback):
         # ggLog.info(f"on_collection_end: {self.eval_freq_ep} {self._episode_counter} {self._last_evaluation_episode}")
         if self.eval_freq_ep > 0 and self._episode_counter - self._last_evaluation_episode >= self.eval_freq_ep and self._last_evaluation_episode != self._episode_counter:
             # ggLog.info(f"Evaluating")
-
             cuda_sync_debug_state = th.cuda.get_sync_debug_mode()
             th.cuda.set_sync_debug_mode("default")
             try:
-                self._last_evaluation_episode = self._episode_counter
-
-                # def predict(obs):
-                #     ggLog.info(f"Got obs of size {map_tensor_tree(obs, func = lambda t: t.size())}")
-                #     obs_batch = stack_tensor_tree(src_trees=[obs])
-                #     ggLog.info(f"Stacked obs to size {map_tensor_tree(obs, func = lambda t: t.size())}")
-                #     # obs_batch = map_tensor_tree(src_tree=obs_batch, func = lambda t: t.expand(16,21).to(device=self._model.device))
-                #     action, hidden_state = self._model.predict(obs_batch, deterministic = self.deterministic)
-                #     ggLog.info(f"Returning action {action}, hidden state {hidden_state}")
-                #     return action, hidden_state
-                
-                if self.verbose > 1:
-                    ggLog.info(f"Evaluation '{self.eval_name}':")
-                results = evaluatePolicyVec(self.eval_env,
-                                            model = self._model,
-                                            episodes=self.n_eval_episodes,
-                                            deterministic=self.deterministic)
-                mean_reward = results["reward_mean"]
-                std_reward = results["reward_std"]
-                mean_ep_length = results["steps_mean"]
-                std_ep_length = results["steps_std"]
-                self.last_mean_reward = mean_reward
-
-                if self.verbose > 0:
-                    print(f"Eval:" f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
-                    print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
-                
-                if mean_reward > self.best_mean_reward:
-                    if self.verbose > 0:
-                        print("New best mean reward!")
-                    if self.best_model_save_path is not None:
-                        self._model.save(os.path.join(self.best_model_save_path, "best_model"))
-                    self.best_mean_reward = mean_reward
+                if self._last_evaluation_episode == float("-inf") and self._random_eval_at_start:
+                    ggLog.info(f"Random policy evaluation")
+                    self._evaluate(predict_func=lambda obs, deterministic: (th.as_tensor(self.eval_env.unwrapped.action_space.sample()), None))
+                self._evaluate(model=self._model)
             finally:
                 th.cuda.set_sync_debug_mode(cuda_sync_debug_state)
         return True
+    
+    def _evaluate(self, model : th.nn.Module | None = None, predict_func : Callable[[Any, bool], tuple[Any,Any]] | None = None):
+        self._last_evaluation_episode = self._episode_counter
+        # def predict(obs):
+        #     ggLog.info(f"Got obs of size {map_tensor_tree(obs, func = lambda t: t.size())}")
+        #     obs_batch = stack_tensor_tree(src_trees=[obs])
+        #     ggLog.info(f"Stacked obs to size {map_tensor_tree(obs, func = lambda t: t.size())}")
+        #     # obs_batch = map_tensor_tree(src_tree=obs_batch, func = lambda t: t.expand(16,21).to(device=self._model.device))
+        #     action, hidden_state = self._model.predict(obs_batch, deterministic = self.deterministic)
+        #     ggLog.info(f"Returning action {action}, hidden state {hidden_state}")
+        #     return action, hidden_state
+        
+        ggLog.info(f"Evaluation '{self.eval_name}':")
+        results = evaluatePolicyVec(self.eval_env,
+                                    model = model,
+                                    episodes=self.n_eval_episodes,
+                                    deterministic=self.deterministic,
+                                    predict_func = predict_func)
+        mean_reward = results["reward_mean"]
+        std_reward = results["reward_std"]
+        mean_ep_length = results["steps_mean"]
+        std_ep_length = results["steps_std"]
+        self.last_mean_reward = mean_reward
+
+        if self.verbose > 0:
+            print(f"Eval:" f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
+            print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
+        
+        if mean_reward > self.best_mean_reward:
+            if self.verbose > 0:
+                print("New best mean reward!")
+            if self.best_model_save_path is not None:
+                self._model.save(os.path.join(self.best_model_save_path, "best_model"))
+            self.best_mean_reward = mean_reward
 
 class CheckpointCallbackRB(TrainingCallback):
     """

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax
+from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing import Any
@@ -256,8 +256,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
         return vec_efforts, sim_has_cmd, cmds, cmds_times
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _apply_impedance_cmds(self):
+    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _apply_impedance_cmds(self, sim_state : SimState):
         # current_cmd, has_cmd, self._cmds_queue, self._cmds_queue_times = self._get_cmd_and_cleanup_vec( self._cmds_queue,
         #                                                                                                 self._cmds_queue_times,
         #                                                                                                 self._simTime)
@@ -268,17 +268,20 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                             self._simTime,
                                                             self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
-                                                            self._mjx_data,
+                                                            sim_state.mjx_data,
                                                             self._imp_control_max_torque)
         # vec_efforts = jnp.zeros_like(vec_efforts)
-        # ggLog.info(f"setting efforts {vec_efforts}")
-        self._set_effort_command(self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
+        ggLog.info(f"setting efforts {vec_efforts}")
+        sim_state = self._set_effort_command(sim_state, self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
+        return sim_state
 
     @override
-    def _apply_commands(self):
-        self._apply_impedance_cmds()
-        self._apply_torque_cmds()
-
+    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _apply_commands(self, sim_state : SimState) -> SimState:
+        sim_state = self._apply_impedance_cmds(sim_state)
+        sim_state = self._apply_torque_cmds(sim_state)
+        return sim_state
+    
     @override
     def resetWorld(self):
         ret = super().resetWorld()

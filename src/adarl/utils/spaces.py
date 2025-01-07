@@ -6,6 +6,7 @@ import numpy as np
 import torch as th
 from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
 gym_spaces = gym.spaces
+from copy import deepcopy
 
 class ThBox(gym.spaces.Box):
     def __init__(   self,
@@ -42,3 +43,9 @@ def get_space_labels(space : gym_spaces.Dict | ThBox):
         return {k: get_space_labels(space.spaces[k]) for k in space.spaces}
     else:
         raise NotImplemented(f"Cannot get labels from space of type {type(space)}")
+    
+
+def batch_space_box(space, n=1):
+    repeats = tuple([n] + [1] * space.low.ndim)
+    low, high = np.tile(space.low, repeats), np.tile(space.high, repeats)
+    return ThBox(low=low, high=high, dtype=space.dtype, seed=deepcopy(space.np_random))

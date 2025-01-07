@@ -22,7 +22,7 @@ import xacro
 import torch as th
 import subprocess
 import re
-from typing import TypedDict
+from typing import TypedDict, Mapping
 import gymnasium as gym
 
 name_to_dtypes = {
@@ -325,22 +325,24 @@ def evaluatePolicy(env,
 
 
 def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
-                   model : th.nn.Module,
+                   model : th.nn.Module | None,
                    episodes : int,
                    on_ep_done_callback : Callable[[float, int,int],Any] | None = None,
-                   predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
+                   predict_func : Optional[Callable[[Any, bool], Tuple[Any,Any]]] = None,
                    progress_bar : bool = False,
                    images_return = None,
                    obs_return = None,
                    extra_info_stats : list[str] = [],
                    deterministic : bool = False):
     with th.no_grad():
-        is_training = model.training
-        model.eval()
-        if predict_func is None:
+        if model is not None:
+            is_training = model.training
+            model.eval()
             predict_func_ = model.predict
-        else:
+        elif predict_func is not None:
             predict_func_ = predict_func
+        else:
+            raise AttributeError(f"You must set either model or predict_func")
         buffsizes = episodes+vec_env.num_envs # may collect at most num_env excess episodes
         rewards = np.empty((buffsizes,), dtype = np.float32)
         durations_steps = np.empty((buffsizes,), dtype = np.int32)
@@ -397,7 +399,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "collected_episodes" : collected_eps}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
-        model.train(is_training)
+        if model is not None:
+            model.train(is_training)
     return eval_results
 
 def fileGlobToList(fileGlobStr : str):
@@ -969,7 +972,7 @@ def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
 printed_dbg_check_msg = False
-def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None):
+def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None, just_warn : bool = False):
     from adarl.utils.session import default_session
     if default_session.debug_level>0:
         global printed_dbg_check_msg
@@ -977,7 +980,11 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
             ggLog.warn(f"dbg_check is enabled")
             printed_dbg_check_msg = True
         if not is_check_passed():
-            raise RuntimeError(build_msg() if build_msg is not None else f"dbg_check failed")
+            msg = build_msg() if build_msg is not None else f"dbg_check failed"
+            if just_warn:
+                ggLog.warn(msg)
+            else:
+                raise RuntimeError(msg)
     # else:
     #     print(f"Dbg check skipped")
     
@@ -999,7 +1006,9 @@ def dbg_check_size(tensor : th.Tensor, size : Sequence[int], msg : str = ""):
               build_msg=lambda: f"Unexpected tensor size: {tensor.size()} instead of {size}. "+msg)
 
 
-
+def pretty_print_tensor_map(thmap : Mapping[str,th.Tensor]):
+    n = "\n"
+    return n.join([f"{k}:{v.cpu().tolist() if v.numel()<100 else v}" for k,v in thmap.items()])
 
 
 

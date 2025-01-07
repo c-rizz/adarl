@@ -11,6 +11,7 @@ from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose
 from typing import Any
 import jax
+import jax.tree_util
 import mujoco
 from mujoco import mjx
 import mujoco.viewer
@@ -32,6 +33,8 @@ from dataclasses import dataclass
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+# jax.config.update("jax_debug_nans", True)
+jax.config.update("jax_check_tracer_leaks", True)
 # jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
@@ -76,8 +79,9 @@ def _build_th2jax_dev_mapping():
     devices_jax2th = {v:k for k,v in devices_th2jax.items()}
 
 _build_th2jax_dev_mapping()
-    
 
+def tree_edit(tree, leaf_name : str, new_value):
+    return jax.tree_util.tree_map_with_path(lambda path, leaf: leaf if path!=(leaf_name,) else new_value, tree)
 
 def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
     """First integrate the physics, then compute forward kinematics/dynamics.
@@ -339,7 +343,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
         self._sim_state.mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
-        ggLog.info(f"mjx_data.qpos.shape = {self._sim_state.mjx_data.qpos.shape}")
+        self._jnt_dofadr_jax = jnp.array(self._mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
+
         self._sim_state.mjx_data = jax.vmap(lambda: self._sim_state.mjx_data, axis_size=self._vec_size)()
         # self._sim_state.mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), self._sim_state.mjx_data)
         ggLog.info(f"mjx_data.qpos.shape = {self._sim_state.mjx_data.qpos.shape}")
@@ -872,7 +877,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"self._sim_state.requested_qfrc_applied = {self._sim_state.requested_qfrc_applied}")
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _set_effort_command(self,   sim_state : SimState,
                                     jids : jnp.ndarray,
                                     qefforts : jnp.ndarray,
@@ -888,11 +893,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         efforts : th.Tensor
             Tensor of shape (vec_size, len(jids)) containing the effort for each joint in each environment.
         """
-        qvadr = self._mj_model.jnt_dofadr[jids]
+        qvadr = self._jnt_dofadr_jax[jids]
         if sims_mask is None:
+            # sim_state = tree_edit(sim_state, "requested_qfrc_applied",
+            #                       sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:]))
             sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
         else:
-            # sims_indexes = jnp.nonzero(sims_mask)[0]
-            # self._sim_state.requested_qfrc_applied = self._sim_state.requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
+            # sim_state = tree_edit(sim_state, "requested_qfrc_applied",
+            #                       set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:]))
             sim_state.requested_qfrc_applied = set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:])
         return sim_state
+    
