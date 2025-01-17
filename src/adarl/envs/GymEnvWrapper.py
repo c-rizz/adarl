@@ -30,6 +30,7 @@ from adarl.utils.wandb_wrapper import wandb_log
 import torch as th
 from adarl.utils.tensor_trees import map_tensor_tree
 import copy
+from typing_extensions import override
 
 ObsType = TypeVar("ObsType")
 
@@ -234,6 +235,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         info.update(ggInfo)
         return copy.deepcopy(info)
 
+    @override
     def step(self, action) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Run one step of the environment's dynamics.
 
@@ -334,7 +336,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
+    @override
     def reset(self, seed = None, options = {}):
         """Reset the state of the environment and return an initial observation.
 
@@ -426,8 +428,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
-
+    @override
     def render(self, mode : str = 'rgb_array') -> np.ndarray:
         """Get a rendering of the environment.
 
@@ -471,8 +472,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
-
+    @override
     def close(self):
         """Close the environment.
 

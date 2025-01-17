@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState
+from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState, tree_replace
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing import Any
@@ -21,6 +21,14 @@ from adarl.utils.utils import build_pose
 import adarl.utils.dbg.ggLog as ggLog
 import jax.core
 from functools import partial
+import jax.tree_util
+from dataclasses import dataclass
+
+@jax.tree_util.register_dataclass
+@dataclass
+class SimStateJimp(SimState):
+    cmds_queue : jnp.ndarray
+    cmds_queue_times : jnp.ndarray
 
 class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     
@@ -36,7 +44,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         gui_env_index : int = 0,
                         default_max_joint_impedance_ctrl_torque : float = 100.0,
                         max_joint_impedance_ctrl_torques : dict[tuple[str,str],float] = {},
-                        add_ground : bool = True):
+                        add_ground : bool = True,
+                        impedance_commands_queue_size : int = 10,
+                        log_freq : int = -1):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -47,14 +57,21 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         gui_frequency = gui_frequency,
                         gui_env_index = gui_env_index,
                         output_th_device=output_th_device,
-                        add_ground=add_ground)
-        self._queue_size = 100
+                        add_ground=add_ground,
+                        log_freq=log_freq)
+        self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
         self.set_impedance_controlled_joints([]) # initialize attributes
-        self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds","cmds_times"]))
-        self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds","cmds_times"]), in_axes=(0,0,None))
+        self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds_queue","cmds_queue_times"]))
+        self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds_queue","cmds_queue_times"]), in_axes=(0,0,None))
         self._compute_impedance_torques_vec = jax.vmap(jax.jit(self._compute_impedance_torques), in_axes=(0,0,None))
+
+        self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
+                                        requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
+                                        sim_time=self._sim_state.sim_time,
+                                        cmds_queue=jnp.empty((0,), device = jax_device),
+                                        cmds_queue_times=jnp.empty((0,), device = jax_device))
 
     def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor | float = 0.0,
@@ -123,19 +140,22 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
         cmd_time = jnp.resize(delay_sec_j, (self._vec_size,)) + self._simTime
         
+        # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
-        self._cmds_queue, self._cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd,
-                                                                                            cmd_time=cmd_time,
-                                                                                            cmds=self._cmds_queue,
-                                                                                            cmds_times=self._cmds_queue_times)
+        new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd,
+                                                                                        cmd_time=cmd_time,
+                                                                                        cmds_queue=self._sim_state.cmds_queue,
+                                                                                        cmds_queue_times=self._sim_state.cmds_queue_times)
+        self._sim_state = tree_replace(self._sim_state, {("cmds_queue",) : new_cmds_queue, ("cmds_queue_times",) : new_cmds_queue_times})
+        
         if not jnp.all(inserted):
             raise RuntimeError(f"Failed to insert commands, inserted = {inserted}")
 
     @staticmethod
     def _insert_cmd_to_queue(   cmd : jnp.ndarray,
                                 cmd_time : jnp.ndarray,
-                                cmds : jnp.ndarray,
-                                cmds_times : jnp.ndarray):
+                                cmds_queue : jnp.ndarray,
+                                cmds_queue_times : jnp.ndarray):
         """_summary_
 
         Parameters
@@ -144,9 +164,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             shape: (imp_joints_num, 5)
         cmd_time : jnp.ndarray
             shape: (,)
-        cmds : jnp.ndarray
+        cmds_queue : jnp.ndarray
             shape (queue_len, imp_joints_num, 5)
-        cmds_times : jnp.ndarray
+        cmds_queue_times : jnp.ndarray
             shape (queue_len,)
 
         Returns
@@ -156,29 +176,29 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         """
         # insert command in the first slot that has +inf time
         # if there's no space return some specific value in a ndarray
-        empty_slots = jnp.isinf(cmds_times)
+        empty_slots = jnp.isinf(cmds_queue_times)
         found_slot = jnp.any(empty_slots)
         first_empty = jnp.argmax(empty_slots) # if there is no empty slot, then this is zero
-        selected_slots = jnp.zeros_like(cmds_times) # all False
+        selected_slots = jnp.zeros_like(cmds_queue_times) # all False
         selected_slots = selected_slots.at[first_empty].set(found_slot) # if a slot was found, set its corresponding cell to True, the rest to False
 
-        cmds_times = cmds_times.at[first_empty].set(jnp.where(found_slot, cmd_time, cmds_times[first_empty]))
-        cmds = cmds.at[first_empty].set(jnp.where(found_slot, cmd, cmds[first_empty]))
+        cmds_queue_times = cmds_queue_times.at[first_empty].set(jnp.where(found_slot, cmd_time, cmds_queue_times[first_empty]))
+        cmds_queue = cmds_queue.at[first_empty].set(jnp.where(found_slot, cmd, cmds_queue[first_empty]))
 
-        return cmds, cmds_times, found_slot
+        return cmds_queue, cmds_queue_times, found_slot
 
     @staticmethod
-    def _get_cmd_and_cleanup(   cmds : jnp.ndarray,
-                                cmds_times : jnp.ndarray,
+    def _get_cmd_and_cleanup(   cmds_queue : jnp.ndarray,
+                                cmds_queue_times : jnp.ndarray,
                                 current_time : jnp.ndarray):
-        past_cmds_mask = cmds_times <= current_time
-        has_cmd = jnp.any(past_cmds_mask)
-        current_cmd_idx = jnp.argmax(jnp.where(past_cmds_mask, cmds_times, float("-inf")))
-        current_cmd = cmds[current_cmd_idx]
-        cmds_to_remove_mask = past_cmds_mask.at[current_cmd_idx].set(False)
-        cmds_times = jnp.where(cmds_to_remove_mask, float("+inf"), cmds_times) # mark commands as removed by setting the time to +inf
+        past_cmds_queue_mask = cmds_queue_times <= current_time
+        has_cmd = jnp.any(past_cmds_queue_mask)
+        current_cmd_idx = jnp.argmax(jnp.where(past_cmds_queue_mask, cmds_queue_times, float("-inf")))
+        current_cmd = cmds_queue[current_cmd_idx]
+        cmds_queue_to_remove_mask = past_cmds_queue_mask.at[current_cmd_idx].set(False)
+        cmds_queue_times = jnp.where(cmds_queue_to_remove_mask, float("+inf"), cmds_queue_times) # mark commands as removed by setting the time to +inf
         
-        return current_cmd, has_cmd, cmds, cmds_times
+        return current_cmd, has_cmd, cmds_queue, cmds_queue_times
 
 
     
@@ -209,9 +229,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._reset_cmd_queue()
 
     def _reset_cmd_queue(self):
-        self._queued_cmds = 1
-        self._cmds_queue =       jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device)
-        self._cmds_queue_times = jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)
+        self._queued_cmds_queue = 1
+        self._sim_state = tree_replace(self._sim_state, {("cmds_queue",) : jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device),
+                                                         ("cmds_queue_times",) : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter
@@ -245,38 +265,39 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         torques = jnp.clip(torques,min=-max_joint_efforts,max=max_joint_efforts)
         return torques
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("cmds", "cmds_times"))
-    def _compute_imp_cmds(self, cmds, cmds_times, sim_time, qpadr, qvadr, mjx_data, max_torques):
-        current_cmd, sim_has_cmd, cmds, cmds_times = self._get_cmd_and_cleanup_vec( cmds,
-                                                                                cmds_times,
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("cmds_queue", "cmds_queue_times"))
+    def _compute_imp_cmds_queue(self, cmds_queue, cmds_queue_times, sim_time, qpadr, qvadr, mjx_data, max_torques):
+        current_cmd, sim_has_cmd, cmds_queue, cmds_queue_times = self._get_cmd_and_cleanup_vec( cmds_queue,
+                                                                                cmds_queue_times,
                                                                                 sim_time)
         vec_jstate = self._get_vec_joint_states_raw_pve(qpadr, 
                                                         qvadr,
                                                         mjx_data)
         vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
-        return vec_efforts, sim_has_cmd, cmds, cmds_times
+        return vec_efforts, sim_has_cmd, cmds_queue, cmds_queue_times
 
-    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
-    def _apply_impedance_cmds(self, sim_state : SimState):
-        # current_cmd, has_cmd, self._cmds_queue, self._cmds_queue_times = self._get_cmd_and_cleanup_vec( self._cmds_queue,
-        #                                                                                                 self._cmds_queue_times,
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _apply_impedance_cmds(self, sim_state : SimStateJimp):
+        # current_cmd, has_cmd, self._sim_state.cmds_queue, self._sim_state.cmds_queue_times = self._get_cmd_and_cleanup_vec( self._sim_state.cmds_queue,
+        #                                                                                                 self._sim_state.cmds_queue_times,
         #                                                                                                 self._simTime)
         # vec_jstate = self._get_vec_joint_states_raw_pve(self._jids_to_imp_cdm_qpadr, self._jids_to_imp_cdm_qvadr, self._mjx_data)
         # vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, self._imp_control_max_torque)
-        vec_efforts, sim_has_cmd, self._cmds_queue, self._cmds_queue_times = self._compute_imp_cmds(  self._cmds_queue,
-                                                            self._cmds_queue_times,
-                                                            self._simTime,
+        vec_efforts, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._compute_imp_cmds_queue(sim_state.cmds_queue,
+                                                            sim_state.cmds_queue_times,
+                                                            sim_state.sim_time,
                                                             self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data,
                                                             self._imp_control_max_torque)
+        sim_state = tree_replace(sim_state, {("cmds_queue",) : new_cmds_queue, ("cmds_queue_times",) : new_cmds_queue_times})
         # vec_efforts = jnp.zeros_like(vec_efforts)
-        ggLog.info(f"setting efforts {vec_efforts}")
+        # ggLog.info(f"setting efforts {vec_efforts}")
         sim_state = self._set_effort_command(sim_state, self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
         return sim_state
 
     @override
-    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_commands(self, sim_state : SimState) -> SimState:
         sim_state = self._apply_impedance_cmds(sim_state)
         sim_state = self._apply_torque_cmds(sim_state)

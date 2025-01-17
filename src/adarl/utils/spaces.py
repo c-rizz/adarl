@@ -7,7 +7,8 @@ import torch as th
 from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
 gym_spaces = gym.spaces
 from copy import deepcopy
-
+from gymnasium.vector.utils.spaces import batch_space
+import adarl.utils.dbg.ggLog as ggLog
 class ThBox(gym.spaces.Box):
     def __init__(   self,
                     low: SupportsFloat | NDArray[Any] | th.Tensor,
@@ -44,8 +45,11 @@ def get_space_labels(space : gym_spaces.Dict | ThBox):
     else:
         raise NotImplemented(f"Cannot get labels from space of type {type(space)}")
     
-
+@batch_space.register(ThBox)
 def batch_space_box(space, n=1):
-    repeats = tuple([n] + [1] * space.low.ndim)
-    low, high = np.tile(space.low, repeats), np.tile(space.high, repeats)
+    # ggLog.info(f"batching space {space.low.shape}")
+    low, high = np.broadcast_to(space.low, (n,)+space.low.shape), np.broadcast_to(space.high, (n,)+space.high.shape)
+    # ggLog.info(f"batched lims (memsize={low.nbytes/1024/1024} MB)")
+    # repeats = tuple([n] + [1] * space.low.ndim)
+    # low, high = np.tile(space.low, repeats), np.tile(space.high, repeats)
     return ThBox(low=low, high=high, dtype=space.dtype, seed=deepcopy(space.np_random))

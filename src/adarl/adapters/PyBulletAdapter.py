@@ -187,7 +187,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
                         simulation_step = 1/960,
                         enable_redering = True,
-                        verbose : bool = False):
+                        verbose : bool = False,
+                        th_device : th.device = th.device("cpu")):
         """Initialize the Simulator controller.
 
 
@@ -196,6 +197,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._stepLength_sec = stepLength_sec
         self._simulation_step = simulation_step
         self._enable_rendering = enable_redering
+        self._th_device = th_device
         if self._stepLength_sec % self._simulation_step != 0:
             ggLog.warn(f"{__class__}: stepLength_sec {self._stepLength_sec} is not a multiple of "
                        f"simulation_step {self._simulation_step}, will not be able to sep of exactly stepLength_sec.")
@@ -610,7 +612,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         
         if requestedJoints is None:
             if len(responses_pve) == 0:
-                return th.empty(size=(0,3))
+                return th.empty(size=(0,3), device = self._th_device)
             state_pve = np.concatenate(responses_pve,axis=0)
             # we have to correct the torque value for the joints that are commanded in torque, pybullet returns zero for those,
             # instead we use the commanded torque
@@ -622,7 +624,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         effort = self._last_sent_torques_by_name[joint_name]
                         state_pve[row,2] = effort
                     row += 1
-            return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32)
+            return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32, device = self._th_device)
         else:
             allStates = {}
             pos = 0
@@ -648,7 +650,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
     def _build_joint_state_step_stats(self):
         self._joint_stats_sample_count = 0
         jstate_pvae_size = (len(self._monitored_joints),4)
-        self._monitored_joints_stats = th.zeros((6,)+jstate_pvae_size, dtype=th.float32)
+        self._monitored_joints_stats = th.zeros((6,)+jstate_pvae_size, dtype=th.float32, device = self._th_device)
         self._monitored_joints_min = self._monitored_joints_stats[0]
         self._monitored_joints_max = self._monitored_joints_stats[1]
         self._monitored_joints_avg = self._monitored_joints_stats[2]
@@ -656,12 +658,12 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._monitored_joints_sum = self._monitored_joints_stats[4]
         self._monitored_joints_sum_of_squares = self._monitored_joints_stats[5]
 
-        self._monitored_joints_min[:] = th.tensor(float("+inf"))
-        self._monitored_joints_max[:] = th.tensor(float("-inf"))
-        self._monitored_joints_avg[:] = th.tensor(float("nan"))
-        self._monitored_joints_std[:] = th.tensor(float("nan"))
-        self._monitored_joints_sum[:] = th.tensor(0)
-        self._monitored_joints_sum_of_squares[:] = th.tensor(0)
+        self._monitored_joints_min[:] = th.tensor(float("+inf"), device = self._th_device)
+        self._monitored_joints_max[:] = th.tensor(float("-inf"), device = self._th_device)
+        self._monitored_joints_avg[:] = th.tensor(float("nan"), device = self._th_device)
+        self._monitored_joints_std[:] = th.tensor(float("nan"), device = self._th_device)
+        self._monitored_joints_sum[:] = th.tensor(0, device = self._th_device)
+        self._monitored_joints_sum_of_squares[:] = th.tensor(0, device = self._th_device)
 
     def _reset_joint_state_step_stats(self):
         # ggLog.info(f"resetting stats")
@@ -1019,7 +1021,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
         self._refresh_entities_ids(print_info=self._verbose)
-        # ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
+        ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],
                                                     pose.position, pose.orientation_xyzw)

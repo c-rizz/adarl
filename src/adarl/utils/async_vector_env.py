@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from enum import Enum
-from typing import List, Optional, Sequence, Tuple, Union, Any, Callable, Dict
+from typing import List, Optional, Sequence, Tuple, Union, Any, Callable, Dict, Literal
 
 import numpy as np
 import cloudpickle
@@ -226,7 +226,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         context : Optional[str] = None,
         purely_numpy = False,
         shared_mem_device = th.device("cpu"),
-        env_action_device = "numpy",
+        env_action_device : th.device|Literal["numpy"]= "numpy",
         copy_data = False,
         worker_init_fn = None,
         worker_init_kwargs = {},

@@ -36,7 +36,8 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                                                             global_max_acceleration_position_control  = global_max_acceleration_position_control,
                                                             joints_max_acceleration_position_control  = joints_max_acceleration_position_control,
                                                             simulation_step  = simulation_step,
-                                                            enable_rendering  = enable_rendering)
+                                                            enable_rendering  = enable_rendering,
+                                                            th_device=th_device)
         self._vec_size = vec_size
         self._th_device = th_device
         if vec_size!=1: 
@@ -44,8 +45,8 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
 
 
     @override
-    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
-        if vec_mask.item():
+    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None) -> tuple[list[th.Tensor], th.Tensor]:
+        if vec_mask is None or vec_mask.item():
             rdict = self._sub_adapter.getRenderings(requestedCameras=requestedCameras)
             imgs =  [th.as_tensor(rdict[n][0], device=self._th_device).unsqueeze(0) for n in requestedCameras]
             times = th.stack([th.as_tensor(rdict[n][1], device=self._th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
@@ -61,7 +62,7 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
         jstate = self._sub_adapter.getJointsState(requestedJoints)
         return th.stack([th.as_tensor([ jstate[k].position.item(),
                                         jstate[k].rate.item(),
-                                        jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0)
+                                        jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0).to(self._th_device)
 
 
     @override
@@ -73,7 +74,7 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                                         jstate[k].rate.item(),
                                         jstate[k].effort.item(),
                                         acceleration,
-                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0)
+                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0).to(self._th_device)
     
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
@@ -88,13 +89,13 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                                 ls[k].pose.orientation_xyzw,
                                 ls[k].pos_velocity_xyz,
                                 ls[k].ang_velocity_xyz])
-                        for k in requestedLinks]).unsqueeze(0)
+                        for k in requestedLinks]).unsqueeze(0).to(self._th_device)
         return r
 
 
     @override
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor):
-        if vec_mask.item():
+        if vec_mask is None or vec_mask.item():
             self._sub_adapter.setJointsStateDirect({n:JointState(position = joint_states_pve[0,i,0],
                                                                 rate =     joint_states_pve[0,i,1],
                                                                 effort =   joint_states_pve[0,i,2]) 
@@ -102,7 +103,7 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
     
     @override
     def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor):
-        if vec_mask.item():
+        if vec_mask is None or vec_mask.item():
             self._sub_adapter.setLinksStateDirect({n:LinkState(position_xyz         = link_states_pose_vel[0,i, 0:3],
                                                             orientation_xyzw     = link_states_pose_vel[0,i, 3:7],
                                                             pos_com_velocity_xyz = link_states_pose_vel[0,i, 7:10],

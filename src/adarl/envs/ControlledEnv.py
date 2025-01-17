@@ -71,7 +71,9 @@ class ControlledEnv(Generic[EnvControllerType], BaseEnv):
             if estimatedStepDuration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
                 break
             elif not self._allow_multiple_steps:
-                raise RuntimeError(f"Simulation stepped less than required step length (stepped {estimatedStepDuration_sec} instead of {self._intendedStepLength_sec})")
+                raise RuntimeError(f"Simulation stepped less than required step length (stepped {estimatedStepDuration_sec} instead of {self._intendedStepLength_sec})\n"
+                                   f"If you are running in siumlation chack your environment dt is an exact multiple of your physiscs dt (careful, in binary).\n"
+                                   f"In the real you may want to raise step_precision_tolerance")
         self._estimatedSimTime += estimatedStepDuration_sec
         if abs(estimatedStepDuration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
             ggLog.warn(f"Step duration is different than intended: {estimatedStepDuration_sec} != {self._intendedStepLength_sec}")

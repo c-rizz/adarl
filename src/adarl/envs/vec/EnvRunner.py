@@ -96,11 +96,11 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._log_freq = log_freq
 
 
-        self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._adarlStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
+        self._runnerStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
+        self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
+        self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
+        self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
+        self._envStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_tot = 0
         self._wtime_spent_stepping_adarl_tot = 0
@@ -135,7 +135,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._adarl_env.submit_actions(actions)
 
         # Step the environment
-        with self._adarlStepWallDurationAverage:
+        with self._envStepWallDurationAverage:
             t_prestep = time.monotonic()
             self._adarl_env.step()
             self._wtime_spent_stepping_adarl_tot += time.monotonic()-t_prestep
@@ -183,7 +183,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         tf = time.monotonic()
         stepDuration = tf - t0
-        self._envStepDurationAverage.addValue(newValue = stepDuration)
+        self._runnerStepDurationAverage.addValue(newValue = stepDuration)
         self._last_step_end_etime = self._adarl_env.get_times_since_build()
         self._end_to_end_step_wtime = tf- self._last_step_end_wtime
         self._end_to_end_step_etime = th.sum(self._adarl_env.get_times_since_build()) - etime_step_start
@@ -226,7 +226,10 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
     def print_dbg_info(self):
         msg =  (f"EnvRunner: vsteps={self._dbg_info['vsteps']:d}"+
                 f" wHz={self._dbg_info['wall_fps']:.4g}"+
-                f" rt={self._dbg_info['rtfactor']:.3g}"+
+                f" rt_estep={self._dbg_info['rtfactor_estep']:.4g}"+
+                f" rt_rstep={self._dbg_info['rtfactor_rstep']:.4g}"+
+                f" rt_tot={self._dbg_info['rtfactor_tot']:.4g}"+
+                f" rt_wall={self._dbg_info['rtfactor']:.4g}"+
                 f" aStpWt={self._dbg_info['avg_env_step_wall_duration']:.6g}"+
                 f" aSimWt={self._dbg_info['avg_adarl_step_wall_duration']:.6g}"+
                 f" aActWt={self._dbg_info['avg_act_wall_duration']:.6g}"+
@@ -297,11 +300,11 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._reset_count += 1
         self._cached_states = None
 
-        self._envStepDurationAverage.reset()
+        self._runnerStepDurationAverage.reset()
         self._submitActionDurationAverage.reset()
         self._getStateDurationAverage.reset()
         self._getObsRewDurationAverage.reset()
-        self._adarlStepWallDurationAverage.reset()
+        self._envStepWallDurationAverage.reset()
         self._fill_dbg_info()
 
         states = self._get_states_caching()
@@ -363,12 +366,13 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/wtime_since_simstart
         self._dbg_info["wall_fps"] = self._adarl_env.num_envs*self._total_vsteps/wtime_since_simstart
         self._dbg_info["rtfactor"] = self._end_to_end_step_etime/self._end_to_end_step_wtime
-        self._dbg_info["rtfactor_step"] = th.sum(self._adarl_env.get_times_since_build())/self._wtime_spent_stepping_adarl_tot
+        self._dbg_info["rtfactor_estep"] = th.sum(self._adarl_env.get_times_since_build())/self._wtime_spent_stepping_adarl_tot
+        self._dbg_info["rtfactor_rstep"] = th.sum(self._adarl_env.get_times_since_build())/self._wtime_spent_stepping_tot
         self._dbg_info["rtfactor_tot"] = th.sum(self._adarl_env.get_times_since_build())/wtime_since_simstart
         self._dbg_info["fps_only_sim"] = self._total_vsteps/self._wtime_spent_stepping_adarl_tot if self._wtime_spent_stepping_adarl_tot!=0 else float("nan")
         self._dbg_info["fps_only_env"] = self._total_vsteps/self._wtime_spent_stepping_tot if self._wtime_spent_stepping_tot!=0 else float("nan")
-        self._dbg_info["avg_env_step_wall_duration"] = self._envStepDurationAverage.getAverage()
-        self._dbg_info["avg_adarl_step_wall_duration"] = self._adarlStepWallDurationAverage.getAverage()
+        self._dbg_info["avg_env_step_wall_duration"] = self._runnerStepDurationAverage.getAverage()
+        self._dbg_info["avg_adarl_step_wall_duration"] = self._envStepWallDurationAverage.getAverage()
         self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
         self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
         self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()

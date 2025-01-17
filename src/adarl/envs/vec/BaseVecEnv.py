@@ -4,6 +4,7 @@ import numpy as np
 import torch as th
 from typing import final, TypeVar, Mapping, Generic
 from gymnasium.vector.utils.spaces import batch_space
+import adarl.utils.dbg.ggLog as ggLog
 
 State = Mapping[str | tuple[str,...], th.Tensor]
 Observation = TypeVar("Observation", bound=Mapping[str | tuple[str,...], th.Tensor])
@@ -26,10 +27,15 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self.single_state_space = single_state_space
         self.single_reward_space = single_reward_space
         self.info_space = info_space
+        ggLog.info(f"Building vec spaces")
         self.vec_action_space = batch_space(single_action_space, n=num_envs)
+        ggLog.info(f"built action vec space")
         self.vec_observation_space = batch_space(single_observation_space, n=num_envs)
+        ggLog.info(f"built obs vec space")
         self.vec_state_space = batch_space(single_state_space, n=num_envs)
+        ggLog.info(f"built state vec space")
         self.vec_reward_space = batch_space(single_reward_space, n=num_envs)
+        ggLog.info(f"Built vec spaces")
 
         self.metadata = metadata
         if isinstance(max_episode_steps, (int, float)):

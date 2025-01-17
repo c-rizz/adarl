@@ -399,7 +399,7 @@ class StateNoiseGenerator:
         return self._vec_state_space
     
     def get_single_space(self):
-        return self._vec_state_space
+        return self._single_state_space
 
     def _resample_mu(self):
         self._current_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std,

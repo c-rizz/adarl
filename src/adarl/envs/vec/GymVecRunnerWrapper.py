@@ -34,10 +34,11 @@ from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
 from adarl.envs.vec.EnvRunner import EnvRunner
+from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 
 ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
-class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
+class GymVecRunnerWrapper(gym.vector.VectorEnv, Generic[ObsType]):
 
     spec = None
 
@@ -46,8 +47,7 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
                  verbose : bool = False,
                  quiet : bool = False,
                  render_cam_index : int = 0,
-                 step_v1_x : bool = False):
-        
+                 step_v1_x : bool = False):        
         self.vec_runner = runner
         self.action_space = runner.vec_action_space
         self.observation_space = runner.vec_observation_space
@@ -55,6 +55,10 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         self.single_observation_space = runner.single_observation_space
         if isinstance(runner, EnvRunner):
             self.metadata = runner.get_base_env().metadata
+        if isinstance(runner, EnvRunnerWrapper):
+            envrunner = runner.get_base_runner()
+            if isinstance(envrunner, EnvRunner):
+                self.metadata = envrunner.get_base_env().metadata
         else:
             self.metadata = None
         self.use_step_v1_x = step_v1_x
@@ -75,13 +79,6 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         self._quiet = quiet
 
 
-
-        self._envStepDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._getPrevStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
-        self._simStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 100)
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_ep = 0
 
@@ -160,11 +157,11 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         """
         return self.vec_runner.reset(seed=seed, options=options)
 
-
+    @override
     def render(self, mode : str = 'rgb_array') -> tuple[th.Tensor,...]:
         if mode!="rgb_array":
             raise NotImplementedError("only rgb_array mode is supported")
-        th_images, imageTimes = self.vec_runner.get_ui_renderings()
+        th_images = self.vec_runner.get_ui_renderings()
         ret : list[th.Tensor] = [None]*self.num_envs #type: ignore
         c = 0
         for i in range(self.num_envs):
@@ -173,7 +170,7 @@ class GymVecEnvWrapper(gym.vector.VectorEnv, Generic[ObsType]):
                 c += 1
         return tuple(ret)
 
-
+    @override
     def close(self):
         """Close the environment.
 

@@ -13,6 +13,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import torch as th
 import numpy as np
 from typing_extensions import override
+import time
 
 EnvAdapterType = TypeVar("EnvAdapterType", bound=BaseVecAdapter)
 
@@ -52,8 +53,8 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
 
     def step(self) -> None:
-        super().step()
         etime0 = self._adapter.getEnvTimeFromStartup()
+        t0 = time.monotonic()
         while True: # Do at least one step, then check if we need more
             self._adapter.step()
             estimated_step_duration_sec = self._adapter.getEnvTimeFromStartup()-etime0
@@ -61,9 +62,13 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                 break
             elif not self._allow_multiple_steps:
                 raise RuntimeError(f"Simulation stepped less than required step length (stepped {estimated_step_duration_sec} instead of {self._intendedStepLength_sec})")
+        t1 = time.monotonic()
+        super().step()
         self._estimated_env_times += estimated_step_duration_sec
         if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
             ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
+        tf = time.monotonic()
+        # ggLog.info(f"ControlledEnv: adapter_step = {t1-t0:.6f} (vec_env_fps={1/(t1-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(t1-t0):.2f}), env_step={tf-t0:.6f} (vec_env_fps={1/(tf-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(tf-t0):.2f})")
 
     @override
     def reset(self, options = {}):

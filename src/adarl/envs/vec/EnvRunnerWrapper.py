@@ -100,3 +100,9 @@ class EnvRunnerWrapper(EnvRunnerInterface[ObsType], Generic[ObsType]):
     @override
     def get_max_episode_steps(self) -> th.Tensor:
         return self._runner.get_max_episode_steps()
+    
+    def get_base_runner(self):
+        runner = self._runner
+        while isinstance(runner, EnvRunnerWrapper):
+            runner = runner._runner
+        return runner

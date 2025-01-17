@@ -22,13 +22,11 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
                         global_max_acceleration_position_control : float = 10,
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
                         simulation_step = 1/960,
-                        enable_rendering = True):
+                        enable_rendering = True,
+                        th_device : th.device = th.device("cpu")):
         """Initialize the Simulator controller.
 
         """
-        self._jimpedance_controlled_joints : list[tuple[str,str]] = []
-        self._null_cmd = th.zeros((len(self._jimpedance_controlled_joints), 5))
-        self._last_applied_jimp_cmd = self._null_cmd
         super().__init__(
             stepLength_sec = stepLength_sec,
             restore_on_reset = restore_on_reset,
@@ -41,8 +39,12 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
             global_max_acceleration_position_control = global_max_acceleration_position_control,
             joints_max_acceleration_position_control = joints_max_acceleration_position_control,
             simulation_step = simulation_step,
-            enable_redering = enable_rendering
+            enable_redering = enable_rendering,
+            th_device=th_device
         )
+        self._jimpedance_controlled_joints : list[tuple[str,str]] = []
+        self._null_cmd = th.zeros((len(self._jimpedance_controlled_joints), 5), device = self._th_device)
+        self._last_applied_jimp_cmd = self._null_cmd
 
     
     def _apply_controls(self):
@@ -54,14 +56,14 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
     @override
     def set_impedance_controlled_joints(self, joint_names : Sequence[Tuple[str,str]]):
         self._jimpedance_controlled_joints = list(joint_names)
-        self._monitored_to_controlled_idxs = th.as_tensor([self._monitored_joints.index(jn) for jn in self._jimpedance_controlled_joints])
-        self._max_torques_th = th.as_tensor([min(self._max_torque_pos_control, self._max_torques_pos_control.get(jn,float("+inf"))) for jn in self._jimpedance_controlled_joints], dtype = th.long)
+        self._monitored_to_controlled_idxs = th.as_tensor([self._monitored_joints.index(jn) for jn in self._jimpedance_controlled_joints], device = self._th_device)
+        self._max_torques_th = th.as_tensor([min(self._max_torque_pos_control, self._max_torques_pos_control.get(jn,float("+inf"))) for jn in self._jimpedance_controlled_joints], dtype = th.long, device = self._th_device)
 
 
     @override
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str, str]]):
         ret = super().set_monitored_joints(jointsToObserve)
-        self._monitored_to_controlled_idxs = th.as_tensor([self._monitored_joints.index(jn) for jn in self._jimpedance_controlled_joints], dtype = th.long)
+        self._monitored_to_controlled_idxs = th.as_tensor([self._monitored_joints.index(jn) for jn in self._jimpedance_controlled_joints], dtype = th.long, device = self._th_device)
         return ret
 
     @override
@@ -96,7 +98,7 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         # ggLog.info(f"future_commands = {future_commands}")        
         self._commanded_joint_impedances = future_commands # keep commands not applied yet
         if len(cmd)>0:
-            jimp_cmd = th.stack([th.as_tensor(cmd[jn]) for jn in self._jimpedance_controlled_joints])
+            jimp_cmd = th.stack([th.as_tensor(cmd[jn], device = self._th_device) for jn in self._jimpedance_controlled_joints])
             self._compute_and_apply_joint_effort(jimp_cmd)
         else:
             jimp_cmd = self._null_cmd
@@ -141,7 +143,7 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
 
     def _compute_and_apply_joint_effort(self, joint_impedances_pvesd : th.Tensor):
         js_pve = super().getJointsState()[self._monitored_to_controlled_idxs]
-        joint_impedances_pvesd.cpu()
+        joint_impedances_pvesd = joint_impedances_pvesd.to(self._th_device)
         torques = (joint_impedances_pvesd[:,3]*(joint_impedances_pvesd[:,0]-js_pve[:,0]) + 
                    joint_impedances_pvesd[:,4]*(joint_impedances_pvesd[:,1]-js_pve[:,1]) + 
                    joint_impedances_pvesd[:,2])
