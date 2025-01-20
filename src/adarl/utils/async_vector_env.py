@@ -53,6 +53,7 @@ def _worker(
     worker_init_fn = None,
     worker_init_kwargs = {}
 ) -> None:
+    # os.environ["CUDA_VISIBLE_DEVICES"]=""
     if worker_init_fn is not None:
         worker_init_fn(**worker_init_kwargs)
     # ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
