@@ -83,11 +83,11 @@ _build_th2jax_dev_mapping()
 def path2tstr(path):
     return tuple([n.name for n in path])
 
-def tree_set(tree, leaf_name : str, new_value):
-    return jax.tree_util.tree_map_with_path(lambda path, leaf: leaf if path2tstr(path)!=(leaf_name,) else new_value, tree)
+# def tree_set(tree, leaf_name : str, new_value):
+#     return jax.tree_util.tree_map_with_path(lambda path, leaf: leaf if path2tstr(path)!=(leaf_name,) else new_value, tree)
 
-def tree_replace(tree, leafs_path_value : Mapping[tuple[str,...],Any]):
-    return jax.tree_util.tree_map_with_path(lambda path, leaf: leafs_path_value.get(path2tstr(path),leaf), tree)
+# def tree_replace(tree, leafs_path_value : Mapping[tuple[str,...],Any]):
+#     return jax.tree_util.tree_map_with_path(lambda path, leaf: leafs_path_value.get(path2tstr(path),leaf), tree)
 
 def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
     """First integrate the physics, then compute forward kinematics/dynamics.
@@ -204,6 +204,27 @@ class SimState:
     mjx_data : mjx.Data
     requested_qfrc_applied : jnp.ndarray
     sim_time : jnp.ndarray
+
+    def replace_v(self, name : str, value : Any):
+        return self.replace_d({name:value})
+
+        return SimState(mjx_data=value if name=="mjx_data" else self.mjx_data,
+                        requested_qfrc_applied=value if name=="requested_qfrc_applied" else self.requested_qfrc_applied,
+                        sim_time=value if name=="sim_time" else self.sim_time)
+
+    def replace_d(self, name_values : dict[str,Any]):
+        # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
+        # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
+        d = {"mjx_data" : self.mjx_data,
+             "requested_qfrc_applied" : self.requested_qfrc_applied,
+             "sim_time" : self.sim_time}
+        # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
+        d.update(name_values)
+        # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
+        ret = SimState(**d)
+        # ggLog.info(f"type(self.mjx_data) = {type(self.mjx_data)}")
+        return ret
+    
 
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
@@ -393,9 +414,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
-        self._sim_state = tree_replace(self._sim_state, {("mjx_data",) : mjx_data,
-                                                         ("sim_time",) : sim_time,
-                                                         ("requested_qfrc_applied",) : requested_qfrc_applied})
+        self._sim_state = self._sim_state.replace_d({   "mjx_data":mjx_data,
+                                                        "requested_qfrc_applied":requested_qfrc_applied,
+                                                        "sim_time":sim_time})
         
         self.set_monitored_joints([])
         self.set_monitored_links([])
@@ -485,7 +506,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_torque_cmds(self, sim_state : SimState) -> SimState:
-        return tree_set(sim_state, "mjx_data", sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied))
+        return sim_state.replace_v( "mjx_data", sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied))
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("state"))
     def _sim_step_fast(self, iteration, state : tuple[SimState, jnp.ndarray]) -> tuple[SimState, jnp.ndarray]:
@@ -493,8 +514,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_arr = state[1]
         sim_state = self._apply_commands(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,sim_state.mjx_data)
-        sim_state = tree_set(sim_state, "mjx_data", new_mjx_data)
-        sim_state = tree_set(sim_state, "sim_time", sim_state.sim_time + self._sim_step_dt)
+        sim_state = sim_state.replace_v( "mjx_data", new_mjx_data)
+        sim_state = sim_state.replace_v( "sim_time", sim_state.sim_time + self._sim_step_dt)
         joint_stats_arr = self._update_joint_state_step_stats(sim_state, joint_stats_arr)
         return (sim_state, joint_stats_arr)
 
@@ -577,9 +598,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #         wt1 = time.monotonic()
     #         control_wtime += wt1-wtps
     #         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,self._sim_state.mjx_data)
-    #         self._sim_state = tree_set(self._sim_state, "mjx_data", new_mjx_data)
+    #         self._sim_state = self._sim_state.replace( "mjx_data", new_mjx_data)
     #         simulating_wtime += time.monotonic()-wt1
-    #         self._sim_state = tree_set(self._sim_state, "sim_time", self._sim_state.sim_time + self._sim_step_dt)
+    #         self._sim_state = self._sim_state.replace( "sim_time", self._sim_state.sim_time + self._sim_step_dt)
 
     #         self._monitored_joints_stats = self._update_joint_state_step_stats(self._sim_state, self._monitored_joints_stats)
     #         stepping_wtime += time.monotonic()-wtps
@@ -615,11 +636,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def get_debug_info(self) -> dict[str,th.Tensor]:
         return {k:th.as_tensor(v) for k,v in dataclasses.asdict(self._dbg_info).items()}
 
-    @staticmethod
-    # @jax.jit
-    def _take_batch_element(batch, e):
-        mjx_data = jax.tree_map(lambda l: l[e], batch)
-        return mjx.get_data(mj_model, mjx_data)
+    # @staticmethod
+    # # @jax.jit
+    # def _take_batch_element(batch, e):
+    #     mjx_data = jax.tree_map(lambda l: l[e], batch)
+    #     return mjx.get_data(mj_model, mjx_data)
     
     @staticmethod
     # @jax.jit
@@ -842,7 +863,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """
         self.__lastResetTime = self.getEnvTimeFromStartup()
 
-        self._sim_state = tree_set(self._sim_state, "mjx_data", copy.deepcopy(self._original_mjx_data))
+        self._sim_state = self._sim_state.replace_v( "mjx_data", copy.deepcopy(self._original_mjx_data))
         self._mjx_model = copy.deepcopy(self._original_mjx_model)
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
@@ -888,7 +909,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qeff = set_rows_cols(self._sim_state.mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
         mjx_data = self._sim_state.mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
         mjx_data = self._mjx_forward(self._mjx_model, mjx_data)
-        self._sim_state = tree_set(self._sim_state, "mjx_data", mjx_data)
+        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
         self._update_gui(force=True)
         # ggLog.info(f"setted_jstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
 
@@ -971,7 +992,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._sim_state.mjx_data.qpos = {self._sim_state.mjx_data.qpos}")        
         # self._mjx_model = mjx.put_model(self._mj_model, device=self._jax_device)
         mjx_data = self._mjx_forward(self._mjx_model,mjx_data)
-        self._sim_state = tree_set(self._sim_state, "mjx_data", mjx_data)
+        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
 
         self._update_gui(True)
         # ggLog.info(f"setted_lstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
@@ -1026,11 +1047,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """
         qvadr = self._jnt_dofadr_jax[jids]
         if sims_mask is None:
-            sim_state = tree_set(sim_state, "requested_qfrc_applied",
+            sim_state = sim_state.replace_v( "requested_qfrc_applied",
                                   sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:]))
             # sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
         else:
-            sim_state = tree_set(sim_state, "requested_qfrc_applied",
+            sim_state = sim_state.replace_v( "requested_qfrc_applied",
                                   set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:]))
             # sim_state.requested_qfrc_applied = set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:])
         return sim_state

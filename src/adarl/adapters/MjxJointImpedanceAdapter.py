@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState, tree_replace
+from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing import Any
@@ -23,12 +23,35 @@ import jax.core
 from functools import partial
 import jax.tree_util
 from dataclasses import dataclass
-
+import dataclasses
+import traceback
 @jax.tree_util.register_dataclass
 @dataclass
 class SimStateJimp(SimState):
     cmds_queue : jnp.ndarray
     cmds_queue_times : jnp.ndarray
+
+    def replace_d(self, name_values : dict[str,Any]):
+        # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
+        # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
+        d = {"mjx_data" : self.mjx_data,
+             "requested_qfrc_applied" : self.requested_qfrc_applied,
+             "sim_time" : self.sim_time,
+             "cmds_queue" : self.cmds_queue,
+             "cmds_queue_times" : self.cmds_queue_times}
+        # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
+        d.update(name_values)
+        # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
+        ret = SimStateJimp(**d)
+        # ggLog.info(f"type(self.mjx_data) = {type(self.mjx_data)}")
+        return ret
+    
+    # def __setattr__(self, name: str, value: Any) -> None:
+    #     if name == "mjx_data":
+    #         ggLog.info(f"setting mjx_data to {type(value)}")
+    #         traceback.print_stack()
+    #     return super().__setattr__(name, value)
+
 
 class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     
@@ -59,6 +82,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         output_th_device=output_th_device,
                         add_ground=add_ground,
                         log_freq=log_freq)
+
+        self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
+                                        requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
+                                        sim_time=self._sim_state.sim_time,
+                                        cmds_queue=jnp.empty((0,), device = jax_device),
+                                        cmds_queue_times=jnp.empty((0,), device = jax_device))
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
@@ -66,12 +95,6 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds_queue","cmds_queue_times"]))
         self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds_queue","cmds_queue_times"]), in_axes=(0,0,None))
         self._compute_impedance_torques_vec = jax.vmap(jax.jit(self._compute_impedance_torques), in_axes=(0,0,None))
-
-        self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
-                                        requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
-                                        sim_time=self._sim_state.sim_time,
-                                        cmds_queue=jnp.empty((0,), device = jax_device),
-                                        cmds_queue_times=jnp.empty((0,), device = jax_device))
 
     def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor | float = 0.0,
@@ -146,7 +169,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                                         cmd_time=cmd_time,
                                                                                         cmds_queue=self._sim_state.cmds_queue,
                                                                                         cmds_queue_times=self._sim_state.cmds_queue_times)
-        self._sim_state = tree_replace(self._sim_state, {("cmds_queue",) : new_cmds_queue, ("cmds_queue_times",) : new_cmds_queue_times})
+        self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
         
         if not jnp.all(inserted):
             raise RuntimeError(f"Failed to insert commands, inserted = {inserted}")
@@ -230,8 +253,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
     def _reset_cmd_queue(self):
         self._queued_cmds_queue = 1
-        self._sim_state = tree_replace(self._sim_state, {("cmds_queue",) : jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device),
-                                                         ("cmds_queue_times",) : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
+        self._sim_state = self._sim_state.replace_d({"cmds_queue" : jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device),
+                                                     "cmds_queue_times" : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter
@@ -290,7 +313,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data,
                                                             self._imp_control_max_torque)
-        sim_state = tree_replace(sim_state, {("cmds_queue",) : new_cmds_queue, ("cmds_queue_times",) : new_cmds_queue_times})
+        sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
+        
         # vec_efforts = jnp.zeros_like(vec_efforts)
         # ggLog.info(f"setting efforts {vec_efforts}")
         sim_state = self._set_effort_command(sim_state, self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
