@@ -46,13 +46,13 @@ class VectorEnvChecker(
     
     def _check(self, observation, reward):
         if observation is not None and not is_all_finite(observation):
-            msg = f"Non-finite values in obs {self._last_obs}"
+            msg = f"Non-finite values in obs {observation}"
             if self._just_warn:
                 ggLog.warn(msg)
             else:
                 raise RuntimeError(msg)
         if observation is not None and not is_all_bounded(observation, min=-100, max=100):
-            msg = f"Values over 100 in obs {self._last_obs}"
+            msg = f"Values over 100 in obs {observation}"
             if self._just_warn:
                 ggLog.warn(msg)
             else:
