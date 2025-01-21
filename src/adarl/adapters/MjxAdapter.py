@@ -514,8 +514,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_arr = state[1]
         sim_state = self._apply_commands(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,sim_state.mjx_data)
-        sim_state = sim_state.replace_v( "mjx_data", new_mjx_data)
-        sim_state = sim_state.replace_v( "sim_time", sim_state.sim_time + self._sim_step_dt)
+        sim_state = sim_state.replace( {"mjx_data": new_mjx_data,
+                                        "sim_time": sim_state.sim_time + self._sim_step_dt})
         joint_stats_arr = self._update_joint_state_step_stats(sim_state, joint_stats_arr)
         return (sim_state, joint_stats_arr)
 
@@ -563,15 +563,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._update_gui()
         # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
         #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
-        self._dbg_info.wtime_stepping =    stepping_wtime
-        self._dbg_info.wtime_simulating =  0
-        self._dbg_info.wtime_controlling = 0
-        self._dbg_info.rt_factor_vec = self._vec_size*(self._simTime-st0)/stepping_wtime
-        self._dbg_info.rt_factor_single = (self._simTime-st0)/stepping_wtime
-        self._dbg_info.stime_ran =  self._simTime-st0
-        self._dbg_info.stime =  self._simTime
-        self._dbg_info.fps_vec =     self._vec_size*sim_vsteps_done/stepping_wtime
-        self._dbg_info.fps_single =  sim_vsteps_done/stepping_wtime
+        self._dbg_info.wtime_stepping =     stepping_wtime
+        self._dbg_info.wtime_simulating =   0
+        self._dbg_info.wtime_controlling =  0
+        self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/stepping_wtime
+        self._dbg_info.rt_factor_single =   (self._simTime-st0)/stepping_wtime
+        self._dbg_info.stime_ran =          self._simTime-st0
+        self._dbg_info.stime =              self._simTime
+        self._dbg_info.fps_vec =            self._vec_size*sim_vsteps_done/stepping_wtime
+        self._dbg_info.fps_single =         sim_vsteps_done/stepping_wtime
         if self._log_freq > 0 and self._sim_step_count_since_build - self._last_log_iters >= self._log_freq:
             self._last_log_iters = self._sim_step_count_since_build
             ggLog.info( "MjxAdapter:\n"+"\n".join(["    "+str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
