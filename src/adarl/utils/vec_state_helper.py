@@ -772,6 +772,7 @@ class JointImpedanceActionHelper:
                         safe_stiffness : th.Tensor,
                         safe_damping : th.Tensor,
                         th_device : th.device,
+                        generator : th.Generator | None,
                         vec_size : int = 1):
         self._joints = joints
         self._control_mode = control_mode
@@ -827,17 +828,25 @@ class JointImpedanceActionHelper:
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
                                               dtype=th.int32,
                                               device=self._th_device)
+        high = th.ones(self.single_action_len())
+        self._single_action_space = spaces.ThBox(low  = -high,
+                                                 high = high,
+                                                 torch_device=th_device,
+                                                 generator = generator)
+        vec_high = th.ones(self.single_action_len()).expand(size=(self._vec_size, self.single_action_len()))
+        self._vec_action_space = spaces.ThBox(  low  = -vec_high,
+                                                high = vec_high,
+                                                torch_device=th_device,
+                                                generator = generator)
         
     def single_action_len(self):
         return self.action_lengths[self._control_mode]*self._joints_num
     
-    def get_single_action_space(self, seed : int):
-        max_act = np.ones(self.single_action_len())
-        return spaces.gym_spaces.Box(-max_act,max_act, seed=seed)
+    def get_single_action_space(self):
+        return self._single_action_space
     
-    def get_vec_action_space(self, seed : int):
-        max_act = np.broadcast_to(np.ones(self.single_action_len()), (self._vec_size, self.single_action_len()))
-        return spaces.gym_spaces.Box(-max_act,max_act, seed=seed)
+    def get_vec_action_space(self):
+        return self._vec_action_space
 
     def pvesd_to_action(self, cmds_pvesd : th.Tensor) -> th.Tensor:
         """Converts a joint impedance command (pvesd) to its respective action.

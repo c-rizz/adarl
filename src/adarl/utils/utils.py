@@ -1011,6 +1011,9 @@ def pretty_print_tensor_map(thmap : Mapping[str,th.Tensor]):
     return n.join([f"{k}:{v.cpu().tolist() if v.numel()<100 else v}" for k,v in thmap.items()])
 
 
+def hash_tensor(tensor):
+    return hash(tuple(tensor.reshape(-1).tolist()))
+
 
 
 

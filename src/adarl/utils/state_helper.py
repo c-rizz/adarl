@@ -674,7 +674,8 @@ class JointImpedanceActionHelper:
                         joints_minmax_pvesd : th.Tensor | dict[tuple[str,str], th.Tensor],
                         safe_stiffness : th.Tensor,
                         safe_damping : th.Tensor,
-                        th_device : th.device):
+                        th_device : th.device,
+                        generator : th.Generator | None):
         self._joints = joints
         self._control_mode = control_mode
         self._joints_num = len(self._joints)
@@ -726,12 +727,16 @@ class JointImpedanceActionHelper:
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
                                               dtype=th.int32,
                                               device=self._th_device)
+        self._action_space = spaces.ThBox(  low=-th.ones(self.action_len()),
+                                            high=th.ones(self.action_len()),
+                                            torch_device=self._th_device,
+                                            generator=generator)
         
     def action_len(self):
         return self.action_lengths[self._control_mode]*self._joints_num
     
-    def action_space(self, seed : int):
-        return spaces.gym_spaces.Box(-np.ones(self.action_len()),np.ones(self.action_len()), seed=seed)
+    def action_space(self):
+        return self._action_space
 
     def _pvesd_to_action(self, cmds_pvesd : dict[tuple[str,str], tuple[float,float,float,float,float]]):
         cmd_joints_pvesd = th.stack([th.as_tensor(cmds_pvesd[j]) for j in self._joints])

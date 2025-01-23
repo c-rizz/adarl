@@ -22,7 +22,7 @@ def create_tensor_tree(batch_size : int, space : gym_spaces.Space, share_mem : b
             tree[k] = create_tensor_tree(batch_size, s, share_mem, device)
         return tree
     elif isinstance(space, gym_spaces.Box):
-        thdtype = th.as_tensor(space.sample()).dtype
+        thdtype = th.as_tensor(space.high).dtype
         t = th.zeros(size=(batch_size,)+space.shape, dtype=thdtype, device = device)
         if share_mem:
             t.share_memory_()

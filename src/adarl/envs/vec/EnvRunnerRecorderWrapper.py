@@ -85,7 +85,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._last_saved_ep = float("-inf")
         self._saved_eps_count = 0
         self._saved_best_eps_count = 0
-        self._stored_steps = 0
+        self._stored_frames = 0
 
         labels = get_space_labels(self._runner.info_space)
         self._info_labels = flatten_tensor_tree(labels)
@@ -155,11 +155,11 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._frameBuffer.append(img)
         self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
         self._infoBuffer.append(info)
-        self._stored_steps += 1
+        self._stored_frames += 1
 
     def _update_vecbuffer(self, vecobs, action, reward, terminated, truncated):
         self._vecBuffer["vecobs"].append(vecobs)
-        if self._stored_steps > 0: # at step 0 these are invalid
+        if self._stored_frames > 0: # at step 0 these are invalid
             self._vecBuffer["action"].append(action)
             self._vecBuffer["reward"].append(reward)
             self._vecBuffer["terminated"].append(terminated)
@@ -312,10 +312,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                             last_truncateds : th.Tensor):
         # ggLog.info(f"rec._on_ep_end()")
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
-        if envs_ended_mask[self._env_idx] and self._may_episode_be_saved(ep_count) and self._stored_steps > 1:
+        if envs_ended_mask[self._env_idx] and self._may_episode_be_saved(ep_count) and self._stored_frames > 1:
             # Episode with at least a full step finishing
-            ggLog.info(f"_on_ep_end: {self._stored_steps}!={self._ep_step_counts[self._env_idx]+1}?")
-            if self._stored_steps!=self._ep_step_counts[self._env_idx]+1:
+            ggLog.info(f"_on_ep_end: {self._stored_frames}!={self._ep_step_counts[self._env_idx]+1}?")
+            if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
                 # The if is needed to distinguish between an autoreset and a normal reset
                 # If the two counters are different we are in the middle of a step, we are in an autoreset
                 # If they are the same we are in a reset triggered from the outside
@@ -344,7 +344,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._frameBuffer = []
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
-        self._stored_steps = 0
+        self._stored_frames = 0
         
 
     def close(self):

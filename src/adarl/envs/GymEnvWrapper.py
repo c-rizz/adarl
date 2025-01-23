@@ -169,7 +169,11 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             sub_rewards = {}
             # Not really setting the rewards, just populating the fields with zeros
             try:
-                _ = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
+                _ = self._ggEnv.computeReward(state,
+                                              state,
+                                              (self._ggEnv.action_space.low+self._ggEnv.action_space.high)/2,
+                                              sub_rewards=sub_rewards,
+                                              env_conf = self._ggEnv.get_configuration())
             except ValueError:
                 pass
             self._total_sub_rewards = {k: v*0.0 for k,v in sub_rewards.items()}

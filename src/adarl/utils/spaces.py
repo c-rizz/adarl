@@ -4,7 +4,7 @@ from typing import Any, SupportsFloat, Sequence
 from numpy.typing import NDArray
 import numpy as np
 import torch as th
-from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
+from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict, hash_tensor
 gym_spaces = gym.spaces
 from copy import deepcopy
 from gymnasium.vector.utils.spaces import batch_space
@@ -14,11 +14,13 @@ class ThBox(gym.spaces.Box):
                     low: SupportsFloat | NDArray[Any] | th.Tensor,
                     high: SupportsFloat | NDArray[Any] | th.Tensor,
                     shape: Sequence[int] | None = None,
-                    dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype = np.float32,
+                    dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str = np.float32,
                     seed: int | np.random.Generator | None = None,
                     torch_device : th.device = th.device("cpu"),
-                    labels : th.Tensor | None = None):
+                    labels : th.Tensor | None = None,
+                    generator : th.Generator | None = None):
         self._th_device = torch_device
+        self._rng = generator
         if isinstance(low,th.Tensor):
             low = low.cpu().numpy()
         if isinstance(high,th.Tensor):
@@ -29,12 +31,24 @@ class ThBox(gym.spaces.Box):
         else:
             numpy_dtype = dtype
             torch_dtype = numpy_to_torch_dtype_dict[dtype]
-        # self.torch_dtype = torch_dtype # yaml cannot save this for some reason, see https://github.com/pytorch/pytorch/issues/78720
+        self.torch_dtype_str = str(torch_dtype).split(".")[1] # yaml cannot save this directly as str-based __reduce__ (used by dtypes) is not supported by yaml, see https://github.com/pytorch/pytorch/issues/78720
         self.labels = labels
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
+        self._high_th = th.as_tensor(self.high)
+        self._low_th = th.as_tensor(self.low)
 
     def sample(self):
-        return th.as_tensor(super().sample(), device = self._th_device)
+        # ggLog.info(f"Sampling ThBox, rng state = {hash_tensor(self._rng.get_state()) if self._rng is not None else None}")
+        # import traceback
+        # traceback.print_stack()
+        # only works for uniform
+        r = th.rand(self._high_th.size(),
+                    device=self._th_device,
+                    generator=self._rng,
+                    dtype=getattr(th,self.torch_dtype_str))
+        return r*(self._high_th-self._low_th)+self._low_th
+        # return th.as_tensor(super().sample(), device = self._th_device) # does not use the torch rng
+    
     
 
 def get_space_labels(space : gym_spaces.Dict | ThBox):
