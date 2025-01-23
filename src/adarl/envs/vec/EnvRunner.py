@@ -204,7 +204,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                             last_observations : ObsType,
                             last_actions : th.Tensor | None,
                             last_infos : TensorTree[th.Tensor],
-                            last_rewards : th.Tensor):
+                            last_rewards : th.Tensor,
+                            options = {}):
         self._on_episode_end(   envs_ended_mask = reinit_envs_mask,
                                 last_observations = last_observations,
                                 last_actions = last_actions,
@@ -212,7 +213,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                 last_rewards = last_rewards,
                                 last_terminateds = terminateds,
                                 last_truncateds = truncateds)
-        self._adarl_env.initialize_episodes(reinit_envs_mask)
+        self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
         self._ep_step_counts[reinit_envs_mask] = 0
         self._ep_counts[reinit_envs_mask] += 1
         self._tot_ep_rewards = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env.th_device, dtype=th.float32)
@@ -294,8 +295,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          last_actions=self._last_actions,
                          last_observations=observations,
                          last_infos=infos,
-                         last_rewards=rewards)
-        self._adarl_env.initialize_episodes(options=options)
+                         last_rewards=rewards,
+                         options=options)
 
         self._reset_count += 1
         self._cached_states = None

@@ -342,7 +342,7 @@ class StateNoiseGenerator:
 
         # At the beginning of each episode a mu is sampled
         # then at each step the noise uses this mu and the step_std
-        self._current_ep_mu = adarl.utils.utils.randn_from_mustd(self._episode_mu_std, generator=self._rng)
+        self._resample_mu()
         # At each step the noise state contains the current sampled noise
         self._state_space = spaces.ThBox(low=float("-inf"), high=float("+inf"), shape=(self._history_length,)+self._noise_shape)
 
@@ -350,11 +350,15 @@ class StateNoiseGenerator:
         return self._state_space
 
     def _resample_mu(self):
-        self._current_ep_mu = adarl.utils.utils.randn_from_mustd(self._episode_mu_std, generator=self._rng)
+        self._current_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std,
+                                                                              size = self._noise_shape,
+                                                                              generator=self._rng,
+                                                                              squash_sigma=self._squash_sigma),
+                                           self._step_std.expand(self._noise_shape)])
+        
 
     def _generate_noise(self):
-        # ggLog.info(f"generating noise with {[self._current_ep_mu,self._step_std]}")
-        return adarl.utils.utils.randn_from_mustd(th.stack([self._current_ep_mu,self._step_std]), generator=self._rng,
+        return adarl.utils.utils.randn_from_mustd(self._current_ep_mustd, generator=self._rng,
                                                   squash_sigma = self._squash_sigma)
 
     def reset_state(self):

@@ -112,14 +112,14 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     @override
     def step(self, actions):
         # ggLog.info(f"rec.step()")
+        self._ep_step_counts += 1
+        self._tot_vstep_counter += 1
         vstep_ret_tuple =  self._runner.step(actions)
         action = actions[self._env_idx]
         (consequent_observations, next_start_observations,
             rewards, terminateds, truncateds, consequent_infos,
             next_start_infos, reinit_dones) = vstep_ret_tuple
         self._ep_rewards += rewards
-        self._ep_step_counts += 1
-        self._tot_vstep_counter += 1
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
             # ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
@@ -132,6 +132,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             img = self._runner.get_ui_renderings()[0][self._env_idx]
             if self._publish_imgs:
                 dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
+            # If the episode just started (i.e. reinit_done == True), we must save next_start instead of consequent, as
+            # the buffers have just been flushed in the _on_ep_end callback.
+            # In all other cases next_start==consequent
+            # So we can simply always save next_start
             self._record_step(img, next_start_observation, action, next_start_info, reward, terminated, truncated)
         return vstep_ret_tuple
 
@@ -310,10 +314,16 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if envs_ended_mask[self._env_idx] and self._may_episode_be_saved(ep_count) and self._stored_steps > 1:
             # Episode with at least a full step finishing
-            img = self._runner.get_ui_renderings()[0][self._env_idx]
-            obs, act, info, rew, term, trunc = map_tensor_tree((last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds), 
-                                                               lambda tensor: tensor[self._env_idx])
-            self._record_step(img, obs, act, info, rew, term, trunc)
+            ggLog.info(f"_on_ep_end: {self._stored_steps}!={self._ep_step_counts[self._env_idx]+1}?")
+            if self._stored_steps!=self._ep_step_counts[self._env_idx]+1:
+                # The if is needed to distinguish between an autoreset and a normal reset
+                # If the two counters are different we are in the middle of a step, we are in an autoreset
+                # If they are the same we are in a reset triggered from the outside
+                # In this case do not save the last obs/action/etcetera, they have already been saved in the last step
+                img = self._runner.get_ui_renderings()[0][self._env_idx]
+                obs, act, info, rew, term, trunc = map_tensor_tree((last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds), 
+                                                                lambda tensor: tensor[self._env_idx])
+                self._record_step(img, obs, act, info, rew, term, trunc)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
             fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
             if self._ep_rewards[self._env_idx] > self._bestReward:

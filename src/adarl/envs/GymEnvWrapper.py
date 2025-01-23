@@ -31,7 +31,6 @@ import torch as th
 from adarl.utils.tensor_trees import map_tensor_tree
 import copy
 from typing_extensions import override
-
 ObsType = TypeVar("ObsType")
 
 class GymEnvWrapper(gym.Env, Generic[ObsType]):
@@ -358,9 +357,9 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             else:
                 if self._logEpisodeInfo:
                     self._logInfoCsv()
-                if self._verbose:
-                    for k,v in self._dbg_info.items():
-                        ggLog.info(k," = ",v)
+                # if self._verbose:
+                #     for k,v in self._dbg_info.items():
+                #         ggLog.info(k," = ",v)
                 elif not self._quiet:
                     msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
                             f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
