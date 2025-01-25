@@ -297,6 +297,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                         qvadr,
                                                         mjx_data)
         vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
+        # jax.debug.print("t={t} \t eff={eff} \t jstate={jstate}", t=sim_time, eff=vec_efforts, jstate=vec_jstate)
         return vec_efforts, sim_has_cmd, cmds_queue, cmds_queue_times
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))

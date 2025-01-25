@@ -8,6 +8,7 @@ from adarl.utils.utils import evaluatePolicyVec
 from adarl.utils.tensor_trees import stack_tensor_tree, unstack_tensor_tree, map_tensor_tree
 import adarl.utils.dbg.ggLog as ggLog
 import time
+from typing_extensions import override
 
 class TrainingCallback():
 
@@ -87,12 +88,8 @@ class EvalCallback(TrainingCallback):
     def set_model(self, model):
         self._model = model
     
-    def on_collection_end(self,    collected_episodes : int,
-                                    collected_steps : int,
-                                    collected_data : Optional[BasicStorage] = None):
-        self._episode_counter += collected_episodes
-        self._step_counter += collected_steps
-        # ggLog.info(f"on_collection_end: {self.eval_freq_ep} {self._episode_counter} {self._last_evaluation_episode}")
+    @override
+    def on_collection_start(self):
         if self.eval_freq_ep > 0 and self._episode_counter - self._last_evaluation_episode >= self.eval_freq_ep and self._last_evaluation_episode != self._episode_counter:
             # ggLog.info(f"Evaluating")
             cuda_sync_debug_state = th.cuda.get_sync_debug_mode()
@@ -104,8 +101,15 @@ class EvalCallback(TrainingCallback):
                 self._evaluate(model=self._model)
             finally:
                 th.cuda.set_sync_debug_mode(cuda_sync_debug_state)
-        return True
-    
+
+    @override
+    def on_collection_end(self,    collected_episodes : int,
+                                    collected_steps : int,
+                                    collected_data : Optional[BasicStorage] = None):
+        self._episode_counter += collected_episodes
+        self._step_counter += collected_steps
+        # ggLog.info(f"on_collection_end: {self.eval_freq_ep} {self._episode_counter} {self._last_evaluation_episode}")
+            
     def _evaluate(self, model : th.nn.Module | None = None, predict_func : Callable[[Any, bool], tuple[Any,Any]] | None = None):
         self._last_evaluation_episode = self._episode_counter
         # def predict(obs):

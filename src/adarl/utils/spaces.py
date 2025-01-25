@@ -34,8 +34,8 @@ class ThBox(gym.spaces.Box):
         self.torch_dtype_str = str(torch_dtype).split(".")[1] # yaml cannot save this directly as str-based __reduce__ (used by dtypes) is not supported by yaml, see https://github.com/pytorch/pytorch/issues/78720
         self.labels = labels
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
-        self._high_th = th.as_tensor(self.high)
-        self._low_th = th.as_tensor(self.low)
+        self._high_th = th.as_tensor(self.high, device=self._th_device)
+        self._low_th = th.as_tensor(self.low, device=self._th_device)
 
     def sample(self):
         # ggLog.info(f"Sampling ThBox, rng state = {hash_tensor(self._rng.get_state()) if self._rng is not None else None}")

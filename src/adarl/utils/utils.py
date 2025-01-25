@@ -343,7 +343,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
             predict_func_ = predict_func
         else:
             raise AttributeError(f"You must set either model or predict_func")
-        buffsizes = episodes+vec_env.num_envs # may collect at most num_env excess episodes
+        num_envs  = vec_env.unwrapped.num_envs
+        buffsizes = episodes+num_envs # may collect at most num_env excess episodes
         rewards = np.empty((buffsizes,), dtype = np.float32)
         durations_steps = np.empty((buffsizes,), dtype = np.int32)
         extra_stats = {k:np.empty((buffsizes,), dtype = np.float32) for k in extra_info_stats}
@@ -357,17 +358,17 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         else:
             maybe_tqdm = tqdm.tqdm
 
-        running_rews = [0] * vec_env.num_envs
-        running_durations = [0] * vec_env.num_envs
+        running_rews = [0] * num_envs
+        running_durations = [0] * num_envs
         if obs_return is not None:
-            running_obss = [[] for i in range(vec_env.num_envs)]
+            running_obss = [[] for i in range(num_envs)]
         t0 = time.monotonic()
         obss, infos = vec_env.reset()
         while collected_eps < episodes:
             acts, _states = predict_func_(obss, deterministic = deterministic)
             obss, rews, terms, truncs, infos = vec_env.step(acts)
-            collected_steps += vec_env.num_envs
-            for i in range(vec_env.num_envs):
+            collected_steps += num_envs
+            for i in range(num_envs):
                 running_rews[i] += rews[i]
                 running_durations[i] += 1
                 if obs_return is not None:

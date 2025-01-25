@@ -54,9 +54,11 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
     def step(self) -> None:
         etime0 = self._adapter.getEnvTimeFromStartup()
+        adapter_step_count = 0
         t0 = time.monotonic()
         while True: # Do at least one step, then check if we need more
             self._adapter.step()
+            adapter_step_count+=1
             estimated_step_duration_sec = self._adapter.getEnvTimeFromStartup()-etime0
             if estimated_step_duration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
                 break
@@ -68,7 +70,7 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
         if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
             ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
         tf = time.monotonic()
-        # ggLog.info(f"ControlledEnv: adapter_step = {t1-t0:.6f} (vec_env_fps={1/(t1-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(t1-t0):.2f}), env_step={tf-t0:.6f} (vec_env_fps={1/(tf-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(tf-t0):.2f})")
+        ggLog.info(f"ControlledEnv: adapter_step_count = {adapter_step_count} adapter_step = {t1-t0:.6f} (vec_env_fps={1/(t1-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(t1-t0):.2f}), env_step={tf-t0:.6f} (vec_env_fps={1/(tf-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(tf-t0):.2f})")
 
     @override
     def reset(self, options = {}):

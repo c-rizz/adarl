@@ -30,11 +30,15 @@ from functools import partial
 import dataclasses
 from dataclasses import dataclass 
 
-jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
-jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-# jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_check_tracer_leaks", True)
+# jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+# jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+# jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+jax.config.update("jax_log_compiles", True)
+# jax.config.update("jax_debug_nans", True) # May have a performance impact?
+# jax.config.update("jax_debug_infs", True) # May have a performance impact?
+# jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
+jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
+# jax.config.update("jax_enable_x64",True)
 # jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
@@ -62,6 +66,8 @@ def th2jax(tensor : th.Tensor, jax_device : jax.Device):
                                                     
 def jax2th(array : jnp.ndarray, th_device : th.device):
     return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
+
+jitted_scan = jax.jit(jax.lax.scan, static_argnames=("length", "reverse", "unroll"))
 
 devices_th2jax = {}
 devices_jax2th = {}
@@ -514,8 +520,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_arr = state[1]
         sim_state = self._apply_commands(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,sim_state.mjx_data)
-        sim_state = sim_state.replace( {"mjx_data": new_mjx_data,
-                                        "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
+                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
         joint_stats_arr = self._update_joint_state_step_stats(sim_state, joint_stats_arr)
         return (sim_state, joint_stats_arr)
 
@@ -525,6 +531,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         state = self._sim_step_fast(0, state)
         return state, None
 
+    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state","joint_stats_arr"))
     def _run_fast(self, sim_state : SimState, joint_stats_arr : jnp.ndarray, iterations : int) -> tuple[SimState, jnp.ndarray]:
         sim_state, joint_stats_arr = jax.lax.scan(self._sim_step_fast_for_scan, 
                                                   init = (sim_state, joint_stats_arr),
@@ -547,14 +554,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         st0 = self._simTime
         wt0 = time.monotonic()
 
+        run_fast_jit_compiles = self._run_fast._cache_size()
+        # ggLog.info(f"Starting run")
         iterations = int(duration_sec/self._sim_step_dt)
         self._sim_state, self._monitored_joints_stats = self._run_fast(self._sim_state, self._monitored_joints_stats, iterations)
         self._sim_step_count_since_build += iterations
         sim_vsteps_done += iterations
         # self._read_new_contacts()
         stepping_wtime = time.monotonic()-wt0
+        # ggLog.info(f"run done.")
+        if self._run_fast._cache_size() > run_fast_jit_compiles and run_fast_jit_compiles>0:
+            ggLog.warn(f"run_fast was recompiled")
 
         self._simTime = self._sim_state.sim_time.item()
+        
+        # print(f"self._simTime={self._simTime}, mjData.time={self._sim_state.mjx_data.time}")
+
         if self._realtime_factor is not None and self._realtime_factor>0:
             sleep_time = self._sim_step_dt*(1/self._realtime_factor) - (time.monotonic()-self._prev_step_end_wtime)
             if sleep_time > 0:
@@ -954,14 +969,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 #    Fixed joints cannot be set to different positions across the vectorized simulations.
                 #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
                 #     and fixed joints are represented as fixed transforms in the model.
+
+                #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, broadcast_in_dim
                 if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
                     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
                                        f"{link_states_pose_vel_jnp[0,i]}\n"
                                        f"!=\n"
                                        f"{link_states_pose_vel_jnp[:,i]}")
+                #TODO: the following line triggers jit recompile
                 if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
                     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
+                #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, convert_element_type
                 model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
+                #TODO: the following line triggers jit recompile, also on add, select_n, concatenate, gather, scatter
                 model_body_quat = model_body_quat.at[lid].set(link_states_pose_vel_jnp[0,i,[6,3,4,5]])
                 # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")
             elif parent_joints_num == 1 and parent_body_id==0:
