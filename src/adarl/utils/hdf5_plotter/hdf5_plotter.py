@@ -24,7 +24,7 @@ def recdict_access(rdict : dict[_K,_V], keylist : list[_K]) -> dict[_K,_V]:
 # def multiplot(n_cols_rows, plotnames, datas : dict, filename : dict, labels : dict, titles : dict):
 
 plot_count = 0
-def plot(data, filename, labels = None, title : str = "HDF5Plot"):
+def plot(data, filename, labels = None, title : str = "HDF5Plot", xlims=None):
     print(f"plotting data with shape {data.shape}")
 
     global plot_count
@@ -43,6 +43,7 @@ def plot(data, filename, labels = None, title : str = "HDF5Plot"):
     lines = ax.plot(data, label=labels)
     legend = ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     legend.set_draggable(True)
+    ax.set_xlim(xlims)
 
     map_legend_to_ax = {}  # Will map legend lines to original lines.
     for legend_line, ax_line in zip(legend.get_lines(), lines):
@@ -99,6 +100,8 @@ def cmd_quit(file, current_path, *args, **kwargs):
 
 
 def cmd_plot(file, current_path, *args, **kwargs):
+    """ Plot a data element. For example 'plot state_robot 0:96:8+2 --xlims=-1,30' plots from state_robot a
+        slice from 0 to 96 with stride 8 and an offset of 2 (i.e. 2,10,18,...), with x axis limits -1 and 30."""
     if len(args) < 1:
         print(f"Argument missing for plot.")
     print(f"cmd_plot({args})")
@@ -120,28 +123,35 @@ def cmd_plot(file, current_path, *args, **kwargs):
         data = np.expand_dims(data,1)
     col_num = data.shape[1]
     columns = None
+    xlims = None
     if len(args)>=2:
         columns = []
         for arg in args[1:]:
-            groups = arg.split(",") # e.g. "1:4,7:9,11,12" gets split in ["1:4","7:9","11","12"]
-            for g in groups:
-                if ":" in g:
-                    slice_offset = g.split("+")
-                    if len(slice_offset) == 1: 
-                        slice_offset.append("0")
-                    slice,offset = slice_offset
-                    e = slice.split(":")
-                    if len(e)>3:
-                        raise RuntimeError(f"Invalid slice '{g}'")
-                    if len(e)==2:
-                        e.append("")
-                    if e[0] == "": e[0] = 0
-                    if e[1] == "": e[1] = col_num
-                    if e[2] == "": e[2] = 1
-                    e = [int(es) for es in e]
-                    columns += [c+int(offset) for c in list(range(col_num))[e[0]:e[1]:e[2]]]
+            if arg.startswith("--"):
+                if arg.startswith("--xlims="):
+                    xlims = [int(l) for l in arg[8:].split(",")]
                 else:
-                    columns.append(int(g))
+                    print(f"Unrecognized arg {arg}")
+            else:
+                groups = arg.split(",") # e.g. "1:4,7:9,11,12" gets split in ["1:4","7:9","11","12"]
+                for g in groups:
+                    if ":" in g:
+                        slice_offset = g.split("+")
+                        if len(slice_offset) == 1: 
+                            slice_offset.append("0")
+                        slice,offset = slice_offset
+                        e = slice.split(":")
+                        if len(e)>3:
+                            raise RuntimeError(f"Invalid slice '{g}'")
+                        if len(e)==2:
+                            e.append("")
+                        if e[0] == "": e[0] = 0
+                        if e[1] == "": e[1] = col_num
+                        if e[2] == "": e[2] = 1
+                        e = [int(es) for es in e]
+                        columns += [c+int(offset) for c in list(range(col_num))[e[0]:e[1]:e[2]]]
+                    else:
+                        columns.append(int(g))
     if columns is not None:
         data = data[:,columns]
     maybe_labels_name = field+"_labels"
@@ -157,7 +167,11 @@ def cmd_plot(file, current_path, *args, **kwargs):
         print(f"using labels {n.join([f'{i} : {l}' for i,l in zip(columns,labels)])}")
     else:
         labels = columns
-    plot(data, labels=labels, filename = "./plot.pdf", title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path))
+    plot(data, 
+         labels=labels, 
+         filename = "./plot.pdf", 
+         title = os.path.basename(kwargs["filename"])+"/"+"/".join(current_path),
+         xlims=xlims)
     return current_path, True
 
 from collections import defaultdict
