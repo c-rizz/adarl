@@ -107,7 +107,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None and not th.all(vec_mask):
             raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
-        ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
+        # ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay_sec)
 
@@ -163,7 +163,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
         cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
         cmd_time = jnp.resize(delay_sec_j, (self._vec_size,)) + self._simTime
-        ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
+        # ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
         # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
         new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd,
@@ -173,7 +173,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
         if not jnp.all(inserted):
             raise RuntimeError(f"Failed to insert commands, inserted = {inserted}")
-        ggLog.info(f"added cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
+        # ggLog.info(f"added cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
 
     @staticmethod
     def _insert_cmd_to_queue(   cmd : jnp.ndarray,
