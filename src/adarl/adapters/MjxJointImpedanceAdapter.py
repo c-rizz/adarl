@@ -107,6 +107,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None and not th.all(vec_mask):
             raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
+        ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay_sec)
 
@@ -162,7 +163,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
         cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
         cmd_time = jnp.resize(delay_sec_j, (self._vec_size,)) + self._simTime
-        
+        ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
         # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
         new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd,
@@ -170,9 +171,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                                         cmds_queue=self._sim_state.cmds_queue,
                                                                                         cmds_queue_times=self._sim_state.cmds_queue_times)
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
-        
         if not jnp.all(inserted):
             raise RuntimeError(f"Failed to insert commands, inserted = {inserted}")
+        ggLog.info(f"added cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
 
     @staticmethod
     def _insert_cmd_to_queue(   cmd : jnp.ndarray,
@@ -199,10 +200,15 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         """
         # insert command in the first slot that has +inf time
         # if there's no space return some specific value in a ndarray
-        empty_slots = jnp.isinf(cmds_queue_times)
-        found_slot = jnp.any(empty_slots)
-        first_empty = jnp.argmax(empty_slots) # if there is no empty slot, then this is zero
-        selected_slots = jnp.zeros_like(cmds_queue_times) # all False
+        empty_slots = jnp.isinf(cmds_queue_times) # if no command or a command for the same time
+        same_time_slots = cmds_queue_times==cmd_time
+        # If there is any slot at the same time, then do not use the empty ones
+        # If there is a slot at the same time, use that one
+        # Thi smounts to the following: (empty and not any(same)) or same
+        writable_slots = jnp.logical_or(jnp.logical_and(empty_slots,jnp.logical_not(jnp.any(same_time_slots))), same_time_slots)
+        found_slot = jnp.any(writable_slots)
+        first_empty = jnp.argmax(writable_slots) # if there is no empty slot, then this is zero, but in that case we end up not selecting it, becuase we use 'found_slot'
+        selected_slots = jnp.zeros_like(cmds_queue_times) # Initialize all False
         selected_slots = selected_slots.at[first_empty].set(found_slot) # if a slot was found, set its corresponding cell to True, the rest to False
 
         cmds_queue_times = cmds_queue_times.at[first_empty].set(jnp.where(found_slot, cmd_time, cmds_queue_times[first_empty]))
@@ -297,7 +303,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                         qvadr,
                                                         mjx_data)
         vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
-        # jax.debug.print("t={t} \t eff={eff} \t jstate={jstate}", t=sim_time, eff=vec_efforts, jstate=vec_jstate)
+        # jax.debug.print("t={t} \t eff={eff} \t cmd={current_cmd} jstate={jstate}",
+        #                 t=sim_time, eff=vec_efforts, jstate=vec_jstate,
+        #                 current_cmd=current_cmd)
         return vec_efforts, sim_has_cmd, cmds_queue, cmds_queue_times
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
