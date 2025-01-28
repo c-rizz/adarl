@@ -236,7 +236,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @dataclass
     class DebugInfo():
-        wtime_stepping : float = 0.0
+        wtime_running : float = 0.0
         wtime_simulating : float = 0.0
         wtime_controlling : float = 0.0
         rt_factor_vec : float = 0.0
@@ -266,6 +266,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_step_dt = sim_step_dt
         self._step_length_sec = step_length_sec
         self._simTime = 0.0
+        self._total_iterations = 0
         self._sim_step_count_since_build = 0
         self._sim_stepping_wtime_since_build = 0
         self._run_wtime_since_build = 0
@@ -295,6 +296,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._no_vecs_thcpu = th.zeros((vec_size,), dtype=th.bool, device="cpu")
 
         self._dbg_info = MjxAdapter.DebugInfo()
+
+        self._record_whole_joint_history = False
+        self._joints_pveae_history = []
+        self._log_freq_joints_pveae_history = 250*(50/1024)/(2/4096)
 
     @staticmethod
     def _mj_name_to_pair(mjname : str):
@@ -459,6 +464,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 return mujoco.Renderer(self._mj_model,height=h,width=w)
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
                             for resolution in set(self._camera_sizes.values())}
+            self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
         else:
             self._renderers = {}
         
@@ -501,8 +507,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         -------
         float
             Duration of the step in simulation time (in seconds)"""
+        t0 = time.monotonic()
         self._clear_joint_state_step_stats()
+        t1 = time.monotonic()
         stepLength = self.run(self._step_length_sec)
+        tf = time.monotonic()
+        ggLog.info(f"Mjx.step duration = {tf-t0}s, run = {tf-t1}s")
         return stepLength
     
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
@@ -530,7 +540,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _sim_step_fast_for_scan(self, state : tuple[SimState, jnp.ndarray], _) -> tuple[tuple[SimState, jnp.ndarray], None]:
         state = self._sim_step_fast(0, state)
         return state, None
-
+    
     @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state","joint_stats_arr"))
     def _run_fast(self, sim_state : SimState, joint_stats_arr : jnp.ndarray, iterations : int) -> tuple[SimState, jnp.ndarray]:
         sim_state, joint_stats_arr = jax.lax.scan(self._sim_step_fast_for_scan, 
@@ -541,32 +551,53 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #                                                 body_fun=self._sim_step_fast,
         #                                                 init_val=(sim_state, joint_stats_arr))
         return sim_state, joint_stats_arr
+    
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("state"))
+    def _sim_step_fast_for_scan_full_pveae(self, state : tuple[SimState, jnp.ndarray], _) -> tuple[tuple[SimState, jnp.ndarray], jnp.ndarray]:
+        state = self._sim_step_fast(0, state)
+        j_pveae = MjxAdapter._get_vec_joint_states_raw_pveae(self._monitored_qpadr, self._monitored_qvadr,
+                                                            state[0].mjx_data)
+        return state, j_pveae
+    
+    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state","joint_stats_arr"))
+    def _run_fast_save_full_jpveae(self, sim_state : SimState, joint_stats_arr : jnp.ndarray, iterations : int) -> tuple[SimState, jnp.ndarray, jnp.ndarray]:
+        (sim_state, joint_stats_arr), j_pveae_history = jax.lax.scan(self._sim_step_fast_for_scan, 
+                                                  init = (sim_state, joint_stats_arr),
+                                                  xs = (), 
+                                                  length = iterations)
+        # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
+        #                                                 body_fun=self._sim_step_fast,
+        #                                                 init_val=(sim_state, joint_stats_arr))
+        return sim_state, joint_stats_arr, j_pveae_history
+
+    def _log_joints_pveae_history(self):
+        full_history = jnp.concat(self._joints_pveae_history)
+        # convert to torch and save as hdf5
 
     @override
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
-        tf0 = time.monotonic()
-
-        # self._sent_motor_torque_commands_by_bid_jid = {}
-
-        stepping_wtime = 0
-        sim_vsteps_done = 0
-        st0 = self._simTime
-        wt0 = time.monotonic()
-
         run_fast_jit_compiles = self._run_fast._cache_size()
+        wt0 = time.monotonic()
+        st0 = self._simTime
+        # self._sent_motor_torque_commands_by_bid_jid = {}
         # ggLog.info(f"Starting run")
         iterations = int(duration_sec/self._sim_step_dt)
-        self._sim_state, self._monitored_joints_stats = self._run_fast(self._sim_state, self._monitored_joints_stats, iterations)
-        self._sim_step_count_since_build += iterations
-        sim_vsteps_done += iterations
+        if not self._record_whole_joint_history:
+            self._sim_state, self._monitored_joints_stats = self._run_fast(self._sim_state, self._monitored_joints_stats, iterations)
+        else:
+            self._sim_state, self._monitored_joints_stats, j_pveae_history = self._run_fast_save_full_jpveae(self._sim_state, self._monitored_joints_stats, iterations)
+            self._joints_pveae_history.append(j_pveae_history)
+            if self._total_iterations % self._log_freq_joints_pveae_history != (self._total_iterations+iterations) % self._log_freq_joints_pveae_history:
+                self._log_joints_pveae_history()
         # self._read_new_contacts()
-        stepping_wtime = time.monotonic()-wt0
+        wtime_simulating = time.monotonic()-wt0
         # ggLog.info(f"run done.")
         if self._run_fast._cache_size() > run_fast_jit_compiles and run_fast_jit_compiles>0:
             ggLog.warn(f"run_fast was recompiled")
 
-        self._simTime = self._sim_state.sim_time.item()
+        self._total_iterations += iterations
+        self._simTime += iterations*self._sim_step_dt # faster than taking sim_state.sim_time, as it does not do a sync
         
         # print(f"self._simTime={self._simTime}, mjData.time={self._sim_state.mjx_data.time}")
 
@@ -578,20 +609,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._update_gui()
         # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
         #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
-        self._dbg_info.wtime_stepping =     stepping_wtime
-        self._dbg_info.wtime_simulating =   0
+        self._dbg_info.wtime_running =     time.monotonic()-wt0
+        self._dbg_info.wtime_simulating =   wtime_simulating
         self._dbg_info.wtime_controlling =  0
-        self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/stepping_wtime
-        self._dbg_info.rt_factor_single =   (self._simTime-st0)/stepping_wtime
+        self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/wtime_simulating
+        self._dbg_info.rt_factor_single =   (self._simTime-st0)/wtime_simulating
         self._dbg_info.stime_ran =          self._simTime-st0
         self._dbg_info.stime =              self._simTime
-        self._dbg_info.fps_vec =            self._vec_size*sim_vsteps_done/stepping_wtime
-        self._dbg_info.fps_single =         sim_vsteps_done/stepping_wtime
+        self._dbg_info.fps_vec =            self._vec_size*iterations/wtime_simulating
+        self._dbg_info.fps_single =         iterations/wtime_simulating
         if self._log_freq > 0 and self._sim_step_count_since_build - self._last_log_iters >= self._log_freq:
             self._last_log_iters = self._sim_step_count_since_build
             ggLog.info( "MjxAdapter:\n"+"\n".join(["    "+str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
-        self._sim_stepping_wtime_since_build += stepping_wtime
-        self._run_wtime_since_build += time.monotonic()-tf0
+        self._sim_stepping_wtime_since_build += wtime_simulating
+        self._sim_step_count_since_build += iterations
+        self._run_wtime_since_build += time.monotonic()-wt0
 
         return self._simTime-st0
     
@@ -677,14 +709,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras)))
         image_batches = [np.ones(shape=(nvecs,)+self._camera_sizes[cam]+(3,), dtype=np.uint8) for cam in requestedCameras]
         # print(f"images.shapes = {[i.shape for i in images]}")
-        mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
+        # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
+        mjx.get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data)
         for env_i,env in enumerate(selected_vecs):
             for i in range(len(requestedCameras)):
                 cam = requestedCameras[i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes[cam]]
-                mujoco.mj_camlight(self._mj_model, mj_datas[env]) # see https://github.com/google-deepmind/mujoco/issues/1806
-                renderer.update_scene(mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                mujoco.mj_camlight(self._mj_model, self._renderers_mj_datas[env]) # see https://github.com/google-deepmind/mujoco/issues/1806
+                renderer.update_scene(self._renderers_mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
                 image_batches[i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in image_batches], times
@@ -777,9 +810,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _clear_joint_state_step_stats(self):
         self._joint_stats_sample_count = 0
-        self._monitored_joints_stats = self._init_stats(jnp.zeros(shape=(self._vec_size, 4, len(self._monitored_joints),4),
-                                                                  dtype=jnp.float32,
-                                                                  device=self._jax_device))
+        self._monitored_joints_stats = self._init_stats(self._monitored_joints_stats)
 
     @staticmethod
     @partial(jax.jit, donate_argnames=["stats_array"])
@@ -815,6 +846,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _reset_joint_state_step_stats(self):
         # ggLog.info(f"resetting stats")
+        self._monitored_joints_stats = jnp.zeros(shape=(self._vec_size, 4, len(self._monitored_joints),4),
+                                                                  dtype=jnp.float32,
+                                                                  device=self._jax_device)
         self._clear_joint_state_step_stats()
         self._monitored_joints_stats = self._update_joint_state_step_stats(self._sim_state, self._monitored_joints_stats) # populate with current state, so that there are safe-ish values here
 

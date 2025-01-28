@@ -161,3 +161,15 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
                         last_rewards = last_rewards,
                         last_terminateds = last_terminateds,
                         last_truncateds = last_truncateds)
+            
+    @abstractmethod
+
+    def get_base_env(self) -> BaseVecEnv[ObsType]:
+        """Get the underlying adarl base environment
+
+        Returns
+        -------
+        BaseEnv
+            The adarl.BaseEnv object.
+        """
+        ...

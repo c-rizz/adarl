@@ -114,7 +114,7 @@ class GymRunnerWrapper(gym.Env, Generic[ObsType]):
         if mode!="rgb_array":
             raise NotImplementedError("only rgb_array mode is supported")
         th_images = self.vec_runner.get_ui_renderings()
-        return th_images[0]
+        return th_images[0][0]
 
     @override
     def close(self):
@@ -124,3 +124,6 @@ class GymRunnerWrapper(gym.Env, Generic[ObsType]):
         garbage collected or when the program exits.
         """
         self.vec_runner.close()
+
+    def get_runner(self):
+        return self.vec_runner

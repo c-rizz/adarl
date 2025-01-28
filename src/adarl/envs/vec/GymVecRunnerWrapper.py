@@ -178,3 +178,14 @@ class GymVecRunnerWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         garbage collected or when the program exits.
         """
         self.vec_runner.close()
+
+
+    def get_base_env(self) -> BaseVecEnv[ObsType]:
+        """Get the underlying adarl base environment
+
+        Returns
+        -------
+        BaseEnv
+            The adarl.BaseEnv object.
+        """
+        return self.vec_runner.get_base_env()

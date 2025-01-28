@@ -21,6 +21,7 @@ from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 import adarl.utils.dbg.dbg_img
 import adarl.utils.dbg.dbg_img as dbg_img 
 from adarl.utils.spaces import get_space_labels
+from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 
 class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     """Wraps the environment to allow a modular transformation.
@@ -357,3 +358,14 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     # def setSaveAllEpisodes(self, enable : bool, disable_after_one_episode : bool = False):
     #     self._saveAllEpisodes = enable
     #     self._disableAfterEp = disable_after_one_episode
+
+
+    def get_base_env(self) -> BaseVecEnv[ObsType]:
+        """Get the underlying adarl base environment
+
+        Returns
+        -------
+        BaseEnv
+            The adarl.BaseEnv object.
+        """
+        return self._runner.get_base_env()

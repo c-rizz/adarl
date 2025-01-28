@@ -3,16 +3,19 @@ from __future__ import annotations
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from typing_extensions import override
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
+from adarl.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
+from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
 from adarl.adapters.PyBulletJointImpedanceAdapter import PyBulletJointImpedanceAdapter
 from typing import Sequence, Any
 from adarl.utils.utils import Pose, build_pose, JointState, LinkState
 import torch as th
 
-class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImpedanceAdapter):
+class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointImpedanceAdapter):
     
     def __init__(self,  vec_size : int,
                         th_device : th.device,
+                        adapter,
                         stepLength_sec : float = 0.004166666666,
                         restore_on_reset = True,
                         debug_gui : bool = False,
@@ -25,19 +28,12 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
                         joints_max_acceleration_position_control : dict[tuple[str,str],float] = {},
                         simulation_step = 1/960,
                         enable_rendering = True):
-        self._sub_adapter = PyBulletJointImpedanceAdapter(  stepLength_sec = stepLength_sec,
-                                                            restore_on_reset  = restore_on_reset,
-                                                            debug_gui  = debug_gui,
-                                                            real_time_factor  = real_time_factor,
-                                                            global_max_torque_position_control  = global_max_torque_position_control,
-                                                            joints_max_torque_position_control  = joints_max_torque_position_control,
-                                                            global_max_velocity_position_control  = global_max_velocity_position_control,
-                                                            joints_max_velocity_position_control  = joints_max_velocity_position_control,
-                                                            global_max_acceleration_position_control  = global_max_acceleration_position_control,
-                                                            joints_max_acceleration_position_control  = joints_max_acceleration_position_control,
-                                                            simulation_step  = simulation_step,
-                                                            enable_rendering  = enable_rendering,
-                                                            th_device=th_device)
+        
+        if not isinstance(adapter, BaseJointImpedanceAdapter):
+            raise RuntimeError(f"adapter Must be a BaseJointImpedanceAdapter")
+        if not isinstance(adapter, BaseSimulationAdapter):
+            raise RuntimeError(f"adapter Must be a BaseSimulationAdapter")
+        self._sub_adapter = adapter
         self._vec_size = vec_size
         self._th_device = th_device
         if vec_size!=1: 
@@ -228,3 +224,6 @@ class VecPyBulletJointImpedanceAdapter(BaseVecSimulationAdapter, BaseVecJointImp
     @override
     def get_last_applied_command(self) -> th.Tensor:
         return self._sub_adapter.get_last_applied_command().unsqueeze(0)
+    
+    def sub_adapter(self):
+        return self._sub_adapter

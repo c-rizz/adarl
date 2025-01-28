@@ -208,7 +208,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
+        tuple[list[th.Tensor], th.Tensor]
             A tuple with a batch of batches of images in the first element and the sim time of each image
             in the second.
             The first element contains a list of length len(ui_cameras) containing tensors of shape
