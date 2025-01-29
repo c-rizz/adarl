@@ -38,7 +38,9 @@ class SimStateJimp(SimState):
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
              "cmds_queue" : self.cmds_queue,
-             "cmds_queue_times" : self.cmds_queue_times}
+             "cmds_queue_times" : self.cmds_queue_times,
+             "stats_step_count" : self.stats_step_count,
+             "mon_joint_stats_arr" : self.mon_joint_stats_arr}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -69,7 +71,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         max_joint_impedance_ctrl_torques : dict[tuple[str,str],float] = {},
                         add_ground : bool = True,
                         impedance_commands_queue_size : int = 10,
-                        log_freq : int = -1):
+                        log_freq : int = -1,
+                        record_whole_joint_trajectories : bool = False,
+                        log_freq_joints_trajectories = 1000,
+                        log_folder="./"):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -81,13 +86,18 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         gui_env_index = gui_env_index,
                         output_th_device=output_th_device,
                         add_ground=add_ground,
-                        log_freq=log_freq)
+                        log_freq=log_freq,
+                        record_whole_joint_trajectories=record_whole_joint_trajectories,
+                        log_freq_joints_trajectories=log_freq_joints_trajectories,
+                        log_folder=log_folder)
 
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
                                         cmds_queue=jnp.empty((0,), device = jax_device),
-                                        cmds_queue_times=jnp.empty((0,), device = jax_device))
+                                        cmds_queue_times=jnp.empty((0,), device = jax_device),
+                                        stats_step_count=jnp.zeros((1,), device = jax_device),
+                                        mon_joint_stats_arr=jnp.empty((0,), device = jax_device))
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque

@@ -6,9 +6,9 @@ from cmath import inf
 from dataclasses import dataclass
 from gymnasium import spaces
 from stable_baselines3.common.preprocessing import get_obs_shape
-from stable_baselines3.common.vec_env import VecNormalize, VecEnv
-from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
-from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
+# from stable_baselines3.common.vec_env import VecNormalize, VecEnv
+# from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
+# from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple, Mapping
 import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.mp_helper as mp_helper
@@ -742,49 +742,49 @@ class ThDReplayBuffer(BaseBuffer):
     #         pos = (pos+1) % self.buffer_size
 
 
-class GenericHerReplayBuffer(HerReplayBuffer):
-    def __init__(self,
-                    buffer_size : int,
-                    observation_space: spaces.Space,
-                    action_space: spaces.Space,
-                    device: Union[th.device, str] = "cpu",
-                    n_envs: int = 1,
-                    optimize_memory_usage: bool = False,
-                    env: VecEnv = None,
-                    buffer_class = None,
-                    buffer_kwargs = None,
-                    max_episode_length: Optional[int] = None,
-                    n_sampled_goal: int = 4,
-                    goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
-                    online_sampling: bool = True,
-                    handle_timeout_termination: bool = True):
+# class GenericHerReplayBuffer(HerReplayBuffer):
+#     def __init__(self,
+#                     buffer_size : int,
+#                     observation_space: spaces.Space,
+#                     action_space: spaces.Space,
+#                     device: Union[th.device, str] = "cpu",
+#                     n_envs: int = 1,
+#                     optimize_memory_usage: bool = False,
+#                     env: VecEnv = None,
+#                     buffer_class = None,
+#                     buffer_kwargs = None,
+#                     max_episode_length: Optional[int] = None,
+#                     n_sampled_goal: int = 4,
+#                     goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
+#                     online_sampling: bool = True,
+#                     handle_timeout_termination: bool = True):
 
-        if online_sampling:
-            if buffer_class is not None:
-                raise AttributeError("Cannot specify replay_buffer_class with online_sampling")
-            replay_buffer = None
-        else:
-            replay_buffer = buffer_class(   buffer_size,
-                                            observation_space,
-                                            action_space,
-                                            device = device,
-                                            n_envs = n_envs,
-                                            optimize_memory_usage = optimize_memory_usage,
-                                            **buffer_kwargs)
-        super().__init__(env = env,
-                         buffer_size = buffer_size,
-                         device = device,
-                         replay_buffer = replay_buffer,
-                         max_episode_length = max_episode_length,
-                         n_sampled_goal = n_sampled_goal,
-                         goal_selection_strategy = goal_selection_strategy,
-                         online_sampling = online_sampling,
-                         handle_timeout_termination = handle_timeout_termination)
-
-    
-    def memory_size(self):
-        return self.replay_buffer.memory_size()
+#         if online_sampling:
+#             if buffer_class is not None:
+#                 raise AttributeError("Cannot specify replay_buffer_class with online_sampling")
+#             replay_buffer = None
+#         else:
+#             replay_buffer = buffer_class(   buffer_size,
+#                                             observation_space,
+#                                             action_space,
+#                                             device = device,
+#                                             n_envs = n_envs,
+#                                             optimize_memory_usage = optimize_memory_usage,
+#                                             **buffer_kwargs)
+#         super().__init__(env = env,
+#                          buffer_size = buffer_size,
+#                          device = device,
+#                          replay_buffer = replay_buffer,
+#                          max_episode_length = max_episode_length,
+#                          n_sampled_goal = n_sampled_goal,
+#                          goal_selection_strategy = goal_selection_strategy,
+#                          online_sampling = online_sampling,
+#                          handle_timeout_termination = handle_timeout_termination)
 
     
-    def storage_torch_device(self):
-        return self.replay_buffer.storage_torch_device()
+#     def memory_size(self):
+#         return self.replay_buffer.memory_size()
+
+    
+#     def storage_torch_device(self):
+#         return self.replay_buffer.storage_torch_device()

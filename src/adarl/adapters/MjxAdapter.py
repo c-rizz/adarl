@@ -8,7 +8,7 @@ os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
-from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose
+from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose, to_string_tensor
 from typing import Any
 import jax
 import jax.tree_util
@@ -33,11 +33,11 @@ from dataclasses import dataclass
 # jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 # jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 # jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-jax.config.update("jax_log_compiles", True)
+# jax.config.update("jax_log_compiles", True)
 # jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
-jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
+# jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
 # jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
@@ -210,6 +210,8 @@ class SimState:
     mjx_data : mjx.Data
     requested_qfrc_applied : jnp.ndarray
     sim_time : jnp.ndarray
+    stats_step_count : jnp.ndarray
+    mon_joint_stats_arr : jnp.ndarray
 
     def replace_v(self, name : str, value : Any):
         return self.replace_d({name:value})
@@ -258,7 +260,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_env_index : int = 0,
                         add_ground : bool = True,
                         log_freq : int = -1,
-                        opt_preset : Literal["fast","none"] = "fast"):
+                        opt_preset : Literal["fast","none"] = "fast",
+                        log_folder : str = "./",
+                        record_whole_joint_trajectories : bool = False,
+                        log_freq_joints_trajectories : int = 1000):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -272,6 +277,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._run_wtime_since_build = 0
         self._add_ground = add_ground
         self._log_freq = log_freq
+        self._log_folder = log_folder
         self._last_log_iters = -log_freq 
         self._opt_preset = opt_preset if not None else "none"
 
@@ -279,7 +285,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
         self._sim_state = SimState(mjx_data=jnp.empty((0,), device = jax_device),
                                    requested_qfrc_applied=jnp.empty((0,), device = jax_device),
-                                   sim_time=jnp.empty((0,), device = jax_device))
+                                   sim_time=jnp.empty((0,), device = jax_device),
+                                   stats_step_count=jnp.zeros((1,), device = jax_device),
+                                   mon_joint_stats_arr=jnp.empty((0,), device = jax_device))
         self._renderer : mujoco.Renderer | None = None
         self._check_sizes = True
         self._show_gui = show_gui
@@ -297,9 +305,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._dbg_info = MjxAdapter.DebugInfo()
 
-        self._record_whole_joint_history = False
+        self._record_whole_joint_trajs = record_whole_joint_trajectories
         self._joints_pveae_history = []
-        self._log_freq_joints_pveae_history = 250*(50/1024)/(2/4096)
+        self._log_freq_joints_trajcetories = log_freq_joints_trajectories
 
     @staticmethod
     def _mj_name_to_pair(mjname : str):
@@ -508,11 +516,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         float
             Duration of the step in simulation time (in seconds)"""
         t0 = time.monotonic()
-        self._clear_joint_state_step_stats()
+        self._sim_state = self._clear_joint_state_step_stats(self._sim_state)
         t1 = time.monotonic()
         stepLength = self.run(self._step_length_sec)
         tf = time.monotonic()
-        ggLog.info(f"Mjx.step duration = {tf-t0}s, run = {tf-t1}s")
+        # ggLog.info(f"Mjx.step duration = {tf-t0}s, run = {tf-t1}s")
         return stepLength
     
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
@@ -524,55 +532,73 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _apply_torque_cmds(self, sim_state : SimState) -> SimState:
         return sim_state.replace_v( "mjx_data", sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied))
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("state"))
-    def _sim_step_fast(self, iteration, state : tuple[SimState, jnp.ndarray]) -> tuple[SimState, jnp.ndarray]:
-        sim_state = state[0]
-        joint_stats_arr = state[1]
+
+
+
+
+
+
+
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
+    def _sim_step_fast(self, iteration, sim_state : SimState) -> SimState:
         sim_state = self._apply_commands(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,sim_state.mjx_data)
         sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
-        joint_stats_arr = self._update_joint_state_step_stats(sim_state, joint_stats_arr)
-        return (sim_state, joint_stats_arr)
+        sim_state = self._update_joint_state_step_stats(sim_state)
+        return sim_state 
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("state"))
-    def _sim_step_fast_for_scan(self, state : tuple[SimState, jnp.ndarray], _) -> tuple[tuple[SimState, jnp.ndarray], None]:
-        state = self._sim_step_fast(0, state)
-        return state, None
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
+    def _sim_step_fast_for_scan(self, sim_state : SimState, _) -> tuple[SimState, None]:
+        sim_state = self._sim_step_fast(0, sim_state)
+        return sim_state, None
     
-    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state","joint_stats_arr"))
-    def _run_fast(self, sim_state : SimState, joint_stats_arr : jnp.ndarray, iterations : int) -> tuple[SimState, jnp.ndarray]:
-        sim_state, joint_stats_arr = jax.lax.scan(self._sim_step_fast_for_scan, 
-                                                  init = (sim_state, joint_stats_arr),
-                                                  xs = (), 
-                                                  length = iterations)[0]
+    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state"))
+    def _run_fast(self, sim_state : SimState, iterations : int) -> SimState:
+        sim_state = jax.lax.scan(   self._sim_step_fast_for_scan, 
+                                    init = sim_state,
+                                    xs = (), 
+                                    length = iterations)[0]
         # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
         #                                                 body_fun=self._sim_step_fast,
         #                                                 init_val=(sim_state, joint_stats_arr))
-        return sim_state, joint_stats_arr
+        return sim_state
     
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("state"))
-    def _sim_step_fast_for_scan_full_pveae(self, state : tuple[SimState, jnp.ndarray], _) -> tuple[tuple[SimState, jnp.ndarray], jnp.ndarray]:
-        state = self._sim_step_fast(0, state)
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
+    def _sim_step_fast_for_scan_full_pveae(self, sim_state : SimState, _) -> tuple[SimState, jnp.ndarray]:
+        sim_state = self._sim_step_fast(0, sim_state)
         j_pveae = MjxAdapter._get_vec_joint_states_raw_pveae(self._monitored_qpadr, self._monitored_qvadr,
-                                                            state[0].mjx_data)
-        return state, j_pveae
+                                                            sim_state.mjx_data)
+        return sim_state, j_pveae
     
-    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state","joint_stats_arr"))
-    def _run_fast_save_full_jpveae(self, sim_state : SimState, joint_stats_arr : jnp.ndarray, iterations : int) -> tuple[SimState, jnp.ndarray, jnp.ndarray]:
-        (sim_state, joint_stats_arr), j_pveae_history = jax.lax.scan(self._sim_step_fast_for_scan, 
-                                                  init = (sim_state, joint_stats_arr),
+    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state"))
+    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int) -> tuple[SimState, jnp.ndarray]:
+        sim_state, j_pveae_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
+                                                  init = sim_state,
                                                   xs = (), 
                                                   length = iterations)
         # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
         #                                                 body_fun=self._sim_step_fast,
         #                                                 init_val=(sim_state, joint_stats_arr))
-        return sim_state, joint_stats_arr, j_pveae_history
+        return sim_state, j_pveae_history
 
     def _log_joints_pveae_history(self):
         full_history = jnp.concat(self._joints_pveae_history)
+        full_history = jnp.reshape(full_history,shape=(full_history.shape[0],-1))
+        full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
         # convert to torch and save as hdf5
+        dir = f"{self._log_folder}/MjxAdapter_joint_hist"
+        os.makedirs(dir, exist_ok=True)
+        out_filename = f"{dir}/MjxAdapter_{int(time.time())}.hdf5"
+        import h5py
+        with h5py.File(out_filename, "w") as f:
+            # loop through obs, action, reward, terminated, truncation
+            try:
+                f.create_dataset(f"pveae", data=np.array(full_history))
+                f.create_dataset("pveae_labels", data=full_history_labels)
+            except TypeError as e:
+                raise RuntimeError(f"Error saving pveae, exception={e}")
 
     @override
     def run(self, duration_sec : float):
@@ -583,12 +609,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._sent_motor_torque_commands_by_bid_jid = {}
         # ggLog.info(f"Starting run")
         iterations = int(duration_sec/self._sim_step_dt)
-        if not self._record_whole_joint_history:
-            self._sim_state, self._monitored_joints_stats = self._run_fast(self._sim_state, self._monitored_joints_stats, iterations)
+        if not self._record_whole_joint_trajs:
+            self._sim_state = self._run_fast(self._sim_state, iterations)
         else:
-            self._sim_state, self._monitored_joints_stats, j_pveae_history = self._run_fast_save_full_jpveae(self._sim_state, self._monitored_joints_stats, iterations)
+            self._sim_state, j_pveae_history = self._run_fast_save_full_jpveae(self._sim_state, iterations)
             self._joints_pveae_history.append(j_pveae_history)
-            if self._total_iterations % self._log_freq_joints_pveae_history != (self._total_iterations+iterations) % self._log_freq_joints_pveae_history:
+            if int(self._total_iterations / self._log_freq_joints_trajcetories) != int((self._total_iterations+iterations) / self._log_freq_joints_trajcetories):
                 self._log_joints_pveae_history()
         # self._read_new_contacts()
         wtime_simulating = time.monotonic()-wt0
@@ -777,9 +803,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr],
+                            mjx_data.qfrc_applied[:,qvadr], #commanded effort
                             mjx_data.qacc[:,qpadr],
-                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]], 
+                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]], #actual effort
                             axis = 2)
     @staticmethod
     @jax.jit
@@ -808,52 +834,61 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             axis = 2)
 
 
-    def _clear_joint_state_step_stats(self):
-        self._joint_stats_sample_count = 0
-        self._monitored_joints_stats = self._init_stats(self._monitored_joints_stats)
+    def _clear_joint_state_step_stats(self, sim_state : SimState):
+        sim_state = self._init_stats(sim_state)
+        return sim_state
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["stats_array"])
-    def _init_stats(stats_array : jnp.ndarray):
-        stats_array.at[:,0].set(float("-inf"))
-        stats_array.at[:,1].set(float("+inf"))
-        stats_array.at[:,2].set(float("nan"))
-        stats_array.at[:,3].set(float("nan"))
-        stats_array.at[:,4].set(0)
-        stats_array.at[:,5].set(0)
-        return stats_array
+    @partial(jax.jit, donate_argnames=["sim_state"])
+    def _init_stats(sim_state : SimState):
+        stats_array = sim_state.mon_joint_stats_arr
+        stats_array = stats_array.at[:,0].set(float("+inf"))
+        stats_array = stats_array.at[:,1].set(float("-inf"))
+        stats_array = stats_array.at[:,2].set(float("nan"))
+        stats_array = stats_array.at[:,3].set(float("nan"))
+        stats_array = stats_array.at[:,4].set(0)
+        stats_array = stats_array.at[:,5].set(0)
+        sim_state = sim_state.replace_d({"stats_step_count": 0,
+                                         "mon_joint_stats_arr" : stats_array})
+        return sim_state
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["stats_array"])
+    @partial(jax.jit, donate_argnames=["sim_state"])
     def _update_joint_state_step_stats_arrs(current_jstate : jnp.ndarray,
-                                            stats_array : jnp.ndarray,
-                                            sample_count : jnp.ndarray):
-        
-        stats_array.at[:,4].set(jnp.add(    stats_array[:,4], current_jstate)) # sum of values
-        stats_array.at[:,5].set(jnp.add(    stats_array[:,5], jnp.square(current_jstate))) # sum of squares
+                                            sim_state : SimState):
+        stats_array = sim_state.mon_joint_stats_arr
+        step_count = sim_state.stats_step_count + 1
+        stats_array = stats_array.at[:,4].set(jnp.add(    stats_array[:,4], current_jstate)) # sum of values
+        stats_array = stats_array.at[:,5].set(jnp.add(    stats_array[:,5], jnp.square(current_jstate))) # sum of squares
 
-        stats_array.at[:,0].set(jnp.minimum(stats_array[:,0], current_jstate))
-        stats_array.at[:,1].set(jnp.maximum(stats_array[:,1], current_jstate))
-        stats_array.at[:,2].set(stats_array[:,4]/sample_count) # average values
-        stats_array.at[:,3].set(jnp.sqrt(jnp.clip(stats_array[:,5]/sample_count-jnp.square(stats_array[:,2]),min=0))) # standard deviation
-        return stats_array
+        stats_array = stats_array.at[:,0].set(jnp.minimum(stats_array[:,0], current_jstate))
+        stats_array = stats_array.at[:,1].set(jnp.maximum(stats_array[:,1], current_jstate))
+        stats_array = stats_array.at[:,2].set(stats_array[:,4]/step_count) # average values
+        stats_array = stats_array.at[:,3].set(jnp.sqrt(jnp.clip(stats_array[:,5]/step_count-jnp.square(stats_array[:,2]),min=0))) # standard deviation
+        sim_state = sim_state.replace_d({"stats_step_count" : step_count,
+                                         "mon_joint_stats_arr" : stats_array})
+        # jax.debug.print("updated stats: count={c}, arr={arr}", c=step_count, arr=stats_array)
+        return sim_state
 
-    def _update_joint_state_step_stats(self, sim_state : SimState, joint_stats_array : jnp.ndarray) -> jnp.ndarray:
-        self._joint_stats_sample_count += 1
+    @partial(jax.jit, static_argnames=["self"], donate_argnames=["sim_state"])
+    def _update_joint_state_step_stats(self, sim_state : SimState) -> SimState:
         jstate_pvea = self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, sim_state.mjx_data)
-        joint_stats_array = self._update_joint_state_step_stats_arrs(jstate_pvea, joint_stats_array, self._joint_stats_sample_count)
-        return joint_stats_array
+        sim_state = self._update_joint_state_step_stats_arrs(jstate_pvea, sim_state)
+        return sim_state
 
     def _reset_joint_state_step_stats(self):
         # ggLog.info(f"resetting stats")
-        self._monitored_joints_stats = jnp.zeros(shape=(self._vec_size, 4, len(self._monitored_joints),4),
-                                                                  dtype=jnp.float32,
-                                                                  device=self._jax_device)
-        self._clear_joint_state_step_stats()
-        self._monitored_joints_stats = self._update_joint_state_step_stats(self._sim_state, self._monitored_joints_stats) # populate with current state, so that there are safe-ish values here
+        sim_state = self._sim_state
+        sim_state = sim_state.replace_v("mon_joint_stats_arr",
+                                        jnp.zeros(shape=(self._vec_size, 6, len(self._monitored_joints),4),
+                                                    dtype=jnp.float32,
+                                                    device=self._jax_device))
+        sim_state = self._clear_joint_state_step_stats(sim_state)
+        sim_state = self._update_joint_state_step_stats(sim_state) # populate with current state, so that there are safe-ish values here
+        self._sim_state = sim_state
 
     def get_joints_state_step_stats(self) -> th.Tensor:
-        return jax2th(self._monitored_joints_stats[:,:4], self._out_th_device)
+        return jax2th(self._sim_state.mon_joint_stats_arr[:,:4], self._out_th_device)
 
     @partial(jax.jit, static_argnums=(0,))
     def _get_links_state_jax(self, body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
@@ -910,6 +945,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             Nothing is returned
 
         """
+        ggLog.info(f"MjxAdapter resetting")
         self.__lastResetTime = self.getEnvTimeFromStartup()
 
         self._sim_state = self._sim_state.replace_v( "mjx_data", copy.deepcopy(self._original_mjx_data))

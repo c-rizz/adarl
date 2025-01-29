@@ -45,6 +45,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._ep_step_counter = th.zeros(size=(num_envs,), device=th_device, dtype=th.long)
         self._ep_counter = th.full(size=(num_envs,), fill_value=-1, device=th_device, dtype=th.long)
         self._tot_init_counter = 0
+        self._init_counter_since_reset = 0
 
         self._build()
         self.initialize_episodes()
@@ -69,6 +70,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
             self._ep_counter += 1
             self._ep_step_counter[:] = 0
         self._tot_init_counter += 1
+        self._init_counter_since_reset += 1
         self._initialize_episodes(vec_mask, options)
 
     @abstractmethod
@@ -92,11 +94,11 @@ class BaseVecEnv(ABC, Generic[Observation]):
         """
         ...
 
-    @abstractmethod
+    
     def reset(self):
         """Re-initializes the scenario state to the initial state it had at build time and initializes. 
         """
-        ...
+        self._init_counter_since_reset = 0
 
     @abstractmethod
     def get_states(self) -> dict[str, th.Tensor]:

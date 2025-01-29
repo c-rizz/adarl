@@ -130,6 +130,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         etime_step_start = th.sum(self._adarl_env.get_times_since_build())
 
         # Setup action to perform
+        if isinstance(actions, np.ndarray):
+            actions = th.as_tensor(actions)
         self._last_actions = actions.detach().clone()
         with self._submitActionDurationAverage:
             self._adarl_env.submit_actions(actions)
