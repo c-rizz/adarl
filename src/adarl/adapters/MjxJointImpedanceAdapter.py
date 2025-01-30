@@ -6,6 +6,7 @@ os.environ["MUJOCO_GL"] = "egl"
 from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
+from adarl.utils.utils import to_string_tensor
 from typing import Any
 import jax
 import mujoco
@@ -30,6 +31,8 @@ import traceback
 class SimStateJimp(SimState):
     cmds_queue : jnp.ndarray
     cmds_queue_times : jnp.ndarray
+    vec_impjoints_pveaepvesde : jnp.ndarray
+    filtered_pv_references : jnp.ndarray
 
     def replace_d(self, name_values : dict[str,Any]):
         # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
@@ -40,7 +43,9 @@ class SimStateJimp(SimState):
              "cmds_queue" : self.cmds_queue,
              "cmds_queue_times" : self.cmds_queue_times,
              "stats_step_count" : self.stats_step_count,
-             "mon_joint_stats_arr" : self.mon_joint_stats_arr}
+             "mon_joint_stats_arr_pvae" : self.mon_joint_stats_arr_pvae,
+             "vec_impjoints_pveaepvesde" : self.vec_impjoints_pveaepvesde,
+             "filtered_pv_references" : self.filtered_pv_references}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -90,14 +95,16 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         record_whole_joint_trajectories=record_whole_joint_trajectories,
                         log_freq_joints_trajectories=log_freq_joints_trajectories,
                         log_folder=log_folder)
-
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
                                         cmds_queue=jnp.empty((0,), device = jax_device),
                                         cmds_queue_times=jnp.empty((0,), device = jax_device),
                                         stats_step_count=jnp.zeros((1,), device = jax_device),
-                                        mon_joint_stats_arr=jnp.empty((0,), device = jax_device))
+                                        mon_joint_stats_arr_pvae=jnp.empty((vec_size,0,4), device = jax_device),
+                                        vec_impjoints_pveaepvesde=jnp.empty((vec_size,0,9), device = jax_device),
+                                        filtered_pv_references=jnp.empty((vec_size,0,3), device = jax_device))
+        self._pv_ref_filter_alpha = 0.99
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
@@ -266,11 +273,29 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             self._jids_to_imp_cdm_qvadr = jnp.empty_like(self._imp_control_jids)
             self._jids_to_imp_cmd_idx   = jnp.empty_like(self._imp_control_jids)
         self._reset_cmd_queue()
+        self._reset_pv_references_filters()
+        if self._record_joint_hist:
+            self._sim_state = self._sim_state.replace_v("vec_impjoints_pveaepvesde",
+                                                        jnp.zeros(shape=(self._vec_size, len(self._imp_controlled_joint_names),11),
+                                                                    dtype=jnp.float32,
+                                                                    device=self._jax_device))
+            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","pref","vref","eeff","stiff","damp","neweff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
+            
 
     def _reset_cmd_queue(self):
         self._queued_cmds_queue = 1
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device),
                                                      "cmds_queue_times" : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
+        
+
+    def _reset_pv_references_filters(self):
+        if len(self._imp_controlled_joint_names)>0:
+            current_pv = self._get_vec_joint_states_pve(self._mjx_model, self._sim_state.mjx_data, self._imp_control_jids)[:,:,:2]
+        else:
+            current_pv = jnp.zeros( shape=(self._vec_size, len(self._imp_controlled_joint_names),3),
+                                    dtype=jnp.float32,
+                                    device=self._jax_device)
+        self._sim_state = self._sim_state.replace_v("filtered_pv_references", current_pv)
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter
@@ -285,7 +310,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
 
     @staticmethod
-    def _compute_impedance_torques(cmd_j_pvesd : jnp.ndarray, state_j_pve : jnp.ndarray,
+    def _compute_impedance_torques(cmd_j_pvesd : jnp.ndarray, 
+                                   state_j_pve : jnp.ndarray,
                                    max_joint_efforts : jnp.ndarray):
         """_summary_
 
@@ -304,19 +330,20 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         torques = jnp.clip(torques,min=-max_joint_efforts,max=max_joint_efforts)
         return torques
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("cmds_queue", "cmds_queue_times"))
-    def _compute_imp_cmds_queue(self, cmds_queue, cmds_queue_times, sim_time, qpadr, qvadr, mjx_data, max_torques):
-        current_cmd, sim_has_cmd, cmds_queue, cmds_queue_times = self._get_cmd_and_cleanup_vec( cmds_queue,
-                                                                                cmds_queue_times,
-                                                                                sim_time)
-        vec_jstate = self._get_vec_joint_states_raw_pve(qpadr, 
+    @partial(jax.jit, static_argnames=("self"))
+    def _compute_imp_cmds(self, current_cmd_v_j_pvesd, qpadr, qvadr, mjx_data, max_torques):
+        vec_jstate = self._get_vec_joint_states_raw_pveae(qpadr, 
                                                         qvadr,
                                                         mjx_data)
-        vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, max_torques)
+        vec_efforts = self._compute_impedance_torques_vec(current_cmd_v_j_pvesd, vec_jstate[:,:,:3], max_torques)
+        if self._record_joint_hist:
+            vec_impjoints_pveaepvesde = jnp.concat([vec_jstate, current_cmd_v_j_pvesd, jnp.expand_dims(vec_efforts,2)], axis = 2)
+        else:
+            vec_impjoints_pveaepvesde = None
         # jax.debug.print("t={t} \t eff={eff} \t cmd={current_cmd} jstate={jstate}",
         #                 t=sim_time, eff=vec_efforts, jstate=vec_jstate,
         #                 current_cmd=current_cmd)
-        return vec_efforts, sim_has_cmd, cmds_queue, cmds_queue_times
+        return vec_efforts, vec_impjoints_pveaepvesde
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_impedance_cmds(self, sim_state : SimStateJimp):
@@ -325,14 +352,27 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         #                                                                                                 self._simTime)
         # vec_jstate = self._get_vec_joint_states_raw_pve(self._jids_to_imp_cdm_qpadr, self._jids_to_imp_cdm_qvadr, self._mjx_data)
         # vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, self._imp_control_max_torque)
-        vec_efforts, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._compute_imp_cmds_queue(sim_state.cmds_queue,
-                                                            sim_state.cmds_queue_times,
-                                                            sim_state.sim_time,
+
+        current_cmd_v_j_pvesd, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._get_cmd_and_cleanup_vec(   sim_state.cmds_queue,
+                                                                                                                    sim_state.cmds_queue_times,
+                                                                                                                    sim_state.sim_time)
+        new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
+        current_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
+        vec_efforts, vec_impjoints_pveaepvesde = self._compute_imp_cmds(current_cmd_v_j_pvesd,
                                                             self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data,
                                                             self._imp_control_max_torque)
-        sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
+        if self._record_joint_hist:
+            sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
+                                            "cmds_queue_times" : new_cmds_queue_times,
+                                            "vec_impjoints_pveaepvesde" : vec_impjoints_pveaepvesde,
+                                            "filtered_pv_references" : new_filtered_pv_references})
+        else:
+            sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
+                                            "cmds_queue_times" : new_cmds_queue_times,
+                                            "filtered_pv_references" : new_filtered_pv_references})
+
         
         # vec_efforts = jnp.zeros_like(vec_efforts)
         # ggLog.info(f"setting efforts {vec_efforts}")
@@ -341,7 +381,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
     @override
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
-    def _apply_commands(self, sim_state : SimState) -> SimState:
+    def _apply_commands(self, sim_state : SimStateJimp) -> SimStateJimp:
         sim_state = self._apply_impedance_cmds(sim_state)
         sim_state = self._apply_torque_cmds(sim_state)
         return sim_state
@@ -355,3 +395,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     @override
     def get_last_applied_command(self) -> th.Tensor:
         return self._last_applied_jimp_cmd
+    
+    @override
+    def _get_joint_state_for_history(self, sim_state : SimStateJimp):
+        return sim_state.vec_impjoints_pveaepvesde
+    
+    @override
+    def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
+        super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
+        self._reset_pv_references_filters()
