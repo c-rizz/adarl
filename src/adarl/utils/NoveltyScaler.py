@@ -3,10 +3,11 @@ from dataclasses import dataclass
 from typing import List
 
 class NoveltyScaler():
-    def __init__(self,  avg_alpha : float, 
-                        bonus_weight : float,
-                        th_device : th.device):
-        self._n_updates = 0
+    def __init__(self,  
+            th_device : th.device,
+            bonus_weight : float = 0.5,
+            avg_alpha : float = 0.0):
+        self._n_smoothing_updates = 0
         self._avgs_alpha_th = th.as_tensor(avg_alpha, device=th_device)
         self._bonus_weight = th.as_tensor(bonus_weight, device=th_device)
         self._avg_raw_exploration_bonus : th.Tensor
@@ -16,29 +17,31 @@ class NoveltyScaler():
         self._avg_raw_reward : th.Tensor
         
     def process_bonuses(self, raw_bonus_batch : th.Tensor, raw_reward_batch : th.Tensor,
-                              return_avg_raw_exp_bonus : th.Tensor | None,
-                              return_avg_proc_exp_bonus : th.Tensor | None,
-                              return_all_proc_exp_bonus : th.Tensor | None,
-                              return_all_norm_exp_bonus : th.Tensor | None,
-                              return_all_raw_exp_bonus : th.Tensor | None):
+            return_avg_raw_exp_bonus : th.Tensor | None,
+            return_avg_proc_exp_bonus : th.Tensor | None,
+            return_all_proc_exp_bonus : th.Tensor | None,
+            return_all_norm_exp_bonus : th.Tensor | None,
+            return_all_raw_exp_bonus : th.Tensor | None):
+        
         raw_batch_eb_mean = th.mean(raw_bonus_batch)
         raw_batch_square_eb_mean = th.mean(th.square(raw_bonus_batch))
         raw_batch_fourth_eb_residual_mean = th.mean(th.pow(raw_bonus_batch - raw_batch_eb_mean, 4.0))
         raw_batch_second_eb_residual_mean = th.mean(th.pow(raw_bonus_batch - raw_batch_eb_mean, 2.0))
         
-        if self._n_updates == 0:
+        if self._n_smoothing_updates == 0:
             self._avg_raw_exploration_bonus = raw_batch_eb_mean
             self._avg_squared_raw_exploration_bonus = raw_batch_square_eb_mean
             self._avg_fourth_raw_eb_residual = raw_batch_fourth_eb_residual_mean
             self._avg_second_raw_eb_residual = raw_batch_second_eb_residual_mean
-            self._avg_raw_reward = th.mean(raw_bonus_batch)
+            self._avg_raw_reward = th.mean(raw_reward_batch)
         else:
             alpha = self._avgs_alpha_th
-            self._avg_raw_exploration_bonus =         alpha * self._avg_raw_exploration_bonus +         (1-alpha)*raw_batch_eb_mean
+            self._avg_raw_exploration_bonus = alpha * self._avg_raw_exploration_bonus + (1-alpha)*raw_batch_eb_mean
             self._avg_squared_raw_exploration_bonus = alpha * self._avg_squared_raw_exploration_bonus + (1-alpha)*raw_batch_square_eb_mean
             self._avg_fourth_raw_eb_residual = alpha * self._avg_fourth_raw_eb_residual + (1-alpha)*raw_batch_fourth_eb_residual_mean
             self._avg_second_raw_eb_residual = alpha * self._avg_second_raw_eb_residual + (1-alpha)*raw_batch_second_eb_residual_mean
-            self._avg_raw_reward = self._avg_raw_reward * self._avg_raw_reward + (1-self._avg_raw_reward)*raw_bonus_batch
+            self._avg_raw_reward = alpha * self._avg_raw_reward + (1 - alpha) * th.mean(raw_reward_batch)
+            self._n_smoothing_updates+=1
 
         # eb_min = th.min(exp_bonuses)
         # eb_max = th.max(exp_bonuses)
@@ -58,8 +61,8 @@ class NoveltyScaler():
         # squash and normalize the bonuses 
         norm_exp_bonus = th.tanh((raw_bonus_batch - raw_batch_eb_mean)/(sigma_squash*raw_batch_eb_std))*sigma_squash*raw_batch_eb_std # squash at sigma_squash*sigma
         norm_exp_bonus = norm_exp_bonus/(interest_threshold*raw_batch_eb_std) # normalize at interest_threshold*sigma
-        # now interest_threshold*sigma is at 1
-
+        # now interest_threshold*sigma is at 
+        
         # now:
         # Interesting stuff ends up being beyond +1
         # Normal stuff is at zero
@@ -75,7 +78,7 @@ class NoveltyScaler():
                                                 norm_exp_bonus*inc_avg_reward*target_interesting_ratio)
         
         # scaled_exp_bonus = th.clamp(scaled_exp_bonus, min=0)
-        rewards = raw_reward_batch + scaled_exp_bonus.unsqueeze(dim=1)
+        rewards = raw_reward_batch + scaled_exp_bonus
         
         if return_avg_raw_exp_bonus is not None:
             return_avg_raw_exp_bonus[:] = raw_batch_eb_mean
