@@ -96,14 +96,14 @@ class NoveltyScaler():
             self._avg_squared_raw_exploration_bonus = raw_batch_square_eb_mean
             self._avg_fourth_raw_eb_residual = raw_batch_fourth_eb_residual_mean
             self._avg_second_raw_eb_residual = raw_batch_second_eb_residual_mean
-            self._avg_raw_reward = th.mean(raw_bonus_batch)
+            self._avg_raw_reward = th.mean(raw_reward_batch)
         else:
             alpha = self._avgs_alpha_th
             self._avg_raw_exploration_bonus =         alpha * self._avg_raw_exploration_bonus +         (1-alpha)*raw_batch_eb_mean
             self._avg_squared_raw_exploration_bonus = alpha * self._avg_squared_raw_exploration_bonus + (1-alpha)*raw_batch_square_eb_mean
             self._avg_fourth_raw_eb_residual = alpha * self._avg_fourth_raw_eb_residual + (1-alpha)*raw_batch_fourth_eb_residual_mean
             self._avg_second_raw_eb_residual = alpha * self._avg_second_raw_eb_residual + (1-alpha)*raw_batch_second_eb_residual_mean
-            self._avg_raw_reward = self._avg_raw_reward * self._avg_raw_reward + (1-self._avg_raw_reward)*raw_bonus_batch
+            self._avg_raw_reward = self._avg_raw_reward * alpha + (1-alpha)*raw_reward_batch
 
         # eb_min = th.min(exp_bonuses)
         # eb_max = th.max(exp_bonuses)
