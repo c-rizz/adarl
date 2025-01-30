@@ -53,13 +53,12 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
 
     def step(self) -> None:
-        etime0 = self._adapter.getEnvTimeFromStartup()
+        estimated_step_duration_sec = 0.0
         adapter_step_count = 0
         t0 = time.monotonic()
         while True: # Do at least one step, then check if we need more
-            self._adapter.step()
+            estimated_step_duration_sec += self._adapter.step()
             adapter_step_count+=1
-            estimated_step_duration_sec = self._adapter.getEnvTimeFromStartup()-etime0
             if estimated_step_duration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
                 break
             elif not self._allow_multiple_steps:
