@@ -37,10 +37,6 @@ class ColoredLevelsFormatter(logging.Formatter):
 
 logger = logging.getLogger('GGLog')
 logger.setLevel(logging.DEBUG)
-# create file handler that logs debug and higher level messages
-os.makedirs("ggLogs", exist_ok=True)
-fh = logging.FileHandler('ggLogs/ggLog_'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'.log')
-fh.setLevel(logging.DEBUG)
 # create console handler with a higher log level
 ch = logging.StreamHandler()
 ch.setLevel(logging.INFO)
@@ -48,10 +44,8 @@ ch.setLevel(logging.INFO)
 formatter = ColoredLevelsFormatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y%m%d%H:%M:%S')
 # formatter = logging.Formatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%s')
 ch.setFormatter(formatter)
-fh.setFormatter(formatter)
 # add the handlers to logger
 logger.addHandler(ch)
-logger.addHandler(fh)
 logger.propagate = False
 
 runid = ""

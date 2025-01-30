@@ -1228,7 +1228,7 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
     k = th.norm(v1) * th.norm(v2)
     th.cross(v1,v2, out=quats_xyzw[...,:3])
     quats_xyzw[...,3] = k + vdot
-    quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)
+    quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
     quats_xyzw[vdot/k==-1,3] = 0
     # print(f"vdot = {vdot}")
     # print(f"k = {k}")

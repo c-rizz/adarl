@@ -866,7 +866,7 @@ class JointImpedanceActionHelper:
         if isinstance(cmds_pvesd, th.Tensor):
             cmd_vec_joints_pvesd = cmds_pvesd
         else:
-            cmd_vec_joints_pvesd = th.stack([th.as_tensor(cmds_pvesd[j]) for j in self._joints])
+            cmd_vec_joints_pvesd = th.stack([th.as_tensor(cmds_pvesd[j]) for j in self._joints]).unsqueeze(0).expand(self._vec_size, len(self._joints), 5)
         cmd_vec_joints_pvesd = normalize(cmd_vec_joints_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
         return cmd_vec_joints_pvesd[:,:,self._act_to_pvesd_idx].flatten(start_dim=1)
 
