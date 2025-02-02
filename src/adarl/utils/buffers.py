@@ -459,7 +459,7 @@ class ThDReplayBuffer(BaseBuffer):
     def __init__(
         self,
         buffer_size: int,
-        observation_space: spaces.Dict,
+        observation_space: spaces.Space,
         action_space: spaces.Space,
         device: Union[th.device, str] = "cpu",
         n_envs: int = 1,

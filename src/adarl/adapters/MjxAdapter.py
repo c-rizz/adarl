@@ -247,6 +247,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         stime : float = 0.0
         fps_vec : float = 0.0
         fps_single : float = 0.0
+        iterations : int = 0
+        run_fps_vec : float = 0.0
 
     def __init__(self, vec_size : int,
                         enable_rendering : bool,
@@ -349,6 +351,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
         for model in models:
             mjSpec = mujoco.MjSpec()
+            # mjSpec.compiler.discardvisual = False
+            # mjSpec.compiler.degree = False
+            mjSpec.discardvisual = False
+            mjSpec.degree = False
             if model.format.strip().lower()[-6:] == ".xacro":
                 def_string = compile_xacro_string( model_definition_string=model.definition_string,
                                                                 model_kwargs=model.kwargs)
@@ -363,17 +369,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         frame = big_speck.worldbody.add_frame()
         big_speck.degree = False
+        big_speck.discardvisual = False
+        # big_speck.compiler.degree = False
+        # big_speck.compiler.discardvisual = False
         for mname, spec in specs:
             if model_element_separator in mname:
                 raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
             # add all th bodies that are direct childern of worldbody
             body = spec.worldbody.first_body()
+            # spec.compiler.discardvisual = False
+            # if spec.compiler.degree:
+            #     raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
+            spec.discardvisual = False
             if spec.degree:
                 raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
             while body is not None:
                 frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
-
+        # big_speck.compiler.discardvisual = False
+        big_speck.discardvisual = False
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._opt_preset == "fast":
@@ -386,8 +400,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             pass
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
-        ggLog.info(f"big_speck.degree = {big_speck.degree}")
-        ggLog.info(f"Spawing: \n{big_speck.to_xml()}")
+        # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
+        ggLog.info(f"Spawning: \n{big_speck.to_xml()}")
 
         # model = models[0]
         # if model.format == "urdf.xacro":
@@ -645,12 +659,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._dbg_info.wtime_running =     time.monotonic()-wt0
         self._dbg_info.wtime_simulating =   wtime_simulating
         self._dbg_info.wtime_controlling =  0
+        self._dbg_info.iterations = iterations
         self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/wtime_simulating
         self._dbg_info.rt_factor_single =   (self._simTime-st0)/wtime_simulating
         self._dbg_info.stime_ran =          self._simTime-st0
         self._dbg_info.stime =              self._simTime
         self._dbg_info.fps_vec =            self._vec_size*iterations/wtime_simulating
         self._dbg_info.fps_single =         iterations/wtime_simulating
+        self._dbg_info.run_fps_vec = self._dbg_info.fps_vec/iterations
         if self._log_freq > 0 and self._sim_step_count_since_build - self._last_log_iters >= self._log_freq:
             self._last_log_iters = self._sim_step_count_since_build
             ggLog.info( "MjxAdapter:\n"+"\n".join(["    "+str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))

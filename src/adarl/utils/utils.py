@@ -15,6 +15,7 @@ import csv
 import sys
 import importlib
 import traceback
+import pathlib
 
 import adarl.utils.dbg.ggLog as ggLog
 import traceback
@@ -467,7 +468,8 @@ class RequestFailError(Exception):
         super().__init__(message)
         self.partialResult = partialResult
 
-
+import pkgutil
+pkgutil.get_data
 
 def pkgutil_get_path(package, resource = None)  -> str:
     """ Modified version from pkgutil.get_data """
@@ -475,25 +477,32 @@ def pkgutil_get_path(package, resource = None)  -> str:
     spec = importlib.util.find_spec(package)
     if spec is None:
         raise FileNotFoundError(f"Could not spec for package for ({package}, {resource})")
-    # loader = spec.loader
-    # if loader is None or not hasattr(loader, 'get_data'):
-    #     return None # If this happens, maybe __init__.py is missing?
-    # XXX needs test
-    mod = (sys.modules.get(package) or
-           importlib._bootstrap._load(spec))
-    if mod is None or not hasattr(mod, '__file__'):
-        raise FileNotFoundError(f"Could not __file__ for package for ({package}, {resource})")
-    
+    if hasattr(spec,"submodule_search_locations"):
+        if len(spec.submodule_search_locations)>0:
+            submodule_paths = spec.submodule_search_locations
+    else:
+        # loader = spec.loader
+        # if loader is None or not hasattr(loader, 'get_data'):
+        #     return None # If this happens, maybe __init__.py is missing?
+        # XXX needs test
+        mod = (sys.modules.get(package) or importlib._bootstrap._load(spec))
+        if mod is None or not hasattr(mod, '__file__'):
+            raise FileNotFoundError(f"Could not __file__ for package for ({package}, {resource})")        
+        submodule_paths = [os.path.dirname(mod.__file__)]
     if resource is None:
-        return os.path.dirname(mod.__file__)
+        if len(spec.submodule_search_locations)>1:
+                ggLog.warn(f"package '{package}' has multiple submodule paths ({submodule_paths}). Will just use the first.")
+        return submodule_paths[0]
 
-    # Modify the resource name to be compatible with the loader.get_data
-    # signature - an os.path format "filename" starting with the dirname of
-    # the package's __file__
-    parts = resource.split('/')
-    parts.insert(0, os.path.dirname(mod.__file__))
-    resource_name = os.path.join(*parts)
-    return resource_name.replace("//","/")
+    for submodule_path in submodule_paths:
+        parts = resource.split('/')
+        print(parts)
+        parts.insert(0, submodule_path)
+        resource_name = os.path.join(*parts)
+        resource_name = resource_name.replace("//","/")
+        if pathlib.Path(resource_name).exists():
+            return resource_name
+    raise FileNotFoundError(f"resource {resource} not found in package {package}, submodule_paths = {submodule_paths}")
 
 def exc_to_str(exception):
     # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
@@ -624,7 +633,22 @@ def find_string_limits(text, pos):
     return start, end
 
 
-def _fix_urdf_subst_find_paths(urdf_string : str):
+def _find_pkg(pkg_name, extra_pkg_paths : dict[str,str] = {}):
+    if pkg_name in extra_pkg_paths:
+        return extra_pkg_paths[pkg_name]
+    try:
+        import rospkg
+        try:
+            pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
+        except rospkg.common.ResourceNotFound as e:
+            pkg_path = pkgutil_get_path(pkg_name) # get generic python package
+    except ImportError as e:
+        ggLog.warn(f"Could not import rospkg")
+        pkg_path = pkgutil_get_path(pkg_name) # get generic python package
+    return pkg_path
+
+
+def _fix_urdf_subst_find_paths(urdf_string : str, extra_pkg_paths : dict[str,str] = {}):
     done = False
     pos = 0
     while not done:
@@ -636,25 +660,21 @@ def _fix_urdf_subst_find_paths(urdf_string : str):
             parts = [p for p in subst_inner.split(" ") if len(p)>0]
             # ggLog.info(f"Got parts {parts}")
             if parts[0] == "find":
-                pkg_name = parts[1]
                 # ggLog.info(f"Found $(find {pkg_name})")
-                import rospkg
-                try:
-                    pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name)) # get ROS package
-                except rospkg.common.ResourceNotFound as e:
-                    pkg_path = pkgutil_get_path(pkg_name) # get generic python package
+                pkg_path = _find_pkg(pkg_name=parts[1], extra_pkg_paths=extra_pkg_paths)
                 full_subst = urdf_string[subst_start:subst_end+1]
                 # ggLog.info(f"Replacing {full_subst} with {[pkg_path]}")
                 urdf_string = urdf_string.replace(full_subst,pkg_path) # could be done more efficiently...
                 pos = subst_start+len(pkg_path)
             else:
+                ggLog.warn(f"Skipping xacro subst: {urdf_string[subst_start:subst_end+1]}")
                 pos = subst_start+1
         else:
             done = True
     return urdf_string
 
 
-def _fix_urdf_package_paths(urdf_string : str):
+def _fix_urdf_package_paths(urdf_string : str, extra_pkg_paths : dict[str,str] = {}):
     done = False
     pos = 0
     while not done:
@@ -666,12 +686,7 @@ def _fix_urdf_package_paths(urdf_string : str):
             original_path = urdf_string[path_start+1:path_end]
             # ggLog.info(f"Resolving path in [{path_start},{path_end}]: '{original_path}'")
             split_path = original_path.split("/")
-            pkg_name = split_path[2]
-            import rospkg
-            try:
-                pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
-            except rospkg.common.ResourceNotFound as e:
-                pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
+            pkg_path = _find_pkg(pkg_name=split_path[2], extra_pkg_paths=extra_pkg_paths)
             abs_path = pkg_path+"/"+"/".join(split_path[3:])
             # ggLog.info(f"pkg_path: {pkg_path}")
             urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
@@ -681,12 +696,13 @@ def _fix_urdf_package_paths(urdf_string : str):
             done = True
     return urdf_string
 
-def _fix_urdf_ros_paths(urdf_string):
-    urdf_string = _fix_urdf_package_paths(urdf_string)
-    urdf_string = _fix_urdf_subst_find_paths(urdf_string)
+def _fix_urdf_ros_paths(urdf_string, extra_pkg_paths : dict[str,str] = {}):
+    urdf_string = _fix_urdf_package_paths(urdf_string, extra_pkg_paths)
+    # urdf_string = _fix_urdf_subst_find_paths(urdf_string, extra_pkg_paths)
+    ggLog.info(f"fixed xacro = {urdf_string}")
     return urdf_string
 
-def compile_xacro_string(model_definition_string, model_kwargs = None):
+def compile_xacro_string(model_definition_string, model_kwargs = None, extra_pkg_paths : dict[str,str] = {}):
     xacro_args = {"output":None, "just_deps":False, "xacro_ns":True, "verbosity":1}
     mappings = {}
     if model_kwargs is not None:
@@ -694,10 +710,10 @@ def compile_xacro_string(model_definition_string, model_kwargs = None):
     mappings = {k:str(v) for k,v in mappings.items()}
     # ggLog.info(f"Xacro args = {xacro_args}")
     # ggLog.info(f"Input xacro: \n{model_definition_string}")
-    model_definition_string = _fix_urdf_ros_paths(model_definition_string)
     doc = xacro.parse(model_definition_string)
-    xacro.process_doc(doc, mappings = mappings, **xacro_args)
+    xacro.process_doc(doc, mappings = mappings, extra_find_pkgs=extra_pkg_paths, **xacro_args)
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
+    model_definition_string = _fix_urdf_ros_paths(model_definition_string, extra_pkg_paths=extra_pkg_paths)
     return model_definition_string
 
 import adarl.adapters.BaseAdapter
