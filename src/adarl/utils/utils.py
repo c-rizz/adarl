@@ -468,9 +468,6 @@ class RequestFailError(Exception):
         super().__init__(message)
         self.partialResult = partialResult
 
-import pkgutil
-pkgutil.get_data
-
 def pkgutil_get_path(package, resource = None)  -> str:
     """ Modified version from pkgutil.get_data """
 
@@ -496,7 +493,6 @@ def pkgutil_get_path(package, resource = None)  -> str:
 
     for submodule_path in submodule_paths:
         parts = resource.split('/')
-        print(parts)
         parts.insert(0, submodule_path)
         resource_name = os.path.join(*parts)
         resource_name = resource_name.replace("//","/")
@@ -699,7 +695,7 @@ def _fix_urdf_package_paths(urdf_string : str, extra_pkg_paths : dict[str,str] =
 def _fix_urdf_ros_paths(urdf_string, extra_pkg_paths : dict[str,str] = {}):
     urdf_string = _fix_urdf_package_paths(urdf_string, extra_pkg_paths)
     # urdf_string = _fix_urdf_subst_find_paths(urdf_string, extra_pkg_paths)
-    ggLog.info(f"fixed xacro = {urdf_string}")
+    # ggLog.info(f"fixed xacro = {urdf_string}")
     return urdf_string
 
 def compile_xacro_string(model_definition_string, model_kwargs = None, extra_pkg_paths : dict[str,str] = {}):
