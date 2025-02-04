@@ -1012,6 +1012,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             model_kwargs: Dict[Any, Any] = {}) -> str:
         if model_name in self._modelName_to_bodyId:
             raise AttributeError(f"model name {model_name} is already present")
+        ggLog.info(f"PyBullet adapter: loading model {model_name}...")
         body_id = self._loadModel(model_definition_string=model_definition_string,
                                   model_file_path=model_file,
                                   format=model_format,
