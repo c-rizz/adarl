@@ -1,6 +1,7 @@
 import torch as th
 from dataclasses import dataclass
 from typing import List
+from typing import Optional, Union
 
 class NoveltyScaler():
     def __init__(self,  
@@ -17,11 +18,11 @@ class NoveltyScaler():
         self._avg_raw_reward : th.Tensor
         
     def process_bonuses(self, raw_bonus_batch : th.Tensor, raw_reward_batch : th.Tensor,
-            return_avg_raw_exp_bonus : th.Tensor | None,
-            return_avg_proc_exp_bonus : th.Tensor | None,
-            return_all_proc_exp_bonus : th.Tensor | None,
-            return_all_norm_exp_bonus : th.Tensor | None,
-            return_all_raw_exp_bonus : th.Tensor | None):
+            return_avg_raw_exp_bonus : Optional[th.Tensor] = None,
+            return_avg_proc_exp_bonus : Optional[th.Tensor] = None,
+            return_all_proc_exp_bonus : Optional[th.Tensor] = None,
+            return_all_norm_exp_bonus : Optional[th.Tensor] = None,
+            return_all_raw_exp_bonus : Optional[th.Tensor] = None):
         
         raw_batch_eb_mean = th.mean(raw_bonus_batch)
         raw_batch_square_eb_mean = th.mean(th.square(raw_bonus_batch))
