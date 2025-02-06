@@ -75,6 +75,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._verbose = verbose
         self._quiet = quiet
+        if quiet:
+            ggLog.info(f"GymEnvWrapper is quiet")
         self._logEpisodeInfo = episodeInfoLogFile is not None
         self._episodeInfoLogFile : str = episodeInfoLogFile if episodeInfoLogFile is not None else ""
 
@@ -352,7 +354,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if seed is not None:
             self._ggEnv.seed(seed)
         if self._verbose:
-            ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+")-------")
+            ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+f" at step {self._framesCounter} quiet= {self._quiet})-------")
 
         if self._resetCount > 0:
             self._update_dbg_info()
@@ -364,7 +366,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
                 # if self._verbose:
                 #     for k,v in self._dbg_info.items():
                 #         ggLog.info(k," = ",v)
-                elif not self._quiet:
+                if not self._quiet:
                     msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
                             f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
                             f" stps = {self._dbg_info['ep_frames_count']:d}"+

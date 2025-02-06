@@ -77,7 +77,7 @@ def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T], _key = "")
         try:
             return func(src_tree)
         except Exception as e:
-            RuntimeError(f"Exception at element {_key}: {e}")
+            raise RuntimeError(f"Exception at element {_key}: {e}")
 
 
 _discarded = object()

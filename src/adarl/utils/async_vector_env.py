@@ -330,8 +330,6 @@ class AsyncVectorEnvShmem(VectorEnv):
         Returns:
             A batch of observations and info from the vectorized environment.
         """
-        ggLog.info(f"async_vector_env.reset()")
-        traceback.print_stack()
         self.reset_async(seed=seed, options=options)
         return self.reset_wait()
 
