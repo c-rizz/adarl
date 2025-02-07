@@ -19,7 +19,8 @@ class VectorEnvLogger(
         env: gym.vector.VectorEnv,
         use_wandb : bool = True,
         logs_id : str | None = None,
-        log_infos : bool =  False
+        log_infos : bool =  True,
+        env_th_device : th.device = th.device("cuda")
     ):
         gym.Wrapper.__init__(self, env)
         self._current_infos = []
@@ -33,14 +34,17 @@ class VectorEnvLogger(
         self._time_last_log = time.monotonic()
         self._log_infos = log_infos
         self._num_envs = env.unwrapped.num_envs
+        self._env_th_device = env_th_device
 
-        self._ep_rewards = th.zeros(size=(self._num_envs,))
-        self._completed_ep_rewards_sum = th.as_tensor(0.0)
-        self._completed_ep_rewards_min = th.as_tensor(float("+inf"))
-        self._completed_ep_rewards_max = th.as_tensor(float("-inf"))
+        self._ep_rewards = th.zeros(size=(self._num_envs,), device=self._env_th_device)
+        self._completed_ep_rewards_sum = th.as_tensor(0.0, device=self._env_th_device)
+        self._completed_ep_rewards_min = th.as_tensor(float("+inf"), device=self._env_th_device)
+        self._completed_ep_rewards_max = th.as_tensor(float("-inf"), device=self._env_th_device)
         self._completed_ep_count = 0
         self._tot_completed_ep_count = 0
 
+    def reset(self, *, seed: int | session.List[int] | None = None, options: Dict | None = None):
+        return super().reset(seed=seed, options=options)
 
     def step(
         self, action
@@ -64,23 +68,23 @@ class VectorEnvLogger(
         t1 = time.monotonic()
 
         th_terminateds, th_truncateds = th.as_tensor(terminated), th.as_tensor(truncated)
-        self._ep_rewards = self._ep_rewards.to(device=th.as_tensor(reward).device)
         self._ep_rewards += reward
         completed_eps = th.logical_or(th_terminateds, th_truncateds)
         completed_eps_count = completed_eps.count_nonzero()
         self._tot_completed_ep_count += completed_eps_count
         if completed_eps_count>0:
-            self._completed_ep_rewards_sum += th.sum(self._ep_rewards[completed_eps])
-            self._completed_ep_rewards_min = th.min(th.min(self._ep_rewards[completed_eps]), self._completed_ep_rewards_min)
-            self._completed_ep_rewards_max = th.max(th.max(self._ep_rewards[completed_eps]), self._completed_ep_rewards_min)
+            completed_rews = th.sum(self._ep_rewards[completed_eps])
+            self._completed_ep_rewards_sum += th.sum(completed_rews)
+            self._completed_ep_rewards_min = th.min(th.min(completed_rews), self._completed_ep_rewards_min)
+            self._completed_ep_rewards_max = th.max(th.max(completed_rews), self._completed_ep_rewards_max)
             self._completed_ep_count += completed_eps_count
             self._ep_rewards[completed_eps] = 0.0
             if self._completed_ep_count >= self.num_envs:
                 print(f"{self._tot_completed_ep_count} reward avg = {self._completed_ep_rewards_sum/completed_eps_count}, min {self._completed_ep_rewards_min}, max = {self._completed_ep_rewards_max}")
+                self._completed_ep_rewards_sum.fill_(0.0)
+                self._completed_ep_rewards_min.fill_(float("+inf"))
+                self._completed_ep_rewards_max.fill_(float("-inf"))
                 self._completed_ep_count = 0
-                self._completed_ep_rewards_sum = th.as_tensor(0.0)
-                self._completed_ep_rewards_min = th.as_tensor(float("+inf"))
-                self._completed_ep_rewards_max = th.as_tensor(float("-inf"))
             
         self.__step_count += 1
 
@@ -93,7 +97,6 @@ class VectorEnvLogger(
             # ggLog.info(f"nonvec_infos = {nonvec_infos}")
             final_infos = infos["final_info"]
             final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
-            print(final_infos)
             # infos.pop("final_infos")
             # info_list = unstack_tensor_tree(infos)
             if self._use_wandb:

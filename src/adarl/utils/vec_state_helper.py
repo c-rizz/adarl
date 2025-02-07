@@ -8,7 +8,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.spaces as spaces
 import adarl.utils.tensor_trees
 import adarl.utils.utils
-from adarl.utils.utils import dbg_check_size, dbg_check
+from adarl.utils.dbg.dbg_checks import dbg_check_size, dbg_check
 import numpy as np
 import torch as th
 import typing

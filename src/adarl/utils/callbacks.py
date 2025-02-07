@@ -9,6 +9,7 @@ from adarl.utils.tensor_trees import stack_tensor_tree, unstack_tensor_tree, map
 import adarl.utils.dbg.ggLog as ggLog
 import time
 from typing_extensions import override
+from rreal.algorithms.rl_agent import RLAgent
 
 class TrainingCallback():
 
@@ -85,7 +86,7 @@ class EvalCallback(TrainingCallback):
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
 
-    def set_model(self, model):
+    def set_model(self, model : RLAgent):
         self._model = model
     
     @override
@@ -110,7 +111,7 @@ class EvalCallback(TrainingCallback):
         self._step_counter += collected_steps
         # ggLog.info(f"on_collection_end: {self.eval_freq_ep} {self._episode_counter} {self._last_evaluation_episode}")
             
-    def _evaluate(self, model : th.nn.Module | None = None, predict_func : Callable[[Any, bool], tuple[Any,Any]] | None = None):
+    def _evaluate(self, model : RLAgent | None = None, predict_func : Callable[[Any, bool], tuple[Any,Any]] | None = None):
         self._last_evaluation_episode = self._episode_counter
         # def predict(obs):
         #     ggLog.info(f"Got obs of size {map_tensor_tree(obs, func = lambda t: t.size())}")

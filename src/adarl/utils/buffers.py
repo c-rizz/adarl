@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from adarl.utils.tensor_trees import map_tensor_tree
-from adarl.utils.utils import dbg_check_finite
+from adarl.utils.dbg.dbg_checks import dbg_check_finite
 from cmath import inf
 from dataclasses import dataclass
 from gymnasium import spaces

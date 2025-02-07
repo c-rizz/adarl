@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import List, Tuple, Dict, Any, Optional, Sequence, overload
+import adarl.utils.dbg.dbg_checks
 from typing_extensions import override
 
 import pybullet
@@ -14,6 +15,7 @@ from adarl.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
 from adarl.adapters.BaseJointVelocityAdapter import BaseJointVelocityAdapter
 import numpy as np
 import adarl.utils.dbg.ggLog as ggLog
+import adarl.utils.dbg
 import quaternion
 import xmltodict
 import adarl.utils.utils
@@ -691,7 +693,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                        (self._current_joint_state_pve_th[:,[1]]-self._prev_joint_state_pve_th[:,[1]])/self._simulation_step, # acc
                                        self._current_joint_state_pve_th[:,[2]]], dim=1) # eff
         self._update_stat_tensors(joint_states_pvae_th)
-        adarl.utils.utils.dbg_check_finite(self._monitored_joints_stats)
+        adarl.utils.dbg.dbg_checks.dbg_check_finite(self._monitored_joints_stats)
 
 
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):
