@@ -99,8 +99,8 @@ class Session():
             pyTorch_makeDeterministic(seed)
             if debug_level>0:
                 th.cuda.set_sync_debug_mode("warn")
-            th.autograd.set_detect_anomaly(debug_level >= 1) # type: ignore
-            th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
+            th.autograd.set_detect_anomaly(debug_level >= 2) # type: ignore
+            th.distributions.Distribution.set_default_validate_args(debug_level >= 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
                 ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
             else:

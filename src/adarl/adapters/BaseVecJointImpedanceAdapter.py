@@ -2,9 +2,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Dict, Mapping, Sequence, overload
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
+from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 import torch as th
 
-class BaseVecJointImpedanceAdapter(BaseVecAdapter):
+class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
 
     @overload
     @abstractmethod
@@ -119,3 +120,10 @@ class BaseVecJointImpedanceAdapter(BaseVecAdapter):
             Tensor of size (vec_size, len(impedance_controlled_joints), 5)
         """
         ...
+
+
+    def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]], efforts : th.Tensor) -> None:
+        jimp_cmd = th.zeros((self.vec_size(),len(joint_names),5), device=efforts.device, dtype=efforts.dtype)
+        jimp_cmd[:,:,2] = efforts
+        self.setJointsImpedanceCommand(joint_impedances_pvesd=jimp_cmd,
+                                       joint_names=joint_names)

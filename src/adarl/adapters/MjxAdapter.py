@@ -30,16 +30,16 @@ from functools import partial
 import dataclasses
 from dataclasses import dataclass 
 
-# jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
-# jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-# jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_log_compiles", True)
 # jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
-# jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
 #     if type(src) != type(dst):

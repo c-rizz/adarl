@@ -28,49 +28,48 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
                         joints_max_acceleration_position_control : dict[tuple[str,str],float] = {},
                         simulation_step = 1/960,
                         enable_rendering = True):
-        
+        super().__init__(vec_size=vec_size,
+                         output_th_device=th_device)
         if not isinstance(adapter, BaseJointImpedanceAdapter):
             raise RuntimeError(f"adapter Must be a BaseJointImpedanceAdapter")
         if not isinstance(adapter, BaseSimulationAdapter):
             raise RuntimeError(f"adapter Must be a BaseSimulationAdapter")
         self._sub_adapter = adapter
-        self._vec_size = vec_size
-        self._th_device = th_device
         if vec_size!=1: 
             raise NotImplementedError()
 
 
     @override
-    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
         if vec_mask is None or vec_mask.item():
             rdict = self._sub_adapter.getRenderings(requestedCameras=requestedCameras)
-            imgs =  [th.as_tensor(rdict[n][0], device=self._th_device).unsqueeze(0) for n in requestedCameras]
-            times = th.stack([th.as_tensor(rdict[n][1], device=self._th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
+            imgs =  [th.as_tensor(rdict[n][0], device=self._out_th_device).unsqueeze(0) for n in requestedCameras]
+            times = th.stack([th.as_tensor(rdict[n][1], device=self._out_th_device) for n in requestedCameras]).expand(self._vec_size, len(requestedCameras))
         else:
-            imgs  = [th.empty((0,3,9,16), dtype = th.uint8, device=self._th_device)]
-            times = th.empty((0,1), dtype = th.float32, device=self._th_device)
+            imgs  = [th.empty((0,3,9,16), dtype = th.uint8, device=self._out_th_device)]
+            times = th.empty((0,1), dtype = th.float32, device=self._out_th_device)
         return imgs, times
         
     @override
     def getJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
         if requestedJoints is None:
-            requestedJoints = self._monitored_joints
+            requestedJoints = self.sub_adapter()._monitored_joints
         jstate = self._sub_adapter.getJointsState(requestedJoints)
         return th.stack([th.as_tensor([ jstate[k].position.item(),
                                         jstate[k].rate.item(),
-                                        jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0).to(self._th_device)
+                                        jstate[k].effort.item()]) for k in requestedJoints]).unsqueeze(0).to(self._out_th_device)
 
 
     @override
     def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
         if requestedJoints is None:
-            requestedJoints = self._monitored_joints
+            requestedJoints = self.sub_adapter()._monitored_joints
         jstate = self._sub_adapter.getJointsState(requestedJoints)
         return th.stack([th.as_tensor([ jstate[k].position.item(),
                                         jstate[k].rate.item(),
                                         jstate[k].effort.item(),
                                         acceleration,
-                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0).to(self._th_device)
+                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0).to(self._out_th_device)
     
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
@@ -79,18 +78,18 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
     @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_frame : bool = False) -> th.Tensor:
         if requestedLinks is None:
-            requestedLinks = self._monitored_links
+            requestedLinks = self.sub_adapter()._monitored_links
         ls = self._sub_adapter.getLinksState(requestedLinks, use_com_frame=use_com_frame)
         r = th.stack([th.cat([ ls[k].pose.position,
                                 ls[k].pose.orientation_xyzw,
                                 ls[k].pos_velocity_xyz,
                                 ls[k].ang_velocity_xyz])
-                        for k in requestedLinks]).unsqueeze(0).to(self._th_device)
+                        for k in requestedLinks]).unsqueeze(0).to(self._out_th_device)
         return r
 
 
     @override
-    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor):
+    def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):
         if vec_mask is None or vec_mask.item():
             self._sub_adapter.setJointsStateDirect({n:JointState(position = joint_states_pve[0,i,0],
                                                                 rate =     joint_states_pve[0,i,1],
@@ -98,7 +97,7 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
                                                     for i,n in enumerate(joint_names)})
     
     @override
-    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor):
+    def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
         if vec_mask is None or vec_mask.item():
             self._sub_adapter.setLinksStateDirect({n:LinkState(position_xyz         = link_states_pose_vel[0,i, 0:3],
                                                             orientation_xyzw     = link_states_pose_vel[0,i, 3:7],

@@ -141,6 +141,7 @@ class ThBoxStateHelper(StateHelper):
                                        dtype=self._obs_dtype, labels=self.observation_names())
         self._single_obs_space = spaces.ThBox(low=self.observe(hlmin)[0], high=self.observe(hlmax)[0], shape=self._obs_size[1:],
                                               dtype=self._obs_dtype, labels=self.observation_names())
+        self._field_idx_cache = {}
 
     def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
         new_minmax = {}
@@ -297,15 +298,25 @@ class ThBoxStateHelper(StateHelper):
     #         return state[:,self.field_idx(field_names, device=state.device)]
 
     @override
-    def field_idx(self, field_names : Sequence[FieldName], device : th.device):
-        return th.as_tensor([self._field_idxs[n] for n in field_names], device=device)
+    def field_idx(self, field_names : tuple[FieldName] | FieldName):
+        idx = self._field_idx_cache.get(field_names, None)
+        if idx is None:
+            if isinstance(field_names, Sequence):
+                if not isinstance(field_names, tuple):
+                    field_names = tuple(field_names)
+                idx = th.as_tensor([self._field_idxs[n] for n in field_names], device=self._th_device)
+            else:
+                idx = th.as_tensor(field_names, device=self._th_device)
+            self._field_idx_cache[field_names] = idx
+            return idx
+        return idx
     
-    def subfield_idx(self, subfield_names : Sequence[FieldName], device : th.device):
+    def subfield_idx(self, subfield_names : Sequence[FieldName]):
         if self._subfield_idxs is not None:
-            return th.as_tensor([self._subfield_idxs[n] for n in subfield_names], device=device)
+            return th.as_tensor([self._subfield_idxs[n] for n in subfield_names], device=self._th_device)
         else:
             # Then subfield names are just the indexes
-            return th.as_tensor([int(typing.cast(int, n)) for n in subfield_names], device=device)
+            return th.as_tensor([int(typing.cast(int, n)) for n in subfield_names], device=self._th_device)
 
     def get_limits(self):
         """_summary_

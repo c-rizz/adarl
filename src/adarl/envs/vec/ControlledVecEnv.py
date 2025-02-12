@@ -26,6 +26,8 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                         step_duration_sec : float,
                         adapter : EnvAdapterType,
                         th_device : th.device,
+                        seed : int = 0,
+                        obs_dtype : th.dtype = th.float32,
                         single_reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
                         metadata = {},
                         max_episode_steps : int | th.Tensor = 1000,
@@ -49,7 +51,9 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                             th_device = th_device,
                             single_reward_space = single_reward_space,
                             metadata = metadata,
-                            max_episode_steps = max_episode_steps)
+                            max_episode_steps = max_episode_steps,
+                            obs_dtype=obs_dtype,
+                            seed=seed)
 
 
     def step(self) -> None:
@@ -87,4 +91,4 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
     @override
     def get_times_since_build(self) -> th.Tensor:
-        return th.as_tensor(self._adapter.getEnvTimeFromStartup(),device=self.th_device, dtype=th.float32).expand((self.num_envs,))
+        return th.as_tensor(self._adapter.getEnvTimeFromStartup(),device=self._th_device, dtype=th.float32).expand((self.num_envs,))

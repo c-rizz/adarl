@@ -19,23 +19,25 @@ class BaseVecEnv(ABC, Generic[Observation]):
                         th_device : th.device,
                         single_reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
                         metadata = {},
-                        max_episode_steps : int | th.Tensor = 1000):
+                        max_episode_steps : int | th.Tensor = 1000,
+                        seed : int = 0,
+                        obs_dtype : th.dtype = th.float32,
+                        init_env : bool = True):
         self.num_envs = num_envs
-        self.th_device = th_device
+        self._input_seed = seed
+        self._rng = th.Generator(device=th_device)
+        self._rng.manual_seed(seed)
+        self._th_device = th_device
+        self._obs_dtype = obs_dtype
         self.single_action_space = single_action_space
         self.single_observation_space = single_observation_space
         self.single_state_space = single_state_space
         self.single_reward_space = single_reward_space
         self.info_space = info_space
-        ggLog.info(f"Building vec spaces")
         self.vec_action_space = batch_space(single_action_space, n=num_envs)
-        ggLog.info(f"built action vec space")
         self.vec_observation_space = batch_space(single_observation_space, n=num_envs)
-        ggLog.info(f"built obs vec space")
         self.vec_state_space = batch_space(single_state_space, n=num_envs)
-        ggLog.info(f"built state vec space")
         self.vec_reward_space = batch_space(single_reward_space, n=num_envs)
-        ggLog.info(f"Built vec spaces")
 
         self.metadata = metadata
         if isinstance(max_episode_steps, (int, float)):
@@ -47,8 +49,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._tot_init_counter = 0
         self._init_counter_since_reset = 0
 
-        self._build()
-        self.initialize_episodes()
+        if init_env:
+            self._build()
+            self.initialize_episodes()
 
     def initialize_episodes(self, vec_mask : th.Tensor | None = None, options : dict = {}):
         """ Initialize the specified environments to an initial state. Internally it calls self._initialize_episodes().
@@ -64,6 +67,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
             Custom options for the initialization, content is the defined by each environment
         """
         if vec_mask is not None:
+            # ggLog.info(f"self._ep_counter.device={self._ep_counter.device}, vec_mask.device={vec_mask.device}")
             self._ep_counter[vec_mask] += 1
             self._ep_step_counter[vec_mask] = 0
         else:
@@ -72,6 +76,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._tot_init_counter += 1
         self._init_counter_since_reset += 1
         self._initialize_episodes(vec_mask, options)
+
+    def get_ep_step_counter(self):
+        return self._ep_step_counter
 
     @abstractmethod
     def _initialize_episodes(self, vec_mask : th.Tensor | None = None, options : dict = {}):
@@ -219,7 +226,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         ...
 
     @abstractmethod
-    def get_infos(self, states : State) -> dict[str, th.Tensor]:
+    def get_infos(self,state, labels : dict[str, th.Tensor] | None = None) -> dict[str, th.Tensor]:
         """ Gets environment specific extra information. The content is environment-defined, should not contain
             information actually used for the functioning of the environment, but just metrics or debug infos.
 
@@ -264,8 +271,18 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     def set_seeds(self, seeds : th.Tensor):
         self._rng_seeds = seeds.expand((self.num_envs,))
+        self._rng.manual_seed(th.sum(self._rng_seeds).item())
+
 
     def get_seeds(self):
         return self._rng_seeds
 
     
+    def _thtens(self, tensor):
+        return th.as_tensor(tensor, device=self._th_device, dtype=self._obs_dtype)
+
+    def _thzeros(self, size : tuple[int,...]):
+        return th.zeros(size, device=self._th_device, dtype=self._obs_dtype)
+
+    def _thrand(self, size : tuple[int,...]):
+        return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)

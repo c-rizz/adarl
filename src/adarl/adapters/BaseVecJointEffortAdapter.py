@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import List, Tuple, Sequence
-from adarl.adapters.BaseAdapter import BaseAdapter
 import torch as th
 
 class BaseVecJointEffortAdapter(ABC):

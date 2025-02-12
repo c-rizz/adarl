@@ -33,6 +33,8 @@ import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
+from adarl.utils.dbg.dbg_checks import dbg_check
+from adarl.utils.utils import to_string_tensor
 
 ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
@@ -59,10 +61,10 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          single_reward_space=env.single_reward_space,
                          autoreset=autoreset,
                          ui_render_envs_indexes=th.as_tensor(render_envs),
-                         th_device=env.th_device)
+                         th_device=env._th_device)
         self._adarl_env = env
-        self._all_vecs = th.ones((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env.th_device)
-        self._no_vecs = th.zeros((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env.th_device)
+        self._all_vecs = th.ones((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
+        self._no_vecs = th.zeros((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
         self._reinit_needed = False
         self._last_actions = None
         
@@ -78,7 +80,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._quiet = quiet
 
         self._tot_ep_rewards = th.zeros_like(self._no_vecs, dtype=th.float32)
-        self._tot_ep_sub_rewards = {}
+        self._sub_rewards_names = []
+        self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, 0), dtype=th.float32, device=self._no_vecs.device)
         self._cached_states : dict[str,th.Tensor] | None = None
         self._cache_ep_step_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
         self._cache_ep_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
@@ -106,7 +109,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._wtime_spent_stepping_adarl_tot = 0
         self._wtime_first_step = time.monotonic() # for now fill it with a reasonable time
 
-        self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env.th_device, dtype=th.bool)
+        self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
 
     @override
@@ -161,10 +164,12 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._tot_ep_rewards += rewards
             # if self._total_sub_rewards is None:
             #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
-            if len(sub_rewardss) > 0 and th.any(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards > 0.001):
-                raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
-            for k,v in sub_rewardss.items():
-                self._tot_ep_sub_rewards[k] += v
+            dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
+                      lambda: f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
+            # if len(sub_rewardss) > 0 and th.any(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards > 0.001):
+            #     raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
+            sub_rewards_tens = th.stack([sub_rewardss[k] for k in self._sub_rewards_names], dim = 1)
+            self._tot_ep_sub_rewards += sub_rewards_tens
         if th.any(th.logical_or(terminateds, truncateds)):
             self._reinit_needed = True            
         if autoreset and self._reinit_needed:
@@ -218,8 +223,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
         self._ep_step_counts[reinit_envs_mask] = 0
         self._ep_counts[reinit_envs_mask] += 1
-        self._tot_ep_rewards = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env.th_device, dtype=th.float32)
-        self._tot_ep_sub_rewards = {}
+        self._tot_ep_rewards = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.float32)
+        self._tot_ep_sub_rewards[:] = 0
         self._reinit_needed = False
         next_start_states = self._get_states_caching()
         next_start_observations = self._adarl_env.get_observations(next_start_states)
@@ -247,7 +252,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         if options is None:
             options = {}
         if seed is not None:
-            self._adarl_env.set_seeds(th.as_tensor(seed, device=self._adarl_env.th_device).expand(self.num_envs))
+            self._adarl_env.set_seeds(th.as_tensor(seed, device=self._adarl_env._th_device).expand(self.num_envs))
         if self._verbose:
             ggLog.info(" ------- Resetting Environment (#"+str(self._reset_count)+")-------")
 
@@ -391,16 +396,19 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._vec_ep_info["ep_frames_count"] = self._ep_step_counts
         self._vec_ep_info["ep_reward"] = self._tot_ep_rewards
         # self._dbg_info.update(self._ggEnv.getInfo(state))
-        if len(self._tot_ep_sub_rewards)==0: # at the first step and episode this must be populated to at least know which fields we'll have
+        if len(self._sub_rewards_names)==0: # at the first step and episode this must be populated to at least know which fields we'll have
             sub_rewards = {}
             # Not really setting the rewards, just populating the fields with zeros
             try:
                 _ = self._adarl_env.compute_rewards(state, sub_rewards_return=sub_rewards)
             except ValueError:
                 pass
-            self._tot_ep_sub_rewards = {k: v*0.0 for k,v in sub_rewards.items()}
+            self._sub_rewards_names = list(sub_rewards.keys())
+            self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, len(self._sub_rewards_names)), dtype=th.float32, device=self._adarl_env._th_device)
         # ggLog.info(f'self._total_sub_rewards = {self._total_sub_rewards}')
-        self._vec_ep_info.update({"ep_sub_"+k:v for k,v in self._tot_ep_sub_rewards.items()})
+        self._vec_ep_info["ep_sub_rewards"] = self._tot_ep_sub_rewards
+        self._vec_ep_info["ep_sub_rewards_labels"] = to_string_tensor(self._sub_rewards_names).expand(self._adarl_env.num_envs,-1,-1)
+        
 
     def _build_info(self, states):
         info = {}
@@ -411,7 +419,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         info["timed_out"] = timed_out
         adarl_env_info = self._adarl_env.get_infos(states)
         adarl_env_info["is_success"] = adarl_env_info.get("success",
-                                            th.as_tensor(False, device=self._adarl_env.th_device).expand((self._adarl_env.num_envs,)))
+                                            th.as_tensor(False, device=self._adarl_env._th_device).expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
         return copy.deepcopy(info)

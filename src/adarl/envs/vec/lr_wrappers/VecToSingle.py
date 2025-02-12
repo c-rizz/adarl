@@ -98,7 +98,7 @@ class VecToSingle(BaseEnv):
             The first tensor is the image, the second is the simulation time at which the image was rendered.
 
         """
-        imgs, times = self.venv.get_ui_renderings(th.ones((self.venv.num_envs,),device=self.venv.th_device, dtype=th.bool))
+        imgs, times = self.venv.get_ui_renderings(th.ones((self.venv.num_envs,),device=self.venv._th_device, dtype=th.bool))
         return imgs[0], times[0]
 
     @abstractmethod
