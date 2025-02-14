@@ -133,6 +133,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                                                           generator=self._rng))
         else:
             raise NotImplementedError()
+        self._adapter.setLinksStateDirect([("simple_camera", "simple_camera_link")],
+                                          link_states_pose_vel=th.as_tensor([0.0,-2.5,0.7,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13))
         self._adapter.setJointsEffortCommand(   joint_names = (("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")), 
                                                 efforts = self._thzeros((self.num_envs,2)))
         
@@ -166,17 +168,16 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             cam_file = "models/simple_camera.mjcf.xacro"
         else:            
             cam_file = "models/simple_camera.sdf.xacro"
-        camera_def = ModelSpawnDef(   definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
-                                            name="simple_camera",
-                                            pose=build_pose(0.,0.,0., 0.,0.,0.,1.0),
-                                            format="sdf.xacro",
-                                            kwargs={"camera_width":426,
-                                                    "camera_height":240,
-                                                    "frame_rate":1/self._intendedStepLength_sec})
-        cartpole_pose = build_pose(0,0,0,0,0,0,1)
+        camera_def = ModelSpawnDef( definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
+                                    name="simple_camera",
+                                    pose=None,
+                                    format="sdf.xacro",
+                                    kwargs={"camera_width":426,
+                                            "camera_height":240,
+                                            "frame_rate":1/self._intendedStepLength_sec})
         cartpole_def = ModelSpawnDef(definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
                                                         name="cartpole_v0",
-                                                        pose=cartpole_pose,
+                                                        pose=None,
                                                         format="urdf.xacro",
                                                         kwargs={})
         return [cartpole_def, camera_def]
@@ -189,12 +190,10 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         elif isinstance(self._adapter, VecSimJointImpedanceAdapterWrapper):
             if adarl.utils.utils.isinstance_noimport(self._adapter.sub_adapter(), ("PyBulletJointImpedanceAdapter")):
                 self._adapter.build_scenario(models = self._get_spawn_defs())
-                self._arrow_base = ("arrow","world")
             elif adarl.utils.utils.isinstance_noimport(self._adapter.sub_adapter(), ("RosXbotAdapter", "RosXbotGazeboAdapter")):
                 self._adapter.build_scenario(launch_file_pkg_and_path = adarl.utils.utils.pkgutil_get_path( "jumping_leg",
                                                                                                             "gazebo/all_gazebo_xbot.launch"),
                                             launch_file_args={"gui":"false"})
-                self._arrow_base = ("arrow","arrow_link")
             else:
                 raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
         else:

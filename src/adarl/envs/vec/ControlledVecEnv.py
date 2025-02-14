@@ -91,4 +91,4 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
     @override
     def get_times_since_build(self) -> th.Tensor:
-        return th.as_tensor(self._adapter.getEnvTimeFromStartup(),device=self._th_device, dtype=th.float32).expand((self.num_envs,))
+        return th.as_tensor(self._adapter.getEnvTimeFromStartup()).to(device=self._th_device, dtype=th.float32, non_blocking=True).expand((self.num_envs,))

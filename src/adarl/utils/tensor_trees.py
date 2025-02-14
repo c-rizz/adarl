@@ -293,7 +293,7 @@ def is_leaf_bounded(tensor : th.Tensor | np.ndarray | float,
                     min : th.Tensor | np.ndarray | float,
                     max : th.Tensor | np.ndarray | float):
     if isinstance(tensor, th.Tensor):
-        return th.all(tensor >= min) and th.all(tensor <= max)
+        return th.logical_and(th.all(tensor >= min), th.all(tensor <= max))
     elif isinstance(tensor, np.ndarray):
         return np.all(tensor >= min) and np.all(tensor <= max)
     else:

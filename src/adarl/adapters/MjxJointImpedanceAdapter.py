@@ -117,9 +117,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         delay_sec : th.Tensor | float = 0.0,
                                         vec_mask : th.Tensor | None = None,
                                         joint_names : Sequence[tuple[str,str]] | None = None) -> None:
-        delay_sec = th.as_tensor(delay_sec)
-        if th.any(delay_sec < 0):
-            raise RuntimeError(f"Cannot have a negative command delay") # actually we could, but it would mess up the logic of set_current_joint_impedance_command
+        delay_sec = th.as_tensor(delay_sec).to(self._out_th_device, non_blocking=True).clamp(min=0)
+        # if th.any(delay_sec < 0):
+        #     raise RuntimeError(f"Cannot have a negative command delay") # actually we could, but it would mess up the logic of set_current_joint_impedance_command
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None and not th.all(vec_mask):
@@ -168,7 +168,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         delay_sec : th.Tensor | float = 0.0) -> None:
         # No support for having commands that don't contain all joints
         joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
-        delay_sec_j = th2jax(th.as_tensor(delay_sec, device = joint_impedances_pvesd.device), self._jax_device)
+        delay_sec_j = th2jax(th.as_tensor(delay_sec), self._jax_device)
         jids = self._imp_control_jids
 
         # Create a command, commands are always of the size of _imp_control_jids

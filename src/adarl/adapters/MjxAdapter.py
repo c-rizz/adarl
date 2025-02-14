@@ -40,6 +40,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
 jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+jax.config.update('jax_default_matmul_precision', "highest")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
 #     if type(src) != type(dst):
@@ -62,7 +63,7 @@ from mujoco.mjx._src.forward import euler, forward
 def th2jax(tensor : th.Tensor, jax_device : jax.Device):
     # apparently there are issues with non-contiguous tensors (https://github.com/jax-ml/jax/issues/7657)
     # and with CPU tensors (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
-    return jnp.from_dlpack(tensor.contiguous().cuda()).to_device(jax_device)
+    return jnp.from_dlpack(tensor.contiguous().cuda(non_blocking=True)).to_device(jax_device)
                                                     
 def jax2th(array : jnp.ndarray, th_device : th.device):
     return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
@@ -345,7 +346,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                                     </worldbody>
                                                                 </mujoco>""",
                                            format="mjcf",
-                                           pose=build_pose(0,0,0,0,0,0,1),
+                                           pose=None,
                                            kwargs={}))
         specs = []
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
@@ -365,6 +366,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec.from_string(def_string)
             specs.append((model.name, mjSpec))
+            if model.pose is not None:
+                raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
         big_speck = mujoco.MjSpec()
         
         frame = big_speck.worldbody.add_frame()

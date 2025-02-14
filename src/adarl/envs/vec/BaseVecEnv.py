@@ -5,6 +5,7 @@ import torch as th
 from typing import final, TypeVar, Mapping, Generic
 from gymnasium.vector.utils.spaces import batch_space
 import adarl.utils.dbg.ggLog as ggLog
+from adarl.utils.utils import masked_assign
 
 State = Mapping[str | tuple[str,...], th.Tensor]
 Observation = TypeVar("Observation", bound=Mapping[str | tuple[str,...], th.Tensor])
@@ -68,11 +69,15 @@ class BaseVecEnv(ABC, Generic[Observation]):
         """
         if vec_mask is not None:
             # ggLog.info(f"self._ep_counter.device={self._ep_counter.device}, vec_mask.device={vec_mask.device}")
-            self._ep_counter[vec_mask] += 1
-            self._ep_step_counter[vec_mask] = 0
+            masked_assign(self._ep_counter, vec_mask, self._ep_counter+1)
+            masked_assign(self._ep_step_counter, vec_mask, 0)
+            # th.where(vec_mask,self._ep_counter+1,self._ep_counter, out=self._ep_counter)
+            # th.where(vec_mask,th.as_tensor(0, device=self._ep_step_counter.device),self._ep_step_counter, out=self._ep_step_counter)
+            # self._ep_counter[vec_mask] += 1
+            # self._ep_step_counter[vec_mask] = 0
         else:
             self._ep_counter += 1
-            self._ep_step_counter[:] = 0
+            self._ep_step_counter.fill_(0)
         self._tot_init_counter += 1
         self._init_counter_since_reset += 1
         self._initialize_episodes(vec_mask, options)
@@ -128,7 +133,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         """ Steps the environment forward of one step. Custom environments hould not override this method, 
             override on_step() instead if needed (most of the times you shouldn't need to).
         """
-        self._ep_step_counter+=1
+        th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
         self.on_step()
 
@@ -279,10 +284,10 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     
     def _thtens(self, tensor):
-        return th.as_tensor(tensor, device=self._th_device, dtype=self._obs_dtype)
+        return th.as_tensor(tensor, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
 
     def _thzeros(self, size : tuple[int,...]):
-        return th.zeros(size, device=self._th_device, dtype=self._obs_dtype)
+        return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
 
     def _thrand(self, size : tuple[int,...]):
         return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)

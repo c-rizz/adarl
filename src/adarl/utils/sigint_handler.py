@@ -138,7 +138,9 @@ def run_on_sigint_received(func) -> bool:
 def haltOnSigintReceived() -> bool:
     def prompt():
         while True:
-                answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
+                print("SIGINT received:")
+                print(f"{session.default_session.run_info['experiment_name']} : {session.default_session.run_info['run_id']}")
+                answer = input(f"  Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":
                     session.default_session.mark_shutting_down()
                     shared_memory_list[0] = "shutdown"

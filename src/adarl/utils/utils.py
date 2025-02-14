@@ -1000,8 +1000,53 @@ def pretty_print_tensor_map(thmap : Mapping[str,th.Tensor]):
 def hash_tensor(tensor):
     return hash(tuple(tensor.reshape(-1).tolist()))
 
+def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int):
+    """Inplace assign values to the original tensor, in locations defined by mask.
+        newvalues must have the same shape as original.
+        Should equivalent to:
+            original[row_mask] = newvalues[row_mask]
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    mask : th.Tensor
+        _description_
+    newvalues : th.Tensor
+        _description_
+    """
+    if not isinstance(newvalues, th.Tensor):
+        newvalues = th.as_tensor(newvalues)
+    # ggLog.info(f"mask.size() = {row_mask.size()}")
+    # ggLog.info(f"newvalues.size() = {newvalues.size()}")
+    # ggLog.info(f"moriginalask.size() = {original.size()}")
+    if len(row_mask.size()) != 1 or row_mask.size()[0] != original.size()[0]:
+        raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
+    mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (kinda a reverse broadcast)
+    th.where(mask,
+             newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
+             original,
+             out=original)
 
-
+def masked_assign_sc(original : th.Tensor, mask : th.Tensor, newvalues : th.Tensor | float | int):
+    """Inplace assign values to the original tensor, in locations defined by mask.
+        At the first dimension newvalues must have the same size as thee are True values in mask,
+         so it must be that newvalues.size()=(mask.count_nonzero(),)+original.size()[1:]. Or it
+        must be broadcastable to it.
+        Should equivalent to:
+            original[mask] = newvalues
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    mask : th.Tensor
+        _description_
+    newvalues : th.Tensor
+        _description_
+    """
+    if not isinstance(newvalues, th.Tensor):
+        newvalues = th.as_tensor(newvalues)
+    original.masked_scatter_(mask, 
+                             newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"))
 
 
 

@@ -108,7 +108,7 @@ class WandbWrapper():
 
                     # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
                     if t-last_logged<throttle_period:
-                        # ggLog.info(f"[{str(keys)[:10]}]: Throttling")
+                        ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period})")
                         return
                     # ggLog.info(f"[{str(keys)[:10]}]: Sending")
 

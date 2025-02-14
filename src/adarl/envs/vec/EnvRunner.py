@@ -223,8 +223,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
         self._ep_step_counts[reinit_envs_mask] = 0
         self._ep_counts[reinit_envs_mask] += 1
-        self._tot_ep_rewards = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.float32)
-        self._tot_ep_sub_rewards[:] = 0
+        self._tot_ep_rewards[reinit_envs_mask] = 0
+        self._tot_ep_sub_rewards[reinit_envs_mask] = 0
         self._reinit_needed = False
         next_start_states = self._get_states_caching()
         next_start_observations = self._adarl_env.get_observations(next_start_states)
