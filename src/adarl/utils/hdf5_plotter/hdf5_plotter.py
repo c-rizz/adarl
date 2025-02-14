@@ -11,6 +11,7 @@ import os
 from typing import TypeVar
 import shutil
 import math 
+import mplcursors
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
@@ -62,6 +63,7 @@ def plot(data, filename, labels = None, title : str = "HDF5Plot", xlims=None):
         # have been toggled.
         legend_line.set_alpha(1.0 if visible else 0.2)
         fig.canvas.draw()
+    mplcursors.cursor(lines)
     fig.canvas.mpl_connect('pick_event', on_pick)
     # matplotlib.use('TkAgg')
     fig.tight_layout()
@@ -92,7 +94,7 @@ def cmd_ls(file, current_path, *args, **kwargs):
     max_k_len = max([len(k) for k in ks]) 
     ks = [(str(k)+" ").rjust(max_k_len) for k in ks]
     elements_per_row = int(shutil.get_terminal_size().columns/max_k_len)
-    print('\n'.join([''.join(ks[p:p+elements_per_row]) for p in range(0,math.ceil(len(ks)/elements_per_row), elements_per_row)]))
+    print('\n'.join([''.join(ks[p:p+elements_per_row]) for p in range(0,len(ks), elements_per_row)]))
     return current_path, True
 
 def cmd_quit(file, current_path, *args, **kwargs):
@@ -129,7 +131,7 @@ def cmd_plot(file, current_path, *args, **kwargs):
         for arg in args[1:]:
             if arg.startswith("--"):
                 if arg.startswith("--xlims="):
-                    xlims = [int(l) for l in arg[8:].split(",")]
+                    xlims = [float(l) for l in arg[8:].split(",")]
                 else:
                     print(f"Unrecognized arg {arg}")
             else:
