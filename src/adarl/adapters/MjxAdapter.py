@@ -39,7 +39,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
-jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+# jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 jax.config.update('jax_default_matmul_precision', "highest")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
@@ -92,7 +92,7 @@ def path2tstr(path):
 
 def disable_discard_visual(urdf_def : str):
     mujoco_block = ('<mujoco>\n'+
-                    '    <compiler  discardvisual="false"/>\n'
+                    '    <compiler  discardvisual="false" strippath="false"/>\n'
                     '</mujoco>')
     return urdf_def.replace("</robot>",mujoco_block+"\n</robot>")
 # def tree_set(tree, leaf_name : str, new_value):
@@ -356,11 +356,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         specs = []
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
         for model in models:
-            mjSpec = mujoco.MjSpec()
-            # mjSpec.compiler.discardvisual = False
-            # mjSpec.compiler.degree = False
-            mjSpec.discardvisual = False
-            mjSpec.degree = False
             if model.format.strip().lower()[-6:] == ".xacro":
                 def_string = compile_xacro_string( model_definition_string=model.definition_string,
                                                                 model_kwargs=model.kwargs)
@@ -370,33 +365,29 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
             def_string = disable_discard_visual(def_string)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
-            mjSpec.from_string(def_string)
+            mjSpec = mujoco.MjSpec.from_string(def_string)
+            mjSpec.compiler.discardvisual = False
+            mjSpec.compiler.degree = False
             specs.append((model.name, mjSpec))
             if model.pose is not None:
                 raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
         big_speck = mujoco.MjSpec()
         
         frame = big_speck.worldbody.add_frame()
-        big_speck.degree = False
-        big_speck.discardvisual = False
-        # big_speck.compiler.degree = False
-        # big_speck.compiler.discardvisual = False
+        big_speck.compiler.degree = False
+        big_speck.compiler.discardvisual = False
         for mname, spec in specs:
             if model_element_separator in mname:
                 raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
             # add all th bodies that are direct childern of worldbody
             body = spec.worldbody.first_body()
-            # spec.compiler.discardvisual = False
-            # if spec.compiler.degree:
-            #     raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
-            spec.discardvisual = False
-            if spec.degree:
+            spec.compiler.discardvisual = False
+            if spec.compiler.degree:
                 raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
             while body is not None:
                 frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
-        # big_speck.compiler.discardvisual = False
-        big_speck.discardvisual = False
+        big_speck.compiler.discardvisual = False
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._opt_preset == "fast":
@@ -410,7 +401,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
-        ggLog.info(f"Spawning: \n{big_speck.to_xml()}")
+        ggLog.info(f"Spawned: \n{big_speck.to_xml()}")
 
         # model = models[0]
         # if model.format == "urdf.xacro":
@@ -443,16 +434,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._original_mj_data = copy.deepcopy(self._mj_data)
         self._original_mj_model = copy.deepcopy(self._mj_model)
 
-        ggLog.info(f"Compiling mjx_integrate_and_forward....")
-        self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
-        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
-        # ggLog.info(f"Compiling mjx.step....")
-        # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
         # _ = self._mjx_step(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
         ggLog.info(f"Compiling mjx.forward....")
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         mjx_data = self._mjx_forward(self._mjx_model, mjx_data) # compute initial mjData
         ggLog.info(f"Compiled MJX.")
+
+        ggLog.info(f"Compiling mjx_integrate_and_forward....")
+        self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
+        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
+        # ggLog.info(f"Compiling mjx.step....")
+        # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
         
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
