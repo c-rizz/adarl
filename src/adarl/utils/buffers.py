@@ -12,6 +12,7 @@ from stable_baselines3.common.preprocessing import get_obs_shape
 from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple, Mapping
 import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.mp_helper as mp_helper
+from adarl.utils.utils import masked_assign
 import ctypes
 import numpy as np
 import psutil
@@ -467,7 +468,8 @@ class ThDReplayBuffer(BaseBuffer):
         handle_timeout_termination: bool = True,
         storage_torch_device: Union[str,th.device] = "cpu",
         fallback_to_cpu_storage: bool = True,
-        copy_outputs : bool = True
+        copy_outputs : bool = True,
+        random_add : bool = False
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
@@ -476,6 +478,7 @@ class ThDReplayBuffer(BaseBuffer):
         self._observation_space = observation_space
         self._action_space = action_space
         self._copy_outputs = copy_outputs
+        self._random_add = random_add
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         if handle_timeout_termination == False:
@@ -608,29 +611,34 @@ class ThDReplayBuffer(BaseBuffer):
 
         devices_to_sync = {t.device for t in [action,reward,terminated,truncated] if isinstance(t, th.Tensor)}
         devices_to_sync.add(self._storage_torch_device)
+        pos = self.pos
+        if self._random_add and self.full:
+            # would be nice to randomize pos along the different envs
+            pos : int = th.randint(0, self.buffer_size, size=tuple(), device = "cpu").item()
+            # pos = th.randint(0, self.buffer_size, size=tuple(), device = self._storage_torch_device) # would be nice to randomize pos along the different envs
         # Copy to avoid modification by reference
         for key in self.observations.keys():
             # Reshape needed when using multiple envs with discrete observations
             # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.observations[key][self.pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
+            self.observations[key][pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
             if isinstance(obs,th.Tensor): devices_to_sync.add(obs.device)
 
         for key in self.next_observations.keys():
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.next_observations[key][self.pos].copy_(next_obs[key], non_blocking=True)
+            self.next_observations[key][pos].copy_(next_obs[key], non_blocking=True)
             if isinstance(next_obs,th.Tensor): devices_to_sync.add(next_obs.device)
 
         # Same reshape, for actions
         if isinstance(self.action_space, spaces.Discrete):
             action = action.reshape((self.n_envs, self.action_dim))
 
-        self.actions[self.pos].copy_(th.as_tensor(action), non_blocking=True)
-        self.rewards[self.pos].copy_(th.as_tensor(reward), non_blocking=True)            
-        self.truncated[self.pos].copy_(th.as_tensor(truncated), non_blocking=True)
-        self.terminated[self.pos].copy_(th.as_tensor(terminated), non_blocking=True)
+        self.actions[pos].copy_(th.as_tensor(action), non_blocking=True)
+        self.rewards[pos].copy_(th.as_tensor(reward), non_blocking=True)            
+        self.truncated[pos].copy_(th.as_tensor(truncated), non_blocking=True)
+        self.terminated[pos].copy_(th.as_tensor(terminated), non_blocking=True)
         for device in devices_to_sync:
             if device.type == "cuda":
                 th.cuda.synchronize(device)

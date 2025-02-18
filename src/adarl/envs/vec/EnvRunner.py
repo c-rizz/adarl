@@ -82,6 +82,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._tot_ep_rewards = th.zeros_like(self._no_vecs, dtype=th.float32)
         self._sub_rewards_names = []
         self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, 0), dtype=th.float32, device=self._no_vecs.device)
+        self._ep_sub_rewards : dict[str,th.Tensor] = {}
         self._cached_states : dict[str,th.Tensor] | None = None
         self._cache_ep_step_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
         self._cache_ep_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
@@ -170,6 +171,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             #     raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
             sub_rewards_tens = th.stack([sub_rewardss[k] for k in self._sub_rewards_names], dim = 1)
             self._tot_ep_sub_rewards += sub_rewards_tens
+            for k,v in self._ep_sub_rewards.items():
+                v += sub_rewardss[k]
         if th.any(th.logical_or(terminateds, truncateds)):
             self._reinit_needed = True            
         if autoreset and self._reinit_needed:
@@ -225,6 +228,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._ep_counts[reinit_envs_mask] += 1
         self._tot_ep_rewards[reinit_envs_mask] = 0
         self._tot_ep_sub_rewards[reinit_envs_mask] = 0
+        for k,v in self._ep_sub_rewards.items():
+                v[reinit_envs_mask] = 0
         self._reinit_needed = False
         next_start_states = self._get_states_caching()
         next_start_observations = self._adarl_env.get_observations(next_start_states)
@@ -397,7 +402,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._vec_ep_info["ep_reward"] = self._tot_ep_rewards
         # self._dbg_info.update(self._ggEnv.getInfo(state))
         if len(self._sub_rewards_names)==0: # at the first step and episode this must be populated to at least know which fields we'll have
-            sub_rewards = {}
+            sub_rewards : dict[str, th.Tensor] = {}
             # Not really setting the rewards, just populating the fields with zeros
             try:
                 _ = self._adarl_env.compute_rewards(state, sub_rewards_return=sub_rewards)
@@ -405,10 +410,11 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 pass
             self._sub_rewards_names = list(sub_rewards.keys())
             self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, len(self._sub_rewards_names)), dtype=th.float32, device=self._adarl_env._th_device)
+            self._ep_sub_rewards = {k : th.zeros(size=(self.num_envs,), dtype=th.float32, device=self._adarl_env._th_device) for k in self._sub_rewards_names}
         # ggLog.info(f'self._total_sub_rewards = {self._total_sub_rewards}')
         self._vec_ep_info["ep_sub_rewards"] = self._tot_ep_sub_rewards
         self._vec_ep_info["ep_sub_rewards_labels"] = to_string_tensor(self._sub_rewards_names).expand(self._adarl_env.num_envs,-1,-1)
-        
+        self._vec_ep_info.update({"ep_sub_reward_"+k : v for k,v in self._ep_sub_rewards.items()})
 
     def _build_info(self, states):
         info = {}

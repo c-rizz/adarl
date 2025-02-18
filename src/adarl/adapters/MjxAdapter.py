@@ -90,6 +90,11 @@ _build_th2jax_dev_mapping()
 def path2tstr(path):
     return tuple([n.name for n in path])
 
+def disable_discard_visual(urdf_def : str):
+    mujoco_block = ('<mujoco>\n'+
+                    '    <compiler  discardvisual="false"/>\n'
+                    '</mujoco>')
+    return urdf_def.replace("</robot>",mujoco_block+"\n</robot>")
 # def tree_set(tree, leaf_name : str, new_value):
 #     return jax.tree_util.tree_map_with_path(lambda path, leaf: leaf if path2tstr(path)!=(leaf_name,) else new_value, tree)
 
@@ -202,7 +207,7 @@ def get_rows_cols(array : jnp.ndarray,
 model_element_separator = "#"
 
 @jax.jit
-def jax_mat_to_quat(matrices):
+def jax_mat_to_quat_xyzw(matrices):
     return jax.scipy.spatial.transform.Rotation.from_matrix(matrices).as_quat(scalar_first=False)
 
 @jax.tree_util.register_dataclass
@@ -363,6 +368,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 def_string = model.definition_string
             else:
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
+            def_string = disable_discard_visual(def_string)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec.from_string(def_string)
             specs.append((model.name, mjSpec))
@@ -925,8 +931,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @staticmethod
     @jax.jit
     def _get_links_com_state_jax(body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        """ The COM orientation is aligned along the principal axes of inertia, 
+            as stated in https://mujoco.readthedocs.io/en/stable/XMLreference.html?utm_source=chatgpt.com#body-inertial
+            I believe this means the x ends up on the highes inertia axis and so on
+            So for example on the main body of a usual quadruped the x would point down, the y sideways and the z front/back
+        """
         return jnp.concatenate([mjx_data.xipos[:,body_ids], # com position
-                                jax_mat_to_quat(mjx_data.ximat[:,body_ids]), # com orientation
+                                jax_mat_to_quat_xyzw(mjx_data.ximat[:,body_ids]), # com orientation, see above
                                 mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) #com linear and angular velocity
     
     @override
