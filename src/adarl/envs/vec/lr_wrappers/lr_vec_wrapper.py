@@ -28,7 +28,7 @@ class LrVecWrapper(BaseVecEnv[Observation]):
                             max_episode_steps = env._max_ep_steps,
                             seed = env._input_seed,
                             obs_dtype = env._obs_dtype,
-                            init_env=False)
+                            build_and_initialize_ep=False)
     
     @override
     def initialize_episodes(self, vec_mask: th.Tensor | None = None, options: dict = ...):

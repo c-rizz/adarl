@@ -74,3 +74,6 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
             Name of the model to be removed
         """
         raise NotImplementedError()
+    
+    def set_body_collisions(self, link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]):
+        raise NotImplementedError
