@@ -171,7 +171,7 @@ class ThBoxStateHelper(StateHelper):
             # ggLog.info(f"resetting from mapping: initial_values = {initial_values}, size = {initial_values.size()}")
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
-        initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype)
+        initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype, non_blocking=self._th_device.type=="cuda")
         dbg_check_size(initial_values, (self._state_size[0],)+self._state_size[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
         state = initial_values.unsqueeze(1).expand(*self._state_size).clone() # repeat along the history dimension
         # state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))

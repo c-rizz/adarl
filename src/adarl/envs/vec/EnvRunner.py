@@ -65,7 +65,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._adarl_env = env
         self._all_vecs = th.ones((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
         self._no_vecs = th.zeros((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
-        self._reinit_needed = False
+        self._envs_needing_reinit = self._no_vecs.detach().clone()
         self._last_actions = None
         
         if th.any(self._adarl_env.get_max_episode_steps()!=self._adarl_env.get_max_episode_steps()[0]):
@@ -127,8 +127,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         t0 = time.monotonic()
         if self._total_vsteps == 0:
             self._wtime_first_step = t0
-        if self._reinit_needed:
-            ggLog.warn(f"Calling step on terminated/truncated episodes")
+        # if th.any(self._envs_needing_reinit):
+        #     ggLog.warn(f"Calling step on terminated/truncated episodes")
 
         self._total_vsteps += 1
         etime_step_start = th.sum(self._adarl_env.get_times_since_build())
@@ -173,18 +173,17 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._tot_ep_sub_rewards += sub_rewards_tens
             for k,v in self._ep_sub_rewards.items():
                 v += sub_rewardss[k]
-        if th.any(th.logical_or(terminateds, truncateds)):
-            self._reinit_needed = True            
-        if autoreset and self._reinit_needed:
-            # If some environments have terminated/truncated then re-initialize them
-            next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=th.logical_or(terminateds, truncateds),
-                                                                         terminateds=terminateds,
-                                                                         truncateds=truncateds,
-                                                                         last_observations=consequent_observations,
-                                                                         last_actions=actions,
-                                                                         last_infos=consequent_infos,
-                                                                         last_rewards=rewards)
-            reinit_done =th.logical_or(terminateds, truncateds)
+        self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
+        if autoreset and th.any(self._envs_needing_reinit): # cuda sync, see comment below
+                # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
+            next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
+                                                                        terminateds=terminateds,
+                                                                        truncateds=truncateds,
+                                                                        last_observations=consequent_observations,
+                                                                        last_actions=actions,
+                                                                        last_infos=consequent_infos,
+                                                                        last_rewards=rewards)
+            reinit_done = th.logical_or(terminateds, truncateds)
         else:
             next_start_observations = consequent_observations
             next_start_infos = consequent_infos
@@ -230,7 +229,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._tot_ep_sub_rewards[reinit_envs_mask] = 0
         for k,v in self._ep_sub_rewards.items():
                 v[reinit_envs_mask] = 0
-        self._reinit_needed = False
+        self._envs_needing_reinit = th.logical_and(self._envs_needing_reinit, th.logical_not(reinit_envs_mask))
         next_start_states = self._get_states_caching()
         next_start_observations = self._adarl_env.get_observations(next_start_states)
         next_start_infos = self._build_info(next_start_states)

@@ -122,8 +122,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         #     raise RuntimeError(f"Cannot have a negative command delay") # actually we could, but it would mess up the logic of set_current_joint_impedance_command
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
-        if vec_mask is not None and not th.all(vec_mask):
-            raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
+        if vec_mask is not None:
+            th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
+            # This could probably be implemented fairly easily
         # ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay_sec)
@@ -158,8 +159,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         # a sizable negative delay.
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
-        if vec_mask is not None and not th.all(vec_mask):
-            raise RuntimeError(f"vec_mask is not supported, must be None (controls all simulations)") # This could probably be implemented fairly easily
+        if vec_mask is not None:
+            th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
+            # This could probably be implemented fairly easily
         # ggLog.info(f"Setting jimp command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=-1000)

@@ -1175,11 +1175,12 @@ def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):
     q[...,0:3] = r1*v2 + r2*v1 + th.linalg.cross(v1,v2, dim=-1)
     return q
 
+
 @th.jit.script
 def th_quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
     """Gives the inverse rotation of q, usually denoted q^-1 or q'. Note that q*q' = 1
     """
-    return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0], device=q_xyzw.device)
+    return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0]).to(device=q_xyzw.device, non_blocking=q_xyzw.device.type=="cuda")
 
 
 def th_quat_rotate_py(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
@@ -1258,8 +1259,13 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
     k = th.norm(v1) * th.norm(v2)
     th.cross(v1,v2, out=quats_xyzw[...,:3])
     quats_xyzw[...,3] = k + vdot
-    quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
-    quats_xyzw[vdot/k==-1,3] = 0
+    quats_xyz = quats_xyzw[:,:3]
+    quats_w = quats_xyzw[:,3]
+    flipped_vecs = vdot/k==-1
+    masked_assign(quats_xyz, flipped_vecs, orthogonal_vec(v1))
+    masked_assign(quats_w, flipped_vecs, 0)
+    # quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
+    # quats_xyzw[vdot/k==-1,3] = 0
     # print(f"vdot = {vdot}")
     # print(f"k = {k}")
     # print(f"vdot/k==-1 = {vdot/k==-1}")
