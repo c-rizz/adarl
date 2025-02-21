@@ -600,9 +600,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             for geom_id in range(self._mj_model.body_geomadr[body_id],
                                  self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
                 # this will pass also through the visual geoms!
-                geom_name = mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-                geom_rgba = self._mj_model.geom_rgba[geom_id]
-                ggLog.info(f"{lname} [{body_id}] : {geom_id} [{geom_name}]: coll={typ:b}/{aff:b} rgba = {geom_rgba}, aff = {aff}, typ = {typ} ")
+                # geom_name = mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                # geom_rgba = self._mj_model.geom_rgba[geom_id]
+                # ggLog.info(f"{lname} [{body_id}] : {geom_id} [{geom_name}]: coll={typ:b}/{aff:b} rgba = {geom_rgba}, aff = {aff}, typ = {typ} ")
                 # geom_contype[geom_id] = 1
                 visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
                 if not visual:
@@ -613,6 +613,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_model.geom_conaffinity = geom_conaffinity
         self._mj_model.body_contype = body_contype
         self._mj_model.body_conaffinity = body_conaffinity
+        ggLog.info(f"Previous geom_contype =     {self._mjx_model.geom_contype}")
+        ggLog.info(f"Previous geom_conaffinity = {self._mjx_model.geom_conaffinity}")
         self._mjx_model = self._mjx_model.replace(geom_contype = geom_contype,
                                                   geom_conaffinity = geom_conaffinity,
                                                   body_contype = body_contype,
@@ -623,10 +625,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                   body_conaffinity = body_conaffinity)
         # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
-        # self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
-        # self._original_mjx_model = copy.deepcopy(self._mjx_model)
-        # print(f"self._mjx_model.geom_contype =     {self._mjx_model.geom_contype}")
-        # print(f"self._mjx_model.geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        ggLog.info(f"New geom_contype =     {self._mjx_model.geom_contype}")
+        ggLog.info(f"New geom_conaffinity = {self._mjx_model.geom_conaffinity}")
 
 
 
