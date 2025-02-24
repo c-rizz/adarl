@@ -23,7 +23,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
                         max_episode_steps : int | th.Tensor = 1000,
                         seed : int = 0,
                         obs_dtype : th.dtype = th.float32,
-                        init_env : bool = True):
+                        build_and_initialize_ep : bool = False):
         self.num_envs = num_envs
         self._input_seed = seed
         self._rng = th.Generator(device=th_device)
@@ -50,7 +50,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._tot_init_counter = 0
         self._init_counter_since_reset = 0
 
-        if init_env:
+        if build_and_initialize_ep:
             self._build()
             self.initialize_episodes()
 

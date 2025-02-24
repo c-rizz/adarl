@@ -39,7 +39,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
-jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+# jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 jax.config.update('jax_default_matmul_precision', "highest")
 
 # def inplace_deepcopy(dst, src, strict = False, exclude : Iterable = []):
@@ -92,7 +92,7 @@ def path2tstr(path):
 
 def disable_discard_visual(urdf_def : str):
     mujoco_block = ('<mujoco>\n'+
-                    '    <compiler  discardvisual="false"/>\n'
+                    '    <compiler  discardvisual="false" strippath="false"/>\n'
                     '</mujoco>')
     return urdf_def.replace("</robot>",mujoco_block+"\n</robot>")
 # def tree_set(tree, leaf_name : str, new_value):
@@ -356,11 +356,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         specs = []
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
         for model in models:
-            mjSpec = mujoco.MjSpec()
-            # mjSpec.compiler.discardvisual = False
-            # mjSpec.compiler.degree = False
-            mjSpec.discardvisual = False
-            mjSpec.degree = False
             if model.format.strip().lower()[-6:] == ".xacro":
                 def_string = compile_xacro_string( model_definition_string=model.definition_string,
                                                                 model_kwargs=model.kwargs)
@@ -370,33 +365,29 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
             def_string = disable_discard_visual(def_string)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
-            mjSpec.from_string(def_string)
+            mjSpec = mujoco.MjSpec.from_string(def_string)
+            mjSpec.compiler.discardvisual = False
+            mjSpec.compiler.degree = False
             specs.append((model.name, mjSpec))
             if model.pose is not None:
                 raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
         big_speck = mujoco.MjSpec()
         
         frame = big_speck.worldbody.add_frame()
-        big_speck.degree = False
-        big_speck.discardvisual = False
-        # big_speck.compiler.degree = False
-        # big_speck.compiler.discardvisual = False
+        big_speck.compiler.degree = False
+        big_speck.compiler.discardvisual = False
         for mname, spec in specs:
             if model_element_separator in mname:
                 raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
             # add all th bodies that are direct childern of worldbody
             body = spec.worldbody.first_body()
-            # spec.compiler.discardvisual = False
-            # if spec.compiler.degree:
-            #     raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
-            spec.discardvisual = False
-            if spec.degree:
+            spec.compiler.discardvisual = False
+            if spec.compiler.degree:
                 raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
             while body is not None:
                 frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
-        # big_speck.compiler.discardvisual = False
-        big_speck.discardvisual = False
+        big_speck.compiler.discardvisual = False
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._opt_preset == "fast":
@@ -410,7 +401,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
-        ggLog.info(f"Spawning: \n{big_speck.to_xml()}")
+        ggLog.info(f"Spawned: \n{big_speck.to_xml()}")
 
         # model = models[0]
         # if model.format == "urdf.xacro":
@@ -424,15 +415,46 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # # Make model, data, and renderer
         # self._mj_model = mujoco.MjModel.from_xml_string(urdf_string)
 
+        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
+                           for jid in range(self._mj_model.njnt)}
+        self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
+        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
+                           for lid in range(self._mj_model.nbody)}
+        self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
+        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
+                           for jid in range(self._mj_model.ncam)}
+        self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
+        ggLog.info(f"self._lname2lid = {self._lname2lid}")
 
 
+        # self.set_body_collisions([  (('kyon', 'pelvis'), False),
+        #                             (('kyon', 'base_link'), False),
+        #                             (('kyon', 'imu_link'), False),
+        #                             (('kyon', 'hip_roll_1_link'), False),
+        #                             (('kyon', 'hip_pitch_1_link'), False),
+        #                             (('kyon', 'knee_pitch_1_link'), False),
+        #                             (('kyon', 'contact_1'), False),
+        #                             (('kyon', 'hip_roll_2_link'), False),
+        #                             (('kyon', 'hip_pitch_2_link'), False),
+        #                             (('kyon', 'knee_pitch_2_link'), False),
+        #                             (('kyon', 'contact_2'), False),
+        #                             (('kyon', 'hip_roll_3_link'), False),
+        #                             (('kyon', 'hip_pitch_3_link'), False),
+        #                             (('kyon', 'knee_pitch_3_link'), False),
+        #                             (('kyon', 'contact_3'), False),
+        #                             (('kyon', 'hip_roll_4_link'), False),
+        #                             (('kyon', 'hip_pitch_4_link'), False),
+        #                             (('kyon', 'knee_pitch_4_link'), False),
+        #                             (('kyon', 'contact_4'), False)])
+        # self._mj_model.body_conaffinity[:] = 0
+        # self._mj_model.geom_conaffinity[:] = 0
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
-        mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         self._jnt_dofadr_jax = jnp.array(self._mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
 
+        mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         mjx_data = jax.vmap(lambda: mjx_data, axis_size=self._vec_size)()
         # mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), mjx_data)
         ggLog.info(f"mjx_data.qpos.shape = {mjx_data.qpos.shape}")
@@ -443,22 +465,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._original_mj_data = copy.deepcopy(self._mj_data)
         self._original_mj_model = copy.deepcopy(self._mj_model)
 
-        ggLog.info(f"Compiling mjx_integrate_and_forward....")
+        # _ = self._mjx_step(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
+        self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
-        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
         # ggLog.info(f"Compiling mjx.step....")
         # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
-        # _ = self._mjx_step(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
-        ggLog.info(f"Compiling mjx.forward....")
-        self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
-        mjx_data = self._mjx_forward(self._mjx_model, mjx_data) # compute initial mjData
-        ggLog.info(f"Compiled MJX.")
         
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
         self._sim_state = self._sim_state.replace_d({   "mjx_data":mjx_data,
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time})
+        
         
         self.set_monitored_joints([])
         self.set_monitored_links([])
@@ -474,20 +492,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._renderer = None
 
         if self._show_gui:
-            self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], mjx_data))
-            mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], mjx_data))
+            self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
+            mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
             self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
 
-        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
-                           for jid in range(self._mj_model.njnt)}
-        self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
-        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
-                           for lid in range(self._mj_model.nbody)}
-        self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
-        ggLog.info(f"self._lname2lid = {self._lname2lid}")
-        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
-                           for jid in range(self._mj_model.ncam)}
-        self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
         self._camera_sizes :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         if self._enable_rendering:
             def make_renderer(h,w):
@@ -505,6 +513,121 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         print("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
         print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
+
+    def startup(self):
+        ggLog.info(f"Compiling mjx.forward....")
+        self._sim_state = self._sim_state.replace_v("mjx_data", self._mjx_forward(self._mjx_model, self._sim_state.mjx_data)) # compute initial mjData
+        ggLog.info(f"Compiling mjx_integrate_and_forward....")
+        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
+        ggLog.info(f"Compiled.")
+
+    @override
+    def set_body_collisions(self, link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]):
+        input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
+        ggLog.info(f"input_collision_groups = {input_collision_groups}")
+
+        best_collision_groups = []
+        while len(input_collision_groups)>0:
+            biggest_common_subgroup = set(input_collision_groups[0])
+            for g in input_collision_groups:
+                biggest_common_subgroup.intersection_update(g)
+            best_collision_groups.append(biggest_common_subgroup)
+            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups]
+            input_collision_groups = [g for g in input_collision_groups if len(g)>0]
+
+        ggLog.info(f"best_collision_groups = {best_collision_groups}")
+        link_to_groups = {} # Which groups each link is part of
+        for i,g in enumerate(best_collision_groups):
+            for l in g:
+                if l not in link_to_groups:
+                    link_to_groups[l] = []
+                link_to_groups[l].append(i)
+        ggLog.info(f"link_to_groups = {link_to_groups}")
+
+        link_colliding_groups = {} # Which group each link collides with
+        for link,colliding_links in link_group_collisions:
+            colliding_links = set(colliding_links)
+            for g in best_collision_groups:
+                if g.issubset(colliding_links):
+                    if l not in link_colliding_groups:
+                        link_colliding_groups[link] = []
+                    link_colliding_groups[link].append(i)
+        ggLog.info(f"link_colliding_groups = {link_colliding_groups}")
+
+        if len(best_collision_groups) > 32:
+            raise RuntimeError(f"Detected more than 32 separate collision group. Cannot represent in Mujoco collision masks.")
+        
+        all_links = list(self._lname2lid.keys()) #list(link_to_groups.keys())+list(link_colliding_groups.keys())
+        for l in all_links:
+            if l not in link_to_groups:
+                link_to_groups[l] = []
+            if l not in link_colliding_groups:
+                link_colliding_groups[l] = []
+        link_contypes = {}
+        link_conaffinity = {}
+        for l in all_links:
+            contype_mask = 0
+            for gid in link_to_groups[l]:
+                contype_mask |= 1<<gid
+            link_contypes[l] = contype_mask
+            conaffinity_mask = 0
+            for gid in link_colliding_groups[l]:
+                conaffinity_mask |= 1<<gid
+            link_conaffinity[l] = conaffinity_mask
+
+        
+
+        # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
+        # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
+        # print(f"self._mjx_model.geom_contype =     {self._mjx_model.geom_contype}")
+        # print(f"self._mjx_model.geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+
+        body_contype = self._mjx_model.body_contype.copy()
+        body_conaffinity = self._mjx_model.body_conaffinity.copy()
+        geom_contype = self._mjx_model.geom_contype.copy()
+        geom_conaffinity = self._mjx_model.geom_conaffinity.copy()
+        for lname in all_links:
+            body_id = self._lname2lid[lname]
+            for geom_id in range(self._mj_model.body_geomadr[body_id],
+                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
+                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
+        for lname in all_links:
+            body_id = self._lname2lid[lname]
+            aff = link_conaffinity[lname]
+            typ = link_contypes[lname]
+            body_conaffinity[body_id] = aff
+            body_contype[body_id] = typ
+            for geom_id in range(self._mj_model.body_geomadr[body_id],
+                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
+                # this will pass also through the visual geoms!
+                # geom_name = mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                # geom_rgba = self._mj_model.geom_rgba[geom_id]
+                # ggLog.info(f"{lname} [{body_id}] : {geom_id} [{geom_name}]: coll={typ:b}/{aff:b} rgba = {geom_rgba}, aff = {aff}, typ = {typ} ")
+                # geom_contype[geom_id] = 1
+                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
+                if not visual:
+                    geom_conaffinity[geom_id] = aff
+                    geom_contype[geom_id] = typ
+
+        self._mj_model.geom_contype = geom_contype
+        self._mj_model.geom_conaffinity = geom_conaffinity
+        self._mj_model.body_contype = body_contype
+        self._mj_model.body_conaffinity = body_conaffinity
+        ggLog.info(f"Previous geom_contype =     {self._mjx_model.geom_contype}")
+        ggLog.info(f"Previous geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        self._mjx_model = self._mjx_model.replace(geom_contype = geom_contype,
+                                                  geom_conaffinity = geom_conaffinity,
+                                                  body_contype = body_contype,
+                                                  body_conaffinity = body_conaffinity)
+        self._original_mjx_model = self._original_mjx_model.replace(geom_contype = geom_contype,
+                                                  geom_conaffinity = geom_conaffinity,
+                                                  body_contype = body_contype,
+                                                  body_conaffinity = body_conaffinity)
+        # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
+        # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
+        ggLog.info(f"New geom_contype =     {self._mjx_model.geom_contype}")
+        ggLog.info(f"New geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+
 
 
     def detected_joints(self):
@@ -766,6 +889,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"mj_data_batch = {mj_data_batch}")
         times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras)))
         image_batches = [np.ones(shape=(nvecs,)+self._camera_sizes[cam]+(3,), dtype=np.uint8) for cam in requestedCameras]
+        self._forward_if_needed()
         # print(f"images.shapes = {[i.shape for i in images]}")
         # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         mjx.get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data)
@@ -792,7 +916,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if len(jids) == 0:
             return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
-           t = self._get_vec_joint_states_pve(self._mjx_model, self._sim_state.mjx_data, jids)
+            self._forward_if_needed()           
+            t = self._get_vec_joint_states_pve(self._mjx_model, self._sim_state.mjx_data, jids)
         return jax2th(t, th_device=self._out_th_device)
     
     @override
@@ -804,7 +929,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if len(jids) == 0:
             return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
-           t = self._get_vec_joint_states_pveae(self._mjx_model, self._sim_state.mjx_data, jids)
+            self._forward_if_needed()
+            t = self._get_vec_joint_states_pveae(self._mjx_model, self._sim_state.mjx_data, jids)
         return jax2th(t, th_device=self._out_th_device)
     
     @staticmethod
@@ -960,6 +1086,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             body_ids = self.get_links_ids(requestedLinks)
         # th.cuda.synchronize()
         # t1 = time.monotonic()
+        self._forward_if_needed()
         if use_com_frame:
             t = self._get_links_com_state_jax(body_ids, self._sim_state.mjx_data)
         else:
@@ -1030,14 +1157,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qvel = set_rows_cols(self._sim_state.mjx_data.qvel,           (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,1])
         qeff = set_rows_cols(self._sim_state.mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
         mjx_data = self._sim_state.mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
-        mjx_data = self._mjx_forward(self._mjx_model, mjx_data)
         self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
-        self._update_gui(force=True)
+        self._mark_forward_needed()
+        # self._update_gui(force=True)
         # ggLog.info(f"setted_jstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
 
 
     def _update_gui(self, force : bool = False):
         if self._show_gui and (time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq or force):
+            self._forward_if_needed()
             mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
             self._last_gui_update_wtime = time.monotonic()
             self._viewer.sync()
@@ -1115,15 +1243,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 raise NotImplementedError(f"Cannot set link state for link {link_name} with {self._mj_model.body_jntnum} parent joints and parent body {parent_body_id}")
         self._mjx_model = self._mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
         mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
+        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
+        self._mark_forward_needed()
         # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")        
         # print(f"self._sim_state.mjx_data.qpos = {self._sim_state.mjx_data.qpos}")        
         # self._mjx_model = mjx.put_model(self._mj_model, device=self._jax_device)
-        mjx_data = self._mjx_forward(self._mjx_model,mjx_data)
-        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
 
-        self._update_gui(True)
+        
+
+        # self._update_gui(True)
         # ggLog.info(f"setted_lstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
-            
+
+    def _mark_forward_needed(self):
+        self._forward_needed = True
+
+    def _forward_if_needed(self):
+        if self._forward_needed:
+            self._sim_state = self._sim_state.replace_v( "mjx_data", self._mjx_forward(self._mjx_model,self._sim_state.mjx_data))
+            self._forward_needed = False
 
     @override
     def setupLight(self):
