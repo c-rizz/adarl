@@ -70,7 +70,7 @@ class RunningMeanStd(object):
         new_var = m_2 / new_count_ep
         
         # skip if there are infs and nans
-        all_finite = th.all(th.cat([th.all(th.isfinite(new_mean)), th.all(th.isfinite(new_var)), th.all(th.isfinite(new_count))]))
+        all_finite = th.all(th.stack([th.all(th.isfinite(new_mean)), th.all(th.isfinite(new_var)), th.all(th.isfinite(new_count))]))
         conditioned_assign(self.mean, all_finite, new_mean)
         conditioned_assign(self.var, all_finite, new_var)
         conditioned_assign(self.count, all_finite, new_count)
