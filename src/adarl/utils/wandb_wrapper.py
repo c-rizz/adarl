@@ -20,21 +20,15 @@ def _fix_histogram_range(value):
         So I compute the range myself, excuding infs and nans, and produce a numpy histogram.
     """
     if isinstance(value, (th.Tensor | np.ndarray)):
-        if isinstance(value, th.Tensor):
-            value = value.cpu().numpy()
+        if not isinstance(value, th.Tensor):
+            value = th.as_tensor(value)
         if value.ndim>0 and len(value) > 1:
-            finite_values = value[np.isfinite(value)]
-            value = np.histogram(value, range=(finite_values.min(), finite_values.max()))
+            # finite_values = value[th.isfinite(value)]
+            value = th.histogram(value) #, range=(finite_values.min(), finite_values.max()))
         else:
             return value
     else:
         return value
-
-def _detach_th(value):
-    if isinstance(value, th.Tensor):
-        value = value.detach().cpu().numpy()
-    return value
-
 
 
 class WandbWrapper():
@@ -91,11 +85,11 @@ class WandbWrapper():
                 # traceback.print_stack()
                 return
             try:
-                log_dict = map_tensor_tree(log_dict, _detach_th)
-                if not is_all_finite(log_dict):
-                    ggLog.warn(f"Non-finite values in wandb log. \n"
-                            f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
-                            f"Stacktrace:\n{''.join(traceback.format_stack())}")
+                log_dict = map_tensor_tree(log_dict, lambda l: l.detach() if isinstance(l, th.Tensor) else l)
+                # if not is_all_finite(log_dict):
+                #     ggLog.warn(f"Non-finite values in wandb log. \n"
+                #             f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
+                #             f"Stacktrace:\n{''.join(traceback.format_stack())}")
 
                 if os.getpid()==self._init_pid:
                     # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")

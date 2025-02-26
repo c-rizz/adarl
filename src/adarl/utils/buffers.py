@@ -360,7 +360,7 @@ class BasicStorage():
     ) -> None:
         if not self._allow_rollover and int(self._addcount_since_clear) >= self.buffer_size:
             raise RuntimeError(f"Called add with full buffer and allow_rollover is false")
-        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
+        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated], async_assert=True)
         pos = int(self._addcount_since_clear) % self.buffer_size
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
         # Copy to avoid modification by reference
@@ -606,7 +606,7 @@ class ThDReplayBuffer(BaseBuffer):
         # if infos is not None and truncated is not None:
         #     raise RuntimeError(f"Can only provided either inifo or truncated")
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
-        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
+        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated], async_assert=True)
         self._addcount+=1
 
         devices_to_sync = {t.device for t in [action,reward,terminated,truncated] if isinstance(t, th.Tensor)}
@@ -693,7 +693,7 @@ class ThDReplayBuffer(BaseBuffer):
         map_tensor_tree(data, lambda t: t.to(device = self.th_device, non_blocking=True))
         if self.th_device.type == "cuda":
             th.cuda.synchronize(self.th_device)
-        dbg_check_finite(data)
+        dbg_check_finite(data, async_assert=True)
 
         return data
 

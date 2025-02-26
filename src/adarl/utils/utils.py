@@ -21,6 +21,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import traceback
 import xacro
 import torch as th
+import inspect
 
 name_to_dtypes = {
     "rgb8":    (np.uint8,  3),
@@ -510,7 +511,11 @@ def exc_to_str(exception):
     # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
     return '\n'.join(traceback.format_exception(exception, value=exception, tb=exception.__traceback__))
 
-
+def get_caller_info():
+    frame = inspect.currentframe().f_back  
+    filename = frame.f_code.co_filename
+    lineno = frame.f_lineno
+    return filename, lineno
 
 
 
@@ -999,6 +1004,21 @@ def pretty_print_tensor_map(thmap : Mapping[str,th.Tensor]):
 
 def hash_tensor(tensor):
     return hash(tuple(tensor.reshape(-1).tolist()))
+
+def conditioned_assign(original : th.Tensor, do_copy : th.Tensor, newvalues : th.Tensor | float | int):
+    """Copy newvalues into original only if do_copy is True
+
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    do_copy : th.Tensor
+        _description_
+    newvalues : th.Tensor | float | int
+        _description_
+    """
+    masked_assign(original.unsqueeze(0), do_copy.view(-1), newvalues)
+
 
 def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int):
     """Inplace assign values to the original tensor, in locations defined by mask.

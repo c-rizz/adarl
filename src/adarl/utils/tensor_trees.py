@@ -284,7 +284,10 @@ def is_leaf_finite(tensor : th.Tensor | np.ndarray):
         # raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
 def is_all_finite(tree : TensorTree):
-    return all(flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).values())
+    tree = flatten_tensor_tree(tree)
+    tree : dict[Any, th.Tensor] = map_tensor_tree(tree, lambda l: th.as_tensor(l))
+    is_finites = map_tensor_tree(tree, is_leaf_finite)
+    return th.all(th.stack(list(is_finites.values())))
 
 def non_finite_flat_keys(tree : TensorTree):
     return [k for k,v in flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).items() if not v]

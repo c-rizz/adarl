@@ -95,7 +95,7 @@ class VectorEnvLogger(
             self._completed_ep_durations_max_sl = th.max(th.max(completed_durs), self._completed_ep_durations_max_sl)
             self._completed_ep_count_sl += completed_eps_count
             self._tot_completed_ep_count += completed_eps_count
-            if self._completed_ep_count_sl >= self.num_envs:
+            if self._completed_ep_count_sl >= self._num_envs:
                 ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
                 davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
                 ggLog.info(f"VecEnvLogger: ep={self._tot_completed_ep_count} reward avg={ravg}, min={self._completed_ep_rewards_min_sl}, max={self._completed_ep_rewards_max_sl}, length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
@@ -204,11 +204,14 @@ class VectorEnvLogger(
                     self._completed_eps_since_log += completed_eps_count
                 if self._completed_eps_since_log >= self._num_envs:
                     logs = {}
-                    logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in self._completed_final_infos_since_log.items()})
+                    avgs = {k:v.mean() for k,v in self._completed_final_infos_since_log.items()}
+
+                    logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in avgs.items()})
+                    logs.update({"VecEnvLogger/"+k:v.mean() for k,v in avgs.items()})
                     logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in self._completed_final_infos_since_log.items()})
                     logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in self._completed_final_infos_since_log.items()})
                     wall_single_fps = (self.__vstep_count - self._step_count_last_log)/(time.monotonic()-self._time_last_log)
-                    logs["VecEnvLogger/wall_fps_vec"] = wall_single_fps*self.num_envs
+                    logs["VecEnvLogger/wall_fps_vec"] = wall_single_fps*self._num_envs
                     logs["VecEnvLogger/wall_fps_single"] = wall_single_fps
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_completed_ep_count
                     # ggLog.info(f"{logs}")

@@ -112,6 +112,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
+        self._cache_dirty = True
 
     @override
     def step(self, actions : th.Tensor, autoreset : bool | None = None) -> Tuple[ ObsType,
@@ -146,6 +147,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._adarl_env.step()
             self._wtime_spent_stepping_adarl_tot += time.monotonic()-t_prestep
             self._ep_step_counts+=1
+        self._cache_dirty = True
+        
 
         #Get new observation
         with self._getStateDurationAverage:
@@ -223,8 +226,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                 last_terminateds = terminateds,
                                 last_truncateds = truncateds)
         self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
+        self._cache_dirty = True
         self._ep_step_counts[reinit_envs_mask] = 0
-        self._ep_counts[reinit_envs_mask] += 1
+        self._ep_counts += 1*reinit_envs_mask
         self._tot_ep_rewards[reinit_envs_mask] = 0
         self._tot_ep_sub_rewards[reinit_envs_mask] = 0
         for k,v in self._ep_sub_rewards.items():
@@ -299,6 +303,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         #reset simulation state
         self._adarl_env.reset()
+        self._cache_dirty = True
+
 
         self.reinit_envs(reinit_envs_mask=self._all_vecs,
                          terminateds=terminateds, 
@@ -308,6 +314,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          last_infos=infos,
                          last_rewards=rewards,
                          options=options)
+        self._cache_dirty = True
+        
 
         self._reset_count += 1
         self._cached_states = None
@@ -348,12 +356,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             An observation of the environment. See the environment implementation for details on its format
 
         """
-        if (self._cached_states is None or
-            th.any(self._cache_ep_counts != self._ep_counts) or
-            th.any(self._cache_ep_step_counts != self._ep_step_counts)):
+        if self._cache_dirty:
             self._cached_states = self._adarl_env.get_states()
-            self._cache_ep_step_counts[:] = self._ep_step_counts
-            self._cache_ep_counts[:] = self._ep_counts
+            self._cache_dirty = False
         return self._cached_states
 
     def get_base_env(self) -> BaseVecEnv[ObsType]:
@@ -424,7 +429,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         info["timed_out"] = timed_out
         adarl_env_info = self._adarl_env.get_infos(states)
         adarl_env_info["is_success"] = adarl_env_info.get("success",
-                                            th.as_tensor(False, device=self._adarl_env._th_device).expand((self._adarl_env.num_envs,)))
+                                            th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
         return copy.deepcopy(info)

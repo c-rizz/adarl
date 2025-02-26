@@ -2,8 +2,7 @@ from typing import Tuple, Union
 
 import torch as th
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.tensor_trees import is_all_finite, is_all_bounded
-
+from adarl.utils.utils import conditioned_assign
 
 class RunningMeanStd(object):
     def __init__(self, tensor_size, torch_device, dtype, epsilon: float = 1e-8):
@@ -71,15 +70,18 @@ class RunningMeanStd(object):
         new_var = m_2 / new_count_ep
         
         # skip if there are infs and nans
-        if th.all(th.isfinite(new_mean)) and th.all(th.isfinite(new_var)) and th.all(th.isfinite(new_count)):
-            # use copy_() to avoid breaking buffer registration
-            self.mean.copy_(new_mean)
-            self.var.copy_(new_var)
-            self.count.copy_(new_count)
-        else:
-            ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping (new_mean:{th.all(th.isfinite(new_mean))} "
-                       f"new_var:{th.all(th.isfinite(new_var))} "
-                       f"new_count:{new_count}). Good samples up to now: {self.count}.")
+        all_finite = th.all(th.cat([th.all(th.isfinite(new_mean)), th.all(th.isfinite(new_var)), th.all(th.isfinite(new_count))]))
+        conditioned_assign(self.mean, all_finite, new_mean)
+        conditioned_assign(self.var, all_finite, new_var)
+        conditioned_assign(self.count, all_finite, new_count)
+        # if all_finite:
+        #     self.mean.copy_(new_mean)
+        #     self.var.copy_(new_var)
+        #     self.count.copy_(new_count)
+        # else:
+        #     ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping (new_mean:{th.all(th.isfinite(new_mean))} "
+        #                f"new_var:{th.all(th.isfinite(new_var))} "
+        #                f"new_count:{new_count}). Good samples up to now: {self.count}.")
 
 
 
@@ -94,6 +96,6 @@ class RunningNormalizer(th.nn.Module):
         self.register_buffer("vec_running_count", self._running_stats.count)
 
     def forward(self, x):
-        if not (self.training or self._freeze_stats):
+        if self.training and not self._freeze_stats: # only update in training mode
             self._running_stats.update(x)
         return (x - self._running_stats.mean)/(th.sqrt(self._running_stats.var)+self._epsilon)

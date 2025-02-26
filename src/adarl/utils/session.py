@@ -26,6 +26,18 @@ faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SI
 import dataclasses 
 import socket
 import cpuinfo
+import warnings
+import traceback
+
+original_showwarning = None
+def custom_showwarning(message, category, filename, lineno, file=None, line=None):
+    original_showwarning(message, category, filename, lineno, file=file, line=line)
+    traceback.print_stack()  # Print full Python stack trace
+
+def override_warning_func():
+    global original_showwarning
+    original_showwarning = warnings.showwarning
+    warnings.showwarning = custom_showwarning
 
 class Session():
     def __init__(self):
@@ -98,6 +110,11 @@ class Session():
             th.set_printoptions(linewidth=160)
             pyTorch_makeDeterministic(seed)
             if debug_level>0:
+                if debug_level>1:
+                    os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
+                if debug_level>2:
+                    warnings.simplefilter("always")
+                override_warning_func()
                 th.cuda.set_sync_debug_mode("warn")
             th.autograd.set_detect_anomaly(debug_level >= 2) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level >= 2) # do not check distribution args validity (it leads to cuda syncs)

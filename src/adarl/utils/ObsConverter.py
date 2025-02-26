@@ -4,6 +4,7 @@ from typing import Tuple, Dict, Union
 import torch as th
 import copy
 from numpy.typing import DTypeLike
+from adarl.utils.utils import numpy_to_torch_dtype_dict
 
 class ObsConverter:
 
@@ -13,6 +14,7 @@ class ObsConverter:
             self.is_img = is_img
             self.shape : Tuple[int,...] = shape
             self.dtype = dtype
+            self.dtype_th = numpy_to_torch_dtype_dict[dtype]
             self.obs_space = obs_space
 
         def __repr__(self):
@@ -98,6 +100,7 @@ class ObsConverter:
         # Look for the vector components and define what will be their order once concatenated
         self._vec_part_idxs = []
         self._vec_parts_sizes = []
+        self._vec_parts_dtype = None
         self._vectorPartSize = 0
         self._space_infos  ={}
         for space_info in obs_elements:
@@ -107,6 +110,10 @@ class ObsConverter:
                     self._vectorPartSize += space_info.shape[0]
                     self._vec_parts_sizes.append(space_info.shape[0])
                     self._space_infos[tuple(space_info.indexes)] = space_info
+                    if self._vec_parts_dtype is None:
+                        self._vec_parts_dtype = space_info.dtype_th
+                    elif space_info.dtype_th != self._vec_parts_dtype:
+                        raise RuntimeError(f"Observation contains vectors of different dtypes")
         for space_info in obs_elements: #keep desired goal at the end
             if not space_info.is_img:
                 if space_info.indexes[0] == "desired_goal":
@@ -114,6 +121,10 @@ class ObsConverter:
                     self._vectorPartSize += space_info.shape[0]
                     self._vec_parts_sizes.append(space_info.shape[0])
                     self._space_infos[tuple(space_info.indexes)] = space_info
+                    if self._vec_parts_dtype is None:
+                        self._vec_parts_dtype = space_info.dtype_th
+                    elif space_info.dtype_th != self._vec_parts_dtype:
+                        raise RuntimeError(f"Observation contains vectors of different dtypes")
         if not self._hide_achieved_goal:  # if it must be visible add also achieved goal
             for space_info in obs_elements:
                 if not space_info.is_img:
@@ -122,6 +133,10 @@ class ObsConverter:
                         self._vectorPartSize += space_info.shape[0]
                         self._vec_parts_sizes.append(space_info.shape[0])
                         self._space_infos[tuple(space_info.indexes)] = space_info
+                        if self._vec_parts_dtype is None:
+                            self._vec_parts_dtype = space_info.dtype_th
+                        elif space_info.dtype_th != self._vec_parts_dtype:
+                            raise RuntimeError(f"Observation contains vectors of different dtypes")
 
         
         self._img_part_indexes = None
@@ -213,6 +228,8 @@ class ObsConverter:
             highs.append(self._space_infos[tuple(idxs)].obs_space.high)
         return np.concatenate(lows),np.concatenate(highs)
 
+    def getVectorPartDtype(self) -> th.dtype:
+        return self._vec_parts_dtype
 
     def _getImgPart(self, observation_batch : Dict[str,th.Tensor]):
         # ggLog.info(f"getImgPart("+str([f"{k} : {subobs_batch.size()}" for k, subobs_batch in observation_batch.items()]))        

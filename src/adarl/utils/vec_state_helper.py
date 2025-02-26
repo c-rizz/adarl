@@ -120,6 +120,7 @@ class ThBoxStateHelper(StateHelper):
 
         self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length
         self._field_idxs = {n:field_names.index(n) for n in field_names}
+        self._field_idx_cache = {}
         if self.subfield_names is not None:
             self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)}
         else:
@@ -131,7 +132,8 @@ class ThBoxStateHelper(StateHelper):
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
 
         self._observable_fields = [f for f in self.field_names if f in self._observable_fields] # to ensure they are ordered
-        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields], dtype=th.int32)
+        self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields], dtype=th.int32).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+        # self._observable_idxs = self.field_idx(tuple(self._observable_fields))
         # print(f"observable_indexes = {self._observable_indexes}")
         hlmin = self._limits_minmax[0].expand(self._state_size)
         hlmax = self._limits_minmax[1].expand(self._state_size)
@@ -141,7 +143,6 @@ class ThBoxStateHelper(StateHelper):
                                        dtype=self._obs_dtype, labels=self.observation_names())
         self._single_obs_space = spaces.ThBox(low=self.observe(hlmin)[0], high=self.observe(hlmax)[0], shape=self._obs_size[1:],
                                               dtype=self._obs_dtype, labels=self.observation_names())
-        self._field_idx_cache = {}
 
     def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
         new_minmax = {}
@@ -298,7 +299,7 @@ class ThBoxStateHelper(StateHelper):
     #         return state[:,self.field_idx(field_names, device=state.device)]
 
     @override
-    def field_idx(self, field_names : tuple[FieldName] | FieldName):
+    def field_idx(self, field_names : tuple[FieldName,...] | FieldName):
         idx = self._field_idx_cache.get(field_names, None)
         if idx is None:
             if isinstance(field_names, Sequence):

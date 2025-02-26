@@ -11,6 +11,7 @@ import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer
 from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree
 from typing_extensions import override
+from adarl.utils.dbg.dbg_checks import dbg_check_finite
 
 def take_frames(buff, episodes, frames):
     # ggLog.info(f"episodes.size() = {episodes.size()}")
@@ -116,20 +117,21 @@ class EpisodeStorage():
         ep_idx = self._added_episodes%self._max_episodes
         frame_idx = self._current_ep_frame_count
 
-        if not is_all_finite(observation):
-            raise RuntimeError(f"nonfinite values in added observation "
-                               f"isnan_count = {map_tensor_tree(observation, lambda t: th.sum(th.isnan(t)))} "
-                               f"isinf_count = {map_tensor_tree(observation, lambda t: th.sum(th.isinf(t)))} "
-                               f"{observation} ")
-        if not is_all_finite(next_observation):
-            raise RuntimeError(f"nonfinite values in added next_observation "
-                               f"isnan_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isnan(t)))} "
-                               f"isinf_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isinf(t)))} "
-                               f"{next_observation}")
-        if not is_all_finite(action):
-            raise RuntimeError(f"nonfinite values in added action isnan_count = {th.sum(th.isnan(action))} {action}")
-        if not is_all_finite(reward):
-            raise RuntimeError(f"nonfinite values in added reward isnan_count = {th.sum(th.isnan(reward))} {reward}")
+        dbg_check_finite((observation, next_observation, action, reward))
+        # if not is_all_finite(observation):
+        #     raise RuntimeError(f"nonfinite values in added observation "
+        #                        f"isnan_count = {map_tensor_tree(observation, lambda t: th.sum(th.isnan(t)))} "
+        #                        f"isinf_count = {map_tensor_tree(observation, lambda t: th.sum(th.isinf(t)))} "
+        #                        f"{observation} ")
+        # if not is_all_finite(next_observation):
+        #     raise RuntimeError(f"nonfinite values in added next_observation "
+        #                        f"isnan_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isnan(t)))} "
+        #                        f"isinf_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isinf(t)))} "
+        #                        f"{next_observation}")
+        # if not is_all_finite(action):
+        #     raise RuntimeError(f"nonfinite values in added action isnan_count = {th.sum(th.isnan(action))} {action}")
+        # if not is_all_finite(reward):
+        #     raise RuntimeError(f"nonfinite values in added reward isnan_count = {th.sum(th.isnan(reward))} {reward}")
 
 
         if self._current_ep_frame_count == 0:
@@ -280,21 +282,22 @@ class EpisodeStorage():
         
 
         # ggLog.info(f"actions.device = {actions.device}")
+        dbg_check_finite((observations, next_observations, actions, rewards))
 
-        if not is_all_finite(observations):
-            raise RuntimeError(f"nonfinite values in sampled observation "
-                               f"isnan_count = {map_tensor_tree(observations, lambda t: th.sum(th.isnan(t)))}"
-                               f"isinf_count = {map_tensor_tree(observations, lambda t: th.sum(th.isinf(t)))}"
-                               f"{observations} ")
-        if not is_all_finite(next_observations):
-            raise RuntimeError(f"nonfinite values in sampled next_observation "
-                               f"isnan_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isnan(t)))}"
-                               f"isinf_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isinf(t)))}"
-                               f"{next_observations}")
-        if not is_all_finite(actions):
-            raise RuntimeError(f"nonfinite values in sampled action isnan_count = {th.sum(th.isnan(actions))} {actions}")
-        if not is_all_finite(rewards):
-            raise RuntimeError(f"nonfinite values in sampled reward isnan_count = {th.sum(th.isnan(rewards))} {rewards}")
+        # if not is_all_finite(observations):
+        #     raise RuntimeError(f"nonfinite values in sampled observation "
+        #                        f"isnan_count = {map_tensor_tree(observations, lambda t: th.sum(th.isnan(t)))}"
+        #                        f"isinf_count = {map_tensor_tree(observations, lambda t: th.sum(th.isinf(t)))}"
+        #                        f"{observations} ")
+        # if not is_all_finite(next_observations):
+        #     raise RuntimeError(f"nonfinite values in sampled next_observation "
+        #                        f"isnan_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isnan(t)))}"
+        #                        f"isinf_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isinf(t)))}"
+        #                        f"{next_observations}")
+        # if not is_all_finite(actions):
+        #     raise RuntimeError(f"nonfinite values in sampled action isnan_count = {th.sum(th.isnan(actions))} {actions}")
+        # if not is_all_finite(rewards):
+        #     raise RuntimeError(f"nonfinite values in sampled reward isnan_count = {th.sum(th.isnan(rewards))} {rewards}")
 
         return TransitionBatch(
             observations=observations,
