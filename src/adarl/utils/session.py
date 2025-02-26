@@ -64,7 +64,6 @@ class Session():
                         use_wandb = True):
         
         self._initialized = True
-        self._wandb_wrapper.start_worker()
         self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
             if debug:

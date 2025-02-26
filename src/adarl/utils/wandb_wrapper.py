@@ -13,6 +13,98 @@ import traceback
 from typing import Optional
 from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_tensor_tree
 import numpy as np
+from typing import Callable
+from collections import deque
+
+
+
+class BlockingPeekQueue:
+    def __init__(self):
+        self.queue = deque()
+        self.lock = threading.Lock()
+        self.not_empty = threading.Condition(self.lock)
+
+    def put(self, item):
+        with self.not_empty:
+            self.queue.append(item)
+            self.not_empty.notify()
+
+    def get(self, timeout : float | None = None):
+        with self.not_empty:
+            while len(self.queue) == 0:
+                not_timedout = self.not_empty.wait(timeout=timeout)
+                if not not_timedout:
+                    raise queue.Empty()
+            return self.queue.popleft()
+
+    def peek(self, timeout : float | None = None):
+        with self.not_empty:
+            while len(self.queue) == 0:
+                not_timedout = self.not_empty.wait(timeout=timeout)
+                if not not_timedout:
+                    raise queue.Empty()
+            return self.queue[0]
+        
+    def __len__(self):
+        return len(self.queue)
+        
+class Async_cuda2cpu_queue():
+    def __init__(self):
+
+        self._running = True
+        self._worker_thread : Optional[threading.Thread] = None
+        self._queue : BlockingPeekQueue | None = None
+        atexit.register(self.close)
+
+    def start_worker(self):
+        """Starts a worker thread that can receive logs from a queue and submit them to wandb.
+            Logs can be sent from other processes by sending to these processes the WandbWrapper
+            object itself. When you call wandb_log from the child process it will recognize
+            he is a child process and send the logs to the queue.
+        """
+        # ggLog.info(f"Starting Async_cuda2cpu_queue worker")
+        # traceback.print_stack()
+        self._queue = BlockingPeekQueue()
+        self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
+        self._worker_thread.start()
+
+
+    def _worker(self):
+        import adarl.utils.session as session
+        ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
+        while not session.default_session.is_shutting_down() or not self._running:
+            try:
+                top = self._queue.peek(timeout=1.0)
+                if top[0].query():
+                    top[3](top[2])
+            except queue.Empty as e:
+                pass
+        
+    def send(self, cuda_tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
+        cpu_tensors = {k:t.to(device="cpu", non_blocking=True) for k,t in cuda_tensors.items()}
+        event = th.Event()
+        event.record()
+        self._queue.put((event, cuda_tensors, cpu_tensors, callback))
+
+    def close(self):
+        self._running = False
+        if self._worker_thread is not None:
+            self._worker_thread.join()
+        if len(self._queue)>0:
+            ggLog.warn(f"Async_tensor_cuda2cpu_queue closing with {len(self._queue)} tensors in queue")
+
+
+    def __getstate__(self):
+        state = self.__dict__.copy()  # Copy the object's state
+        del state['_queue']  # Remove the attribute we don't want to pickle
+        del state['_worker_thread']  # Remove the attribute we don't want to pickle
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._queue = None
+        self._worker_thread = None
+
 
 def _fix_histogram_range(value):
     """ In case there are nan/inf values in an array/tensor wandb drops the entire log, because it fails to
@@ -42,17 +134,19 @@ class WandbWrapper():
 
         self.last_warn_time = 0.0
         self._running = True
-        self._queue = mp_helper.get_context().Queue()
+        self._mp_queue = mp_helper.get_context().Queue()
         self._wandb_initialized = False
         self._worker_thread : Optional[threading.Thread] = None
+        self._async_c2c_queue = Async_cuda2cpu_queue()
         atexit.register(self.close)
 
-    def start_worker(self):
+    def _start(self):
         """Starts a worker thread that can receive logs from a queue and submit them to wandb.
             Logs can be sent from other processes by sending to these processes the WandbWrapper
             object itself. When you call wandb_log from the child process it will recognize
             he is a child process and send the logs to the queue.
         """
+        self._async_c2c_queue.start_worker()
         self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
         self._worker_thread.start()
 
@@ -62,12 +156,13 @@ class WandbWrapper():
         ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
         while not session.default_session.is_shutting_down() or not self._running:
             try:
-                log_dict, throttle_period = self._queue.get(block=True, timeout=10)
+                log_dict, throttle_period = self._mp_queue.get(block=True, timeout=1)
                 wandb_log(log_dict, throttle_period)
             except queue.Empty as e:
                 pass
 
     def wandb_init(self, **kwargs):
+        self._start()
         if self._wandb_initialized:
             raise RuntimeError(f"Tried to initialize wandb wrapper twice (original pid {self._init_pid}, current pid = {os.getpid()}")
         self._init_pid = os.getpid()
@@ -76,9 +171,21 @@ class WandbWrapper():
         self._wandb_initialized = True
         # self._worker_thread = threading.Thread(target=self._worker)
         # self._worker_thread.start()
+    
+    @staticmethod
+    def _safe_wandb_log(log_dict : dict[str,th.Tensor]):
+        try:
+            wandb.log(log_dict)
+        except Exception as e:
+            ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
         
+    def _async_thread_wandb_log(self, log_dict : dict[str, th.Tensor]):
+        log_dict = map_tensor_tree(log_dict, lambda l: th.as_tensor(l))
+        log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
+        self._async_c2c_queue.send(log_dict, self._safe_wandb_log)
 
-    def wandb_log(self, log_dict, throttle_period = 0):
+
+    def wandb_log(self, log_dict : dict[str, th.Tensor], throttle_period = 0):
         with th.no_grad():
             if not self._wandb_initialized:
                 ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
@@ -120,15 +227,16 @@ class WandbWrapper():
                     log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                     log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
                     log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
-                    log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
-                    try:
-                        wandb.log(log_dict)
-                    except Exception as e:
-                        ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
+                    # log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
+                    self._async_thread_wandb_log(log_dict)
+                    # try:
+                    #     wandb.log(log_dict)
+                    # except Exception as e:
+                    #     ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
                 else:
                     # ggLog.info(f"wandb_log called from non-main process")
                     # raise NotImplementedError()
-                    self._queue.put((log_dict, throttle_period), block=False)
+                    self._mp_queue.put((log_dict, throttle_period), block=False)
             except Exception as e:
                 ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
 
@@ -148,6 +256,7 @@ class WandbWrapper():
         self._running = False
         if self._worker_thread is not None:
             self._worker_thread.join()
+        self._async_c2c_queue.close()
 
     def __getstate__(self):
         state = self.__dict__.copy()
