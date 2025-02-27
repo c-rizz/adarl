@@ -94,8 +94,9 @@ def add_compiler_options(urdf_def : str,
                          max_hull_vert : int = 32,
                          discardvisual : bool = False,
                          strippath : bool = False):
+    
     mujoco_block = ('<mujoco>\n'+
-                    f'    <compiler  discardvisual="{discardvisual}" strippath="{strippath}" maxhullvert="{max_hull_vert:d}"/>\n'
+                    f'    <compiler  discardvisual="{str(discardvisual).lower()}" strippath="{str(strippath).lower()}" maxhullvert="{max_hull_vert:d}"/>\n'
                     '</mujoco>')
     return urdf_def.replace("</robot>",mujoco_block+"\n</robot>")
 # def tree_set(tree, leaf_name : str, new_value):
@@ -391,6 +392,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
         big_speck.compiler.discardvisual = False
+        big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._opt_preset == "fast":

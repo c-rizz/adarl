@@ -102,7 +102,7 @@ class Async_cuda2cpu_queue():
         self._running = False
         if self._worker_thread is not None:
             self._worker_thread.join()
-        if len(self._queue)>0:
+        if self._queue is not None and len(self._queue)>0:
             ggLog.warn(f"Async_tensor_cuda2cpu_queue closing with {len(self._queue)} tensors in queue")
 
 
