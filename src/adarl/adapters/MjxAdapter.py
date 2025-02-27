@@ -90,9 +90,12 @@ _build_th2jax_dev_mapping()
 def path2tstr(path):
     return tuple([n.name for n in path])
 
-def disable_discard_visual(urdf_def : str):
+def add_compiler_options(urdf_def : str,
+                         max_hull_vert : int = 32,
+                         discardvisual : bool = False,
+                         strippath : bool = False):
     mujoco_block = ('<mujoco>\n'+
-                    '    <compiler  discardvisual="false" strippath="false"/>\n'
+                    f'    <compiler  discardvisual="{discardvisual}" strippath="{strippath}" maxhullvert="{max_hull_vert:d}"/>\n'
                     '</mujoco>')
     return urdf_def.replace("</robot>",mujoco_block+"\n</robot>")
 # def tree_set(tree, leaf_name : str, new_value):
@@ -363,7 +366,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 def_string = model.definition_string
             else:
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
-            def_string = disable_discard_visual(def_string)
+            def_string = add_compiler_options(def_string)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec = mujoco.MjSpec.from_string(def_string)
             mjSpec.compiler.discardvisual = False
