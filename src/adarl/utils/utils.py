@@ -511,11 +511,19 @@ def exc_to_str(exception):
     # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
     return '\n'.join(traceback.format_exception(exception, value=exception, tb=exception.__traceback__))
 
-def get_caller_info():
-    frame = inspect.currentframe().f_back  
-    filename = frame.f_code.co_filename
-    lineno = frame.f_lineno
-    return filename, lineno
+def get_caller_info(depth : int = 1, width : int = 1, inline = True):
+    frame = inspect.currentframe()
+    r = []
+    for i in range(width):
+        for i in range(depth+1+i):
+            frame = frame.f_back  
+        filename = frame.f_code.co_filename
+        lineno = frame.f_lineno
+        r.append(f"{filename, lineno}")
+    if inline:
+        return ",".join(r)
+    else:
+        return "\n".join(r)
 
 
 

@@ -1,5 +1,5 @@
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import exc_to_str
+from adarl.utils.utils import exc_to_str, get_caller_info
 import time
 import torch as th
 import os
@@ -25,25 +25,34 @@ class BlockingPeekQueue:
         self.not_empty = threading.Condition(self.lock)
 
     def put(self, item):
+        # ggLog.info(f"put...")
         with self.not_empty:
             self.queue.append(item)
-            self.not_empty.notify()
+            self.not_empty.notify_all()
+        # ggLog.info(f"put!")
 
     def get(self, timeout : float | None = None):
+        # ggLog.info(f"get...")
         with self.not_empty:
             while len(self.queue) == 0:
-                not_timedout = self.not_empty.wait(timeout=timeout)
-                if not not_timedout:
+                timedout = not self.not_empty.wait(timeout=timeout)
+                if timedout:
                     raise queue.Empty()
-            return self.queue.popleft()
+            r = self.queue.popleft()
+        # ggLog.info(f"get!")
+        return r
 
     def peek(self, timeout : float | None = None):
+        # ggLog.info(f"peek...")
         with self.not_empty:
             while len(self.queue) == 0:
-                not_timedout = self.not_empty.wait(timeout=timeout)
-                if not not_timedout:
+                timedout = not self.not_empty.wait(timeout=timeout)
+                if timedout:
+                    # ggLog.info(f"peek! (empty)")
                     raise queue.Empty()
-            return self.queue[0]
+            r = self.queue[0]
+        # ggLog.info(f"peek!")
+        return r
         
     def __len__(self):
         return len(self.queue)
@@ -74,9 +83,12 @@ class Async_cuda2cpu_queue():
         ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
         while not session.default_session.is_shutting_down() or not self._running:
             try:
-                top = self._queue.peek(timeout=1.0)
-                if top[0].query():
-                    top[3](top[2])
+                event, cuda_tensors, cpu_tensors, callback = self._queue.peek(timeout=1.0)
+                if event.query():
+                    self._queue.get(timeout=0)
+                    callback(cpu_tensors)
+                else:
+                    time.sleep(0.01) # I believe using event.wait would block the entire python process (actually it would be nice if the wholw wandbwrapper was in a separate process from the rest)
             except queue.Empty as e:
                 pass
         
@@ -174,6 +186,7 @@ class WandbWrapper():
     
     @staticmethod
     def _safe_wandb_log(log_dict : dict[str,th.Tensor]):
+        log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
         try:
             wandb.log(log_dict)
         except Exception as e:
@@ -181,7 +194,6 @@ class WandbWrapper():
         
     def _async_thread_wandb_log(self, log_dict : dict[str, th.Tensor]):
         log_dict = map_tensor_tree(log_dict, lambda l: th.as_tensor(l))
-        log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
         self._async_c2c_queue.send(log_dict, self._safe_wandb_log)
 
 
@@ -209,14 +221,14 @@ class WandbWrapper():
 
                     # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
                     if t-last_logged<throttle_period:
-                        ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period})")
+                        ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=1, width=2, inline=True)}")
                         return
                     # ggLog.info(f"[{str(keys)[:10]}]: Sending")
 
                     t_50reqs_ago = self.last_send_to_server_times[(self.req_count+1)%self.max_reqs_per_min]
                     if t-t_50reqs_ago<60:
                         if t-self.last_warn_time > 60:
-                            ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log for keys {list(log_dict.keys())}. Sent logs counters = {self.sent_count}")
+                            ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log from {get_caller_info(depth=1, width=2, inline=True)}. Sent logs counters = {self.sent_count}")
                             self.last_warn_time = t
                         return
                     self.last_send_to_server_times[self.req_count%self.max_reqs_per_min] = t
@@ -227,8 +239,8 @@ class WandbWrapper():
                     log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                     log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
                     log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
-                    # log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
                     self._async_thread_wandb_log(log_dict)
+                    # log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
                     # try:
                     #     wandb.log(log_dict)
                     # except Exception as e:
