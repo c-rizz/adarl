@@ -1434,7 +1434,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #    some world parameters? e.g. gravity
         body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
         body_ids = link_masses[0]
-        current_mass = self._mjx_model.body_mass.at[:,body_ids]
+        current_mass = self._mjx_model.body_mass[:,body_ids]
         body_mass = self._mjx_model.body_mass.at[:,body_ids].set(current_mass + current_mass*body_masses_ratio_change)
         
         self._mjx_model = self._mjx_model.replace(body_mass=body_mass)
