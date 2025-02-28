@@ -291,3 +291,6 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     def _thrand(self, size : tuple[int,...]):
         return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)
+    
+    def _thrandn(self, size : tuple[int,...]):
+        return th.randn(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)

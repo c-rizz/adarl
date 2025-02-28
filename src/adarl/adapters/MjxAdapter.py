@@ -8,7 +8,7 @@ os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
-from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose, to_string_tensor
+from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, get_caller_info
 from typing import Any
 import jax
 import jax.tree_util
@@ -330,6 +330,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"Invalid mjName: must contain one and only one '{model_element_separator}' substring, but it's {mjname}")
         return mjname[:sep],mjname[sep+len(model_element_separator):]
 
+    def _recompute_mjxmodel_inaxes(self):
+        out_axes = jax.tree_util.tree_map(lambda l:None, self._mjx_model)
+        out_axes = out_axes.tree_replace({"body_mass":0}) # model fields to be vmapped
+        self._mjx_model_in_axes = out_axes
+
+    def _rebuild_lower_funcs(self):
+        self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
+        self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
+        
+
     @override
     def build_scenario(self, models : list[ModelSpawnDef]):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
@@ -456,7 +466,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
+        ggLog.info(f"self._mj_model.opt.timestep = {self._mj_model.opt.timestep}")
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
+        ggLog.info(f"self._mjx_model.opt.timestep = {self._mjx_model.opt.timestep}")
+        # self._mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
+        self._recompute_mjxmodel_inaxes()
+        self._mjx_model = jax.vmap(lambda: self._mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
+        # self._mjx_model = jax.vmap(lambda: self._mjx_model, axis_size=self._vec_size, in_axes=None)()
+        
         self._jnt_dofadr_jax = jnp.array(self._mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
@@ -471,8 +488,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._original_mj_model = copy.deepcopy(self._mj_model)
 
         # _ = self._mjx_step(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
-        self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(None, 0)))
-        self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
+        self._rebuild_lower_funcs()
+        # self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
+        # self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
         # ggLog.info(f"Compiling mjx.step....")
         # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
         
@@ -482,6 +500,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time})
         
+        # self._check_model_inaxes()        
+        # data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
+        # ggLog.info(f"compiled")
+        # self._check_model_inaxes()        
         
         self.set_monitored_joints([])
         self.set_monitored_links([])
@@ -518,10 +540,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         print("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
         print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
+        # self._check_model_inaxes()        
+
 
     def startup(self):
         ggLog.info(f"Compiling mjx.forward....")
-        self._sim_state = self._sim_state.replace_v("mjx_data", self._mjx_forward(self._mjx_model, self._sim_state.mjx_data)) # compute initial mjData
+        data = self._mjx_forward(self._mjx_model, self._sim_state.mjx_data)
+        self._sim_state = self._sim_state.replace_v("mjx_data", data) # compute initial mjData
         ggLog.info(f"Compiling mjx_integrate_and_forward....")
         _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
         ggLog.info(f"Compiled.")
@@ -632,6 +657,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
         ggLog.info(f"New geom_contype =     {self._mjx_model.geom_contype}")
         ggLog.info(f"New geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        self._recompute_mjxmodel_inaxes()
+        self._rebuild_lower_funcs()
+        self._check_model_inaxes()        
+
 
 
 
@@ -1122,6 +1151,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._reset_joint_state_step_stats()
+        print(f"reset: mjx_model = {self._mjx_model}")
+        self._recompute_mjxmodel_inaxes()
+        
 
 
     @override
@@ -1249,6 +1281,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_model = self._mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
         mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
         self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
+        self._recompute_mjxmodel_inaxes()
         self._mark_forward_needed()
         # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")        
         # print(f"self._sim_state.mjx_data.qpos = {self._sim_state.mjx_data.qpos}")        
@@ -1264,8 +1297,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _forward_if_needed(self):
         if self._forward_needed:
-            self._sim_state = self._sim_state.replace_v( "mjx_data", self._mjx_forward(self._mjx_model,self._sim_state.mjx_data))
+            print(f"forward_if_needed: mjx_model = {self._mjx_model}")
+
+            self._check_model_inaxes()
+
+            data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
+            self._sim_state = self._sim_state.replace_v( "mjx_data", data)
             self._forward_needed = False
+
+    def _check_model_inaxes(self):
+        # from jax._src.tree_util import prefix_errors
+        # all_errors = prefix_errors(self._mjx_model_in_axes, self._mjx_model)
+        # print(f"{get_caller_info()} prefix check= {all_errors[0]('in_axes')}")
+        pass
 
     @override
     def setupLight(self):
@@ -1347,3 +1391,51 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #         sims_indexes = jnp.nonzero(sims_mask)[0]
     #         sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
     #     return sim_state
+
+
+    def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
+        """_summary_
+
+        Parameters
+        ----------
+        link_masses : tuple[jnp.ndarray, th.Tensor]
+            tuple containing alist of link ids (from get_link_id) and corresponding
+            body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
+        """
+        # We need to be able to alter:
+        #    body masses (body_mass)
+        #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
+        #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+        #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+        #    some world parameters? e.g. gravity
+        body_masses = th2jax(link_masses[1],jax_device=self._jax_device)
+        body_ids = link_masses[0]
+        body_mass = self._mjx_model.body_mass.at[:,body_ids].set(body_masses)
+        
+        self._mjx_model = self._mjx_model.replace(body_mass=body_mass)
+        self._recompute_mjxmodel_inaxes() # Is it really necessary?
+
+
+
+    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
+        """_summary_
+
+        Parameters
+        ----------
+        link_masses : tuple[jnp.ndarray, th.Tensor]
+            tuple containing alist of link ids (from get_link_id) and corresponding
+            body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
+        """
+        # We need to be able to alter:
+        #    body masses (body_mass)
+        #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
+        #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+        #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+        #    some world parameters? e.g. gravity
+        body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
+        body_ids = link_masses[0]
+        current_mass = self._mjx_model.body_mass.at[:,body_ids]
+        body_mass = self._mjx_model.body_mass.at[:,body_ids].set(current_mass + current_mass*body_masses_ratio_change)
+        
+        self._mjx_model = self._mjx_model.replace(body_mass=body_mass)
+        self._recompute_mjxmodel_inaxes() # Is it really necessary?
