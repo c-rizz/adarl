@@ -1,19 +1,21 @@
 """This file implements the Envitronment controller class, whic is the superclass for all th environment controllers."""
 #!/usr/bin/env python3
 from __future__ import annotations
-from typing import List, Tuple, Dict, Callable, Optional
+from typing import List, Tuple, Any, TypeVar
 from typing_extensions import deprecated
 
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
 from adarl.utils.utils import JointState, LinkState
-from typing import overload, Sequence
+from typing import overload, Sequence, Generic
 from adarl.adapters.BaseAdapter import BaseAdapter
 JointName = Tuple[str,str]
 LinkName = Tuple[str,str]
+LinkIdSequence = TypeVar("LinkIdSequence")
+JointIdSequence = TypeVar("JointIdSequence")
 
-class BaseVecAdapter(BaseAdapter):
+class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     """Base class for implementing environment adapters. Adapters allow to interface with a variety of 
     execution environments, being them real or simulated. Different capabilities may be available depending
     on the kind of environment they are implemented for, which can allow very different capabilities.
@@ -187,7 +189,7 @@ class BaseVecAdapter(BaseAdapter):
 
 
     
-    def get_links_ids(self, link_names : Sequence[tuple[str,str]]):
+    def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:
         """Convert a sequence of link names to an identifier for a set of links.
            By default this is an identity operation, but some adapter may return their internal
            ids (or whatever other representation), so to speedup further computations.
@@ -204,7 +206,7 @@ class BaseVecAdapter(BaseAdapter):
         """
         return link_names
 
-    def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
+    def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]) -> JointIdSequence:
         """Convert a sequence of joint names to an identifier for a set of joints.
            By default this is an identity operation, but some adapter may return their internal
            ids  (or whatever other representation), so to speedup further computations.
@@ -220,3 +222,13 @@ class BaseVecAdapter(BaseAdapter):
             An identifier for the joint group, to be used in methods such as getJointsState
         """
         return joint_names
+    
+
+    def get_detected_joints(self) -> Sequence[tuple[str,str]]:
+        return []
+    
+    def get_detected_links(self) -> Sequence[tuple[str,str]]:
+        return []
+    
+    def get_detected_cameras(self) -> Sequence[tuple[str,str]]:
+        return []
