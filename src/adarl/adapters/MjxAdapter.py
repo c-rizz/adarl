@@ -332,7 +332,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _recompute_mjxmodel_inaxes(self):
         out_axes = jax.tree_util.tree_map(lambda l:None, self._mjx_model)
-        out_axes = out_axes.tree_replace({"body_mass":0}) # model fields to be vmapped
+        out_axes = out_axes.tree_replace({"body_mass":0,
+                                          "geom_friction":0}) # model fields to be vmapped
         self._mjx_model_in_axes = out_axes
 
     def _rebuild_lower_funcs(self):
@@ -466,9 +467,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
-        ggLog.info(f"self._mj_model.opt.timestep = {self._mj_model.opt.timestep}")
         self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
-        ggLog.info(f"self._mjx_model.opt.timestep = {self._mjx_model.opt.timestep}")
         # self._mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
         self._recompute_mjxmodel_inaxes()
         self._mjx_model = jax.vmap(lambda: self._mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
@@ -534,6 +533,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             self._renderers = {}
         
+
+        self._lid2geoms : dict[int,jnp.ndarray] = {}
+        all_links = list(self._lname2lid.keys())
+        for lname in all_links:
+            body_id = self._lname2lid[lname]
+            self._lid2geoms[body_id] = self._mjx_model.body_geomadr[body_id:body_id+self._mjx_model.body_geomnum[body_id]]
+        self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
+
         print("Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
         print("Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
         
@@ -664,13 +671,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
 
-    def detected_joints(self):
+    def get_detected_joints(self):
         return list(self._jname2jid.keys())
     
-    def detected_links(self):
+    def get_detected_links(self):
         return list(self._lname2lid.keys())
     
-    def detected_cameras(self):
+    def get_detected_cameras(self):
         return list(self._cname2cid.keys())
 
     @override
@@ -1102,11 +1109,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     
     @override
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device)
+        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
 
     @override
     def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device)
+        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
 
     @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | jnp.ndarray | None = None, use_com_frame : bool = False) -> th.Tensor:
@@ -1151,7 +1158,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._reset_joint_state_step_stats()
-        # print(f"reset: mjx_model = {self._mjx_model}")
         self._recompute_mjxmodel_inaxes()
         
 
@@ -1297,8 +1303,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _forward_if_needed(self):
         if self._forward_needed:
-            # print(f"forward_if_needed: mjx_model = {self._mjx_model}")
-
             self._check_model_inaxes()
 
             data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
@@ -1393,31 +1397,33 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     return sim_state
 
 
-    def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
-        """_summary_
+    # def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
+    #     """_summary_
 
-        Parameters
-        ----------
-        link_masses : tuple[jnp.ndarray, th.Tensor]
-            tuple containing alist of link ids (from get_link_id) and corresponding
-            body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
-        """
-        # We need to be able to alter:
-        #    body masses (body_mass)
-        #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
-        #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
-        #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
-        #    some world parameters? e.g. gravity
-        body_masses = th2jax(link_masses[1],jax_device=self._jax_device)
-        body_ids = link_masses[0]
-        body_mass = self._mjx_model.body_mass.at[:,body_ids].set(body_masses)
-        
-        self._mjx_model = self._mjx_model.replace(body_mass=body_mass)
-        self._recompute_mjxmodel_inaxes() # Is it really necessary?
+    #     Parameters
+    #     ----------
+    #     link_masses : tuple[jnp.ndarray, th.Tensor]
+    #         tuple containing alist of link ids (from get_link_id) and corresponding
+    #         body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
+    #     """
+    #     # We need to be able to alter:
+    #     #    body masses (body_mass)
+    #     #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
+    #     #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+    #     #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
+    #     #    some world parameters? e.g. gravity
+    #     body_masses = th2jax(link_masses[1],jax_device=self._jax_device)
+    #     body_ids = link_masses[0]
+    #     replacements = {}
+    #     if len(body_ids)>0:
+    #         replacements["body_mass"] = self._mjx_model.body_mass.at[:,body_ids].set(body_masses)
+    #     self._mjx_model = self._mjx_model.replace(**replacements)
+    #     # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
 
 
-    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
+    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor],
+                              link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None):
         """_summary_
 
         Parameters
@@ -1433,9 +1439,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
         #    some world parameters? e.g. gravity
         body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
-        body_ids = link_masses[0]
-        current_mass = self._mjx_model.body_mass[:,body_ids]
-        body_mass = self._mjx_model.body_mass.at[:,body_ids].set(current_mass + current_mass*body_masses_ratio_change)
-        
-        self._mjx_model = self._mjx_model.replace(body_mass=body_mass)
-        self._recompute_mjxmodel_inaxes() # Is it really necessary?
+        if link_frictions is not None:
+            body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
+        replacements = {}
+
+        masses_body_ids = link_masses[0]
+        if len(masses_body_ids)>0:            
+            current_mass = self._mjx_model.body_mass[:,masses_body_ids]
+            replacements["body_mass"] = self._mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
+        if link_frictions is not None:
+            frictions_body_ids = link_frictions[0]
+            frictions_body_ids_mask = jnp.zeros(shape=(self._mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
+            frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(1)
+            frictions_geoms_ids_mask = frictions_body_ids_mask[self._mjx_model.geom_bodyid]
+            full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, self._mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
+            full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:,frictions_body_ids].set(body_frictions_ratio_change)
+            geom_friction_ratios = full_body_frictions_ratio_change[:,self._mjx_model.geom_bodyid]
+            replacements["geom_friction"] = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
+                                                      self._mjx_model.geom_friction+self._mjx_model.geom_friction*geom_friction_ratios,
+                                                      self._mjx_model.geom_friction)
+        self._mjx_model = self._mjx_model.replace(**replacements)
+        # self._recompute_mjxmodel_inaxes() # Is it really necessary?

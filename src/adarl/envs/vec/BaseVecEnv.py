@@ -283,8 +283,8 @@ class BaseVecEnv(ABC, Generic[Observation]):
         return self._rng_seeds
 
     
-    def _thtens(self, tensor):
-        return th.as_tensor(tensor, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
+    def _thtens(self, data):
+        return th.as_tensor(data, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
 
     def _thzeros(self, size : tuple[int,...]):
         return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)

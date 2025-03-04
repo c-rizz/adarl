@@ -280,6 +280,20 @@ class Robot():
     def get_frame_names(self) -> list[str]:
         return self._frame_names
     
+    def get_tree_frame_names_under_frame(self, frame_name : str):
+        joints = self.get_tree_joint_names_under_joint(self._frame_names_to_parent_joint_names[frame_name])
+        frames : list[str] = []
+        for j in joints:
+            frames.extend(self._joints_to_frame_names[j])
+        return frames
+    
+    def get_tree_frame_names_under_joint(self, joint_name : str):
+        joints = self.get_tree_joint_names_under_joint(joint_name)
+        frames : list[str] = []
+        for j in joints:
+            frames.extend(self._joints_to_frame_names[j])
+        return frames
+    
     def get_geom_names(self) -> list[str]:
         return [str(geom.name) for geom in self._collision_geom_model.geometryObjects]
 
