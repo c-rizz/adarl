@@ -1319,7 +1319,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _forward_if_needed(self):
         if self._forward_needed:
-
             self._check_model_inaxes()
 
             data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
