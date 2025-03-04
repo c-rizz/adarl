@@ -168,8 +168,8 @@ class WandbWrapper():
         ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
         while not session.default_session.is_shutting_down() or not self._running:
             try:
-                log_dict, throttle_period = self._mp_queue.get(block=True, timeout=1)
-                wandb_log(log_dict, throttle_period)
+                log_dict, throttle_period, silent_throttling = self._mp_queue.get(block=True, timeout=1)
+                wandb_log(log_dict, throttle_period, silent_throttling)
             except queue.Empty as e:
                 pass
 
@@ -197,7 +197,7 @@ class WandbWrapper():
         self._async_c2c_queue.send(log_dict, self._safe_wandb_log)
 
 
-    def wandb_log(self, log_dict : dict[str, th.Tensor], throttle_period = 0):
+    def wandb_log(self, log_dict : dict[str, th.Tensor], throttle_period = 0, silent_throttling : bool = False):
         with th.no_grad():
             if not self._wandb_initialized:
                 ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
@@ -221,7 +221,8 @@ class WandbWrapper():
 
                     # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
                     if t-last_logged<throttle_period:
-                        ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=1, width=2, inline=True)}")
+                        if not silent_throttling:
+                            ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=1, width=2, inline=True)}")
                         return
                     # ggLog.info(f"[{str(keys)[:10]}]: Sending")
 
@@ -248,7 +249,7 @@ class WandbWrapper():
                 else:
                     # ggLog.info(f"wandb_log called from non-main process")
                     # raise NotImplementedError()
-                    self._mp_queue.put((log_dict, throttle_period), block=False)
+                    self._mp_queue.put((log_dict, throttle_period, silent_throttling), block=False)
             except Exception as e:
                 ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
 
@@ -288,9 +289,9 @@ def wandb_init(**kwargs):
     return default_wrapper.wandb_init(**kwargs)
 
 
-def wandb_log(log_dict, throttle_period = 0):
+def wandb_log(log_dict, throttle_period = 0, silent_throttling : bool = False):
     # ggLog.info(f"wandb_log called at {traceback.format_list(traceback.extract_stack(limit=2))[0]}")
-    default_wrapper.wandb_log(log_dict, throttle_period)
+    default_wrapper.wandb_log(log_dict, throttle_period, silent_throttling)
 
 def wandb_log_hists(d, throttle_period):
     default_wrapper.wandb_log_hists( d, throttle_period)

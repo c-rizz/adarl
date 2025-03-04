@@ -1151,7 +1151,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._reset_joint_state_step_stats()
-        print(f"reset: mjx_model = {self._mjx_model}")
+        # print(f"reset: mjx_model = {self._mjx_model}")
         self._recompute_mjxmodel_inaxes()
         
 
@@ -1297,7 +1297,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _forward_if_needed(self):
         if self._forward_needed:
-            print(f"forward_if_needed: mjx_model = {self._mjx_model}")
+            # print(f"forward_if_needed: mjx_model = {self._mjx_model}")
 
             self._check_model_inaxes()
 
