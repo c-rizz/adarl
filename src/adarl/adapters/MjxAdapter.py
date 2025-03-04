@@ -275,7 +275,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         opt_preset : Literal["fast","none"] = "fast",
                         log_folder : str = "./",
                         record_whole_joint_trajectories : bool = False,
-                        log_freq_joints_trajectories : int = 1000):
+                        log_freq_joints_trajectories : int = 1000,
+                        safe_revolute_dof_armature = 0.01,
+                        revolute_dof_armature_override = None):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -292,6 +294,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._log_folder = log_folder
         self._last_log_iters = -log_freq 
         self._opt_preset = opt_preset if not None else "none"
+        self._safe_revolute_dof_armature = safe_revolute_dof_armature
+        self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
 
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
@@ -345,6 +349,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def build_scenario(self, models : list[ModelSpawnDef]):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
         ggLog.info(f"MjxAdapter building scenario")
+        discardvisual = False
         if self._add_ground:
             models.append(ModelSpawnDef( name="ground",
                                            definition_string="""<mujoco>
@@ -378,10 +383,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 def_string = model.definition_string
             else:
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
-            def_string = add_compiler_options(def_string)
+            def_string = add_compiler_options(def_string, discardvisual=True)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec = mujoco.MjSpec.from_string(def_string)
-            mjSpec.compiler.discardvisual = False
+            # mjSpec.compiler.discardvisual = False
             mjSpec.compiler.degree = False
             specs.append((model.name, mjSpec))
             if model.pose is not None:
@@ -390,19 +395,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         frame = big_speck.worldbody.add_frame()
         big_speck.compiler.degree = False
-        big_speck.compiler.discardvisual = False
+        # big_speck.compiler.discardvisual = False
         for mname, spec in specs:
             if model_element_separator in mname:
                 raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
             # add all th bodies that are direct childern of worldbody
             body = spec.worldbody.first_body()
-            spec.compiler.discardvisual = False
+            # spec.compiler.discardvisual = False
             if spec.compiler.degree:
                 raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
             while body is not None:
                 frame.attach_body(body, mname+model_element_separator, "")
                 body = spec.worldbody.next_body(body)
-        big_speck.compiler.discardvisual = False
+        # big_speck.compiler.discardvisual = False
         big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
@@ -418,6 +423,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         ggLog.info(f"Spawned: \n{big_speck.to_xml()}")
+
+
+        for dof_id in range(self._mj_model.nv):
+            joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
+            if joint_type == mujoco.mjtJoint.mjJNT_HINGE:
+                if self._mj_model.dof_armature[dof_id] == 0:
+                    self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
+                if self._revolute_dof_armature_override is not None:
+                    self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
 
         # model = models[0]
         # if model.format == "urdf.xacro":
@@ -541,8 +555,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._lid2geoms[body_id] = self._mjx_model.body_geomadr[body_id:body_id+self._mjx_model.body_geomnum[body_id]]
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
+
         print("Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
         print("Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        print(f"dof armatures:{self._mj_model.dof_armature}")
         
         print("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
         print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))

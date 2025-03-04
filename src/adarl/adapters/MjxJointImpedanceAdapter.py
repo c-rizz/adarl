@@ -79,7 +79,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         log_freq : int = -1,
                         record_whole_joint_trajectories : bool = False,
                         log_freq_joints_trajectories = 1000,
-                        log_folder="./"):
+                        log_folder="./",
+                        safe_revolute_dof_armature = 0.01,
+                        revolute_dof_armature_override = None):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -94,7 +96,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         log_freq=log_freq,
                         record_whole_joint_trajectories=record_whole_joint_trajectories,
                         log_freq_joints_trajectories=log_freq_joints_trajectories,
-                        log_folder=log_folder)
+                        log_folder=log_folder,
+                        safe_revolute_dof_armature=safe_revolute_dof_armature,
+                        revolute_dof_armature_override=revolute_dof_armature_override)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
@@ -281,7 +285,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                         jnp.zeros(shape=(self._vec_size, len(self._imp_controlled_joint_names),11),
                                                                     dtype=jnp.float32,
                                                                     device=self._jax_device))
-            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","pref","vref","eeff","stiff","damp","neweff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
+            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","pref","vref","eref","stiff","damp","neweff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
             
 
     def _reset_cmd_queue(self):
