@@ -277,7 +277,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         record_whole_joint_trajectories : bool = False,
                         log_freq_joints_trajectories : int = 1000,
                         safe_revolute_dof_armature = 0.01,
-                        revolute_dof_armature_override = None):
+                        revolute_dof_armature_override = None,
+                        opt_override : dict[str,Any] | None = None):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
@@ -296,6 +297,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._opt_preset = opt_preset if not None else "none"
         self._safe_revolute_dof_armature = safe_revolute_dof_armature
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
+        self._discardvisual = False
+        self._opt_override = opt_override
 
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
@@ -349,7 +352,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def build_scenario(self, models : list[ModelSpawnDef]):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
         ggLog.info(f"MjxAdapter building scenario")
-        discardvisual = False
         if self._add_ground:
             models.append(ModelSpawnDef( name="ground",
                                            definition_string="""<mujoco>
@@ -383,7 +385,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 def_string = model.definition_string
             else:
                 raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
-            def_string = add_compiler_options(def_string, discardvisual=True)
+            if model.format.strip().lower() in ("urdf","urdf.xacro"):
+                def_string = add_compiler_options(def_string, discardvisual=self._discardvisual)
             ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
             mjSpec = mujoco.MjSpec.from_string(def_string)
             # mjSpec.compiler.discardvisual = False
@@ -411,18 +414,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
-        if self._opt_preset == "fast":
+        if self._opt_preset == "fastest":
             # Copied from barkour example
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 1
-            self._mj_model.opt.ls_iterations = 5
+            self._mj_model.opt.iterations = 1 # constraint solver iterations
+            self._mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-        elif self._opt_preset == "none":
-            pass
+        elif self._opt_preset == "faster":
+            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+            self._mj_model.opt.iterations = 3
+            self._mj_model.opt.ls_iterations = 3
+            self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        elif self._opt_preset == "fast":
+            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+            self._mj_model.opt.iterations = 10
+            self._mj_model.opt.ls_iterations = 5
+            # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
+        if self._opt_override is not None:
+             for k,v in self._opt_override.items():
+                setattr(self._mj_model.opt,k,v)
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         ggLog.info(f"Spawned: \n{big_speck.to_xml()}")
+        ggLog.info(f"mj_model.opt = {self._mj_model.opt}")
 
 
         for dof_id in range(self._mj_model.nv):
@@ -704,7 +719,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._monitored_qvadr = self._mjx_model.jnt_dofadr[self._monitored_jids]
         self._reset_joint_state_step_stats()
         if self._record_joint_hist:
-            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
+            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","constr_eff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
 
 
 
@@ -792,7 +807,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state, joints_state_history
 
     def _get_joint_state_for_history(self, sim_state):
-        return MjxAdapter._get_vec_joint_states_raw_pveae(  self._monitored_qpadr,
+        return MjxAdapter._get_vec_joint_states_raw_pveaec(  self._monitored_qpadr,
                                                             self._monitored_qvadr,
                                                             sim_state.mjx_data)
     
@@ -1010,7 +1025,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # What should we use as torque readings?
         # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
         #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
-        # - We also could use qfrc_applied, which is the torque we are applying, I think thin in most cases this should be correct
+        # - We also could use qfrc_applied, which is the torque we are applying, I think in most cases this should be correct
         # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
         #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
         #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
@@ -1022,13 +1037,33 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             mjx_data.qacc[:,qpadr],
                             mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]], #actual effort
                             axis = 2)
+    
+    @staticmethod
+    @jax.jit
+    def _get_vec_joint_states_raw_pveaec(qpadr, qvadr, mjx_data):
+        # What should we use as torque readings?
+        # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
+        #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
+        # - We also could use qfrc_applied, which is the torque we are applying, I think in most cases this should be correct
+        # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
+        #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
+        #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
+        #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
+        return jnp.stack([  mjx_data.qpos[:,qpadr],
+                            mjx_data.qvel[:,qvadr],
+                            mjx_data.qfrc_applied[:,qvadr], #commanded effort
+                            mjx_data.qacc[:,qpadr],
+                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
+                            mjx_data.qfrc_constraint[:,qvadr]],
+                            axis = 2)
     @staticmethod
     @jax.jit
     def _get_vec_joint_states_raw_pve(qpadr, qvadr, mjx_data):
         # What should we use as torque readings?
         # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
         #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
-        # - We also could use qfrc_applied, which is the torque we are applying, I think thin in most cases this should be correct
+        # - We also could use qfrc_applied, which is the torque we are applying, I think in most cases this should be correct
         # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
         #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
         #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
