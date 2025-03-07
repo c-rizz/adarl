@@ -29,10 +29,13 @@ import cpuinfo
 import warnings
 import traceback
 
+
+warning_printstack = False
 original_showwarning = None
 def custom_showwarning(message, category, filename, lineno, file=None, line=None):
     original_showwarning(message, category, filename, lineno, file=file, line=line)
-    traceback.print_stack()  # Print full Python stack trace
+    if warning_printstack:
+        traceback.print_stack()  # Print full Python stack trace
 
 def override_warning_func():
     global original_showwarning
