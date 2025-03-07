@@ -156,9 +156,9 @@ tensorboardX==2.6.2.2
 tensorstore==0.1.71
 tomli==2.2.1
 toolz==1.0.0
-torch==2.5.1+cu124
-torchaudio==2.5.1+cu124
-torchvision==0.20.1+cu124
+torch==2.6.0
+torchaudio==2.6.0
+torchvision==0.21.0
 tqdm==4.66.5
 traitlets==5.14.3
 trimesh==4.4.9

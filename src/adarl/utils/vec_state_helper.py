@@ -186,7 +186,7 @@ class ThBoxStateHelper(StateHelper):
     def update(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor | float | Sequence[float]], state : th.Tensor):
         if isinstance(instantaneous_state,Mapping):
             instantaneous_state = self._mapping_to_tensor(instantaneous_state)
-        for i in range(1,state.size()[1]):
+        for i in range(state.size()[1]-1,0,-1):
             state[:,i] = state[:,i-1]
         state[:,0] = instantaneous_state.view(self._vec_size,self._fields_num,*self.field_size)
         return state
@@ -546,6 +546,8 @@ class DictStateHelper(StateHelper):
     def update(self, instantaneous_state : Mapping[str,th.Tensor | Mapping[FieldName, th.Tensor]], state : Mapping[str,th.Tensor]):
         for k,sh in self.sub_helpers.items():
             sh.update(instantaneous_state[k], state[k])
+            # if k == "action":
+            #     ggLog.info(f"Updating action with {instantaneous_state[k]}, state={state[k]}")
         for k,ng in self.noise_generators.items():
             ng.update(state[k+"_n"])        
 

@@ -107,6 +107,7 @@ class AverageKeeper:
 
     def addValue(self, newValue):
         self._buffer.append(newValue)
+        self._last_added = newValue
         self._all_time_sum += newValue
         self._all_time_count += 1
         self._avg = float(sum(self._buffer))/len(self._buffer)
@@ -117,6 +118,9 @@ class AverageKeeper:
             return self._all_time_avg
         else:
             return self._avg
+        
+    def getLast(self):
+        return self._last_added
 
     def reset(self):
         self._buffer = collections.deque(maxlen=self._bufferSize)

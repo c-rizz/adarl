@@ -104,10 +104,12 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._submitActionDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._getStateDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._getObsRewDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
+        self._reinitDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._envStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_tot = 0
         self._wtime_spent_reinit_tot = 0
+        self._wtime_spent_really_reinit_tot = 0
         self._wtime_spent_stepping_adarl_tot = 0
         self._wtime_first_step = time.monotonic() # for now fill it with a reasonable time
 
@@ -126,84 +128,84 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                                         th.Tensor]:
         if autoreset is None:
             autoreset = self.autoreset
-        t0 = time.monotonic()
         if self._total_vsteps == 0:
-            self._wtime_first_step = t0
-        # if th.any(self._envs_needing_reinit):
-        #     ggLog.warn(f"Calling step on terminated/truncated episodes")
+            self._wtime_first_step = time.monotonic()
 
-        self._total_vsteps += 1
-        etime_step_start = th.sum(self._adarl_env.get_times_since_build())
+        with self._runnerStepDurationAverage:
+            self._total_vsteps += 1
+            # if th.any(self._envs_needing_reinit):
+            #     ggLog.warn(f"Calling step on terminated/truncated episodes")
+            etime_step_start = th.sum(self._adarl_env.get_times_since_build())
 
-        # Setup action to perform
-        if isinstance(actions, np.ndarray):
-            actions = th.as_tensor(actions)
-        self._last_actions = actions.detach().clone()
-        with self._submitActionDurationAverage:
-            self._adarl_env.submit_actions(actions)
+            # Setup action to perform
+            with self._submitActionDurationAverage:
+                if isinstance(actions, np.ndarray):
+                    actions = th.as_tensor(actions)
+                self._last_actions = actions.detach().clone()
+                self._adarl_env.submit_actions(actions)
 
-        # Step the environment
-        with self._envStepWallDurationAverage:
-            t_prestep = time.monotonic()
-            self._adarl_env.step()
-            self._wtime_spent_stepping_adarl_tot += time.monotonic()-t_prestep
-            self._ep_step_counts+=1
-        self._cache_dirty = True
-        
-
-        #Get new observation
-        with self._getStateDurationAverage:
-            consequent_states = self._get_states_caching()
-
-        # Assess the situation
-        with self._getObsRewDurationAverage:
-            terminateds = self._adarl_env.are_states_terminal(consequent_states)
-            truncateds = self._adarl_env.are_states_timedout(consequent_states)
-            sub_rewardss : Dict[str,th.Tensor] = {}
-            rewards = self._adarl_env.compute_rewards(consequent_states, sub_rewards_return = sub_rewardss)
-            consequent_observations = self._adarl_env.get_observations(consequent_states)
-            consequent_infos = self._build_info(consequent_states)
+            # Step the environment
+            with self._envStepWallDurationAverage:
+                self._adarl_env.step()
+                self._ep_step_counts+=1
+                self._cache_dirty = True
             
-            self._last_terminated = terminateds
-            self._last_truncated = truncateds
-            self._tot_ep_rewards += rewards
-            # if self._total_sub_rewards is None:
-            #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
-            # dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
-            #           lambda: f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
-            # if len(sub_rewardss) > 0 and th.any(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards > 0.001):
-            #     raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
-            sub_rewards_tens = th.stack([sub_rewardss[k] for k in self._sub_rewards_names], dim = 1)
-            self._tot_ep_sub_rewards += sub_rewards_tens
-            for k,v in self._ep_sub_rewards.items():
-                v += sub_rewardss[k]
-        self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
-        t_prereinit = time.monotonic()
-        if autoreset and th.any(self._envs_needing_reinit): # cuda sync, see comment below
-            # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
-            next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
-                                                                        terminateds=terminateds,
-                                                                        truncateds=truncateds,
-                                                                        last_observations=consequent_observations,
-                                                                        last_actions=actions,
-                                                                        last_infos=consequent_infos,
-                                                                        last_rewards=rewards)
-            reinit_done = th.logical_or(terminateds, truncateds)
-        else:
-            next_start_observations = consequent_observations
-            next_start_infos = consequent_infos
-            reinit_done = self._no_vecs
-        self._wtime_spent_reinit_tot += time.monotonic() - t_prereinit
+
+            #Get new observation
+            with self._getStateDurationAverage:
+                consequent_states = self._get_states_caching()
+
+            # Assess the situation
+            with self._getObsRewDurationAverage:
+                terminateds = self._adarl_env.are_states_terminal(consequent_states)
+                truncateds = self._adarl_env.are_states_timedout(consequent_states)
+                sub_rewardss : Dict[str,th.Tensor] = {}
+                rewards = self._adarl_env.compute_rewards(consequent_states, sub_rewards_return = sub_rewardss)
+                consequent_observations = self._adarl_env.get_observations(consequent_states)
+                consequent_infos = self._build_info(consequent_states)
+                
+                self._last_terminated = terminateds
+                self._last_truncated = truncateds
+                self._tot_ep_rewards += rewards
+                # if self._total_sub_rewards is None:
+                #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
+                # dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
+                #           lambda: f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
+                # if len(sub_rewardss) > 0 and th.any(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards > 0.001):
+                #     raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
+                sub_rewards_tens = th.stack([sub_rewardss[k] for k in self._sub_rewards_names], dim = 1)
+                self._tot_ep_sub_rewards += sub_rewards_tens
+                for k,v in self._ep_sub_rewards.items():
+                    v += sub_rewardss[k]
+
+            with self._reinitDurationAverage:
+                self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
+                if autoreset and th.any(self._envs_needing_reinit): # cuda sync, see comment below
+                    t_prereinit_real = time.monotonic()
+                    # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
+                    next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
+                                                                                terminateds=terminateds,
+                                                                                truncateds=truncateds,
+                                                                                last_observations=consequent_observations,
+                                                                                last_actions=actions,
+                                                                                last_infos=consequent_infos,
+                                                                                last_rewards=rewards)
+                    reinit_done = th.logical_or(terminateds, truncateds)
+                    self._wtime_spent_really_reinit_tot += time.monotonic() - t_prereinit_real
+                else:
+                    next_start_observations = consequent_observations
+                    next_start_infos = consequent_infos
+                    reinit_done = self._no_vecs
 
 
         tf = time.monotonic()
-        stepDuration = tf - t0
-        self._runnerStepDurationAverage.addValue(newValue = stepDuration)
         self._last_step_end_etime = self._adarl_env.get_times_since_build()
         self._end_to_end_step_wtime = tf- self._last_step_end_wtime
         self._end_to_end_step_etime = th.sum(self._adarl_env.get_times_since_build()) - etime_step_start
         self._last_step_end_wtime = tf
-        self._wtime_spent_stepping_tot += stepDuration
+        self._wtime_spent_stepping_tot += self._runnerStepDurationAverage.getLast()
+        self._wtime_spent_reinit_tot += self._reinitDurationAverage.getLast()
+        self._wtime_spent_stepping_adarl_tot += self._envStepWallDurationAverage.getLast()
 
         self._fill_dbg_info()
         if self._total_vsteps%self._log_freq==0:
@@ -254,8 +256,10 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 f" aActWt={self._dbg_info['avg_act_wall_duration']:.6g}"+
                 f" aStaWt={self._dbg_info['avg_sta_wall_duration']:.6g}"+
                 f" aObsWt={self._dbg_info['avg_obs_rew_wall_duration']:.6g}"+
+                f" aReiWt={self._dbg_info['avg_reinit_wall_duration']:.6g}"+
                 f" tstep%wt={self._dbg_info['ratio_time_spent_stepping']:.2f}"+
                 f" tinit%wt={self._dbg_info['ratio_time_spent_reinit']:.2f}"+
+                f" trinit%wt={self._dbg_info['ratio_time_spent_really_reinit']:.2f}"+
                 f" tstep%st={self._dbg_info['ratio_time_spent_simulating']:.2f}")
         ggLog.info(msg)
 
@@ -328,6 +332,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._submitActionDurationAverage.reset()
         self._getStateDurationAverage.reset()
         self._getObsRewDurationAverage.reset()
+        self._reinitDurationAverage.reset()
         self._envStepWallDurationAverage.reset()
         self._fill_dbg_info()
 
@@ -385,6 +390,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._dbg_info["vsteps"] = self._total_vsteps
         self._dbg_info["ratio_time_spent_stepping"] = self._wtime_spent_stepping_tot/wtime_since_simstart
         self._dbg_info["ratio_time_spent_reinit"] = self._wtime_spent_reinit_tot/wtime_since_simstart
+        self._dbg_info["ratio_time_spent_really_reinit"] = self._wtime_spent_really_reinit_tot/wtime_since_simstart
         self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/wtime_since_simstart
         self._dbg_info["wall_fps"] = self._adarl_env.num_envs*self._total_vsteps/wtime_since_simstart
         self._dbg_info["rtfactor"] = self._end_to_end_step_etime/self._end_to_end_step_wtime
@@ -398,6 +404,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
         self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
         self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()
+        self._dbg_info["avg_reinit_wall_duration"] = self._getObsRewDurationAverage.getAverage()
         # self._dbg_info["tot_ep_sim_duration"] = self._last_step_end_etime
         # self._dbg_info["reset_count"] = self._reset_count
         # self._dbg_info["time_from_start"] = t - self._build_time
