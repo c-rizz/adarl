@@ -128,6 +128,8 @@ class ThBoxStateHelper(StateHelper):
         self._fields_num = len(field_names)
         self._state_size = (self._vec_size, self._history_length, self._fields_num) + self.field_size
         self._obs_size = (self._vec_size, self._obs_history_length, len(self._observable_fields)) + self.field_size
+        if self._flatten_observation:
+            self._obs_size = (self._vec_size, int(np.prod(self._obs_size[1:])))
         self._limits_minmax = self.build_limits(fields_minmax)
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_size, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_size}"
 
@@ -238,7 +240,7 @@ class ThBoxStateHelper(StateHelper):
         else:
             obs = state[:,:self._obs_history_length,self._observable_indexes]
         if self._flatten_observation:
-            obs = th.flatten(obs)
+            obs = th.flatten(obs, start_dim=1)
         return obs
     
     @override
@@ -483,16 +485,22 @@ class DictStateHelper(StateHelper):
                                                  for k in self._flatten_in_obs ]))
             flattened_dtype = self.sub_helpers[self._flatten_in_obs[0]].get_single_obs_space().dtype
             for k in self._flatten_in_obs:
+                if k not in self._observable_fields:
+                    raise RuntimeError(f"Field {k} is present in flatten_in_obs but not in observable_fields")
                 d = self.sub_helpers[k].get_single_obs_space().dtype
                 if d != flattened_dtype:
                     raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
                                        f"but {self._flatten_in_obs[0]} has {flattened_dtype} and {k} has {d}")
+            ggLog.info(f"setting self.observation_names()[{self._flatten_part_name}]={self.observation_names()[self._flatten_part_name]}")
+            obs_labels = adarl.utils.utils.to_string_tensor(self.observation_names()[self._flatten_part_name])
             vec_obs_subspaces[self._flatten_part_name] = spaces.ThBox(low = -1.0, high = 1.0,
                                                                       shape=(self._vec_size, self._single_flattened_part_size,),
-                                                                      dtype=flattened_dtype)            
+                                                                      dtype=flattened_dtype,
+                                                                      labels=obs_labels)            
             single_obs_subspaces[self._flatten_part_name] = spaces.ThBox(   low = -1.0, high = 1.0,
                                                                             shape=(self._single_flattened_part_size,),
-                                                                            dtype=flattened_dtype)
+                                                                            dtype=flattened_dtype,
+                                                                            labels=obs_labels)
         self._vec_obs_space = spaces.gym_spaces.Dict(vec_obs_subspaces)
         self._single_obs_space = spaces.gym_spaces.Dict(single_obs_subspaces)
         

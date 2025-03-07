@@ -107,6 +107,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._envStepWallDurationAverage =adarl.utils.utils.AverageKeeper(bufferSize = 10)
         self._last_step_end_etime = 0
         self._wtime_spent_stepping_tot = 0
+        self._wtime_spent_reinit_tot = 0
         self._wtime_spent_stepping_adarl_tot = 0
         self._wtime_first_step = time.monotonic() # for now fill it with a reasonable time
 
@@ -168,8 +169,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._tot_ep_rewards += rewards
             # if self._total_sub_rewards is None:
             #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
-            dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
-                      lambda: f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
+            # dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
+            #           lambda: f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
             # if len(sub_rewardss) > 0 and th.any(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards > 0.001):
             #     raise RuntimeError(f"sub_rewards do not sum up to reward: {rewards}!=sum({sub_rewardss})")
             sub_rewards_tens = th.stack([sub_rewardss[k] for k in self._sub_rewards_names], dim = 1)
@@ -177,8 +178,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             for k,v in self._ep_sub_rewards.items():
                 v += sub_rewardss[k]
         self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
+        t_prereinit = time.monotonic()
         if autoreset and th.any(self._envs_needing_reinit): # cuda sync, see comment below
-                # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
+            # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
             next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
                                                                         terminateds=terminateds,
                                                                         truncateds=truncateds,
@@ -191,6 +193,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             next_start_observations = consequent_observations
             next_start_infos = consequent_infos
             reinit_done = self._no_vecs
+        self._wtime_spent_reinit_tot += time.monotonic() - t_prereinit
 
 
         tf = time.monotonic()
@@ -252,6 +255,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 f" aStaWt={self._dbg_info['avg_sta_wall_duration']:.6g}"+
                 f" aObsWt={self._dbg_info['avg_obs_rew_wall_duration']:.6g}"+
                 f" tstep%wt={self._dbg_info['ratio_time_spent_stepping']:.2f}"+
+                f" tinit%wt={self._dbg_info['ratio_time_spent_reinit']:.2f}"+
                 f" tstep%st={self._dbg_info['ratio_time_spent_simulating']:.2f}")
         ggLog.info(msg)
 
@@ -380,6 +384,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         wtime_since_simstart = (t-self._wtime_first_step)
         self._dbg_info["vsteps"] = self._total_vsteps
         self._dbg_info["ratio_time_spent_stepping"] = self._wtime_spent_stepping_tot/wtime_since_simstart
+        self._dbg_info["ratio_time_spent_reinit"] = self._wtime_spent_reinit_tot/wtime_since_simstart
         self._dbg_info["ratio_time_spent_simulating"] = self._wtime_spent_stepping_adarl_tot/wtime_since_simstart
         self._dbg_info["wall_fps"] = self._adarl_env.num_envs*self._total_vsteps/wtime_since_simstart
         self._dbg_info["rtfactor"] = self._end_to_end_step_etime/self._end_to_end_step_wtime

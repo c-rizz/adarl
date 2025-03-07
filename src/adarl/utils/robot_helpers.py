@@ -13,7 +13,7 @@ import faulthandler
 from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
-from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conjugate
+from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conj_xyzw_np
 
 
 class JointProperties(TypedDict):
@@ -240,8 +240,8 @@ class Robot():
             if ref_pose is None:
                 raise RuntimeError(f"Reference frame {reference_frame} not found")
             ref_pos, ref_orient = ref_pose
-            ret = {fname: (pos-ref_pos, quat_mul_xyzw_np(orient,quat_conjugate(ref_orient))) for fname, (pos, orient) in ret.items()}
-        return {fname:np.concatenate(p_xyz,q_xyzw) for fname,(p_xyz,q_xyzw) in ret.items()}
+            ret = {fname: (pos-ref_pos, quat_mul_xyzw_np(orient,quat_conj_xyzw_np(ref_orient))) for fname, (pos, orient) in ret.items()}
+        return {fname:np.concatenate([p_xyz,q_xyzw]) for fname,(p_xyz,q_xyzw) in ret.items()}
     
 
     def get_joint_names(self) -> list[str]:
@@ -389,7 +389,11 @@ class Robot():
 
 
 if __name__ == "__main__":
-    leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")
+    import sys
+    if len(sys.argv)==1:
+        leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")
+    else:
+        leg_file = sys.argv[1]
     # leg_file = adarl.utils.utils.pkgutil_get_path("adarl","models/cube.urdf")
     model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
                                                                         model_kwargs={})
