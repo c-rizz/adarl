@@ -222,6 +222,8 @@ class SimState:
     sim_time : jnp.ndarray
     stats_step_count : jnp.ndarray
     mon_joint_stats_arr_pvae : jnp.ndarray
+    impulse_startends_stime : jnp.ndarray
+    impulses_xfrc : jnp.ndarray
 
     def replace_v(self, name : str, value : Any):
         return self.replace_d({name:value})
@@ -235,7 +237,10 @@ class SimState:
         # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
         d = {"mjx_data" : self.mjx_data,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
-             "sim_time" : self.sim_time}
+             "sim_time" : self.sim_time,
+             "stats_step_count" : self.stats_step_count,
+             "impulse_startends_stime" : self.impulse_startends_stime,
+             "impulses_xfrc" : self.impulses_xfrc}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -302,11 +307,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
-        self._sim_state = SimState(mjx_data=jnp.empty((0,), device = jax_device),
-                                   requested_qfrc_applied=jnp.empty((0,), device = jax_device),
-                                   sim_time=jnp.empty((0,), device = jax_device),
-                                   stats_step_count=jnp.zeros((1,), device = jax_device),
-                                   mon_joint_stats_arr_pvae=jnp.empty((0,), device = jax_device))
+        self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device),
+                                    requested_qfrc_applied=jnp.empty((0,), device = jax_device),
+                                    sim_time=jnp.empty((0,), device = jax_device),
+                                    stats_step_count=jnp.zeros((1,), device = jax_device),
+                                    mon_joint_stats_arr_pvae=jnp.empty((0,), device = jax_device),
+                                    impulse_startends_stime=jnp.empty((0,), device = jax_device),
+                                    impulses_xfrc=jnp.empty((0,), device = jax_device))
         self._renderer : mujoco.Renderer | None = None
         self._check_sizes = True
         self._show_gui = show_gui
@@ -526,7 +533,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
         self._sim_state = self._sim_state.replace_d({   "mjx_data":mjx_data,
                                                         "requested_qfrc_applied":requested_qfrc_applied,
-                                                        "sim_time":sim_time})
+                                                        "sim_time":sim_time,
+                                                        "impulses_xfrc" : jnp.zeros_like(mjx_data.xfrc_applied),
+                                                        "impulse_startends_stime" : jnp.full(shape=(self._vec_size, 2), fill_value=-1) })
         
         # self._check_model_inaxes()        
         # data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
@@ -752,6 +761,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_commands(self, sim_state : SimState) -> SimState:
         sim_state = self._apply_torque_cmds(sim_state)
+        # sim_state = self._apply_impulses(sim_state)
         return sim_state
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
@@ -1539,3 +1549,78 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
         geoms = self._sim_state.mjx_data.contact.geom[:,:self._sim_state.mjx_data.ncon]
         return self._mjx_model.geom_bodyid[geoms]
+    
+
+    
+    def set_link_impulses(self, link_names : Sequence[tuple[str,str]],
+                                force_torque_xyzxyz : th.Tensor,
+                                durations : th.Tensor, delays : th.Tensor,
+                                vec_mask : th.Tensor) -> None:
+        lids = jnp.array([self._lname2lid[ln] for ln in link_names])
+        force_torques = th2jax(force_torque_xyzxyz, jax_device=self._jax_device)
+        self._sim_state = self._set_link_impulse(self._sim_state,
+                                                 lids,
+                                                 force_torques,
+                                                 )
+
+
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _set_link_impulse(self, sim_state : SimState,
+                                body_ids : jnp.ndarray,
+                                force_torques : jnp.ndarray,
+                                durations : jnp.ndarray,
+                                delays : jnp.ndarray,
+                                vec_mask : jnp.ndarray | None):
+        starts = sim_state.sim_time + delays
+        ends = starts + durations
+        startends = jnp.concat([starts,ends], axis = -1)
+        if vec_mask is None:
+            impulse_startends_stime = sim_state.impulse_startends_stime.at[:,body_ids].set(startends)
+            impulses_xfrc = sim_state.impulses_xfrc.at[:,body_ids].set(force_torques)
+        else:
+            impulse_startends_stime = set_rows_cols_masks(sim_state.impulse_startends_stime, [vec_mask,body_ids], startends)
+            impulses_xfrc = set_rows_cols_masks(sim_state.impulses_xfrc, [vec_mask,body_ids], force_torques)
+        sim_state = sim_state.replace_d({"impulse_startends_stime" : impulse_startends_stime,
+                                         "impulses_xfrc" : impulses_xfrc})
+        return sim_state
+
+
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _apply_impulses(self, sim_state : SimState):
+        started_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,0]
+        ended_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,1]
+        xfrc_applied = jnp.where(ended_impulses, 0, sim_state.mjx_data.xfrc_applied) # clear ended impulses
+        impulse_startends_stime = jnp.where(ended_impulses, -1,      sim_state.impulse_startends_stime) # clear ended impulses start/ends
+        impulses_xfrc =              jnp.where(ended_impulses, 0, sim_state.impulses_xfrc) # clear ended impulses force/torques
+        active_impulses = jnp.logical_and(started_impulses, jnp.logical_not(ended_impulses))
+        
+        xfrc_applied = jnp.where(active_impulses, sim_state.impulses_xfrc, xfrc_applied)
+        
+        mjx_data = sim_state.mjx_data.replace(xfrc_applied = xfrc_applied)
+        sim_state = sim_state.replace_d({"impulse_startends_stime" : impulse_startends_stime,
+                                         "impulses_xfrc" : impulses_xfrc,
+                                         "mjx_data" : mjx_data})
+        return sim_state
+
+
+
+    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    # def _apply_disturbances(self, sim_state : SimState):
+    #     prng_key = sim_state.prng_key
+    #     ending_disturbances = sim_state.sim_time > sim_state.disturbance_terminations_stime
+    #     xfrc_applied = jnp.where(ending_disturbances, 0, sim_state.mjx_data.xfrc_applied)
+    #     disturbance_terminations_stime = jnp.where(ending_disturbances, -1, sim_state.disturbance_terminations_stime)
+        
+    #     prng_key, subkey = jax.random.split(prng_key)
+    #     starting_disturbances = jax.random.uniform(subkey, shape=ending_disturbances.shape) < self._xfrc_disturbance_probability
+        
+    #     prng_key, subkey = jax.random.split(prng_key)
+    #     new_disturbance_durations = jax.random.normal(subkey, shape=disturbance_terminations_stime.shape) * self._disturbance_duration_std + self._disturbance_duration_mean
+    #     new_xfrc_applied_disturbed = jax.random.normal(subkey, shape=xfrc_applied.shape) * self._xfrc_disturbance_std + self._xfrc_disturbance_mu
+    #     xfrc_applied = jnp.where(starting_disturbances, new_xfrc_applied_disturbed, xfrc_applied)
+    #     disturbance_terminations_stime = jnp.where(starting_disturbances,sim_state.stime + new_disturbance_durations, sim_state.disturbance_terminations_stime)
+        
+    #     mjx_data = sim_state.mjx_data.replace(xfrc_applied = xfrc_applied)
+    #     sim_state = sim_state.replace_d({"prng_key":prng_key,
+    #                                      "disturbance_terminations_stime":disturbance_terminations_stime,
+    #                                      "mjx_data" : mjx_data})

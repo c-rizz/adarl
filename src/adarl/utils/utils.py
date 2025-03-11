@@ -107,6 +107,7 @@ class AverageKeeper:
 
     def addValue(self, newValue):
         self._buffer.append(newValue)
+        self._last_added = newValue
         self._all_time_sum += newValue
         self._all_time_count += 1
         self._avg = float(sum(self._buffer))/len(self._buffer)
@@ -117,6 +118,9 @@ class AverageKeeper:
             return self._all_time_avg
         else:
             return self._avg
+        
+    def getLast(self):
+        return self._last_added
 
     def reset(self):
         self._buffer = collections.deque(maxlen=self._bufferSize)
@@ -1145,7 +1149,7 @@ def ros_rpy_to_quaternion_xyzw(rpy):
 
 
 
-def quat_conjugate(quaternion_xyzw : np.ndarray | th.Tensor):
+def quat_conj_xyzw_np(quaternion_xyzw : np.ndarray | th.Tensor):
     if isinstance(quaternion_xyzw, th.Tensor):
         quaternion_xyzw = quaternion_xyzw.cpu()
     q = quaternion.from_float_array(quaternion_xyzw[...,[3,0,1,2]])
@@ -1176,7 +1180,7 @@ def th_quat_combine(q_applied_first_xyzw : th.Tensor, q_applied_second_xyzw : th
     return quat_mul_xyzw(q_applied_second_xyzw,q_applied_first_xyzw)
 
 def quat_mul_xyzw_np(q1_xyzw : np.ndarray, q2_xyzw : np.ndarray):
-    quat_mul_xyzw(th.as_tensor(q1_xyzw),
+    return quat_mul_xyzw(th.as_tensor(q1_xyzw),
                     th_quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
 # @th.jit.script
 def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):

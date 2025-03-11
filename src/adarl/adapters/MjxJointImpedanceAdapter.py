@@ -47,7 +47,9 @@ class SimStateJimp(SimState):
              "mon_joint_stats_arr_pvae" : self.mon_joint_stats_arr_pvae,
              "vec_impjoints_pveaecpvesde" : self.vec_impjoints_pveaecpvesde,
              "filtered_pv_references" : self.filtered_pv_references,
-             "filtered_pve_states" : self.filtered_pve_states}
+             "filtered_pve_states" : self.filtered_pve_states,
+             "impulse_startends_stime" : self.impulse_startends_stime,
+             "impulses_xfrc" : self.impulses_xfrc}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -114,7 +116,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         mon_joint_stats_arr_pvae=jnp.empty((vec_size,0,4), device = jax_device),
                                         vec_impjoints_pveaecpvesde=jnp.empty((vec_size,0,12), device = jax_device),
                                         filtered_pv_references=jnp.empty((vec_size,0,2), device = jax_device),
-                                        filtered_pve_states = jnp.empty((vec_size,0,3), device = jax_device))
+                                        filtered_pve_states = jnp.empty((vec_size,0,3), device = jax_device),
+                                        impulse_startends_stime=jnp.empty((0,), device = jax_device),
+                                        impulses_xfrc=jnp.empty((0,), device = jax_device)
+                                        )
         pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
         pve_sens_filter_decimation_time = 0.005
         self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))

@@ -1,3 +1,4 @@
+import adarl.utils.utils
 import gymnasium as gym
 import cv2
 import os
@@ -88,9 +89,15 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._saved_best_eps_count = 0
         self._stored_frames = 0
 
-        labels = get_space_labels(self._runner.info_space)
-        self._info_labels = flatten_tensor_tree(labels)
+        self._info_labels = flatten_tensor_tree(get_space_labels(self._runner.info_space))
         self._info_labels = map_tensor_tree(self._info_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        self._vecobs_labels = get_space_labels(self._runner.single_observation_space)
+        if self._vec_obs_key is not None:
+            self._vecobs_labels = self._vecobs_labels[self._vec_obs_key]
+        self._vecobs_labels = flatten_tensor_tree(self._vecobs_labels)
+        self._vecobs_labels = map_tensor_tree(self._vecobs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        # self._obs_labels = map_tensor_tree(self._obs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        ggLog.info(f"obs labels = {self._vecobs_labels}")
 
         self.add_on_ep_end_callback(self._on_ep_end)
 
@@ -102,8 +109,6 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             vecobs = obs[self._vec_obs_key]
         else:
             vecobs = obs
-        vecobs = flatten_tensor_tree(vecobs)
-        vecobs = map_tensor_tree(vecobs, lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
         if isinstance(action, th.Tensor):
             action = action.cpu()
         action = np.array(action)
@@ -248,7 +253,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                     f.create_dataset(field_name+"_labels", data=self._info_labels[k])
 
         
-    def _write_vecbuffer(self, out_filename, vecbuffer):
+    def _write_vecbuffer(self, out_filename, vecbuffer, vecbuffer_labels={}):
         out_filename += ".hdf5"
         i = 0
         # ggLog.info(f"writing buffer {vecbuffer}")
@@ -263,12 +268,19 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                     v = flatten_tensor_tree(v) # flatten in case we have complex observations
                     for sk,sv in v.items():
                         f.create_dataset(f"{k}.{sk}", data=sv)
+                    if self._vecobs_labels is not None:
+                        for sk,sv in self._vecobs_labels.items():
+                            f.create_dataset(f"{k}.{sk}_labels", data=sv)
                 except TypeError as e:
-                    raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={e}")
+                    raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
 
 
     def _saveLastEpisode(self, filename : str):
         if len(self._frameBuffer) > 1:
+            for i in range(len(self._vecBuffer)):
+                vecobs = self._vecBuffer["vecobs"][i]
+                self._vecBuffer["vecobs"][i] = map_tensor_tree(flatten_tensor_tree(vecobs),
+                                                               lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
             self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
             if not self._only_video:
                 self._write_vecbuffer(filename,self._vecBuffer)
