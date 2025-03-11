@@ -257,13 +257,13 @@ class Robot():
             p = {}
             if j.idx_q < 0 or j.idx_v<0:
                 p["type"] = Robot.JOINT_TYPES.FIXED # Not sure about this, but the universe joint that is added automatically apepars like this
-            elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned","JointModelRevoluteUnboundedUnaligned"]:
+            elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.REVOLUTE
             elif j.shortname() in ["JointModelPX","JointModelPY","JointModelPZ","JointModelPrismaticUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.PRISMATIC
             elif j.shortname() in ["JointModelFreeFlyer"]:
                 p["type"] = Robot.JOINT_TYPES.FLOATING
-            elif j.shortname() in ["JointModelRUBX","JointModelRUBY","JointModelRUBZ"]:
+            elif j.shortname() in ["JointModelRUBX","JointModelRUBY","JointModelRUBZ","JointModelRevoluteUnboundedUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.CONTINUOUS
             else:
                 raise RuntimeError(f"Unknown joint type {j.shortname()}")

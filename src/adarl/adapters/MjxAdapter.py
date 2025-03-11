@@ -579,6 +579,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
+        ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
+        # ggLog.info(f"self._sim_state.mjx_model.nconmax = {self._mjx_model.nconmax}")
+        ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
+
 
 
     def startup(self):
@@ -695,6 +699,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
         ggLog.info(f"New geom_contype =     {self._mjx_model.geom_contype}")
         ggLog.info(f"New geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        self._mark_forward_needed()
         self._recompute_mjxmodel_inaxes()
         self._rebuild_lower_funcs()
         self._check_model_inaxes()        
@@ -1163,6 +1168,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
 
     @override
+    def get_links_names(self, link_ids : jnp.ndarray):
+        link_names = np.vectorize(lambda lid: self._lid2lname[lid])(np.asarray(link_ids))
+        return link_names
+
+    @override
     def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
         return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
 
@@ -1511,3 +1521,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                       self._mjx_model.geom_friction)
         self._mjx_model = self._mjx_model.replace(**replacements)
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
+
+
+    def get_current_contacts_num(self) -> th.Tensor:
+        """Gets the number of contacts in this instant.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of size (self.vec_size,) with the number of contacts in each environment
+        """
+        self._forward_if_needed()
+        return jax2th(self._sim_state.mjx_data.ncon, th_device=self._out_th_device)
+
+
+    def get_current_colliding_link_ids(self) -> jnp.ndarray:
+        # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
+        geoms = self._sim_state.mjx_data.contact.geom[:,:self._sim_state.mjx_data.ncon]
+        return self._mjx_model.geom_bodyid[geoms]

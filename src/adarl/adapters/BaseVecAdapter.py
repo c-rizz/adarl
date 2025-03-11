@@ -192,7 +192,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:
         """Convert a sequence of link names to an identifier for a set of links.
            By default this is an identity operation, but some adapter may return their internal
-           ids (or whatever other representation), so to speedup further computations.
+           ids (or whatever other representation), mostly to speedup further computations.
 
         Parameters
         ----------
@@ -201,10 +201,29 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
         Returns
         -------
-        _type_
+        LinkIdSequence
             An identifier for the link group, to be used in methods such as getLinksState
         """
         return link_names
+    
+
+    
+    def get_links_names(self, link_ids : LinkIdSequence) -> Sequence[tuple[str,str]]:
+        """Convert an identifier for a set of links to a sequence of link names.
+           By default this is an identity operation, but some adapter may use their internal
+           ids (or whatever other representation), mostly to speedup further computations.
+
+        Parameters
+        ----------
+        link_ids : LinkIdSequence
+            An identifier for a set of links, returned by get_links_ids
+
+        Returns
+        -------
+        Sequence[tuple[str,str]]
+            A sequence of link names
+        """
+        return link_ids
 
     def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]) -> JointIdSequence:
         """Convert a sequence of joint names to an identifier for a set of joints.
