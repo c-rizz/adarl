@@ -1580,9 +1580,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             Boolean array of shape (vec_size, queried_body_pairs.shape[0])
         """
         colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state)
+        print(f"colliding_body_pairs = {colliding_body_pairs}")
         # colliding_body_pairs is of shape (vec_size, collision_num, 2)
         # body_pairs is of shape (num_queried_pairs, 2)
-        return jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
+        a_to_b = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
+        b_to_a = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs[:,[1,0]], axis = -1), axis=1)
+        return jnp.logical_or(a_to_b,b_to_a)
 
     def check_colliding_links(self, queried_link_id_pairs_a : jnp.ndarray, queried_link_id_pairs_b : jnp.ndarray) -> th.Tensor:
         """_summary_
@@ -1604,7 +1607,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if queried_link_id_pairs_b.size == 1 and queried_link_id_pairs_a.size != 1:
             queried_link_id_pairs_b = jnp.broadcast_to(queried_link_id_pairs_b, queried_link_id_pairs_a.shape)
         queried_link_id_pairs = jnp.stack([queried_link_id_pairs_a, queried_link_id_pairs_b], axis=1)
+        # print(f"queried_link_id_pairs = {queried_link_id_pairs}")
         colliding_pairs_mask_vec = self._check_links_colliding(self._sim_state, queried_link_id_pairs)
+        # print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
         return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
 
 
