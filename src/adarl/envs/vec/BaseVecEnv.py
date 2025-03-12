@@ -284,10 +284,10 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     
     def _thtens(self, data):
-        return th.as_tensor(data, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
+        return th.as_tensor(data, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
 
     def _thzeros(self, size : tuple[int,...]):
-        return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=True)
+        return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
 
     def _thrand(self, size : tuple[int,...]):
         return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)

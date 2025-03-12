@@ -39,6 +39,7 @@ class SimStateJimp(SimState):
         # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
         # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
         d = {"mjx_data" : self.mjx_data,
+             "mjx_model" : self.mjx_model,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
              "cmds_queue" : self.cmds_queue,
@@ -110,6 +111,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
+                                        mjx_model=self._sim_state.mjx_model,
                                         cmds_queue=jnp.empty((0,), device = jax_device),
                                         cmds_queue_times=jnp.empty((0,), device = jax_device),
                                         stats_step_count=jnp.zeros((1,), device = jax_device),
@@ -118,8 +120,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         filtered_pv_references=jnp.empty((vec_size,0,2), device = jax_device),
                                         filtered_pve_states = jnp.empty((vec_size,0,3), device = jax_device),
                                         impulse_startends_stime=jnp.empty((0,), device = jax_device),
-                                        impulses_xfrc=jnp.empty((0,), device = jax_device)
-                                        )
+                                        impulses_xfrc=jnp.empty((0,), device = jax_device))
         pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
         pve_sens_filter_decimation_time = 0.005
         self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))
@@ -311,7 +312,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
     def _reset_filters(self):
         if len(self._imp_controlled_joint_names)>0:
-            current_pve = self._get_vec_joint_states_pve(self._mjx_model, self._sim_state.mjx_data, self._imp_control_jids)
+            current_pve = self._get_vec_joint_states_pve(self._sim_state.mjx_model, self._sim_state.mjx_data, self._imp_control_jids)
             current_pv = current_pve[:,:,:2]
         else:
             current_pve = jnp.zeros( shape=(self._vec_size, len(self._imp_controlled_joint_names),3),

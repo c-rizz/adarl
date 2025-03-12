@@ -21,12 +21,12 @@ shared_memory_list = None
 
 
 def destroy_shm():
-    ggLog.info(f"destroying shm")
+    # ggLog.info(f"destroying shm")
     shared_memory_list.shm.close()
     shared_memory_list.shm.unlink()
 
 def close_shm():
-    ggLog.info(f"closing shm")
+    # ggLog.info(f"closing shm")
     shared_memory_list.shm.close()
 
 last_printed_st : str | None = None

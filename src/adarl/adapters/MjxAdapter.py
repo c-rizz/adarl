@@ -218,6 +218,7 @@ def jax_mat_to_quat_xyzw(matrices):
 @dataclass
 class SimState:
     mjx_data : mjx.Data
+    mjx_model : mjx.Model
     requested_qfrc_applied : jnp.ndarray
     sim_time : jnp.ndarray
     stats_step_count : jnp.ndarray
@@ -236,6 +237,7 @@ class SimState:
         # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
         # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
         d = {"mjx_data" : self.mjx_data,
+             "mjx_model" : self.mjx_model,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
              "stats_step_count" : self.stats_step_count,
@@ -308,6 +310,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
         self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device),
+                                    mjx_model=jnp.empty((0,), device = jax_device),
                                     requested_qfrc_applied=jnp.empty((0,), device = jax_device),
                                     sim_time=jnp.empty((0,), device = jax_device),
                                     stats_step_count=jnp.zeros((1,), device = jax_device),
@@ -344,8 +347,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"Invalid mjName: must contain one and only one '{model_element_separator}' substring, but it's {mjname}")
         return mjname[:sep],mjname[sep+len(model_element_separator):]
 
-    def _recompute_mjxmodel_inaxes(self):
-        out_axes = jax.tree_util.tree_map(lambda l:None, self._mjx_model)
+    def _recompute_mjxmodel_inaxes(self, mjx_model):
+        out_axes = jax.tree_util.tree_map(lambda l:None, mjx_model)
         out_axes = out_axes.tree_replace({"body_mass":0,
                                           "geom_friction":0}) # model fields to be vmapped
         self._mjx_model_in_axes = out_axes
@@ -503,13 +506,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
-        self._mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
-        # self._mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
-        self._recompute_mjxmodel_inaxes()
-        self._mjx_model = jax.vmap(lambda: self._mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
-        # self._mjx_model = jax.vmap(lambda: self._mjx_model, axis_size=self._vec_size, in_axes=None)()
+        mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
+        # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
+        self._recompute_mjxmodel_inaxes(mjx_model)
+        mjx_model = jax.vmap(lambda: mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
+        # mjx_model = jax.vmap(lambda: mjx_model, axis_size=self._vec_size, in_axes=None)()
         
-        self._jnt_dofadr_jax = jnp.array(self._mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
+        self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
+        self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         mjx_data = jax.vmap(lambda: mjx_data, axis_size=self._vec_size)()
@@ -518,11 +522,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
         self._original_mjx_data = copy.deepcopy(mjx_data)
-        self._original_mjx_model = copy.deepcopy(self._mjx_model)
+        self._original_mjx_model = copy.deepcopy(mjx_model)
         self._original_mj_data = copy.deepcopy(self._mj_data)
         self._original_mj_model = copy.deepcopy(self._mj_model)
 
-        # _ = self._mjx_step(self._mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
+        # _ = self._mjx_step(mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
         self._rebuild_lower_funcs()
         # self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
         # self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
@@ -532,13 +536,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
         self._sim_state = self._sim_state.replace_d({   "mjx_data":mjx_data,
+                                                        "mjx_model":mjx_model,
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time,
                                                         "impulses_xfrc" : jnp.zeros_like(mjx_data.xfrc_applied),
                                                         "impulse_startends_stime" : jnp.full(shape=(self._vec_size, 2), fill_value=-1) })
         
         # self._check_model_inaxes()        
-        # data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
+        # data = self._mjx_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
         # ggLog.info(f"compiled")
         # self._check_model_inaxes()        
         
@@ -576,7 +581,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         all_links = list(self._lname2lid.keys())
         for lname in all_links:
             body_id = self._lname2lid[lname]
-            self._lid2geoms[body_id] = self._mjx_model.body_geomadr[body_id:body_id+self._mjx_model.body_geomnum[body_id]]
+            self._lid2geoms[body_id] = self._sim_state.mjx_model.body_geomadr[body_id:body_id+self._sim_state.mjx_model.body_geomnum[body_id]]
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
 
@@ -589,17 +594,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
         ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
-        # ggLog.info(f"self._sim_state.mjx_model.nconmax = {self._mjx_model.nconmax}")
+        # ggLog.info(f"self._sim_state.mjx_model.nconmax = {self._sim_state.mjx_model.nconmax}")
         ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
 
 
 
     def startup(self):
         ggLog.info(f"Compiling mjx.forward....")
-        data = self._mjx_forward(self._mjx_model, self._sim_state.mjx_data)
+        data = self._mjx_forward(self._sim_state.mjx_model, self._sim_state.mjx_data)
         self._sim_state = self._sim_state.replace_v("mjx_data", data) # compute initial mjData
         ggLog.info(f"Compiling mjx_integrate_and_forward....")
-        _ = self._mjx_integrate_and_forward(self._mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
+        _ = self._mjx_integrate_and_forward(self._sim_state.mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
         ggLog.info(f"Compiled.")
 
     @override
@@ -660,13 +665,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
-        # print(f"self._mjx_model.geom_contype =     {self._mjx_model.geom_contype}")
-        # print(f"self._mjx_model.geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        # print(f"self._sim_state.mjx_model.geom_contype =     {self._sim_state.mjx_model.geom_contype}")
+        # print(f"self._sim_state.mjx_model.geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
 
-        body_contype = self._mjx_model.body_contype.copy()
-        body_conaffinity = self._mjx_model.body_conaffinity.copy()
-        geom_contype = self._mjx_model.geom_contype.copy()
-        geom_conaffinity = self._mjx_model.geom_conaffinity.copy()
+        body_contype = self._sim_state.mjx_model.body_contype.copy()
+        body_conaffinity = self._sim_state.mjx_model.body_conaffinity.copy()
+        geom_contype = self._sim_state.mjx_model.geom_contype.copy()
+        geom_conaffinity = self._sim_state.mjx_model.geom_conaffinity.copy()
         for lname in all_links:
             body_id = self._lname2lid[lname]
             for geom_id in range(self._mj_model.body_geomadr[body_id],
@@ -694,22 +699,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_model.geom_conaffinity = geom_conaffinity
         self._mj_model.body_contype = body_contype
         self._mj_model.body_conaffinity = body_conaffinity
-        ggLog.info(f"Previous geom_contype =     {self._mjx_model.geom_contype}")
-        ggLog.info(f"Previous geom_conaffinity = {self._mjx_model.geom_conaffinity}")
-        self._mjx_model = self._mjx_model.replace(geom_contype = geom_contype,
-                                                  geom_conaffinity = geom_conaffinity,
-                                                  body_contype = body_contype,
-                                                  body_conaffinity = body_conaffinity)
+        ggLog.info(f"Previous geom_contype =     {self._sim_state.mjx_model.geom_contype}")
+        ggLog.info(f"Previous geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
+        self._sim_state = self._sim_state.replace_v("mjx_model" , self._sim_state.mjx_model.replace(  
+                                                                                            geom_contype = geom_contype,
+                                                                                            geom_conaffinity = geom_conaffinity,
+                                                                                            body_contype = body_contype,
+                                                                                            body_conaffinity = body_conaffinity))
         self._original_mjx_model = self._original_mjx_model.replace(geom_contype = geom_contype,
                                                   geom_conaffinity = geom_conaffinity,
                                                   body_contype = body_contype,
                                                   body_conaffinity = body_conaffinity)
         # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
-        ggLog.info(f"New geom_contype =     {self._mjx_model.geom_contype}")
-        ggLog.info(f"New geom_conaffinity = {self._mjx_model.geom_conaffinity}")
+        ggLog.info(f"New geom_contype =     {self._sim_state.mjx_model.geom_contype}")
+        ggLog.info(f"New geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
         self._mark_forward_needed()
-        self._recompute_mjxmodel_inaxes()
+        self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         self._rebuild_lower_funcs()
         self._check_model_inaxes()        
 
@@ -729,8 +735,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_joints(jointsToObserve)
         self._monitored_jids = jnp.array([self._jname2jid[jn] for jn in self._monitored_joints], device=self._jax_device)
-        self._monitored_qpadr = self._mjx_model.jnt_qposadr[self._monitored_jids]
-        self._monitored_qvadr = self._mjx_model.jnt_dofadr[self._monitored_jids]
+        self._monitored_qpadr = self._sim_state.mjx_model.jnt_qposadr[self._monitored_jids]
+        self._monitored_qvadr = self._sim_state.mjx_model.jnt_dofadr[self._monitored_jids]
         self._reset_joint_state_step_stats()
         if self._record_joint_hist:
             self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","constr_eff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
@@ -778,7 +784,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
     def _sim_step_fast(self, iteration, sim_state : SimState) -> SimState:
         sim_state = self._apply_commands(sim_state)
-        new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,sim_state.mjx_data)
+        new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model,sim_state.mjx_data)
         sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
         sim_state = self._update_joint_state_step_stats(sim_state)
@@ -912,7 +918,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #         self._sim_state = self._apply_commands(self._sim_state)
     #         wt1 = time.monotonic()
     #         control_wtime += wt1-wtps
-    #         new_mjx_data = self._mjx_integrate_and_forward(self._mjx_model,self._sim_state.mjx_data)
+    #         new_mjx_data = self._mjx_integrate_and_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
     #         self._sim_state = self._sim_state.replace( "mjx_data", new_mjx_data)
     #         simulating_wtime += time.monotonic()-wt1
     #         self._sim_state = self._sim_state.replace( "sim_time", self._sim_state.sim_time + self._sim_step_dt)
@@ -1004,7 +1010,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
             self._forward_if_needed()           
-            t = self._get_vec_joint_states_pve(self._mjx_model, self._sim_state.mjx_data, jids)
+            t = self._get_vec_joint_states_pve(self._sim_state.mjx_model, self._sim_state.mjx_data, jids)
         return jax2th(t, th_device=self._out_th_device)
     
     @override
@@ -1017,7 +1023,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
             self._forward_if_needed()
-            t = self._get_vec_joint_states_pveae(self._mjx_model, self._sim_state.mjx_data, jids)
+            t = self._get_vec_joint_states_pveae(self._sim_state.mjx_model, self._sim_state.mjx_data, jids)
         return jax2th(t, th_device=self._out_th_device)
     
     @staticmethod
@@ -1224,12 +1230,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"MjxAdapter resetting")
         self.__lastResetTime = self.getEnvTimeFromStartup()
 
-        self._sim_state = self._sim_state.replace_v( "mjx_data", copy.deepcopy(self._original_mjx_data))
-        self._mjx_model = copy.deepcopy(self._original_mjx_model)
+        self._sim_state = self._sim_state.replace_d({   "mjx_data": copy.deepcopy(self._original_mjx_data),
+                                                        "mjx_model": copy.deepcopy(self._original_mjx_model)})
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._reset_joint_state_step_stats()
-        self._recompute_mjxmodel_inaxes()
+        self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         
 
 
@@ -1293,8 +1299,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
-        model_body_pos = self._mjx_model.body_pos
-        model_body_quat = self._mjx_model.body_quat
+        model_body_pos = self._sim_state.mjx_model.body_pos
+        model_body_quat = self._sim_state.mjx_model.body_quat
         data_joint_pos = self._sim_state.mjx_data.qpos
         data_joint_vel = self._sim_state.mjx_data.qvel
         for i, link_name in enumerate(link_names):
@@ -1332,7 +1338,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
                 #TODO: the following line triggers jit recompile, also on add, select_n, concatenate, gather, scatter
                 model_body_quat = model_body_quat.at[lid].set(link_states_pose_vel_jnp[0,i,[6,3,4,5]])
-                # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")
+                # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
             elif parent_joints_num == 1 and parent_body_id==0:
                 jid = self._mj_model.body_jntadr[lid]
                 jtype = self._mj_model.jnt_type[jid]
@@ -1355,17 +1361,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     raise NotImplementedError(f"Cannot set link state for link {link_name} with parent joint of type {jtype} (see mjtJoint enum)")
             else:
                 raise NotImplementedError(f"Cannot set link state for link {link_name} with {self._mj_model.body_jntnum} parent joints and parent body {parent_body_id}")
-        self._mjx_model = self._mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
+        mjx_model = self._sim_state.mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
         mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
-        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
-        self._recompute_mjxmodel_inaxes()
+        self._sim_state = self._sim_state.replace_d({"mjx_data"  : mjx_data,
+                                                     "mjx_model" : mjx_model})
+        self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         self._mark_forward_needed()
-        # print(f"self._mjx_model.body_pos = {self._mjx_model.body_pos}")        
+        # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")        
         # print(f"self._sim_state.mjx_data.qpos = {self._sim_state.mjx_data.qpos}")        
-        # self._mjx_model = mjx.put_model(self._mj_model, device=self._jax_device)
-
-        
-
         # self._update_gui(True)
         # ggLog.info(f"setted_lstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
 
@@ -1376,13 +1379,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._forward_needed:
             self._check_model_inaxes()
 
-            data = self._mjx_forward(self._mjx_model,self._sim_state.mjx_data)
+            data = self._mjx_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
             self._sim_state = self._sim_state.replace_v( "mjx_data", data)
             self._forward_needed = False
 
     def _check_model_inaxes(self):
         # from jax._src.tree_util import prefix_errors
-        # all_errors = prefix_errors(self._mjx_model_in_axes, self._mjx_model)
+        # all_errors = prefix_errors(self._mjx_model_in_axes, self._sim_state.mjx_model)
         # print(f"{get_caller_info()} prefix check= {all_errors[0]('in_axes')}")
         pass
 
@@ -1487,8 +1490,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     body_ids = link_masses[0]
     #     replacements = {}
     #     if len(body_ids)>0:
-    #         replacements["body_mass"] = self._mjx_model.body_mass.at[:,body_ids].set(body_masses)
-    #     self._mjx_model = self._mjx_model.replace(**replacements)
+    #         replacements["body_mass"] = self._sim_state.mjx_model.body_mass.at[:,body_ids].set(body_masses)
+    #     mjx_model = self._sim_state.mjx_model.replace(**replacements)
+    #     self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
     #     # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
 
@@ -1515,21 +1519,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         replacements = {}
 
         masses_body_ids = link_masses[0]
+        mjx_model = self._sim_state.mjx_model
         if len(masses_body_ids)>0:            
-            current_mass = self._mjx_model.body_mass[:,masses_body_ids]
-            replacements["body_mass"] = self._mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
+            current_mass = mjx_model.body_mass[:,masses_body_ids]
+            replacements["body_mass"] = mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
-            frictions_body_ids_mask = jnp.zeros(shape=(self._mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
+            frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
             frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(1)
-            frictions_geoms_ids_mask = frictions_body_ids_mask[self._mjx_model.geom_bodyid]
-            full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, self._mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
+            frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax]
+            full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
             full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:,frictions_body_ids].set(body_frictions_ratio_change)
-            geom_friction_ratios = full_body_frictions_ratio_change[:,self._mjx_model.geom_bodyid]
+            geom_friction_ratios = full_body_frictions_ratio_change[:,self._geom_bodyid_jax]
             replacements["geom_friction"] = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
-                                                      self._mjx_model.geom_friction+self._mjx_model.geom_friction*geom_friction_ratios,
-                                                      self._mjx_model.geom_friction)
-        self._mjx_model = self._mjx_model.replace(**replacements)
+                                                      mjx_model.geom_friction+mjx_model.geom_friction*geom_friction_ratios,
+                                                      mjx_model.geom_friction)
+        mjx_model = mjx_model.replace(**replacements)
+        self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
 
@@ -1544,14 +1550,60 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_if_needed()
         return jax2th(self._sim_state.mjx_data.ncon, th_device=self._out_th_device)
 
-
-    def get_current_colliding_link_ids(self) -> jnp.ndarray:
+    # @partial(jax.jit, static_argnames=["self"])
+    def _get_current_colliding_link_id_pairs(self, sim_state : SimState) -> jnp.ndarray:
         # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
-        geoms = self._sim_state.mjx_data.contact.geom[:,:self._sim_state.mjx_data.ncon]
-        return self._mjx_model.geom_bodyid[geoms]
+        # self._forward_if_needed()
+        geom_pairs = sim_state.mjx_data.contact.geom
+        body_pairs = self._geom_bodyid_jax[geom_pairs]
+        body_pairs = body_pairs.at[:,self._sim_state.mjx_data.ncon:].set(-1)
+        return body_pairs
     
+    @partial(jax.jit, static_argnames=["self"])
+    def _check_links_colliding(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
+        """Returns a boolean array of shape (vec_size, queried_body_pairs.shape[0]).
 
-    
+        Parameters
+        ----------
+        sim_state : SimState
+            _description_
+        queried_body_pairs : jnp.ndarray
+            The body pairs to check for, array of shape (number_of_pairs,2)
+
+        Returns
+        -------
+        jnp.ndarray
+            Boolean array of shape (vec_size, queried_body_pairs.shape[0])
+        """
+        colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state)
+        # colliding_body_pairs is of shape (vec_size, collision_num, 2)
+        # body_pairs is of shape (num_queried_pairs, 2)
+        return jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
+
+    def check_colliding_links(self, queried_link_id_pairs_a : jnp.ndarray, queried_link_id_pairs_b : jnp.ndarray) -> th.Tensor:
+        """_summary_
+
+        Parameters
+        ----------
+        queried_link_id_pairs_a : jnp.ndarray
+            Obtained using get_links_ids()
+        queried_link_id_pairs_b : jnp.ndarray
+            Obtained using get_links_ids()
+
+        Returns
+        -------
+        th.Tensor
+            Boolean mask tensor of shape (vec_size, queried_body_pairs.shape[0])
+        """
+        if queried_link_id_pairs_a.size == 1 and queried_link_id_pairs_b.size != 1:
+            queried_link_id_pairs_a = jnp.broadcast_to(queried_link_id_pairs_a, queried_link_id_pairs_b.shape)
+        if queried_link_id_pairs_b.size == 1 and queried_link_id_pairs_a.size != 1:
+            queried_link_id_pairs_b = jnp.broadcast_to(queried_link_id_pairs_b, queried_link_id_pairs_a.shape)
+        queried_link_id_pairs = jnp.stack([queried_link_id_pairs_a, queried_link_id_pairs_b], axis=1)
+        colliding_pairs_mask_vec = self._check_links_colliding(self._sim_state, queried_link_id_pairs)
+        return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
+
+
     def set_link_impulses(self, link_names : Sequence[tuple[str,str]],
                                 force_torque_xyzxyz : th.Tensor,
                                 durations : th.Tensor, delays : th.Tensor,

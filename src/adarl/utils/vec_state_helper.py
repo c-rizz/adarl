@@ -200,7 +200,9 @@ class ThBoxStateHelper(StateHelper):
                 dbg_check_size(instantaneous_state, (self._vec_size,self._fields_num,*self.field_size))
             else:
                 for k,t in instantaneous_state.items():
-                    dbg_check_size(t, (self._vec_size,) + self.field_size, msg="At state " + state_name + f" field {k} ({self.field_names[k] if isinstance(k,int) else None}): ")
+                    dbg_check_size(t,
+                                   (self._vec_size,) + self.field_size,
+                                   msg="At state " + state_name + f" field {k} ({self.field_names[k] if isinstance(k,int) and k<len(self.field_names) else None}): ")
         if state_th is not None:
             dbg_check_size(state_th, (self._vec_size,self._history_length, self._fields_num,*self.field_size))
         
@@ -507,15 +509,17 @@ class DictStateHelper(StateHelper):
     def add_substate(self,  state_name : str,
                             state_helper : ThBoxStateHelper,
                             observable : bool,
-                            flatten : bool,
+                            flatten_obs : bool,
                             noise : StateNoiseGenerator | None= None) -> DictStateHelper:
+        if state_name in self.sub_helpers:
+            raise RuntimeError(f"state with name '{state_name}' is already present")
         state_helpers = {state_name:state_helper}
         state_helpers.update(self.sub_helpers)
         if observable:
             observable_fields = [state_name]
         else:
             observable_fields = []
-        if flatten:
+        if flatten_obs:
             flatten_in_obs = [state_name]
         else:
             flatten_in_obs = []
