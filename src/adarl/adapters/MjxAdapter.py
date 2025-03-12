@@ -1507,7 +1507,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         masses_body_ids = link_masses[0]
         if len(masses_body_ids)>0:            
             current_mass = self._mjx_model.body_mass[:,masses_body_ids]
-            replacements["body_mass"] = self._mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
+            replacements["body_mass"] = jnp.clip(self._mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change),
+                                                 min = 0.01)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
             frictions_body_ids_mask = jnp.zeros(shape=(self._mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
@@ -1519,6 +1520,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             replacements["geom_friction"] = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
                                                       self._mjx_model.geom_friction+self._mjx_model.geom_friction*geom_friction_ratios,
                                                       self._mjx_model.geom_friction)
+            replacements["geom_friction"] = jnp.clip(replacements["geom_friction"],
+                                                     min = 0.0)
+        # ggLog.info(f"altering model with {replacements}")
         self._mjx_model = self._mjx_model.replace(**replacements)
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
