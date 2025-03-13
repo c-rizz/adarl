@@ -151,9 +151,9 @@ def set_rows_cols_masks(array : jnp.ndarray,
                         masks : Sequence[jnp.ndarray],
                         vals : jnp.ndarray):
     """Sets values in the specified subarray. index_arrs indicates which indexes of each dimension to set
-       the values in. For example you can write in a 2D array at the rows [2,3,4] and columns [0,3,5,7] 
-       (which identify a 3x4 array) by setting index_arrs=(jnp.array([2,3,4]), jnp.array([0,3,5,7])) and
-       passing a 3x4 array in vals.
+       the values in. For example you can write in a 2D array at the rows [2,3] and columns [0,2,3] 
+       (which identify a 2x3 array) by setting index_arrs=(jnp.array([False, False, True, True]), jnp.array([True, False, True, True])) and
+       passing a 2x3 array in vals.
 
     Parameters
     ----------
@@ -1495,7 +1495,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
     #     # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
+    def reset_model_alterations(self, vec_mask : th.Tensor | None = None):
+        # ggLog.info(f"setJointsStateDirect(\n{link_names}, \n{link_states_pose_vel}, \n{vec_mask})")
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
+        # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
+        self._sim_state = self._reset_model_alterations(vec_mask_jnp, self._sim_state)
+        # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
 
+    @partial(jax.jit, static_argnames=["self"])
+    def _reset_model_alterations(self, vec_mask : jnp.ndarray, sim_state : SimState):
+        sim_state.mjx_model.body_mass.copy()
+        resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1), self._original_mjx_model.body_mass, sim_state.mjx_model.body_mass)
+        resetted_geom_friction= jnp.where(jnp.expand_dims(vec_mask,(1,2)), self._original_mjx_model.geom_friction, sim_state.mjx_model.geom_friction)
+        resetted_model = sim_state.mjx_model.replace(   body_mass = resetted_body_mass,
+                                                        geom_friction = resetted_geom_friction)
+        return sim_state.replace_v("mjx_model", resetted_model)
 
     def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor],
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None):
@@ -1523,7 +1540,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if len(masses_body_ids)>0:            
             current_mass = mjx_model.body_mass[:,masses_body_ids]
             body_mass = mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
-            replacements["body_mass"] = jnp.clip(body_mass, min = 0.01)
+            replacements["body_mass"] = jnp.clip(body_mass, min = 0.0)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
             frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
