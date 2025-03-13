@@ -1558,7 +1558,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _get_current_colliding_link_id_pairs(self, sim_state : SimState) -> jnp.ndarray:
         # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
         # self._forward_if_needed()
+
+        active_contacts = sim_state.mjx_data.contact.dist < sim_state.mjx_data.contact.includemargin # size (vec_size, ncon)
+        # print(f"sim_state.mjx_data.contact.dist = {sim_state.mjx_data.contact.dist}")
+        # print(f"sim_state.mjx_data.contact.includemargin = {sim_state.mjx_data.contact.includemargin}")
+        # print(f"active_contacts = {active_contacts}")
+        geom_pairs = sim_state.mjx_data.contact.geom # size (vec_size, ncon, 2)
+        geom_pairs = jnp.where(jnp.expand_dims(active_contacts,-1), geom_pairs, -1)
+        # print(f"geom_pairs = {geom_pairs}")
+        body_pairs = self._geom_bodyid_jax[geom_pairs]
+        # print(f"body_pairs = {body_pairs}")
+        # body_pairs = body_pairs.at[:,sim_state.mjx_data.ncon:].set(-1)
+        # print(f"ncon = {sim_state.mjx_data.ncon}")
+        # print(f"body_pairs = {body_pairs}")
+        return body_pairs
+
+        print(f"ncon = {sim_state.mjx_data.ncon}")
         geom_pairs = sim_state.mjx_data.contact.geom
+        print(f"geom_pairs = {geom_pairs}, size = {geom_pairs.shape}")
         body_pairs = self._geom_bodyid_jax[geom_pairs]
         body_pairs = body_pairs.at[:,self._sim_state.mjx_data.ncon:].set(-1)
         return body_pairs
@@ -1580,7 +1597,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             Boolean array of shape (vec_size, queried_body_pairs.shape[0])
         """
         colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state)
-        print(f"colliding_body_pairs = {colliding_body_pairs}")
+        # print(f"colliding_body_pairs = {colliding_body_pairs}")
         # colliding_body_pairs is of shape (vec_size, collision_num, 2)
         # body_pairs is of shape (num_queried_pairs, 2)
         a_to_b = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
@@ -1607,9 +1624,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if queried_link_id_pairs_b.size == 1 and queried_link_id_pairs_a.size != 1:
             queried_link_id_pairs_b = jnp.broadcast_to(queried_link_id_pairs_b, queried_link_id_pairs_a.shape)
         queried_link_id_pairs = jnp.stack([queried_link_id_pairs_a, queried_link_id_pairs_b], axis=1)
-        # print(f"queried_link_id_pairs = {queried_link_id_pairs}")
+        print(f"queried_link_id_pairs = {queried_link_id_pairs}")
         colliding_pairs_mask_vec = self._check_links_colliding(self._sim_state, queried_link_id_pairs)
-        # print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
+        print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
         return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
 
 
