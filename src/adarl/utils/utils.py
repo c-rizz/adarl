@@ -1264,7 +1264,7 @@ def quat_angle_xyzw(q_xyzw : th.Tensor) -> th.Tensor:
     th.Tensor
         _description_
     """
-    return 2*th.atan2(th.norm(q_xyzw[0:3]),q_xyzw[3])
+    return 2*th.atan2(th.norm(q_xyzw[...,0:3], dim=-1),q_xyzw[...,3])
 
 def orthogonal_vec(v : th.Tensor):
     shortest_axis = th.zeros_like(v)
@@ -1288,11 +1288,11 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
     """
     quats_xyzw = th.zeros(size=v1.size()[:-1]+(4,), device=v1.device, dtype=v1.dtype)
     vdot = th.linalg.vecdot(v1, v2)
-    k = th.norm(v1) * th.norm(v2)
-    th.cross(v1,v2, out=quats_xyzw[...,:3])
+    k = th.linalg.norm(v1, dim = -1) * th.linalg.norm(v2, dim = -1)
+    th.linalg.cross(v1,v2, out=quats_xyzw[...,:3])
     quats_xyzw[...,3] = k + vdot
-    quats_xyz = quats_xyzw[:,:3]
-    quats_w = quats_xyzw[:,3]
+    quats_xyz = quats_xyzw[...,:3]
+    quats_w = quats_xyzw[...,3]
     flipped_vecs = vdot/k==-1
     masked_assign(quats_xyz, flipped_vecs, orthogonal_vec(v1))
     masked_assign(quats_w, flipped_vecs, 0)

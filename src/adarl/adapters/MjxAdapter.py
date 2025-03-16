@@ -1641,9 +1641,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if queried_link_id_pairs_b.size == 1 and queried_link_id_pairs_a.size != 1:
             queried_link_id_pairs_b = jnp.broadcast_to(queried_link_id_pairs_b, queried_link_id_pairs_a.shape)
         queried_link_id_pairs = jnp.stack([queried_link_id_pairs_a, queried_link_id_pairs_b], axis=1)
-        print(f"queried_link_id_pairs = {queried_link_id_pairs}")
+        # print(f"queried_link_id_pairs = {queried_link_id_pairs}")
         colliding_pairs_mask_vec = self._check_links_colliding(self._sim_state, queried_link_id_pairs)
-        print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
+        # print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
         return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
 
 

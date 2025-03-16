@@ -202,7 +202,7 @@ class ThBoxStateHelper(StateHelper):
                 for k,t in instantaneous_state.items():
                     dbg_check_size(t,
                                    (self._vec_size,) + self.field_size,
-                                   msg="At state " + state_name + f" field {k} ({self.field_names[k] if isinstance(k,int) and k<len(self.field_names) else None}): ")
+                                   msg=f"At state '{state_name}' field '{k}' ({self.field_names[k] if isinstance(k,int) and k<len(self.field_names) else None}): ")
         if state_th is not None:
             dbg_check_size(state_th, (self._vec_size,self._history_length, self._fields_num,*self.field_size))
         
