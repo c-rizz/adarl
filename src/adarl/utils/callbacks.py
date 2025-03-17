@@ -123,11 +123,13 @@ class EvalCallback(TrainingCallback):
         #     return action, hidden_state
         
         ggLog.info(f"Evaluation '{self.eval_name}':")
+        t0 = time.monotonic()
         results = evaluatePolicyVec(self.eval_env,
                                     model = model,
                                     episodes=self.n_eval_episodes,
                                     deterministic=self.deterministic,
                                     predict_func = predict_func)
+        tf = time.monotonic()
         mean_reward = results["reward_mean"]
         std_reward = results["reward_std"]
         mean_ep_length = results["steps_mean"]
@@ -135,8 +137,9 @@ class EvalCallback(TrainingCallback):
         self.last_mean_reward = mean_reward
 
         if self.verbose > 0:
-            print(f"Eval:" f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
-            print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
+            print(f"Eval took {tf-t0 :.2f}s:\n"
+                  f"    episode_reward: {mean_reward:.2f} +/- {std_reward:.2f}"
+                  f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
         
         if mean_reward > self.best_mean_reward:
             if self.verbose > 0:

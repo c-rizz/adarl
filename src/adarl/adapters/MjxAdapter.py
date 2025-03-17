@@ -1278,6 +1278,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qeff = set_rows_cols(self._sim_state.mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
         mjx_data = self._sim_state.mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
         self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
+        self._reset_joint_state_step_stats()
         self._mark_forward_needed()
         # self._update_gui(force=True)
         # ggLog.info(f"setted_jstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
@@ -1647,15 +1648,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
 
 
-    def set_link_impulses(self, link_names : Sequence[tuple[str,str]],
+    def set_link_impulses(self, link_ids : jnp.ndarray,
                                 force_torque_xyzxyz : th.Tensor,
                                 durations : th.Tensor, delays : th.Tensor,
                                 vec_mask : th.Tensor) -> None:
-        lids = jnp.array([self._lname2lid[ln] for ln in link_names])
         force_torques = th2jax(force_torque_xyzxyz, jax_device=self._jax_device)
         self._sim_state = self._set_link_impulse(self._sim_state,
-                                                 lids,
+                                                 link_ids,
                                                  force_torques,
+                                                 durations=th2jax(durations, jax_device=self._jax_device),
+                                                 delays=th2jax(delays, jax_device=self._jax_device),
+                                                 vec_mask=th2jax(vec_mask, jax_device=self._jax_device)
                                                  )
 
 
