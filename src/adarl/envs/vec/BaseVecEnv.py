@@ -124,8 +124,13 @@ class BaseVecEnv(ABC, Generic[Observation]):
     def submit_actions(self, actions : th.Tensor):
         ...
 
-    def on_step(self):
-        """ Steps the environment forward of one step.
+    def post_step(self):
+        """ Called after the actual stepping of the environment
+        """
+        pass
+
+    def pre_step(self):
+        """ Called before the actual stepping of the environment
         """
         pass
 
@@ -133,9 +138,10 @@ class BaseVecEnv(ABC, Generic[Observation]):
         """ Steps the environment forward of one step. Custom environments hould not override this method, 
             override on_step() instead if needed (most of the times you shouldn't need to).
         """
+        self.pre_step()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
-        self.on_step()
+        self.post_step()
 
     @abstractmethod
     def get_times_since_build(self) -> th.Tensor:
@@ -294,3 +300,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
     
     def _thrandn(self, size : tuple[int,...]):
         return th.randn(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)
+    
+
+    def _thrand_truncnorm(self, size : tuple[int,...], mean : float, std : float, min_val : float, max_val : float):
+        t = th.empty(size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+        th.nn.init.trunc_normal_(t, mean,std,min_val,max_val, generator=self._rng)
+        return t

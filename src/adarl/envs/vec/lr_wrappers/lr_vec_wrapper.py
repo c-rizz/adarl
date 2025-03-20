@@ -64,8 +64,8 @@ class LrVecWrapper(BaseVecEnv[Observation]):
         return self.env.submit_actions(actions)
 
     @override
-    def on_step(self):
-        return self.env.on_step()
+    def post_step(self):
+        return self.env.post_step()
 
     @override
     def step(self):
