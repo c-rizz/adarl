@@ -52,7 +52,7 @@ class RunningMeanStd(object):
         """
         self.update_from_moments(other.mean, other.var, other.count)
 
-    def update(self, x) -> None:
+    def update(self, x : th.Tensor) -> None:
         batch_mean = th.mean(x, dim=0)
         batch_var = th.var(x, dim=0)
         batch_size = x.size()[0]
@@ -95,7 +95,7 @@ class RunningNormalizer(th.nn.Module):
         self.register_buffer("vec_running_var",   self._running_stats.var)
         self.register_buffer("vec_running_count", self._running_stats.count)
 
-    def forward(self, x):
+    def forward(self, x : th.Tensor):
         if self.training and not self._freeze_stats: # only update in training mode
             self._running_stats.update(x)
         return (x - self._running_stats.mean)/(th.sqrt(self._running_stats.var)+self._epsilon)

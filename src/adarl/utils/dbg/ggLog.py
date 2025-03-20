@@ -119,4 +119,3 @@ def addLogFile(path :str, level = logging.DEBUG):
     fh.setLevel(level)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
-

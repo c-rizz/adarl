@@ -36,6 +36,11 @@ def custom_showwarning(message, category, filename, lineno, file=None, line=None
     original_showwarning(message, category, filename, lineno, file=file, line=line)
     if warning_printstack:
         traceback.print_stack()  # Print full Python stack trace
+    else:
+        stacklist = traceback.extract_stack(limit=10)[:-3]
+        stacklist = traceback.format_list(stacklist)
+        stacklist = [ss[:-1].replace("\n",": ")[:200] for ss in stacklist]
+        print("\n".join(stacklist))
 
 def override_warning_func():
     global original_showwarning
@@ -118,8 +123,8 @@ class Session():
                     warnings.simplefilter("always")
                 override_warning_func()
                 th.cuda.set_sync_debug_mode("warn")
-            th.autograd.set_detect_anomaly(debug_level >= 2) # type: ignore
-            th.distributions.Distribution.set_default_validate_args(debug_level >= 2) # do not check distribution args validity (it leads to cuda syncs)
+            th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
+            th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
                 ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
             else:
