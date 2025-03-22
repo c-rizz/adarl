@@ -101,9 +101,9 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
         # ggLog.info(f"Sending cmd {actions}")
 
-    def on_step(self):
+    def post_step(self):
         # ggLog.info(f"Step {self.get_ep_step_counter()}")
-        return super().on_step()
+        return super().post_step()
     
     @override
     def are_states_terminal(self, states : th.Tensor) -> th.Tensor:

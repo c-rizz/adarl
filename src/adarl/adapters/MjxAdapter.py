@@ -8,7 +8,7 @@ os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
-from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, get_caller_info
+from adarl.utils.utils import Pose, compile_xacro_string, pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, quat_xyzw_between_vecs_py
 from typing import Any
 import jax
 import jax.tree_util
@@ -175,7 +175,7 @@ def set_rows_cols_masks(array : jnp.ndarray,
     #            f"{vals}\n"
     #            f")")
     # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
-    index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), -1) for mask in masks]
+    index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), mask.shape[0]+1) for mask in masks]
     return array.at[jnp.ix_(*index_arrs)].set(vals)
 
 def get_rows_cols(array : jnp.ndarray,
@@ -207,6 +207,47 @@ def get_rows_cols(array : jnp.ndarray,
     index_arrs = [ia if ia.ndim>0 else jnp.expand_dims(ia,0)            for ia in index_arrs]
     index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]          for ia in index_arrs]
     return array[jnp.ix_(*index_arrs)].squeeze(zerodim_axes)
+
+def add_geom_to_renderer(renderer : mujoco.Renderer,
+                         geom_type : mujoco.mjtGeom, 
+                         size_xyz : np.ndarray,
+                         pos_xyz  : np.ndarray,
+                         quat_xyzw  : np.ndarray,
+                         rgba : np.ndarray):
+    if renderer.scene.ngeom == renderer.scene.maxgeom:
+        raise RuntimeError(f"Cannot add geom ngeom == maxgeom == {renderer.scene.ngeom}")
+    ggLog.info(f"adding geom {dict( geom_type=geom_type, size_xyz=size_xyz, pos_xyz=pos_xyz, quat_xyzw=quat_xyzw, rgba=rgba)}")
+    quat_xyzw = quat_xyzw.astype(np.float64)
+    orient_mat = np.empty((9,),dtype=quat_xyzw.dtype)
+    mujoco.mju_quat2Mat(orient_mat, quat_xyzw[...,[3,0,1,2]])
+    mujoco.mjv_initGeom(geom=renderer.scene.geoms[renderer.scene.ngeom],
+                        type=geom_type,
+                        size=size_xyz,
+                        pos=pos_xyz,
+                        mat=orient_mat,
+                        rgba=rgba)
+    renderer.scene.ngeom += 1
+
+def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6, 1]):
+  """Add an arrow to the scene."""
+  scene = renderer.scene
+  scene.geoms[scene.ngeom].category = mujoco.mjtCatBit.mjCAT_STATIC
+  mujoco.mjv_initGeom(
+      geom=scene.geoms[scene.ngeom],
+      type=mujoco.mjtGeom.mjGEOM_ARROW,
+      size=np.zeros(3),
+      pos=np.zeros(3),
+      mat=np.zeros(9),
+      rgba=np.asarray(rgba).astype(np.float32),
+  )
+  mujoco.mjv_connector(
+      geom=scene.geoms[scene.ngeom],
+      type=mujoco.mjtGeom.mjGEOM_ARROW,
+      width=radius,
+      from_=from_,
+      to=to,
+  )
+  scene.ngeom += 1
 
 model_element_separator = "#"
 
@@ -291,6 +332,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._enable_rendering = enable_rendering
         self._jax_device = jax_device
         self._sim_step_dt = sim_step_dt
+        self._sim_step_dt_th = th.as_tensor(sim_step_dt, device=output_th_device)
         self._step_length_sec = step_length_sec
         self._simTime = 0.0
         self._total_iterations = 0
@@ -337,6 +379,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._record_joint_hist = record_whole_joint_trajectories
         self._joints_pveae_history = []
         self._log_freq_joints_trajcetories = log_freq_joints_trajectories
+
+    @override
+    def sim_step_duration(self):
+        return self._sim_step_dt_th
 
     @staticmethod
     def _mj_name_to_pair(mjname : str):
@@ -540,7 +586,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time,
                                                         "impulses_xfrc" : jnp.zeros_like(mjx_data.xfrc_applied),
-                                                        "impulse_startends_stime" : jnp.full(shape=(self._vec_size, 2), fill_value=-1) })
+                                                        "impulse_startends_stime" : jnp.full(shape=(self._vec_size, mjx_model.nbody, 2), fill_value=-1) })
         
         # self._check_model_inaxes()        
         # data = self._mjx_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
@@ -552,13 +598,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._reset_joint_state_step_stats()
 
 
-        if self._enable_rendering:
-            self._renderer = mujoco.Renderer(self._mj_model)
-            self._render_scene_option = mujoco.MjvOption()
-            # # enable joint visualization option:
-            # scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
-        else:
-            self._renderer = None
 
         if self._show_gui:
             self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
@@ -575,7 +614,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
         else:
             self._renderers = {}
-        
+        self._visualize_xfrc_applied = True
 
         self._lid2geoms : dict[int,jnp.ndarray] = {}
         all_links = list(self._lname2lid.keys())
@@ -767,7 +806,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_commands(self, sim_state : SimState) -> SimState:
         sim_state = self._apply_torque_cmds(sim_state)
-        # sim_state = self._apply_impulses(sim_state)
         return sim_state
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
@@ -784,6 +822,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
     def _sim_step_fast(self, iteration, sim_state : SimState) -> SimState:
         sim_state = self._apply_commands(sim_state)
+        sim_state = self._apply_impulses(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model,sim_state.mjx_data)
         sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
@@ -971,7 +1010,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None) -> tuple[list[th.Tensor], th.Tensor]:
-        if self._renderer is None:
+        if len(self._renderers)==0:
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
         if vec_mask is None:
             vec_mask = self._all_vecs_thcpu
@@ -991,8 +1030,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 cam = requestedCameras[i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes[cam]]
-                mujoco.mj_camlight(self._mj_model, self._renderers_mj_datas[env]) # see https://github.com/google-deepmind/mujoco/issues/1806
-                renderer.update_scene(self._renderers_mj_datas[env], self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                mjdata = self._renderers_mj_datas[env]
+                mujoco.mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
+                renderer.update_scene(mjdata, self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                if self._visualize_xfrc_applied:
+                    for body_id in range(0,self._mj_model.nbody):
+                        if np.linalg.norm(mjdata.xfrc_applied[body_id]) != 0.0:
+                            # ggLog.info(f"xfrc_applied[{body_id}] = {mjdata.xfrc_applied[body_id]}")
+                            force_vec = mjdata.xfrc_applied[body_id,:3]
+                            # force = np.linalg.norm(np.linalg.norm(force_vec))
+                            # force_quat = quat_xyzw_between_vecs_py(th.as_tensor([1.0,0,0]), th.as_tensor(force_vec, dtype=th.float32)).numpy()
+                            body_pos = mjdata.xipos[body_id]
+                            # add_geom_to_renderer(renderer,
+                            #                         geom_type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                            #                         size_xyz=np.array([0.05, force,0.05]),
+                            #                         pos_xyz=body_pos,
+                            #                         quat_xyzw=force_quat,
+                            #                         rgba=np.array([0.9,0.1,0.1,1.0]))
+                            add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
                 image_batches[i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in image_batches], times
@@ -1448,54 +1503,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             # sim_state.requested_qfrc_applied = set_rows_cols_masks(sim_state.requested_qfrc_applied, [sims_mask, qvadr], qefforts[:,:])
         return sim_state
 
-    # def _set_effort_command(self,   sim_state : SimState,
-    #                                 jids : jnp.ndarray,
-    #                                 qefforts : jnp.ndarray,
-    #                                 sims_mask : jnp.ndarray | None = None) -> SimState:
-    #     """Set the efforts to be applied on a set of joints.
-
-    #     Effort means either a torque or a force, depending on the type of joint.
-
-    #     Parameters
-    #     ----------
-    #     joint_names : jnp.ndarray
-    #         Array with the joint ids for each effort command, 1-dimensional
-    #     efforts : th.Tensor
-    #         Tensor of shape (vec_size, len(jids)) containing the effort for each joint in each environment.
-    #     """
-    #     qvadr = self._mj_model.jnt_dofadr[jids]
-    #     if sims_mask is None:
-    #         sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:])
-    #     else:
-    #         sims_indexes = jnp.nonzero(sims_mask)[0]
-    #         sim_state.requested_qfrc_applied = sim_state.requested_qfrc_applied.at[sims_indexes[:,jnp.newaxis],qvadr].set(qefforts[:,:])
-    #     return sim_state
-
-
-    # def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor]):
-    #     """_summary_
-
-    #     Parameters
-    #     ----------
-    #     link_masses : tuple[jnp.ndarray, th.Tensor]
-    #         tuple containing alist of link ids (from get_link_id) and corresponding
-    #         body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
-    #     """
-    #     # We need to be able to alter:
-    #     #    body masses (body_mass)
-    #     #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
-    #     #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
-    #     #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
-    #     #    some world parameters? e.g. gravity
-    #     body_masses = th2jax(link_masses[1],jax_device=self._jax_device)
-    #     body_ids = link_masses[0]
-    #     replacements = {}
-    #     if len(body_ids)>0:
-    #         replacements["body_mass"] = self._sim_state.mjx_model.body_mass.at[:,body_ids].set(body_masses)
-    #     mjx_model = self._sim_state.mjx_model.replace(**replacements)
-    #     self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
-    #     # self._recompute_mjxmodel_inaxes() # Is it really necessary?
-
     def reset_model_alterations(self, vec_mask : th.Tensor | None = None):
         # ggLog.info(f"setJointsStateDirect(\n{link_names}, \n{link_states_pose_vel}, \n{vec_mask})")
         if vec_mask is not None:
@@ -1647,18 +1654,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
         return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
 
-
+    @override
     def set_link_impulses(self, link_ids : jnp.ndarray,
                                 force_torque_xyzxyz : th.Tensor,
                                 durations : th.Tensor, delays : th.Tensor,
                                 vec_mask : th.Tensor) -> None:
-        force_torques = th2jax(force_torque_xyzxyz, jax_device=self._jax_device)
+        bodies_num = link_ids.shape[0]
         self._sim_state = self._set_link_impulse(self._sim_state,
                                                  link_ids,
-                                                 force_torques,
-                                                 durations=th2jax(durations, jax_device=self._jax_device),
-                                                 delays=th2jax(delays, jax_device=self._jax_device),
-                                                 vec_mask=th2jax(vec_mask, jax_device=self._jax_device)
+                                                 force_torques=th2jax(force_torque_xyzxyz.view((self._vec_size,bodies_num,6)), jax_device=self._jax_device),
+                                                 durations=th2jax(durations.view(self._vec_size,bodies_num), jax_device=self._jax_device),
+                                                 delays=th2jax(delays.view(self._vec_size,bodies_num), jax_device=self._jax_device),
+                                                 vec_mask=th2jax(vec_mask.view(self._vec_size,), jax_device=self._jax_device)
                                                  )
 
 
@@ -1669,9 +1676,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 durations : jnp.ndarray,
                                 delays : jnp.ndarray,
                                 vec_mask : jnp.ndarray | None):
-        starts = sim_state.sim_time + delays
-        ends = starts + durations
-        startends = jnp.concat([starts,ends], axis = -1)
+        starts = sim_state.sim_time + delays # (vec_size,body_ids.shape[0])
+        ends = starts + durations # (vec_size,body_ids.shape[0])
+        startends = jnp.stack([starts,ends], axis = -1)  # (vec_size,body_ids.shape[0],2)
         if vec_mask is None:
             impulse_startends_stime = sim_state.impulse_startends_stime.at[:,body_ids].set(startends)
             impulses_xfrc = sim_state.impulses_xfrc.at[:,body_ids].set(force_torques)
@@ -1685,14 +1692,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_impulses(self, sim_state : SimState):
-        started_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,0]
-        ended_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,1]
-        xfrc_applied = jnp.where(ended_impulses, 0, sim_state.mjx_data.xfrc_applied) # clear ended impulses
-        impulse_startends_stime = jnp.where(ended_impulses, -1,      sim_state.impulse_startends_stime) # clear ended impulses start/ends
-        impulses_xfrc =              jnp.where(ended_impulses, 0, sim_state.impulses_xfrc) # clear ended impulses force/torques
+        started_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,:,0] # vec_size*nbody
+        ended_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,:,1] # vec_size*nbody
+        # expand to match sizesof xfrc_applied or impulse_startends_stime (i.e. vec_size*nbody*6 and vec_size*nbody*2)
+        ended_impulses = jnp.expand_dims(ended_impulses, -1) # vec_size*nbody*1
+        started_impulses = jnp.expand_dims(started_impulses, -1) # vec_size*nbody*1
+        xfrc_applied = jnp.where(ended_impulses, 0, sim_state.mjx_data.xfrc_applied) # clear ended impulses (vec_size*nbody*6)
+        impulse_startends_stime = jnp.where(ended_impulses, -1, sim_state.impulse_startends_stime) # clear ended impulses start/ends (vec_size*nbody*2)
+        impulses_xfrc =           jnp.where(ended_impulses, 0,  sim_state.impulses_xfrc) # clear ended impulses force/torques (vec_size*nbody*6)
         active_impulses = jnp.logical_and(started_impulses, jnp.logical_not(ended_impulses))
         
         xfrc_applied = jnp.where(active_impulses, sim_state.impulses_xfrc, xfrc_applied)
+        # jax.debug.print("xfrc_applied={xfrc_applied}, ended_impulses={ended_impulses}, started_impulses={started_impulses}",
+        #                  xfrc_applied=xfrc_applied,
+        #                  started_impulses=started_impulses,
+        #                  ended_impulses=ended_impulses)       
         
         mjx_data = sim_state.mjx_data.replace(xfrc_applied = xfrc_applied)
         sim_state = sim_state.replace_d({"impulse_startends_stime" : impulse_startends_stime,

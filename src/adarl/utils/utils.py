@@ -993,6 +993,8 @@ def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
                     dtype=mu_std.dtype,
                     device=mu_std.device)
     if squash_sigma > 0:
+        if squash_sigma < 1.5:
+            ggLog.warn(f"Using randn squashing with squash_sigma={squash_sigma}. This may lead to a non-concave distribution!")
         noise = th.tanh(noise/(squash_sigma))*squash_sigma
     return noise*mu_std[1] + mu_std[0]
 
@@ -1294,8 +1296,8 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
     quats_xyz = quats_xyzw[...,:3]
     quats_w = quats_xyzw[...,3]
     flipped_vecs = vdot/k==-1
-    masked_assign(quats_xyz, flipped_vecs, orthogonal_vec(v1))
-    masked_assign(quats_w, flipped_vecs, 0)
+    masked_assign(quats_xyz.view(-1,3), flipped_vecs.view(-1), orthogonal_vec(v1).view(-1,3))
+    masked_assign(quats_w.view(-1,1), flipped_vecs.view(-1), 0)
     # quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
     # quats_xyzw[vdot/k==-1,3] = 0
     # print(f"vdot = {vdot}")

@@ -76,4 +76,14 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         raise NotImplementedError()
     
     def set_body_collisions(self, link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]):
-        raise NotImplementedError
+        raise NotImplementedError()
+    
+    def set_link_impulses(self, link_ids : Sequence[Any],
+                                force_torque_xyzxyz : th.Tensor,
+                                durations : th.Tensor, delays : th.Tensor,
+                                vec_mask : th.Tensor) -> None:
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def sim_step_duration(self) -> th.Tensor:
+        raise NotImplementedError()
