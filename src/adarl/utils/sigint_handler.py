@@ -122,7 +122,7 @@ def run_on_sigint_received(func) -> bool:
     else:
         status = shared_memory_list[0]
         if status == "wait":
-            ggLog.info(f"SIGINT received, halting and waiting for main process...")
+            ggLog.info(f"Pause request received, halting and waiting for main process...")
             while status == "wait":
                 time.sleep(1)
                 status = shared_memory_list[0]
@@ -138,7 +138,7 @@ def run_on_sigint_received(func) -> bool:
 def haltOnSigintReceived() -> bool:
     def prompt():
         while True:
-                print("SIGINT received:")
+                print("Pause request received:")
                 print(f"{session.default_session.run_info['experiment_name']} : {session.default_session.run_info['run_id']}")
                 answer = input(f"  Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":

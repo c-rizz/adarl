@@ -210,6 +210,9 @@ class VectorEnvLogger(
                     logs.update({"VecEnvLogger/"+k:v.mean() for k,v in avgs.items()})
                     logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in self._completed_final_infos_since_log.items()})
                     logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in self._completed_final_infos_since_log.items()})
+                    logs.update({"VecEnvLogger/med."+k:v.median()  for k,v in self._completed_final_infos_since_log.items()})
+                    logs.update({"VecEnvLogger/q95."+k:v.quantile(0.95)  for k,v in self._completed_final_infos_since_log.items()})
+                    logs.update({"VecEnvLogger/q05."+k:v.quantile(0.05)  for k,v in self._completed_final_infos_since_log.items()})
                     wall_single_fps = (self.__vstep_count - self._step_count_last_log)/(time.monotonic()-self._time_last_log)
                     logs["VecEnvLogger/wall_fps_vec"] = wall_single_fps*self._num_envs
                     logs["VecEnvLogger/wall_fps_single"] = wall_single_fps
@@ -219,6 +222,7 @@ class VectorEnvLogger(
                             f" r= \033[1m{logs.get('VecEnvLogger/avg.lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+
                             f" min_r={logs.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"
                             f" max_r={logs.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}"
+                            f" med_r={logs.get('VecEnvLogger/med.lastinfo.ep_reward',float('nan')):08.8g}"
                             f" fps={self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
                     if self._use_wandb:
                         from adarl.utils.wandb_wrapper import wandb_log

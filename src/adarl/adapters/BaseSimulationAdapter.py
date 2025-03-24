@@ -87,3 +87,7 @@ class BaseSimulationAdapter(BaseAdapter):
             Name of the model to be removed
         """
         raise NotImplementedError()
+    
+    @abstractmethod
+    def sim_step_duration(self):
+        raise NotImplementedError()

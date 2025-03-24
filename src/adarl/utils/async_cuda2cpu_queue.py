@@ -8,7 +8,7 @@ import os
 import adarl.utils.dbg.ggLog as ggLog
 import time
 import atexit
-
+from adarl.utils.utils import exc_to_str
 
 
 class BlockingPeekQueue:
@@ -73,7 +73,7 @@ class Async_cuda2cpu_queue():
 
     def _worker(self):
         import adarl.utils.session as session
-        ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
+        ggLog.info(f"Starting Async_cuda2cpu_queue worker in process {os.getpid()}")
         while not session.default_session.is_shutting_down() or not self._running:
             try:
                 event, cuda_tensors, cpu_tensors, callback = self._queue.peek(timeout=1.0)
@@ -90,6 +90,9 @@ class Async_cuda2cpu_queue():
         event = th.Event()
         event.record()
         self._queue.put((event, cuda_tensors, cpu_tensors, callback))
+
+    def current_queue_len(self):
+        return len(self._queue)
 
     def close(self):
         self._running = False
@@ -129,8 +132,12 @@ def run_async_job(tensors : dict[str,th.Tensor], callback : Callable[[dict[str,t
 def log_async(string : str, tensors : dict[str,th.Tensor], loglevel = "info"):
     def callback(tensors : dict[str,th.Tensor]):
         nonlocal string
-        string = string.format(tensors)
-        # for k,t in tensors:
-        #     string = string.replace("{"+k+"}", f"{t}")
+        try:
+            string = string.format(**tensors)
+        except Exception as e:
+            ggLog.warn(f"log_async: string formatting failed with {exc_to_str(e)}, tensors = {tensors}")
         getattr(ggLog,loglevel)(string)
     get_async_cuda2cpu_queue().send(tensors, callback)
+    # ql = get_async_cuda2cpu_queue().current_queue_len()
+    # if(ql > 10):
+    #     ggLog.warn(f"log_async queue len = {ql}")

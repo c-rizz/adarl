@@ -226,3 +226,7 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
     
     def sub_adapter(self):
         return self._sub_adapter
+    
+    @override
+    def sim_step_duration(self) -> float:
+        return self._sub_adapter.sim_step_duration()
