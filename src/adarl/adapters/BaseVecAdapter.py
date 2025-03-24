@@ -150,15 +150,15 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_frame : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False) -> th.Tensor:
         """Get the state of the requested links.
 
         Parameters
         ----------
         linkNames : List[str]
             Names of the link to get the state of
-        use_com_frame : bool
-            Defines if th elink information should be referring to the frame pose or the center of mass pose
+        use_com_pose : bool
+            Defines if the link pose should be the one of the frame pose or the center of mass pose. linear/angular velocity are always in the com frame
 
         Returns
         -------

@@ -172,7 +172,7 @@ class BaseAdapter(ABC):
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_frame : bool = False) -> Dict[LinkName,LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False) -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.
 
         Parameters

@@ -1220,13 +1220,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _get_links_state_jax(self, body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
         return jnp.concatenate([mjx_data.xpos[:,body_ids], # frame position
                                 mjx_data.xquat[:,body_ids][:,:,self._wxyz2xyzw], # frame orientation
-                                mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # frame linear and angular velocity
+                                mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # com linear and angular velocity
     
     @staticmethod
     @jax.jit
     def _get_links_com_state_jax(body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """ The COM orientation is aligned along the principal axes of inertia, 
-            as stated in https://mujoco.readthedocs.io/en/stable/XMLreference.html?utm_source=chatgpt.com#body-inertial
+            as stated in https://mujoco.readthedocs.io/en/stable/XMLreference.html?#body-inertial
             I believe this means the x ends up on the highes inertia axis and so on
             So for example on the main body of a usual quadruped the x would point down, the y sideways and the z front/back
         """
@@ -1248,7 +1248,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
 
     @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | jnp.ndarray | None = None, use_com_frame : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | jnp.ndarray | None = None, use_com_pose : bool = False) -> th.Tensor:
         # th.cuda.synchronize()
         # t0 = time.monotonic()
         if requestedLinks is None:
@@ -1260,7 +1260,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # th.cuda.synchronize()
         # t1 = time.monotonic()
         self._forward_if_needed()
-        if use_com_frame:
+        if use_com_pose:
             t = self._get_links_com_state_jax(body_ids, self._sim_state.mjx_data)
         else:
             t = self._get_links_state_jax(body_ids, self._sim_state.mjx_data)

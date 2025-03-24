@@ -415,7 +415,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         ret = {}
         for cam_name in requestedCameras:
             camera = self._cameras[cam_name]
-            linkstate = self.getLinksState([camera.link_name], use_com_frame=True)[camera.link_name]
+            linkstate = self.getLinksState([camera.link_name], use_com_pose=True)[camera.link_name]
             camera.set_pose(linkstate.pose)
             camera.setup_light( lightDirection = self._lightDirection,
                                 lightColor = self._lightColor,
@@ -734,7 +734,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
 
 
-    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_frame : bool = False) -> Dict[Tuple[str,str],LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose : bool = False) -> Dict[Tuple[str,str],LinkState]:
         # ggLog.info(f"Getting link states for {requestedLinks}")
         #For each bodyId I submit a request for joint state
         requests = {} #for each body id we will have a list of joints
@@ -754,7 +754,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
-                if use_com_frame:
+                if use_com_pose:
                     linkState = LinkState(  position_xyz =     bodyStates[i][0][:3],
                                             orientation_xyzw = bodyStates[i][1][:4],
                                             pos_com_velocity_xyz = bodyStates[i][6][:3],
@@ -770,16 +770,24 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             # ggLog.info(f"Getting pose of body {bodyId}")
             bodyPose = pybullet.getBasePositionAndOrientation(bodyId)
             bodyVelocity = pybullet.getBaseVelocity(bodyId)
-            if use_com_frame:
+            if use_com_pose:
                 linkState = LinkState(  position_xyz = bodyPose[0][:3],
                                         orientation_xyzw = bodyPose[1][:4],
                                         pos_com_velocity_xyz = bodyVelocity[0][:3],
                                         ang_velocity_xyz = bodyVelocity[1][:3])
             else:
-                # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame
+                # The pose is expressed in the center-of-mass frame, we need to convert it to use the urdf frame
                 local_inertia_pos, local_inertia_orient = pybullet.getDynamicsInfo(bodyId,-1)[3:5]
-                # pybullet.multiplyTransform
-                raise NotImplementedError()
+                local_inertia_pos, local_inertia_orient = pybullet.invertTransform(local_inertia_pos, local_inertia_orient)
+                # urdfLinkFrame = comLinkFrame * localInertialFrame.inverse()
+                pos, orient = pybullet.multiplyTransforms(positionA = bodyPose[0][:3],
+                                           orientationA = bodyPose[1][:4],
+                                           positionB = local_inertia_pos,
+                                           orientationB = local_inertia_orient)
+                linkState = LinkState(  position_xyz = pos,
+                                        orientation_xyzw = orient,
+                                        pos_com_velocity_xyz = bodyVelocity[0][:3],
+                                        ang_velocity_xyz = bodyVelocity[1][:3])
         
             allStates[self._getLinkName(bodyId,-1)] = linkState
 
@@ -1159,3 +1167,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                 "run_wtime_since_build" : self._run_wtime_since_build,
                 "run_overhead_ratio" : self._run_wtime_since_build/self._sim_stepping_wtime_since_build,
                 "pure_sim_rt_factor" : self._simTime/self._sim_stepping_wtime_since_build}
+    
+
+    @override
+    def sim_step_duration(self):
+        return self._simulation_step

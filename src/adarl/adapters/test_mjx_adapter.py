@@ -129,7 +129,7 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
             js = adapter.getJointsState([('cartpole','cartpole_joint'),('cartpole','foot_joint')])[:,:]
             print(  f"revolute joint state = {js[:,0,:]}\n"
                     f"linear   joint state = {js[:,1,:]}")
-        # print(f"link states = {adapter.getLinksState(use_com_frame=False)}")
+        # print(f"link states = {adapter.getLinksState(use_com_pose=False)}")
 
         # print(f"link states = {adapter.getLinksState()}")
         # print(f"cart link state = {adapter.getLinksState([('cartpole','base_link')])}")

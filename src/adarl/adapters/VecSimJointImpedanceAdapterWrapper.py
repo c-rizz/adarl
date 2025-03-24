@@ -76,10 +76,10 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
         return self._sub_adapter.get_joints_state_step_stats().unsqueeze(0)
         
     @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_frame : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_pose : bool = False) -> th.Tensor:
         if requestedLinks is None:
             requestedLinks = self.sub_adapter()._monitored_links
-        ls = self._sub_adapter.getLinksState(requestedLinks, use_com_frame=use_com_frame)
+        ls = self._sub_adapter.getLinksState(requestedLinks, use_com_pose=use_com_pose)
         r = th.stack([th.cat([ ls[k].pose.position,
                                 ls[k].pose.orientation_xyzw,
                                 ls[k].pos_velocity_xyz,
