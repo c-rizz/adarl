@@ -1552,7 +1552,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
             frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
-            frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(1)
+            frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
             frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax]
             full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
             full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:,frictions_body_ids].set(body_frictions_ratio_change)

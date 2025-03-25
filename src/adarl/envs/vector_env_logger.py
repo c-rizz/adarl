@@ -229,7 +229,7 @@ class VectorEnvLogger(
                         # ggLog.info(f"vecenvlogger logging: {list(logs.keys())}")
                         wdblog = {f"{self._logs_id}{k}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()}
                         wandb_log(wdblog)
-                    ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
+                    # ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
                     self._step_count_last_log = self.__vstep_count
                     self._time_last_log = time.monotonic()
                     self._overhead_count = 0
