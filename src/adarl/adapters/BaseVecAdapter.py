@@ -178,6 +178,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         -------
         th.Tensor
             Tensor containing the link state for each monitored link.
+            The link state is a concatenation of position_xyz,orientation_xyzw,linear_com_velocity_xyz,angular_velocity_xyz.
 
         """
         ...

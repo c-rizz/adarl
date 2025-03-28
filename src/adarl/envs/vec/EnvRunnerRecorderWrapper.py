@@ -325,6 +325,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                             last_truncateds : th.Tensor):
         # ggLog.info(f"rec._on_ep_end()")
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
+        run_id = adarl.utils.session.default_session.run_info["run_id"]
         if self._may_episode_be_saved(ep_count) and envs_ended_mask[self._env_idx] and self._stored_frames > 1:
             # Episode with at least a full step finishing
             if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
@@ -337,7 +338,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                                                                 lambda tensor: tensor[self._env_idx])
                 self._record_step(img, obs, act, info, rew, term, trunc)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-            fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
+            fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
             if self._saveBestEpisodes and self._ep_rewards[self._env_idx] > self._bestReward:
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(f"{self._outFolder}/best/{fname}")            

@@ -402,7 +402,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _rebuild_lower_funcs(self):
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
-        
+        self._mjx_ray_vec = jax.jit(jax.vmap(
+                                fun=jax.vmap(mjx.ray,
+                                             in_axes=(None, None, 0, 0, None, None, None)), # map over number of rays
+                                in_axes=((self._mjx_model_in_axes, 0, None, None, None, None, None)) # map over sims
+                            ))
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef]):
@@ -481,6 +485,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._mj_model.opt.iterations = 3
             self._mj_model.opt.ls_iterations = 3
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+            self._mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
+            self._mj_model.opt.impratio = 1.1 
         elif self._opt_preset == "fast":
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 10
@@ -624,12 +630,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
 
-        print("Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        print("Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        print(f"dof armatures:{self._mj_model.dof_armature}")
+
+        ggLog.info("Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info("Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info(f"dof armatures:{self._mj_model.dof_armature}")
         
-        print("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
-        print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
+        ggLog.info("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
+        ggLog.info("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
         ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
@@ -647,11 +654,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Compiled.")
 
     @override
-    def set_body_collisions(self, link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]):
+    def set_body_collisions(self,   link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
+                                    explicit_groups : list[tuple[tuple[str,str],...]] = []):
         input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
         ggLog.info(f"input_collision_groups = {input_collision_groups}")
 
-        best_collision_groups = []
+        best_collision_groups : list[set[tuple[str,str]]] = []
         while len(input_collision_groups)>0:
             biggest_common_subgroup = set(input_collision_groups[0])
             for g in input_collision_groups:
@@ -660,16 +668,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups]
             input_collision_groups = [g for g in input_collision_groups if len(g)>0]
 
+        best_collision_groups_set = {tuple(g) for g in best_collision_groups}
+        best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
         ggLog.info(f"best_collision_groups = {best_collision_groups}")
-        link_to_groups = {} # Which groups each link is part of
+        link_to_group_ids = {} # Which groups each link is part of
+        group_to_links = {}
+        self._linkgroup_to_id : dict[tuple[tuple[str,str],...], int] = {}
         for i,g in enumerate(best_collision_groups):
+            g_t = tuple(g)
+            self._linkgroup_to_id[g_t] = i
+            group_to_links[g_t] = []
             for l in g:
-                if l not in link_to_groups:
-                    link_to_groups[l] = []
-                link_to_groups[l].append(i)
-        ggLog.info(f"link_to_groups = {link_to_groups}")
+                if l not in link_to_group_ids:
+                    link_to_group_ids[l] = []
+                link_to_group_ids[l].append(i)
+                group_to_links[g_t].append(l)
+        ggLog.info(f"link_to_groups = {link_to_group_ids}")
+        ggLog.info(f"group_to_links = {group_to_links}")
 
-        link_colliding_groups = {} # Which group each link collides with
+        link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
         for link,colliding_links in link_group_collisions:
             colliding_links = set(colliding_links)
             for g in best_collision_groups:
@@ -680,19 +697,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"link_colliding_groups = {link_colliding_groups}")
 
         if len(best_collision_groups) > 32:
-            raise RuntimeError(f"Detected more than 32 separate collision group. Cannot represent in Mujoco collision masks.")
+            raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")
         
         all_links = list(self._lname2lid.keys()) #list(link_to_groups.keys())+list(link_colliding_groups.keys())
         for l in all_links:
-            if l not in link_to_groups:
-                link_to_groups[l] = []
+            if l not in link_to_group_ids:
+                link_to_group_ids[l] = []
             if l not in link_colliding_groups:
                 link_colliding_groups[l] = []
         link_contypes = {}
         link_conaffinity = {}
         for l in all_links:
             contype_mask = 0
-            for gid in link_to_groups[l]:
+            for gid in link_to_group_ids[l]:
                 contype_mask |= 1<<gid
             link_contypes[l] = contype_mask
             conaffinity_mask = 0
@@ -940,67 +957,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         return self._simTime-st0
     
-    # @override
-    # def run(self, duration_sec : float):
-    #     """Run the environment for the specified duration"""
-    #     tf0 = time.monotonic()
-
-    #     # self._sent_motor_torque_commands_by_bid_jid = {}
-
-    #     stepping_wtime = 0
-    #     simulating_wtime = 0
-    #     control_wtime = 0
-    #     vsteps_done = 0
-    #     st0 = self._simTime
-    #     while self._simTime-st0 < duration_sec:
-    #         wtps = time.monotonic()
-    #         self._sim_state = self._apply_commands(self._sim_state)
-    #         wt1 = time.monotonic()
-    #         control_wtime += wt1-wtps
-    #         new_mjx_data = self._mjx_integrate_and_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
-    #         self._sim_state = self._sim_state.replace( "mjx_data", new_mjx_data)
-    #         simulating_wtime += time.monotonic()-wt1
-    #         self._sim_state = self._sim_state.replace( "sim_time", self._sim_state.sim_time + self._sim_step_dt)
-
-    #         self._monitored_joints_stats = self._update_joint_state_step_stats(self._sim_state, self._monitored_joints_stats)
-    #         stepping_wtime += time.monotonic()-wtps
-    #         self._sim_step_count_since_build += 1
-    #         vsteps_done += 1
-    #         # self._read_new_contacts()
-            
-    #         self._simTime += self._sim_step_dt
-    #         if self._realtime_factor is not None and self._realtime_factor>0:
-    #             sleep_time = self._sim_step_dt*(1/self._realtime_factor) - (time.monotonic()-self._prev_step_end_wtime)
-    #             if sleep_time > 0:
-    #                 time.sleep(sleep_time)
-    #         self._prev_step_end_wtime = time.monotonic()
-    #         self._update_gui()
-    #     # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
-    #     #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
-    #     self._dbg_info.wtime_stepping =    stepping_wtime
-    #     self._dbg_info.wtime_simulating =  simulating_wtime
-    #     self._dbg_info.wtime_controlling = control_wtime
-    #     self._dbg_info.rt_factor_vec = self._vec_size*(self._simTime-st0)/stepping_wtime
-    #     self._dbg_info.rt_factor_single = (self._simTime-st0)/stepping_wtime
-    #     self._dbg_info.stime_ran =  self._simTime-st0
-    #     self._dbg_info.stime =  self._simTime
-    #     self._dbg_info.fps_vec =     self._vec_size*vsteps_done/stepping_wtime
-    #     self._dbg_info.fps_single =  vsteps_done/stepping_wtime
-    #     if self._log_freq > 0 and self._sim_step_count_since_build % self._log_freq == 0:
-    #         ggLog.info( "\n".join([str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
-    #     self._sim_stepping_wtime_since_build += stepping_wtime
-    #     self._run_wtime_since_build += time.monotonic()-tf0
-
-    #     return self._simTime-st0
     
     def get_debug_info(self) -> dict[str,th.Tensor]:
         return {k:th.as_tensor(v) for k,v in dataclasses.asdict(self._dbg_info).items()}
 
-    # @staticmethod
-    # # @jax.jit
-    # def _take_batch_element(batch, e):
-    #     mjx_data = jax.tree_map(lambda l: l[e], batch)
-    #     return mjx.get_data(mj_model, mjx_data)
     
     @staticmethod
     # @jax.jit
@@ -1736,3 +1696,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     sim_state = sim_state.replace_d({"prng_key":prng_key,
     #                                      "disturbance_terminations_stime":disturbance_terminations_stime,
     #                                      "mjx_data" : mjx_data})
+
+    def get_elevation_map(self, positions_vec_xy : th.Tensor, range_xyxy : th.Tensor, resolution_xy : th.Tensor,
+                                ground_linkgroups : list[tuple[tuple[str,str],...]]):
+        for g in ground_linkgroups:
+            if g not in self._linkgroup_to_id:
+                raise RuntimeError(f"Group {g} was not already defined, you can add it explicitly in set_body_collisions")
+            ground_linkgroups_mask |= 1<<self._linkgroup_to_id[g]
+        jnp_positions_vec_xy = th2jax(positions_vec_xy, jax_device=self._jax_device)
+        jnp_range_xyxy = th2jax(range_xyxy, jax_device=self._jax_device)
+        jnp_resolution_xy = th2jax(resolution_xy, jax_device=self._jax_device)
+        width_height = jnp_range_xyxy[2:4] - jnp_range_xyxy[0:2]
+        coords_grid = jnp.swapaxes(jnp.mgrid[:jnp_resolution_xy[0],:jnp_resolution_xy[1]]/jnp_resolution_xy*width_height-jnp_range_xyxy[0:2],0,2) + jnp_resolution_xy/2
+        coords_grid = jnp_positions_vec_xy + coords_grid
+        ray_origins = jnp.concat([coords_grid,jnp.full_like(coords_grid[...,0], fill_value=10.0)], axis=-1) # add z coord
+        self._mjx_ray_vec(  self._sim_state.mjx_model, self._sim_state.mjx_data, 
+                            pnt = ray_origins,
+                            vec = jnp.array([0., 0., -1.]),
+                            geom_group = ground_linkgroups_mask # mask that is true at each group_id to be included
+                            )
