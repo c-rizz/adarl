@@ -1032,8 +1032,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
         if requestedJoints is None:
             jids = self._monitored_jids
+        elif isinstance(requestedJoints, jnp.ndarray):
+            jids = requestedJoints
         else:
-            jids = jnp.array([self._jname2jid[jn] for jn in requestedJoints], device=self._jax_device)
+            jids = self.get_joints_ids(requestedJoints)
         if len(jids) == 0:
             return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
         else:
@@ -1697,21 +1699,33 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #                                      "disturbance_terminations_stime":disturbance_terminations_stime,
     #                                      "mjx_data" : mjx_data})
 
-    def get_elevation_map(self, positions_vec_xy : th.Tensor, range_xyxy : th.Tensor, resolution_xy : th.Tensor,
+    @partial(jax.jit, static_argnums=(0,))
+    def _get_height_map(self, positions_vec_xy : jnp.ndarray, range_xyxy : jnp.ndarray, resolution_xy : tuple[int,int],
+                                ground_linkgroups_ids : jnp.ndarray,
+                                sim_state : SimState):
+        vsize = positions_vec_xy.shape[0]
+        jnp_resolution_xy = jnp.array(resolution_xy)
+        width_height = range_xyxy[2:4] - range_xyxy[0:2]
+        coords_grid = jnp.swapaxes(jnp.mgrid[:resolution_xy[0],:resolution_xy[1]]/jnp_resolution_xy*width_height-range_xyxy[0:2],0,2) + jnp_resolution_xy/2
+        coords_grid = positions_vec_xy + coords_grid
+        ray_height = 10.0
+        ray_origins = jnp.concat([coords_grid,jnp.full_like(coords_grid[...,0], fill_value=ray_height)], axis=-1) # add z coord
+        dists_vec_xy = self._mjx_ray_vec(  sim_state.mjx_model, sim_state.mjx_data, 
+                            pnt = ray_origins.reshape(vsize,-1),
+                            vec = jnp.array([0., 0., -1.]),
+                            geom_group = ground_linkgroups_ids # mask that is true at each group_id to be included
+                            ).reshape(vsize, resolution_xy[0], resolution_xy[1])
+        return dists_vec_xy - ray_height
+
+    def get_height_map(self, positions_vec_xy : th.Tensor, range_xyxy : th.Tensor, resolution_xy : tuple[int,int],
                                 ground_linkgroups : list[tuple[tuple[str,str],...]]):
         for g in ground_linkgroups:
             if g not in self._linkgroup_to_id:
                 raise RuntimeError(f"Group {g} was not already defined, you can add it explicitly in set_body_collisions")
-            ground_linkgroups_mask |= 1<<self._linkgroup_to_id[g]
-        jnp_positions_vec_xy = th2jax(positions_vec_xy, jax_device=self._jax_device)
-        jnp_range_xyxy = th2jax(range_xyxy, jax_device=self._jax_device)
-        jnp_resolution_xy = th2jax(resolution_xy, jax_device=self._jax_device)
-        width_height = jnp_range_xyxy[2:4] - jnp_range_xyxy[0:2]
-        coords_grid = jnp.swapaxes(jnp.mgrid[:jnp_resolution_xy[0],:jnp_resolution_xy[1]]/jnp_resolution_xy*width_height-jnp_range_xyxy[0:2],0,2) + jnp_resolution_xy/2
-        coords_grid = jnp_positions_vec_xy + coords_grid
-        ray_origins = jnp.concat([coords_grid,jnp.full_like(coords_grid[...,0], fill_value=10.0)], axis=-1) # add z coord
-        self._mjx_ray_vec(  self._sim_state.mjx_model, self._sim_state.mjx_data, 
-                            pnt = ray_origins,
-                            vec = jnp.array([0., 0., -1.]),
-                            geom_group = ground_linkgroups_mask # mask that is true at each group_id to be included
-                            )
+        ground_linkgroups_ids = th.as_tensor([self._linkgroup_to_id[g] for g in ground_linkgroups])
+        heights_vec_xy = self._get_elevation_map(positions_vec_xy=th2jax(positions_vec_xy, jax_device=self._jax_device),
+                                range_xyxy=th2jax(range_xyxy, jax_device=self._jax_device),
+                                ground_linkgroups_ids = th2jax(ground_linkgroups_ids, jax_device=self._jax_device),
+                                resolution_xy=resolution_xy,
+                                sim_state = self._sim_state)        
+        return jax2th(heights_vec_xy, th_device=self._out_th_device)
