@@ -309,6 +309,10 @@ class Robot():
 
 
     def set_joint_pose_by_names(self, joints : dict[str,np.ndarray]):
+        # print(f"setting joint pose {joints}")
+        for jn in joints:
+            if jn not in self.get_joint_names():
+                raise RuntimeError(f"Tried to move set position of joint {jn}, but it does not exist, existing joints = {self.get_joint_names()}")
         for name in self.get_joint_names():
             if name in joints:
                 q_idx = self._model.joints[self._joint_name_to_idx[name]].idx_q

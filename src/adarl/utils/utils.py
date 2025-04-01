@@ -33,26 +33,6 @@ torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
 
 
 
-import adarl.adapters.BaseAdapter
-def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : adarl.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
-    call_time = time.monotonic()
-    last_warn_time = call_time
-    while True:
-        gottenStuff, missingStuff = getterFunction()
-        if len(missingStuff)==0:
-            return gottenStuff
-        else:
-            t = time.monotonic()
-            if t-call_time >= blocking_timeout_sec:
-                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
-                                    partialResult=gottenStuff)
-            else:
-                if t - last_warn_time > 0.1:
-                    last_warn_time = t
-                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
-                env_controller.run(step_duration_sec)
-
-
 
 T = TypeVar('T')
 @dataclass
@@ -745,3 +725,24 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
 # @th.jit.script
 # def quat_xyzw_between_vecs(v1 : th.Tensor, v2 : th.Tensor):
 #     return quat_xyzw_between_vecs_py(v1,v2)
+
+
+
+import adarl.adapters.BaseAdapter
+def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : adarl.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
+    call_time = time.monotonic()
+    last_warn_time = call_time
+    while True:
+        gottenStuff, missingStuff = getterFunction()
+        if len(missingStuff)==0:
+            return gottenStuff
+        else:
+            t = time.monotonic()
+            if t-call_time >= blocking_timeout_sec:
+                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
+                                    partialResult=gottenStuff)
+            else:
+                if t - last_warn_time > 0.1:
+                    last_warn_time = t
+                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
+                env_controller.run(step_duration_sec)

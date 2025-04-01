@@ -12,6 +12,7 @@ from adarl.utils.dbg.dbg_checks import dbg_check_size, dbg_check
 import numpy as np
 import torch as th
 import typing
+import math
 
 _T = TypeVar('_T', float, th.Tensor)
 def unnormalize(v : _T, min : _T, max : _T) -> _T:
@@ -20,7 +21,14 @@ def unnormalize(v : _T, min : _T, max : _T) -> _T:
 def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
-
+def _build_full_mask(dims_masks : Sequence[th.Tensor]):
+    dims = len(dims_masks)
+    reshaped_masks = [m.view((-1,)+(1,)*(dims-i-1)) for i,m in enumerate(dims_masks)]
+    m = reshaped_masks[0]
+    for i in range(1,dims):
+        m = m*reshaped_masks[i]
+    return m
+    
 FieldName = Union[str, int, Tuple[str,str]]
 
 class StateHelper(ABC):
@@ -167,15 +175,24 @@ class ThBoxStateHelper(StateHelper):
         else:
             self.observed_field_size : tuple[int,...] = (th.count_nonzero(self._observable_subfields_mask).item(),)
 
+        self._full_observation_mask = _build_full_mask([self._observable_hist_mask, 
+                                                        self._observable_fields_mask, 
+                                                        self._observable_subfields_mask])
+        self._unflattened_obs_shape = (self._vec_size,
+                            int(th.count_nonzero(self._observable_hist_mask).item()),
+                            int(th.count_nonzero(self._observable_fields_mask).item()),
+                            int(th.count_nonzero(self._observable_subfields_mask).item()))
+        self._obs_shape = (self._vec_size,math.prod(self._unflattened_obs_shape[1:])) if self._flatten_observation else self._unflattened_obs_shape
+
         # self._observable_idxs = self.field_idx(tuple(self._observable_fields))
         # print(f"observable_indexes = {self._observable_indexes}")
         hlmin = self._limits_minmax[0].expand(self._state_size)
         hlmax = self._limits_minmax[1].expand(self._state_size)
         self._vec_state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_size)
         self._single_state_space = spaces.ThBox(low=hlmin[0], high=hlmax[0], shape=self._state_size[1:])
-        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_size,
+        self._obs_space = spaces.ThBox(low=self.observe(hlmin), high=self.observe(hlmax), shape=self._obs_shape,
                                        dtype=self._obs_dtype, labels=self.observation_names())
-        self._single_obs_space = spaces.ThBox(low=self.observe(hlmin)[0], high=self.observe(hlmax)[0], shape=self._obs_size[1:],
+        self._single_obs_space = spaces.ThBox(low=self.observe(hlmin)[0], high=self.observe(hlmax)[0], shape=self._obs_shape[1:],
                                               dtype=self._obs_dtype, labels=self.observation_names())
 
     def build_limits(self, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]):
@@ -275,7 +292,8 @@ class ThBoxStateHelper(StateHelper):
             if self._observable_subfields is None:
                 obs = state[:,:self._obs_history_length,self._observable_indexes]
             else:
-                obs = state[:,self._observable_hist_mask,self._observable_fields_mask, self._observable_subfields_mask]
+                print(f"_full_observation_mask.shape= {self._full_observation_mask.shape}")
+                obs = state[:,self._full_observation_mask].view(self._unflattened_obs_shape)
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
         return obs
