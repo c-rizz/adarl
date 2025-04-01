@@ -130,8 +130,6 @@ def build_sim(render):
     # """
     model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
                                                                         model_kwargs={})
-    # model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")).read_text(),
-    #                                                                     model_kwargs={"use_cylinders" : False})
     xml = model_definition_string
     # Make model, data, and renderer
     mj_model = mujoco.MjModel.from_xml_string(xml)
