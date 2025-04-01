@@ -14,7 +14,7 @@ from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
 from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conj_xyzw_np
-
+import pprint
 
 class JointProperties(TypedDict):
     joint_type : str
@@ -364,11 +364,13 @@ class Robot():
             limits_minmax_pve[jn] = np.stack([p_minmax[:,q_idx], v_minmax[:,v_idx], e_minmax[:,v_idx]]).transpose()
         return limits_minmax_pve
 
-    def detect_always_present_collisions(self, moving_joints : Sequence[str], fixed_joints_pose : dict[str,np.ndarray], samples : int = 10000):
+    def detect_always_present_collisions(self, moving_joints : Sequence[str], fixed_joints_pose : dict[str,np.ndarray], samples : int = 10000,
+                                         threshold = 1.0):
         original_joint_pose = self.get_joint_pose()
         original_collision_pairs = self.get_enabled_collision_pairs()
         self.set_collision_pairs("all")
-        always_present_collisions = set()
+        # always_present_collisions = set()
+        collision_counters = {}
         self.set_joint_pose_by_names(fixed_joints_pose)
 
         for i in range(samples):
@@ -377,14 +379,30 @@ class Robot():
             limits_minmax = np.stack([limits[jn][:,0] for jn in moving_joints], axis = 1)
             pose = rand_pos*(limits_minmax[1]-limits_minmax[0])+limits_minmax[0]
             
-            self.set_joint_pose_by_names({jn[1]:pose[i] for i,jn in enumerate(moving_joints)})
+            jpose_dict = {jn:pose[i] for i,jn in enumerate(moving_joints)}
+            self.set_joint_pose_by_names(jpose_dict)
             collisions = self.get_all_collisions()
-            if i == 0:
-                always_present_collisions = set(collisions)
-            always_present_collisions = always_present_collisions.intersection(set(collisions))
+            # print(f"moving_joints = {moving_joints}")
+            # print(f"jpose_dict = {jpose_dict}")
+            # pprint.pprint(self.get_frame_poses_xyzxyzw())
+            # pprint.pprint(collisions)
+            # print(f"limits = {limits}")
+            # print(f"jp = {self._joint_position}")
+            # img = self.get_dbg_image()
+            # import cv2
+            # import time
+            # print(img)
+            # cv2.imwrite(f"robot_img{time.time()}.png", img)
+            # time.sleep(1)
+            # input("Press ENTER")
+            # if i == 0:
+            #     always_present_collisions = set(collisions)
+            collision_counters.update({ln:collision_counters.get(ln,0)+1 for ln in collisions})
+            # always_present_collisions = always_present_collisions.intersection(set(collisions))
         self.set_joint_pose(original_joint_pose)
         self.set_collision_pairs(original_collision_pairs)
-        return always_present_collisions
+        print(f"collision_counters = {collision_counters}")
+        return {ln for ln, count in collision_counters.items() if count>=samples*threshold}
 
 
 

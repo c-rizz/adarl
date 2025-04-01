@@ -632,9 +632,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         print("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
-        ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
+        # ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
         # ggLog.info(f"self._sim_state.mjx_model.nconmax = {self._sim_state.mjx_model.nconmax}")
-        ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
+        # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
 
 
 
@@ -1168,10 +1168,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, donate_argnames=["sim_state"])
     def _init_stats(sim_state : SimState):
         stats_array = sim_state.mon_joint_stats_arr_pvae
-        stats_array = stats_array.at[:,0].set(float("+inf"))
-        stats_array = stats_array.at[:,1].set(float("-inf"))
-        stats_array = stats_array.at[:,2].set(float("nan"))
-        stats_array = stats_array.at[:,3].set(float("nan"))
+        stats_array = stats_array.at[:,0].set(float("+inf")) # mins
+        stats_array = stats_array.at[:,1].set(float("-inf")) # maxes
+        stats_array = stats_array.at[:,2].set(0) # avg
+        stats_array = stats_array.at[:,3].set(0) # std
         stats_array = stats_array.at[:,4].set(0)
         stats_array = stats_array.at[:,5].set(0)
         sim_state = sim_state.replace_d({"stats_step_count": 0,
