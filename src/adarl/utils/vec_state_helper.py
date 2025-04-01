@@ -90,6 +90,7 @@ class ThBoxStateHelper(StateHelper):
                         history_length : int = 1,
                         observable_fields : list[str|int] | None = None,
                         subfield_names : list[str] | np.ndarray | None = None,
+                        observable_subfields : list[str|int] | np.ndarray | None = None,
                         flatten_observation = False,
                         obs_history_length : int = 1):
         self.field_names = field_names
@@ -105,9 +106,31 @@ class ThBoxStateHelper(StateHelper):
                     raise RuntimeError(f"subfield_names is not of size field_size, subfield_names.shape={subfield_names.shape} and field_size is {self.field_size}")
         if isinstance(subfield_names,(list,tuple)):
             subfield_names = np.array(subfield_names, dtype=object)
+        print(f"subfield_names = {subfield_names}")
         if obs_history_length>history_length:
             raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than history_length ({history_length})")
         self.subfield_names = subfield_names
+        self._observable_subfields = observable_subfields
+        if observable_subfields is None:
+            self._observable_subfields_mask = th.ones(self.field_size,dtype=th.bool)
+        else:
+            if len(self.field_size)!=1:
+                raise RuntimeError(f"observable_subfields is supported only with 1-dimensional fields")
+            if isinstance(observable_subfields, (list,tuple)):
+                self._observable_subfields_mask = th.zeros(self.field_size,dtype=th.bool)
+                for s in observable_subfields:
+                    if isinstance(s,str):
+                        if self.subfield_names is None:
+                            raise RuntimeError(f"observable_subfields contains a string, but subfield_names was not specified")
+                        itemindex = np.where(self.subfield_names == s)
+                        self._observable_subfields_mask[itemindex] = True
+                    elif isinstance(s,int):
+                        self._observable_subfields_mask[s] = True
+                    else:
+                        raise NotImplementedError()
+            elif isinstance(observable_subfields, (np.ndarray)):
+                raise NotImplementedError()
+        self._observable_subfields = observable_subfields
         self._obs_dtype = obs_dtype
         self._th_device = th_device
         self._history_length = history_length
@@ -118,7 +141,7 @@ class ThBoxStateHelper(StateHelper):
         self._state_names = None
         self._vec_size = vec_size
 
-        self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length
+        self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length and self._observable_subfields is not None
         self._field_idxs = {n:field_names.index(n) for n in field_names}
         self._field_idx_cache = {}
         if self.subfield_names is not None:
@@ -135,6 +158,15 @@ class ThBoxStateHelper(StateHelper):
 
         self._observable_fields = [f for f in self.field_names if f in self._observable_fields] # to ensure they are ordered
         self._observable_indexes = th.as_tensor([self.field_names.index(n) for n in self._observable_fields], dtype=th.int32).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+        self._observable_fields_mask = th.zeros((self._fields_num,), dtype=th.bool)
+        self._observable_fields_mask[self._observable_indexes] = True
+        self._observable_hist_mask = th.zeros((self._history_length,), dtype=th.bool)
+        self._observable_hist_mask[:self._obs_history_length] = True
+        if self._observable_subfields is None:
+            self.observed_field_size = self.field_size
+        else:
+            self.observed_field_size : tuple[int,...] = (th.count_nonzero(self._observable_subfields_mask).item(),)
+
         # self._observable_idxs = self.field_idx(tuple(self._observable_fields))
         # print(f"observable_indexes = {self._observable_indexes}")
         hlmin = self._limits_minmax[0].expand(self._state_size)
@@ -240,7 +272,10 @@ class ThBoxStateHelper(StateHelper):
         if self._fully_observable:
             obs = state
         else:
-            obs = state[:,:self._obs_history_length,self._observable_indexes]
+            if self._observable_subfields is None:
+                obs = state[:,:self._obs_history_length,self._observable_indexes]
+            else:
+                obs = state[:,self._observable_hist_mask,self._observable_fields_mask, self._observable_subfields_mask]
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
         return obs
@@ -248,17 +283,20 @@ class ThBoxStateHelper(StateHelper):
     @override
     def observation_names(self):
         if self._obs_names is None:
-            self._obs_names = np.empty(shape=(self._obs_history_length,len(self._observable_fields))+self.field_size, dtype=object)
+            self._obs_names = np.empty(shape=(self._obs_history_length,len(self._observable_fields))+self.observed_field_size, dtype=object)
             for h in range(self._obs_history_length):
                 for fn in range(len(self._observable_fields)):
-                    for s in np.ndindex(self.field_size):
+                    for s in np.ndindex(self.observed_field_size):
+                        if self._observable_subfields is not None and not self._observable_subfields_mask[s]:
+                            continue
                         f = self._observable_fields[fn]
                         if isinstance(f, Enum):
                             f = f.name
                         if self.subfield_names is not None:
-                            self._obs_names[(h,fn)+s] = f"[{h},{f},{self.subfield_names[s]}]"
+                            sn = self.subfield_names[s]
                         else:
-                            self._obs_names[(h,fn)+s] = f"[{h},{f},{','.join([str(i) for i in s])}]"
+                            sn = ','.join([str(i) for i in s])
+                        self._obs_names[(h,fn)+s] = f"[{h},{f},{sn}]"
             if self._flatten_observation:
                 self._obs_names =  self._obs_names.flatten()
         return self._obs_names
@@ -666,45 +704,56 @@ class DictStateHelper(StateHelper):
 
 
 class RobotStateHelper(ThBoxStateHelper):
-    def __init__(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
+    def __init__(self,  joint_limit_minmax_pveae : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         obs_dtype : th.dtype,
                         th_device : th.device,
                         vec_size : int,
                         history_length : int = 1,
-                        obs_history_length : int = 1):
-        subfield_names = ["pos","vel","eff","refpos","refvel","refeff","stiff","damp"]
+                        obs_history_length : int = 1,
+                        observable_joints = None,
+                        observable_subfields = None):
+        subfield_names = ["pos","vel","cmdeff","acc","senseff","refpos","refvel","refeff","stiff","damp"]
         self._th_device = th_device
-        super().__init__(   field_names=list(joint_limit_minmax_pve.keys()),
+        super().__init__(   field_names=list(joint_limit_minmax_pveae.keys()),
                             obs_dtype=obs_dtype,
                             th_device=th_device,
                             field_size=(len(subfield_names),),
-                            fields_minmax= self._build_fields_minmax(joint_limit_minmax_pve, stiffness_minmax, damping_minmax),
+                            fields_minmax= self._build_fields_minmax(joint_limit_minmax_pveae, stiffness_minmax, damping_minmax),
                             history_length=history_length,
                             subfield_names = subfield_names,
                             obs_history_length=obs_history_length,
-                            vec_size=vec_size)
+                            vec_size=vec_size,
+                            observable_fields=observable_joints,
+                            observable_subfields=observable_subfields)
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor]) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
+        joint_limit_minmax_pveae = {k:th.as_tensor(l) for k,l in joint_limit_minmax_pve.items()}
+        joint_limit_minmax_pveae = {jn:th.cat([  lim_pve,
+                                    th.as_tensor([[-5000.0], [5000]], device = lim_pve.device), # Can we have better acceleration limits?
+                                    lim_pve[:,2].unsqueeze(-1)], dim=-1)
+                        for jn,lim_pve in joint_limit_minmax_pveae.items()}
         if isinstance(stiffness_minmax,tuple):
-            stiffness_minmax = {j:th.as_tensor(stiffness_minmax, device=self._th_device) for j in joint_limit_minmax_pve}
+            stiffness_minmax = {j:th.as_tensor(stiffness_minmax, device=self._th_device) for j in joint_limit_minmax_pveae}
         if isinstance(damping_minmax,tuple):
-            damping_minmax = {j:th.as_tensor(damping_minmax, device=self._th_device) for j in joint_limit_minmax_pve}
-        t_joint_limit_minmax_pve : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(joint_limit_minmax_pve, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
+            damping_minmax = {j:th.as_tensor(damping_minmax, device=self._th_device) for j in joint_limit_minmax_pveae}
+        t_joint_limit_minmax_pveae : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(joint_limit_minmax_pveae, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
         t_stiffness_minmax : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(stiffness_minmax, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
         t_damping_minmax : Mapping[Any, th.Tensor] = adarl.utils.tensor_trees.map_tensor_tree(damping_minmax, lambda v: th.as_tensor(v,device = self._th_device)) #type: ignore
-        return {joint : th.stack([  limits_minmax_pve[:,0],
-                                    limits_minmax_pve[:,1],
-                                    limits_minmax_pve[:,2],
-                                    limits_minmax_pve[:,0],
-                                    limits_minmax_pve[:,1],
-                                    limits_minmax_pve[:,2],
+        return {joint : th.stack([  limits_minmax_pveae[:,0],
+                                    limits_minmax_pveae[:,1],
+                                    limits_minmax_pveae[:,2],
+                                    limits_minmax_pveae[:,3],
+                                    limits_minmax_pveae[:,4],
+                                    limits_minmax_pveae[:,0],
+                                    limits_minmax_pveae[:,1],
+                                    limits_minmax_pveae[:,2],
                                     t_stiffness_minmax[joint],
                                     t_damping_minmax[joint]]).permute(1,0)
-                for joint,limits_minmax_pve in t_joint_limit_minmax_pve.items()}
+                for joint,limits_minmax_pveae in t_joint_limit_minmax_pveae.items()}
         
     def build_robot_limits(self, joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                             stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],

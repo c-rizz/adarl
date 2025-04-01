@@ -409,7 +409,7 @@ class Robot():
 if __name__ == "__main__":
     import sys
     if len(sys.argv)==1:
-        leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")
+        leg_file = adarl.utils.utils.pkgutil_get_path("adarl_envs","models/leg_rig_simple.urdf.xacro")
     else:
         leg_file = sys.argv[1]
     # leg_file = adarl.utils.utils.pkgutil_get_path("adarl","models/cube.urdf")
