@@ -62,14 +62,16 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
 
     @override
     def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
+        raise NotImplementedError()
         if requestedJoints is None:
             requestedJoints = self.sub_adapter()._monitored_joints
         jstate = self._sub_adapter.getJointsState(requestedJoints)
         return th.stack([th.as_tensor([ jstate[k].position.item(),
                                         jstate[k].rate.item(),
                                         jstate[k].effort.item(),
-                                        acceleration,
-                                        sensed_effort]) for k in requestedJoints]).unsqueeze(0).to(self._out_th_device)
+                                        0.0,  # TODO: fix this
+                                        jstate[k].effort.item() # TODO: fix this
+                                        ]) for k in requestedJoints]).unsqueeze(0).to(self._out_th_device)
     
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:

@@ -149,7 +149,7 @@ class ThBoxStateHelper(StateHelper):
         self._state_names = None
         self._vec_size = vec_size
 
-        self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length and self._observable_subfields is not None
+        self._fully_observable = observable_fields is None and self._obs_history_length==self._history_length and self._observable_subfields is None
         self._field_idxs = {n:field_names.index(n) for n in field_names}
         self._field_idx_cache = {}
         if self.subfield_names is not None:
@@ -289,7 +289,7 @@ class ThBoxStateHelper(StateHelper):
         if self._fully_observable:
             obs = state
         else:
-            if self._observable_subfields is None:
+            if self.observed_field_size == self.field_size:
                 obs = state[:,:self._obs_history_length,self._observable_indexes]
             else:
                 obs = state[:,self._full_observation_mask].view(self._unflattened_obs_shape)
