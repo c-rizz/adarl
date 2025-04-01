@@ -465,28 +465,6 @@ def compile_xacro_string(model_definition_string, model_kwargs = None, extra_pkg
     model_definition_string = _fix_urdf_ros_paths(model_definition_string, extra_pkg_paths=extra_pkg_paths)
     return model_definition_string
 
-import adarl.adapters.BaseAdapter
-def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : adarl.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
-    call_time = time.monotonic()
-    last_warn_time = call_time
-    while True:
-        gottenStuff, missingStuff = getterFunction()
-        if len(missingStuff)==0:
-            return gottenStuff
-        else:
-            t = time.monotonic()
-            if t-call_time >= blocking_timeout_sec:
-                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
-                                    partialResult=gottenStuff)
-            else:
-                if t - last_warn_time > 0.1:
-                    last_warn_time = t
-                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
-                env_controller.run(step_duration_sec)
-
-
-
-
 def isinstance_noimport(obj, class_names):
     if isinstance(class_names, str):
         class_names = [class_names]
