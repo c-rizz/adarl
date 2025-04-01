@@ -405,7 +405,7 @@ class Robot():
             # always_present_collisions = always_present_collisions.intersection(set(collisions))
         self.set_joint_pose(original_joint_pose)
         self.set_collision_pairs(original_collision_pairs)
-        print(f"collision_counters = {collision_counters}")
+        print(f"collision_counters (on {samples}) = {collision_counters}")
         return {ln for ln, count in collision_counters.items() if count>=samples*threshold}
 
 

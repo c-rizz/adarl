@@ -292,7 +292,6 @@ class ThBoxStateHelper(StateHelper):
             if self._observable_subfields is None:
                 obs = state[:,:self._obs_history_length,self._observable_indexes]
             else:
-                print(f"_full_observation_mask.shape= {self._full_observation_mask.shape}")
                 obs = state[:,self._full_observation_mask].view(self._unflattened_obs_shape)
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
