@@ -514,11 +514,13 @@ class ThDReplayBuffer(BaseBuffer):
                 self._storage_torch_device = th.device("cpu")
         pred_avail = self.predict_memory_consumption()
         consumptionRatio = pred_avail[0]/pred_avail[1]
-        if consumptionRatio>0.5:
+        ggLog.info(f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}")
+        ggLog.info(f"Replay buffer observation_space = {observation_space}")
+        if consumptionRatio>0.6:
             warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                             f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
                              "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
-            time.sleep(3)
+            time.sleep(10)
 
         self._allocate_buffers(self.buffer_size)
         self._addcount = 0

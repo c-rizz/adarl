@@ -97,7 +97,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._vecobs_labels = flatten_tensor_tree(self._vecobs_labels)
         self._vecobs_labels = map_tensor_tree(self._vecobs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
         # self._obs_labels = map_tensor_tree(self._obs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
-        ggLog.info(f"obs labels = {self._vecobs_labels}")
+        # ggLog.info(f"obs labels = {self._vecobs_labels}")
 
         self.add_on_ep_end_callback(self._on_ep_end)
 
