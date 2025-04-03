@@ -7,7 +7,7 @@ from typing_extensions import deprecated
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
-from adarl.utils.utils import JointState, LinkState
+from adarl.utils.utils import JointState, LinkState, th_quat_rotate
 from typing import overload, Sequence
 
 JointName = Tuple[str,str]
@@ -203,6 +203,13 @@ class BaseAdapter(ABC):
     @overload
     def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> Dict[LinkName,LinkState] | th.Tensor:
         raise NotImplementedError()
+
+
+    def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        ls = self.getLinksState(requestedLinks=requestedLinks)
+        gdirs = {ln:th_quat_rotate(th.as_tensor([-1., 0., 0.]), state.pose.orientation_xyzw) for ln,state in ls.items()}
+        return th.stack([gdirs[ln] for ln in requestedLinks])
+
 
     @abstractmethod
     def resetWorld(self):

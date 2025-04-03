@@ -1,3 +1,4 @@
+from __future__ import annotations
 import adarl.utils.utils
 import gymnasium as gym
 import cv2

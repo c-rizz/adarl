@@ -12,7 +12,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
 import numpy as np
-from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional, Mapping
+from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional, Mapping, Union
 import time
 import csv
 
@@ -37,7 +37,7 @@ from adarl.envs.vec.EnvRunner import EnvRunner
 from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 from adarl.utils.tensor_trees import map_tensor_tree
 
-ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
+ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
 
 def take_first(tensor_tree):
     return map_tensor_tree(tensor_tree, lambda t: t[0])

@@ -6,7 +6,6 @@ from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAda
 from adarl.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
-from adarl.adapters.PyBulletJointImpedanceAdapter import PyBulletJointImpedanceAdapter
 from typing import Sequence, Any
 from adarl.utils.utils import Pose, build_pose, JointState, LinkState
 import torch as th
@@ -15,19 +14,7 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
     
     def __init__(self,  vec_size : int,
                         th_device : th.device,
-                        adapter,
-                        stepLength_sec : float = 0.004166666666,
-                        restore_on_reset = True,
-                        debug_gui : bool = False,
-                        real_time_factor : float | None = None,
-                        global_max_torque_position_control : float = 100,
-                        joints_max_torque_position_control : dict[tuple[str,str],float] = {},
-                        global_max_velocity_position_control : float = 1,
-                        joints_max_velocity_position_control : dict[tuple[str,str],float] = {},
-                        global_max_acceleration_position_control : float = 10,
-                        joints_max_acceleration_position_control : dict[tuple[str,str],float] = {},
-                        simulation_step = 1/960,
-                        enable_rendering = True):
+                        adapter):
         super().__init__(vec_size=vec_size,
                          output_th_device=th_device)
         if not isinstance(adapter, BaseJointImpedanceAdapter):
@@ -196,7 +183,11 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
     
     @override
     def build_scenario(self, models: Sequence[ModelSpawnDef] = [], **kwargs):
-        return self._sub_adapter.build_scenario(models, **kwargs)
+        self._sub_adapter.build_scenario(models=models, **kwargs)
+
+    @override
+    def startup(self):
+        self._sub_adapter.startup()
     
     @override
     def destroy_scenario(self, **kwargs):

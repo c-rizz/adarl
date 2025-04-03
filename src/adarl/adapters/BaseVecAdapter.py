@@ -7,7 +7,7 @@ from typing_extensions import deprecated
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
-from adarl.utils.utils import JointState, LinkState
+from adarl.utils.utils import JointState, LinkState, th_quat_rotate
 from typing import overload, Sequence, Generic
 from adarl.adapters.BaseAdapter import BaseAdapter
 JointName = Tuple[str,str]
@@ -32,6 +32,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         """
         self._vec_size = vec_size
         self._out_th_device = output_th_device
+        self._out_th_float_dtype = th.float32
         super().__init__()
 
     def vec_size(self):
@@ -189,6 +190,10 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         raise NotImplementedError()
 
 
+    def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
+        ls = self.getLinksState(requestedLinks=requestedLinks)
+        return th_quat_rotate(th.as_tensor([-1., 0., 0.]).expand(self._vec_size,3), ls[:3:7])
+    
     
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:
         """Convert a sequence of link names to an identifier for a set of links.
@@ -252,3 +257,11 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     
     def get_detected_cameras(self) -> Sequence[tuple[str,str]]:
         return []
+    
+    def startup(self):
+        """Called after the initail environment has been set up. It can be used to start up workers, and build resources
+            that require a setup done by the environments.
+            For example in MJX it is used to build functions that depend on the simulation environment definition,
+            or in ros environments it can be used to start up listeners.
+        """
+        pass

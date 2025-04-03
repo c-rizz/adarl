@@ -1,41 +1,15 @@
-#!/usr/bin/env python3
-"""
-Base-class for cresting GAzebo-based gym environments.
-
-The provided class must be extended to define a specific environment
-"""
-
 # import traceback
 from __future__ import annotations
-import adarl.utils.dbg.ggLog as ggLog
-
-import gymnasium as gym
-from gymnasium.envs.registration import EnvSpec
-import numpy as np
-from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional, Mapping, Callable, Protocol
-import time
-import csv
-
-import adarl
-
+from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional, Mapping, Callable, Protocol, Union
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
-import os
-import adarl.utils.dbg.ggLog as ggLog
-
-import multiprocessing as mp
-import signal
-import adarl.utils.session
 import adarl.utils.utils
-from adarl.utils.wandb_wrapper import wandb_log
-from numpy.typing import NDArray
 import torch as th
-import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override, final
 from abc import ABC, abstractmethod
 from adarl.utils.spaces import gym_spaces
 
-ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
+ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
 
 
 class EnvRunnerInterface(ABC, Generic[ObsType]):

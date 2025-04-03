@@ -7,36 +7,21 @@ The provided class must be extended to define a specific environment
 
 # import traceback
 from __future__ import annotations
-import adarl.utils.dbg.ggLog as ggLog
-
 import gymnasium as gym
 from gymnasium.envs.registration import EnvSpec
-import numpy as np
 from typing import Tuple, Dict, Any, SupportsFloat, TypeVar, Generic, Optional, Mapping
 import time
-import csv
-
 import adarl
-
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
-import os
-import adarl.utils.dbg.ggLog as ggLog
-
-import multiprocessing as mp
-import signal
 import adarl.utils.session
 import adarl.utils.utils
-from adarl.utils.wandb_wrapper import wandb_log
-from numpy.typing import NDArray
 import torch as th
-import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
-from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
+from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.envs.vec.EnvRunner import EnvRunner
 from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 
-ObsType = TypeVar("ObsType", bound=Mapping[str | tuple[str,...], th.Tensor])
 
 class GymVecRunnerWrapper(gym.vector.VectorEnv, Generic[ObsType]):
 

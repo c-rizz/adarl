@@ -4,7 +4,7 @@ Base-class for cresting GAzebo-based gym environments.
 
 The provided class must be extended to define a specific environment
 """
-
+from __future__ import annotations
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv, Observation
 from typing import TypeVar, Generic
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
