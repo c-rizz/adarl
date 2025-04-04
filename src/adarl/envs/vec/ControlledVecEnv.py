@@ -66,10 +66,18 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
         while True: # Do at least one step, then check if we need more
             estimated_step_duration_sec += self._adapter.step()
             adapter_step_count+=1
-            if estimated_step_duration_sec >= self._intendedStepLength_sec - self._step_precision_tolerance:
+            residual_step_length = self._intendedStepLength_sec - estimated_step_duration_sec
+            if abs(residual_step_length) <= self._step_precision_tolerance:
                 break
-            elif not self._allow_multiple_steps:
-                raise RuntimeError(f"Simulation stepped less than required step length (stepped {estimated_step_duration_sec} instead of {self._intendedStepLength_sec})")
+            else:
+                if residual_step_length > 0:
+                    if not self._allow_multiple_steps:
+                        raise RuntimeError(f"Simulation stepped less than required step length ({estimated_step_duration_sec}<{self._intendedStepLength_sec})\n"
+                                           f"Tolerance is {self._step_precision_tolerance}, increase it to ignore these errors")
+                else:
+                    ggLog.warn( f"Simulation stepped more than required step length ({estimated_step_duration_sec}>{self._intendedStepLength_sec})\n"
+                                f"Tolerance is {self._step_precision_tolerance}, increase it to ignore these errors")
+                    break
         t1 = time.monotonic()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
