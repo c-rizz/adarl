@@ -45,7 +45,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                         overlay_text_height = 0.04,
                         overlay_text_color_rgb = (20,20,255),
                         use_global_ep_count = True,
-                        only_video = False,
+                        record_infoobs = True,
+                        record_video = True,
                         publish : bool = False,
                         stream : bool = False):
         super().__init__(runner=runner)
@@ -60,7 +61,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             self._frameRepeat = int(math.ceil(30/fps))
             self._outFps = fps*self._frameRepeat
         self._frameBuffer = []
-        self._only_video = only_video
+        self._record_infoobs = record_infoobs
+        self._record_video = record_video
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer = []
         self._outFolder = outFolder
@@ -136,9 +138,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             if reinit_done:
                 # Then, a reset just happened; action, terminated and truncated are invalid
                 action, terminated, truncated = None,None,None
-            img = self._runner.get_ui_renderings()[0][self._env_idx]
-            if self._publish_imgs:
-                dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
+            if self._record_video:
+                img = self._runner.get_ui_renderings()[0][self._env_idx]        
+                if self._publish_imgs:
+                    dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
+            else:
+                img = None
             # If the episode just started (i.e. reinit_done == True), we must save next_start instead of consequent, as
             # the buffers have just been flushed in the _on_ep_end callback.
             # In all other cases next_start==consequent
@@ -154,7 +159,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         if self._may_episode_be_saved(ep_count):
             obs  =  map_tensor_tree(obss, lambda tensor: tensor[self._env_idx])
             info =  map_tensor_tree(infos, lambda tensor: tensor[self._env_idx])
-            img = self._runner.get_ui_renderings()[0][self._env_idx]        
+            if self._record_video:
+                img = self._runner.get_ui_renderings()[0][self._env_idx]        
+            else:
+                img = None
             self._record_step(img=img, obs = obs, action = None, info = info, reward=None, terminated=None, truncated=None)
         return obss, infos
 
@@ -282,8 +290,9 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 vecobs = self._vecBuffer["vecobs"][i]
                 self._vecBuffer["vecobs"][i] = map_tensor_tree(flatten_tensor_tree(vecobs),
                                                                lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
-            self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
-            if not self._only_video:
+            if self._record_video:
+                self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
+            if self._record_infoobs:
                 self._write_vecbuffer(filename,self._vecBuffer)
                 self._write_infobuffer(filename+"_info",self._infoBuffer)
 
