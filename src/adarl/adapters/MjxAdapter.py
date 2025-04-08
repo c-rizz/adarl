@@ -998,8 +998,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         mjx.get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data)
         for env_i,env in enumerate(selected_vecs):
-            for i in range(len(requestedCameras)):
-                cam = requestedCameras[i]
+            for cam_i in range(len(requestedCameras)):
+                cam = requestedCameras[cam_i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes[cam]]
                 mjdata = self._renderers_mj_datas[env]
@@ -1020,7 +1020,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             #                         quat_xyzw=force_quat,
                             #                         rgba=np.array([0.9,0.1,0.1,1.0]))
                             add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
-                image_batches[i][env_i] = renderer.render()
+                image_batches[cam_i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in image_batches], times
 

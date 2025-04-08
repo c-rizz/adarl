@@ -40,7 +40,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     startSimulation : bool = True,
                     wall_sim_speed = False,
                     seed = 1,
-                    th_device : th.device = th.device("cpu")):
+                    th_device : th.device = th.device("cpu"),
+                    task : str = "balance"):
         """Short summary.
 
         Parameters
@@ -65,6 +66,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self._wall_sim_speed = wall_sim_speed
         self._renderingEnabled = render
         self._ui_camera_name = "simple_camera"
+        self._task = task
         obs_max = np.array([2.5 * 2,
                             np.finfo(np.float32).max,
                             0.7 * 2,
@@ -127,10 +129,15 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
     def _initialize_episodes(self, vec_mask : th.Tensor | None = None, options = {}) -> None:
         # ggLog.info(f"initializing eps {vec_mask}")
         if isinstance(self._adapter, BaseVecSimulationAdapter):
-            self._adapter.setJointsStateDirect(joint_names=(("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")),
-                                               joint_states_pve=th.normal(mean=th.zeros((self.num_envs,2,3), device=self._th_device, dtype=th.float32),
-                                                                          std=th.as_tensor([0.1, 0.0, 0.0], device=self._th_device, dtype=th.float32).expand(self.num_envs, 2, 3),
-                                                                          generator=self._rng))
+            if self._task == "balance":
+                joint_states_pve=th.normal(mean=th.zeros((self.num_envs,2,3), device=self._th_device, dtype=th.float32),
+                                            std=th.as_tensor([0.1, 0.0, 0.0], device=self._th_device, dtype=th.float32).expand(self.num_envs, 2, 3),
+                                            generator=self._rng)
+            elif self._task == "swingup":
+                joint_states_pve=self._thrandn((self.num_envs,2,3))*th.as_tensor([0.1, 0.0, 0.0])                
+                # joint_states_pve=self._thrand((self.num_envs,2,3))*th.as_tensor([2*th.pi, 0.0, 0.0])                
+            self._adapter.setJointsStateDirect( joint_names=(("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")),
+                                                joint_states_pve=joint_states_pve)
         else:
             raise NotImplementedError()
         self._adapter.setLinksStateDirect([("simple_camera", "simple_camera_link")],
@@ -141,8 +148,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
     @override
     def get_ui_renderings(self, vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
-        if th.any(vec_mask[1:]):
-            raise RuntimeError(f"Can only render env #0 (because the camera can only be at one position across all sims)")
+        # if th.any(vec_mask[1:]):
+        #     raise RuntimeError(f"Can only render env #0 (because the camera can only be at one position across all sims)")
         try:
             imgs, times = self._adapter.getRenderings([self._ui_camera_name], vec_mask=vec_mask)
             return imgs, times
