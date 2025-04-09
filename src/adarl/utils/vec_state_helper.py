@@ -749,9 +749,11 @@ class RobotStateHelper(ThBoxStateHelper):
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor]) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
         joint_limit_minmax_pveae = {k:th.as_tensor(l) for k,l in joint_limit_minmax_pve.items()}
-        joint_limit_minmax_pveae = {jn:th.cat([  lim_pve,
-                                    th.as_tensor([[-5000.0], [5000]], device = lim_pve.device), # Can we have better acceleration limits?
-                                    lim_pve[:,2].unsqueeze(-1)], dim=-1)
+        joint_limit_minmax_pveae = {jn:th.cat([
+                                        lim_pve,
+                                        th.as_tensor([[-5000.0], [5000]], device = lim_pve.device), # Can we have better acceleration limits?
+                                        th.as_tensor([[-10000.0], [10000.0]], device = lim_pve.device) # Can we have better sensed effort limits?
+                                    ], dim=-1)
                         for jn,lim_pve in joint_limit_minmax_pveae.items()}
         if isinstance(stiffness_minmax,tuple):
             stiffness_minmax = {j:th.as_tensor(stiffness_minmax, device=self._th_device) for j in joint_limit_minmax_pveae}

@@ -320,7 +320,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_env_index : int = 0,
                         add_ground : bool = True,
                         log_freq : int = -1,
-                        opt_preset : Literal["fast","none"] = "fast",
+                        opt_preset : Literal["fast","faster","fastest"] | None = "fast",
                         log_folder : str = "./",
                         record_whole_joint_trajectories : bool = False,
                         log_freq_joints_trajectories : int = 1000,
@@ -343,7 +343,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._log_freq = log_freq
         self._log_folder = log_folder
         self._last_log_iters = -log_freq 
-        self._opt_preset = opt_preset if not None else "none"
+        self._opt_preset = opt_preset
         self._safe_revolute_dof_armature = safe_revolute_dof_armature
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
         self._discardvisual = False
@@ -474,24 +474,34 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
         self._mj_model = big_speck.compile()
         self._mj_model.opt.timestep = self._sim_step_dt
-        if self._opt_preset == "fastest":
+        # I prevent slipping by using a big impratio see for example:
+        # - https://github.com/google-deepmind/mujoco_menagerie/blob/d98292efc73511aa7a4ca958eaaf226403d56cb7/anybotics_anymal_b/anymal_b.xml#L4 
+        # and the discussion at these links:
+        # - https://github.com/google-deepmind/mujoco/discussions/656#discussioncomment-4416347
+        # - https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
+        # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
+        if self._opt_preset is None:
+            pass
+        elif self._opt_preset == "fastest":
             # Copied from barkour example
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 1 # constraint solver iterations
             self._mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+            self._mj_model.opt.impratio = 100 # see comment above
         elif self._opt_preset == "faster":
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 3
             self._mj_model.opt.ls_iterations = 3
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
             self._mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
-            self._mj_model.opt.impratio = 1.1 
+            self._mj_model.opt.impratio = 100 # see comment above
         elif self._opt_preset == "fast":
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 10
             self._mj_model.opt.ls_iterations = 5
             # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+            self._mj_model.opt.impratio = 100 # see comment above
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
         if self._opt_override is not None:
@@ -615,6 +625,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             def make_renderer(h,w):
                 ggLog.info(f"Making renderer for size {h}x{w}")
                 return mujoco.Renderer(self._mj_model,height=h,width=w)
+            self._render_scene_option = mujoco.MjvOption()
+            self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
                             for resolution in set(self._camera_sizes.values())}
             self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
@@ -986,13 +998,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         mjx.get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data)
         for env_i,env in enumerate(selected_vecs):
-            for i in range(len(requestedCameras)):
-                cam = requestedCameras[i]
+            for cam_i in range(len(requestedCameras)):
+                cam = requestedCameras[cam_i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes[cam]]
                 mjdata = self._renderers_mj_datas[env]
                 mujoco.mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
-                renderer.update_scene(mjdata, self._cname2cid[cam]) #, scene_option=self._render_scene_option)
+                renderer.update_scene(mjdata, self._cname2cid[cam], scene_option=self._render_scene_option)
                 if self._visualize_xfrc_applied:
                     for body_id in range(0,self._mj_model.nbody):
                         if np.linalg.norm(mjdata.xfrc_applied[body_id]) != 0.0:
@@ -1008,7 +1020,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             #                         quat_xyzw=force_quat,
                             #                         rgba=np.array([0.9,0.1,0.1,1.0]))
                             add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
-                image_batches[i][env_i] = renderer.render()
+                image_batches[cam_i][env_i] = renderer.render()
                 # renderer.render(out=images[i][env])
         return [th.as_tensor(img_batch) for img_batch in image_batches], times
 
