@@ -97,6 +97,7 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
     def initialize_episodes(self, vec_mask: th.Tensor | None = None, options: dict = {}):
         self._estimated_env_times[vec_mask] = 0.0
         super().initialize_episodes(vec_mask, options)
+        self._adapter.initialize_for_episode(vec_mask=vec_mask)
 
     @override
     def get_times_since_ep_start(self) -> th.Tensor:

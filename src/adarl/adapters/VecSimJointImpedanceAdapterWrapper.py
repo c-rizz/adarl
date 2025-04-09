@@ -210,8 +210,8 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
         return self._sub_adapter.getEnvTimeFromStartup()
     
     @override
-    def getEnvTimeFromReset(self) -> float:
-        return self._sub_adapter.getEnvTimeFromReset()
+    def getEnvTimeFromEpStart(self) -> float:
+        return self._sub_adapter.getEnvTimeFromEpStart()
     
     @override
     def get_last_applied_command(self) -> th.Tensor:
