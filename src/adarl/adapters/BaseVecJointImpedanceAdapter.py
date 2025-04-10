@@ -127,3 +127,15 @@ class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
         jimp_cmd[:,:,2] = efforts
         self.setJointsImpedanceCommand(joint_impedances_pvesd=jimp_cmd,
                                        joint_names=joint_names)
+
+    @abstractmethod
+    def control_period(self) -> th.Tensor:
+        """The control period of the joint impedance adapter.
+
+        Returns
+        -------
+        th.Tensor
+            zero-dimensional tensor, containing the control dt in seconds
+            
+        """
+        raise NotImplementedError()

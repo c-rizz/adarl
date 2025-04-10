@@ -434,3 +434,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
         super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
         self._reset_filters()
+
+    @override
+    def control_period(self):
+        self._sim_step_dt_th

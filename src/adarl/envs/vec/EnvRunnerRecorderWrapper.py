@@ -348,7 +348,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                                                                 lambda tensor: tensor[self._env_idx])
                 self._record_step(img, obs, act, info, rew, term, trunc)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-            fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
+            fname = f"ep_{run_id}_{self._saved_eps_count}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}"
             if self._saveBestEpisodes and self._ep_rewards[self._env_idx] > self._bestReward:
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(f"{self._outFolder}/best/{fname}")            
