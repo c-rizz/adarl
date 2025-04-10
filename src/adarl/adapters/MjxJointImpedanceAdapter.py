@@ -423,7 +423,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         return ret
     
     @override
-    def get_last_applied_command(self) -> th.Tensor:
+    def get_current_joint_impedance_command(self) -> th.Tensor:
         return self._last_applied_jimp_cmd
     
     @override

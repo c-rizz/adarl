@@ -214,8 +214,8 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
         return self._sub_adapter.getEnvTimeFromEpStart()
     
     @override
-    def get_last_applied_command(self) -> th.Tensor:
-        return self._sub_adapter.get_last_applied_command().unsqueeze(0)
+    def get_current_joint_impedance_command(self) -> th.Tensor:
+        return self._sub_adapter.get_current_joint_impedance_command().unsqueeze(0)
     
     def sub_adapter(self):
         return self._sub_adapter

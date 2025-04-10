@@ -516,6 +516,7 @@ def compute_quintic(p0 : float, pf : float, max_vel : float, max_acc : float):
     duration_vel_lim = 15*pos_range/(max_vel*8)
     duration_acc_lim = np.sqrt(10*pos_range)/(np.power(3,0.25)*np.sqrt(max_acc))
     duration = max(duration_vel_lim, duration_acc_lim)
+    duration = max(duration,0.001)
     return duration, pos_range, offset
 
 def build_quintic_trajectory(p0 : float, v0 : float, pf : float, ctrl_freq_hz : float, max_vel : float, max_acc : float):
