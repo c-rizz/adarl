@@ -111,7 +111,7 @@ class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
         raise NotImplementedError()
 
     @abstractmethod
-    def get_last_applied_command(self) -> th.Tensor:
+    def get_current_joint_impedance_command(self) -> th.Tensor:
         """Returns the last command that was applied to the controlled joints.
 
         Returns

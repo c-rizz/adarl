@@ -7,9 +7,10 @@ from typing_extensions import deprecated
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
-from adarl.utils.utils import JointState, LinkState, th_quat_rotate
+from adarl.utils.utils import JointState, LinkState, th_quat_rotate, masked_assign, th_quat_conj
 from typing import overload, Sequence, Generic
 from adarl.adapters.BaseAdapter import BaseAdapter
+from typing_extensions import override
 JointName = Tuple[str,str]
 LinkName = Tuple[str,str]
 LinkIdSequence = TypeVar("LinkIdSequence")
@@ -34,6 +35,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         self._out_th_device = output_th_device
         self._out_th_float_dtype = th.float32
         super().__init__()
+        self.__episode_start_env_time = th.zeros(size=(self._vec_size,), dtype=th.float32).to(self._out_th_device, non_blocking=self._out_th_device.type=="cuda")
 
     def vec_size(self):
         return self._vec_size
@@ -192,7 +194,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
     def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
         ls = self.getLinksState(requestedLinks=requestedLinks)
-        return th_quat_rotate(th.as_tensor([-1., 0., 0.]).expand(self._vec_size,3), ls[:3:7])
+        return th_quat_rotate(th.as_tensor([0., 0., -1.]).expand(self._vec_size,3), th_quat_conj(ls[:3:7]))
     
     
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:
@@ -265,3 +267,14 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             or in ros environments it can be used to start up listeners.
         """
         pass
+
+    @override
+    def initialize_for_episode(self, vec_mask : th.Tensor | None = None):
+        if vec_mask is not None:
+            masked_assign(self.__episode_start_env_time, vec_mask, self.getEnvTimeFromStartup())
+        else:
+            self.__episode_start_env_time.fill_(self.getEnvTimeFromStartup())
+
+    @override
+    def getEnvTimeFromEpStart(self) -> th.Tensor:
+        return self.getEnvTimeFromStartup()-self.__episode_start_env_time
