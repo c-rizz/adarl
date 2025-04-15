@@ -845,16 +845,16 @@ class JointImpedanceActionHelper:
     CONTROL_MODES = IntEnum("CONTROL_MODES", [  "VELOCITY",
                                                 "TORQUE",
                                                 "POSITION",
-                                                "IMPEDANCE",
-                                                "IMPEDANCE_NO_GAINS",
-                                                "POSITION_AND_TORQUES",
-                                                "POSITION_AND_STIFFNESS"], start=0)
+                                                "PVESD",
+                                                "PVE",
+                                                "PT",
+                                                "PS"], start=0)
     
     action_lengths = {
-        CONTROL_MODES.IMPEDANCE: 5 ,
-        CONTROL_MODES.IMPEDANCE_NO_GAINS: 3,
-        CONTROL_MODES.POSITION_AND_TORQUES: 2,
-        CONTROL_MODES.POSITION_AND_STIFFNESS: 2,
+        CONTROL_MODES.PVESD: 5 ,
+        CONTROL_MODES.PVE: 3,
+        CONTROL_MODES.PT: 2,
+        CONTROL_MODES.PS: 2,
         CONTROL_MODES.TORQUE: 1,
         CONTROL_MODES.VELOCITY: 1,
         CONTROL_MODES.POSITION: 1,
@@ -897,20 +897,20 @@ class JointImpedanceActionHelper:
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
+        elif self._control_mode == self.CONTROL_MODES.PT:
             act_to_pvesd =  [0,2]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
+        elif self._control_mode == self.CONTROL_MODES.PVE:
             act_to_pvesd =  [0,1,2]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
             self._base_v_j_pvesd[:,:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
+        elif self._control_mode == self.CONTROL_MODES.PVESD:
             act_to_pvesd =  [0,1,2,3,4]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
-        elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
+        elif self._control_mode == self.CONTROL_MODES.PS:
             act_to_pvesd =  [0,3]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d

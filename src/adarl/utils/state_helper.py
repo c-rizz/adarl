@@ -660,10 +660,10 @@ class JointImpedanceActionHelper:
                                                 "POSITION_AND_STIFFNESS"], start=0)
     
     action_lengths = {
-        CONTROL_MODES.IMPEDANCE: 5 ,
-        CONTROL_MODES.IMPEDANCE_NO_GAINS: 3,
-        CONTROL_MODES.POSITION_AND_TORQUES: 2,
-        CONTROL_MODES.POSITION_AND_STIFFNESS: 2,
+        CONTROL_MODES.PVESD: 5 ,
+        CONTROL_MODES.PVE: 3,
+        CONTROL_MODES.PT: 2,
+        CONTROL_MODES.PS: 2,
         CONTROL_MODES.TORQUE: 1,
         CONTROL_MODES.VELOCITY: 1,
         CONTROL_MODES.POSITION: 1,
@@ -702,20 +702,20 @@ class JointImpedanceActionHelper:
             self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.POSITION_AND_TORQUES:
+        elif self._control_mode == self.CONTROL_MODES.PT:
             act_to_pvesd =  [0,2]
             self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.IMPEDANCE_NO_GAINS:
+        elif self._control_mode == self.CONTROL_MODES.PVE:
             act_to_pvesd =  [0,1,2]
             self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,3] = s
             self._base_pvesd[:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.IMPEDANCE:
+        elif self._control_mode == self.CONTROL_MODES.PVESD:
             act_to_pvesd =  [0,1,2,3,4]
             self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, 0.0]).repeat(self._joints_num,1)
-        elif self._control_mode == self.CONTROL_MODES.POSITION_AND_STIFFNESS:
+        elif self._control_mode == self.CONTROL_MODES.PS:
             act_to_pvesd =  [0,3]
             self._base_pvesd = th.as_tensor([0.0, 0.0, 0.0, 0.0, float("nan")]).repeat(self._joints_num,1)
             self._base_pvesd[:,4] = d
