@@ -97,8 +97,8 @@ import sys
 def check_stdin_halt():
     if sys.__stdin__.closed or not sys.__stdin__.isatty():
         return False
-    if select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
-        instring = input()
+    while select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
+        instring = input().strip()
         if instring.lower() == "pause":
             return True
         else:

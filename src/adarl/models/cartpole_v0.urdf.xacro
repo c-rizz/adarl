@@ -4,16 +4,16 @@
 
 
 
-	<xacro:arg name="bar_width" default="0.05" />
+	<xacro:arg name="bar_width" default="0.1" />
 	<xacro:arg name="bar_length" default="0.05" />
 	<xacro:arg name="bar_height" default="0.8" />
 	<xacro:arg name="bar_mass" default="1" />
-	<xacro:arg name="bar_color" default="1 0.5088 0.0468 1" /> <!-- Orange -->
+	<xacro:arg name="bar_color" default="1 0.7 0.1 1" /> <!-- Orange -->
 	<xacro:arg name="base_width" default="0.4" />
 	<xacro:arg name="base_length" default="0.2" />
 	<xacro:arg name="base_height" default="0.2" />
 	<xacro:arg name="base_mass" default="2.5" />
-	<xacro:arg name="base_color" default="0 0 0 1" /> <!-- Black -->
+	<xacro:arg name="base_color" default="0.5 0.5 0.5 1" /> <!-- grey -->
 	<xacro:arg name="rail_color" default="1 1 1 1" /> <!-- White -->
 	<xacro:arg name="rail_width" default="6" />
 	<xacro:arg name="rail_length" default="0.025" />
@@ -27,6 +27,7 @@
 	<xacro:arg name="rail_roll" default="0.0" />
 	<xacro:arg name="rail_pitch" default="0.0" />
 	<xacro:arg name="rail_yaw" default="0.0" />
+	<xacro:arg name="use_collisions" default="true" />
 
 
 	<xacro:property name="bar_width" default="$(arg bar_width)" />
@@ -52,6 +53,7 @@
 	<xacro:property name="rail_roll" default="$(arg rail_roll)" />
 	<xacro:property name="rail_pitch" default="$(arg rail_pitch)" />
 	<xacro:property name="rail_yaw" default="$(arg rail_yaw)" />
+	<xacro:property name="use_collisions" default="$(arg use_collisions)" />
 
 
 	<xacro:macro name="box_inertial" params="mass x y z pose_xyz pose_rpy">
@@ -71,13 +73,18 @@
 			<geometry>
 				<box size="${bar_width} ${bar_length} ${bar_height}"/>
 			</geometry>
-	   </visual>
-		<collision name = "bar_link_c">
-			<origin xyz="0 0 ${bar_height/2}" rpy="0 0 0"/>
-			<geometry>
-				<box size="${bar_width} ${bar_length} ${bar_height}"/>
-			</geometry>
-	   </collision>
+            <material name="bar_material">
+                <color rgba="$(arg bar_color)"/>
+            </material>
+		</visual>
+		<xacro:if value="${use_collisions}">
+			<collision name = "bar_link_c">
+				<origin xyz="0 0 ${bar_height/2}" rpy="0 0 0"/>
+				<geometry>
+					<box size="${bar_width} ${bar_length} ${bar_height}"/>
+				</geometry>
+			</collision>
+		</xacro:if>
 		<xacro:box_inertial mass="${bar_mass}" x="${bar_width}" y="${bar_length}" z="${bar_height}" pose_xyz="0 0 ${bar_height/2}" pose_rpy="0 0 0"/>
 	</link>
 	<gazebo reference="bar_link">
@@ -102,13 +109,18 @@
 			<geometry>
 				<box size="${base_width} ${base_length} ${base_height}"/>
 			</geometry>
-	   </visual>
-  		<collision>
-			<origin xyz="0 0 ${base_height}" rpy="0 0 0"/>
-			<geometry>
-				<box size="${base_width} ${base_length} ${base_height}"/>
-			</geometry>
-	   </collision>
+            <material name="base_material">
+                <color rgba="$(arg base_color)"/>
+            </material>
+	   	</visual>
+		<xacro:if value="${use_collisions}">
+			<collision>
+				<origin xyz="0 0 ${base_height}" rpy="0 0 0"/>
+				<geometry>
+					<box size="${base_width} ${base_length} ${base_height}"/>
+				</geometry>
+			</collision>
+		</xacro:if>
 		<xacro:box_inertial mass="${base_mass}" x="${base_width}" y="${base_length}" z="${base_height}" pose_xyz="0 0 ${base_height}" pose_rpy="0 0 0"/>
 	</link>
 	<gazebo reference="base_link">
@@ -134,13 +146,18 @@
 			<geometry>
 				<box size="${rail_width} ${rail_length} ${rail_height}"/>
 			</geometry>
+            <material name="rail_material">
+                <color rgba="$(arg rail_color)"/>
+            </material>
 	   </visual>
-  		<collision name = "foot_link_c">
-			<origin xyz="0 0 ${rail_height/2}" rpy="0 0 0"/>
-			<geometry>
-				<box size="${rail_width} ${rail_length} ${rail_height}"/>
-			</geometry>
-	   </collision>
+		<xacro:if value="${use_collisions}">
+			<collision name = "foot_link_c">
+				<origin xyz="0 0 ${rail_height/2}" rpy="0 0 0"/>
+				<geometry>
+					<box size="${rail_width} ${rail_length} ${rail_height}"/>
+				</geometry>
+			</collision>
+		</xacro:if>
 		<xacro:box_inertial mass="${rail_mass}" x="${rail_width}" y="${rail_length}" z="${rail_height}" pose_xyz="0 0 ${rail_height/2}" pose_rpy="0 0 0"/>
 	</link>
 	<gazebo reference="foot_link">
@@ -163,12 +180,12 @@
 
 
 
- 	<joint name="cartpole_joint" type="revolute">
+ 	<joint name="cartpole_joint" type="continuous">
     	<parent link="base_link"/>
     	<child link="bar_link"/>
     	<origin xyz="0 0 0.32" rpy="0 0 0"/>
 		<dynamics damping="0.0" friction="${hinge_friction}"/>
-       	<limit lower="-1.57" upper="1.57" effort="1" velocity="100"/>
+       	<limit effort="1" velocity="100"/>
         <axis xyz="0 1 0"/>
 	</joint>
 	<joint name="foot_joint" type="prismatic">

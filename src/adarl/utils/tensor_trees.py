@@ -296,6 +296,9 @@ def is_leaf_bounded(tensor : th.Tensor | np.ndarray | float,
                     min : th.Tensor | np.ndarray | float,
                     max : th.Tensor | np.ndarray | float):
     if isinstance(tensor, th.Tensor):
+        # th.set_printoptions(threshold=4097)
+        # print(f"th.all(tensor >= min) = th.all({tensor} >= {min}) = {th.all(tensor >= min)}")
+        # print(f"th.all(tensor <= max) = th.all({tensor} <= {max}) = {th.all(tensor <= max)}")
         return th.logical_and(th.all(tensor >= min), th.all(tensor <= max))
     elif isinstance(tensor, np.ndarray):
         return np.all(tensor >= min) and np.all(tensor <= max)
@@ -305,9 +308,10 @@ def is_leaf_bounded(tensor : th.Tensor | np.ndarray | float,
 def is_all_bounded(tree : TensorTree,
                     min : th.Tensor | np.ndarray | float,
                     max : th.Tensor | np.ndarray | float):
-    r = flatten_tensor_tree(map_tensor_tree(tree, lambda t: is_leaf_bounded(t,min=min,max=max))).values()
-    # print(f"r = {r}")
-    return all(r)
+    tree = flatten_tensor_tree(tree)
+    tree : dict[Any, th.Tensor] = map_tensor_tree(tree, lambda l: th.as_tensor(l))
+    r = map_tensor_tree(tree, lambda t: is_leaf_bounded(t,min=min,max=max))
+    return th.all(th.stack(list(r.values())))
 
 
 def to_contiguous_tensor(value):

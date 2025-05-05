@@ -43,6 +43,7 @@ class EpisodeStorage():
         self._stored_episodes = 0
         self._current_ep_frame_count = 0
         self.full = False
+        self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
 
         #TODO: Make more efficient by using only one observation buffer
         self.observations = {
@@ -79,7 +80,7 @@ class EpisodeStorage():
                                     dtype=th.int32,
                                     device = self._storage_torch_device)
         
-        if self._storage_torch_device.type == "cpu":
+        if self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds:
             for k in self.observations.keys():
                 self.observations[k] = self.observations[k].pin_memory()
                 self.next_observations[k] = self.next_observations[k].pin_memory()
@@ -139,7 +140,7 @@ class EpisodeStorage():
             if self._added_episodes < self._max_episodes:
                 self._stored_episodes += 1
             self.episode_durations[ep_idx] = 0    
-        nb = True
+        nb = self._use_nonblocking_adds
         for key in self.observations.keys():
             self.observations[key][ep_idx,frame_idx].copy_(th.as_tensor(observation[key]), non_blocking=nb)
             self.next_observations[key][ep_idx,frame_idx].copy_(th.as_tensor(next_observation[key]), non_blocking=nb)
@@ -238,13 +239,13 @@ class EpisodeStorage():
 
         # ggLog.info(f"EpisodeStorage{id(self)}: sampled {list(zip(sampled_episodes,sampled_frames))}")
 
-        trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
+        trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") 
                                     for key, b in self.observations.items()} 
-        trajs_next_obs_ =   {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
+        trajs_next_obs_ =   {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") 
                                     for key, b in self.next_observations.items()} 
-        trajs_terminateds = take_frames(self.terminated, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
-        trajs_actions = take_frames(self.actions, sampled_episodes, sampled_frames).to(self._output_device) #.view(trajs_num,trajs_len,-1)
-        trajs_rewards = take_frames(self.rewards, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
+        trajs_terminateds = take_frames(self.terminated, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device, non_blocking=self._output_device.type=="cuda")
+        trajs_actions = take_frames(self.actions, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") #.view(trajs_num,trajs_len,-1)
+        trajs_rewards = take_frames(self.rewards, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device, non_blocking=self._output_device.type=="cuda")
 
         for key in self.observations:
             obs_shape = trajs_obs_[key].size()[2:]
@@ -433,6 +434,8 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
                             f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
                              "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
             time.sleep(3)
+        if consumptionRatio > 1.0:
+            raise RuntimeError(f"Not enough memory on device {self.storage_torch_device}, would use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory")
         # ggLog.info(f"Buffer will consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB")
 
         self._allocate_buffers(self._max_episodes, self._max_val_episodes)

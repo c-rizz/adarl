@@ -417,7 +417,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             self._ep_sub_rewards = {k : th.zeros(size=(self.num_envs,), dtype=th.float32, device=self._adarl_env._th_device) for k in self._sub_rewards_names}
         # ggLog.info(f'self._total_sub_rewards = {self._total_sub_rewards}')
         self._vec_ep_info["ep_sub_rewards"] = self._tot_ep_sub_rewards
-        self._vec_ep_info["ep_sub_rewards_labels"] = to_string_tensor(self._sub_rewards_names).expand(self._adarl_env.num_envs,-1,-1)
+        self._vec_ep_info["ep_sub_rewards_labels"] = to_string_tensor(self._sub_rewards_names).expand(self._adarl_env.num_envs,len(self._sub_rewards_names),-1)
         self._vec_ep_info.update({"ep_sub_reward_"+k : v for k,v in self._ep_sub_rewards.items()})
 
     def _build_info(self, states):

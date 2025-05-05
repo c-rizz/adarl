@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from adarl.utils.tensor_trees import map_tensor_tree
-from adarl.utils.dbg.dbg_checks import dbg_check_finite
+from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check_device
 from cmath import inf
 from dataclasses import dataclass
 from gymnasium import spaces
@@ -360,7 +360,9 @@ class BasicStorage():
     ) -> None:
         if not self._allow_rollover and int(self._addcount_since_clear) >= self.buffer_size:
             raise RuntimeError(f"Called add with full buffer and allow_rollover is false")
-        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated], async_assert=True)
+        # dbg_check_device([obs,next_obs,action,reward,truncated,terminated], device=reward.device)
+        for tt in [obs,next_obs,action,reward,truncated,terminated]: # cannot check them all together, they may be on different devices
+            dbg_check_finite(tt, async_assert=True)
         pos = int(self._addcount_since_clear) % self.buffer_size
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
         # Copy to avoid modification by reference

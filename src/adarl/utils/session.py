@@ -37,7 +37,7 @@ def custom_showwarning(message, category, filename, lineno, file=None, line=None
     if warning_printstack:
         traceback.print_stack()  # Print full Python stack trace
     else:
-        stacklist = traceback.extract_stack(limit=10)[:-3]
+        stacklist = traceback.extract_stack(limit=10)[:-1]
         stacklist = traceback.format_list(stacklist)
         stacklist = [ss[:-1].replace("\n",": ")[:200] for ss in stacklist]
         print("\n".join(stacklist))

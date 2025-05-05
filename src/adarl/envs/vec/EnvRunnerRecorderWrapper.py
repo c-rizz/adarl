@@ -9,7 +9,7 @@ import numpy as np
 from vidgear.gears import WriteGear
 import math
 import adarl.utils.session
-from adarl.utils.utils import puttext_cv
+from adarl.utils.utils import puttext_cv, masked_assign
 from typing import Callable, Optional, Any
 import h5py
 import lzma
@@ -26,13 +26,6 @@ from adarl.utils.spaces import get_space_labels
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 
 class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
-    """Wraps the environment to allow a modular transformation.
-    This class is the base class for all wrappers. The subclass could override
-    some methods to change the behavior of the original environment without touching the
-    original code.
-    .. note::
-        Don't forget to call ``super().__init__(env)`` if the subclass overrides :meth:`__init__`.
-    """
     def __init__(self,  runner : EnvRunnerInterface[ObsType],
                         fps : float,
                         outFolder : str,
@@ -60,7 +53,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         if fps < 30:
             self._frameRepeat = int(math.ceil(30/fps))
             self._outFps = fps*self._frameRepeat
-        self._frameBuffer = []
+        self._imgBuffer = []
         self._record_infoobs = record_infoobs
         self._record_video = record_video
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
@@ -74,11 +67,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._ep_rewards = th.zeros((self.num_envs,), device=runner.th_device, dtype=th.float32)
         self._ep_step_counts = th.zeros((self.num_envs,), device=runner.th_device, dtype=th.long)
         self._vec_obs_key = vec_obs_key
-        if self._vec_obs_key is None and isinstance(self.vec_observation_space, gym.spaces.Dict):
-            if len(self.vec_observation_space.spaces) == 1:
-                onlykey = next(iter(self.vec_observation_space.spaces.keys()))
-                if isinstance(self.vec_observation_space.spaces[onlykey], gym.spaces.Box):
-                    self._vec_obs_key = onlykey
+        self._has_vec_obs = False
+        # if self._vec_obs_key is None and isinstance(self.vec_observation_space, gym.spaces.Dict):
+        #     if len(self.vec_observation_space.spaces) == 1:
+        #         onlykey = next(iter(self.vec_observation_space.spaces.keys()))
+        #         if isinstance(self.vec_observation_space.spaces[onlykey], gym.spaces.Box):
+        #             self._vec_obs_key = onlykey
             # else:
             #     raise RuntimeError(f"No vec_obs_key was provided and the observation space is"
             #                        f" a dict of more than 1 element. (env.observation_space = {env.observation_space})")
@@ -94,20 +88,29 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
         self._info_labels = flatten_tensor_tree(get_space_labels(self._runner.info_space))
         self._info_labels = map_tensor_tree(self._info_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
-        self._vecobs_labels = get_space_labels(self._runner.single_observation_space)
-        if self._vec_obs_key is not None:
-            self._vecobs_labels = self._vecobs_labels[self._vec_obs_key]
-        self._vecobs_labels = flatten_tensor_tree(self._vecobs_labels)
-        self._vecobs_labels = map_tensor_tree(self._vecobs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
-        # self._obs_labels = map_tensor_tree(self._obs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
-        # ggLog.info(f"obs labels = {self._vecobs_labels}")
+        # self._vecobs_labels = get_space_labels(self._runner.single_observation_space)
+        # # ggLog.info(f"self._vecobs_labels = {self._vecobs_labels}")
+        # if self._vec_obs_key is not None:
+        #     self._vecobs_labels = self._vecobs_labels[self._vec_obs_key]
+        # self._vecobs_labels = flatten_tensor_tree(self._vecobs_labels)
+        # self._vecobs_labels = map_tensor_tree(self._vecobs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        # # self._obs_labels = map_tensor_tree(self._obs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        # # ggLog.info(f"obs labels = {self._vecobs_labels}")
 
         self.add_on_ep_end_callback(self._on_ep_end)
 
         os.makedirs(self._outFolder, exist_ok=True)
         os.makedirs(self._outFolder+"/best", exist_ok=True)
 
-    def _record_step(self, img, obs, action, info, reward, terminated, truncated):
+    def _record_step(self, obs, action, info, reward, terminated, truncated):
+        if self._record_video:
+            imgs = self._runner.get_ui_renderings()[0]
+        else:
+            imgs = None
+        obs, action, info, reward, terminated, truncated, img = map_tensor_tree((obs, action, info, reward, terminated, truncated, imgs),
+                                                                           lambda tensor: tensor[self._env_idx] if tensor is not None else None)
+        if self._record_video and self._publish_imgs:
+            dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
         if self._vec_obs_key is not None:
             vecobs = obs[self._vec_obs_key]
         else:
@@ -124,31 +127,23 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._ep_step_counts += 1
         self._tot_vstep_counter += 1
         vstep_ret_tuple =  self._runner.step(actions)
-        action = actions[self._env_idx]
-        (consequent_observations, next_start_observations,
-            rewards, terminateds, truncateds, consequent_infos,
-            next_start_infos, reinit_dones) = vstep_ret_tuple
-        self._ep_rewards += rewards
+        self._ep_rewards += vstep_ret_tuple[2]
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
             # ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
-            (consequent_observation, next_start_observation,
-                reward, terminated, truncated, consequent_info,
-                next_start_info, reinit_done) = map_tensor_tree(vstep_ret_tuple, lambda tensor: tensor[self._env_idx])
-            if reinit_done:
-                # Then, a reset just happened; action, terminated and truncated are invalid
-                action, terminated, truncated = None,None,None
-            if self._record_video:
-                img = self._runner.get_ui_renderings()[0][self._env_idx]        
-                if self._publish_imgs:
-                    dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
-            else:
-                img = None
+            (consequent_observations, next_start_observations,
+                rewards, terminateds, truncateds, consequent_infos,
+                next_start_infos, reinit_dones) = vstep_ret_tuple
+            
+            # if reinit_dones:
+            #     # Then, a reset just happened; action, terminated and truncated are invalid
+            #     actions, terminateds, truncateds = None,None,None
+
             # If the episode just started (i.e. reinit_done == True), we must save next_start instead of consequent, as
             # the buffers have just been flushed in the _on_ep_end callback.
             # In all other cases next_start==consequent
             # So we can simply always save next_start
-            self._record_step(img, next_start_observation, action, next_start_info, reward, terminated, truncated)
+            self._record_step(next_start_observations, actions, next_start_infos, rewards, terminateds, truncateds)
         return vstep_ret_tuple
 
     @override
@@ -157,23 +152,18 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         obss, infos = super().reset(seed=seed, options=options)
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
-            obs  =  map_tensor_tree(obss, lambda tensor: tensor[self._env_idx])
-            info =  map_tensor_tree(infos, lambda tensor: tensor[self._env_idx])
-            if self._record_video:
-                img = self._runner.get_ui_renderings()[0][self._env_idx]        
-            else:
-                img = None
-            self._record_step(img=img, obs = obs, action = None, info = info, reward=None, terminated=None, truncated=None)
+            self._record_step(obs = obss, action = None, info = infos, reward=None, terminated=None, truncated=None)
         return obss, infos
 
     def _update_buffers(self, img, vecobs, action, reward, terminated, truncated, info):
-        self._frameBuffer.append(img)
+        self._imgBuffer.append(img)
         self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
         self._infoBuffer.append(info)
         self._stored_frames += 1
 
     def _update_vecbuffer(self, vecobs, action, reward, terminated, truncated):
-        self._vecBuffer["vecobs"].append(vecobs)
+        if self._has_vec_obs:
+            self._vecBuffer["vecobs"].append(vecobs)
         if self._stored_frames > 0: # at step 0 these are invalid
             self._vecBuffer["action"].append(action)
             self._vecBuffer["reward"].append(reward)
@@ -225,7 +215,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 npimg = cv2.resize(npimg,dsize=out_resolution_wh,interpolation=cv2.INTER_NEAREST)
                 npimg = self._preproc_frame(npimg)
                 if self._overlay_text_func is not None:
-                    vecobs = vecs["vecobs"][i]
+                    if self._has_vec_obs:
+                        vecobs = vecs["vecobs"][i]
+                    else:
+                        vecobs = None
                     if i == 0:
                         action, reward, terminated, truncated = None, None, None, None
                     else:
@@ -244,12 +237,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             writer.close()
         
     def _write_infobuffer(self, out_filename, infobuffer):
-        pkl_filename = out_filename+".xz"
-        with lzma.open(pkl_filename, "wb") as f:
-            pickle.dump(infobuffer, f)
 
-        infos = tt.map_tensor_tree(self._infoBuffer, lambda t: th.as_tensor(t).detach().cpu())
-        # ggLog.info(f"infos = {infos}")
+        infos = tt.map_tensor_tree(infobuffer, lambda t: th.as_tensor(t).detach().cpu())
         infos = tt.stack_tensor_tree(infos)
         infos = tt.flatten_tensor_tree(infos)
 
@@ -269,6 +258,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         with h5py.File(out_filename, "w") as f:
             # loop through obs, action, reward, terminated, truncation
             for k,v in vecbuffer.items():
+                if k == "vecobs" and not self._has_vec_obs:
+                    continue
                 # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
                 try:
                     # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
@@ -277,21 +268,22 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                     v = flatten_tensor_tree(v) # flatten in case we have complex observations
                     for sk,sv in v.items():
                         f.create_dataset(f"{k}.{sk}", data=sv)
-                    if self._vecobs_labels is not None:
-                        for sk,sv in self._vecobs_labels.items():
-                            f.create_dataset(f"{k}.{sk}_labels", data=sv)
+                    # if self._vecobs_labels is not None:
+                    #     for sk,sv in self._vecobs_labels.items():
+                    #         f.create_dataset(f"{k}.{sk}_labels", data=sv)
                 except TypeError as e:
                     raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
 
 
     def _saveLastEpisode(self, filename : str):
-        if len(self._frameBuffer) > 1:
-            for i in range(len(self._vecBuffer)):
-                vecobs = self._vecBuffer["vecobs"][i]
-                self._vecBuffer["vecobs"][i] = map_tensor_tree(flatten_tensor_tree(vecobs),
-                                                               lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
+        if len(self._imgBuffer) > 1:
+            if self._has_vec_obs:
+                for i in range(len(self._vecBuffer)):
+                    vecobs = self._vecBuffer["vecobs"][i]
+                    self._vecBuffer["vecobs"][i] = map_tensor_tree(flatten_tensor_tree(vecobs),
+                                                                lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
             if self._record_video:
-                self._writeVideo(filename,self._frameBuffer, self._vecBuffer, self._infoBuffer)
+                self._writeVideo(filename,self._imgBuffer, self._vecBuffer, self._infoBuffer)
             if self._record_infoobs:
                 self._write_vecbuffer(filename,self._vecBuffer)
                 self._write_infobuffer(filename+"_info",self._infoBuffer)
@@ -343,10 +335,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 # If the two counters are different we are in the middle of a step, we are in an autoreset
                 # If they are the same we are in a reset triggered from the outside
                 # In this case do not save the last obs/action/etcetera, they have already been saved in the last step
-                img = self._runner.get_ui_renderings()[0][self._env_idx]
-                obs, act, info, rew, term, trunc = map_tensor_tree((last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds), 
-                                                                lambda tensor: tensor[self._env_idx])
-                self._record_step(img, obs, act, info, rew, term, trunc)
+                self._record_step(last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
             fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
             if self._saveBestEpisodes and self._ep_rewards[self._env_idx] > self._bestReward:
@@ -364,10 +353,11 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._ep_step_counts[envs_ended_mask] = 0
         self._ep_counts[envs_ended_mask] = 0
 
-        self._frameBuffer = []
-        self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
-        self._infoBuffer = []
-        self._stored_frames = 0
+        if envs_ended_mask[self._env_idx]:
+            self._imgBuffer = []
+            self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
+            self._infoBuffer = []
+            self._stored_frames = 0
         
 
     def close(self):
