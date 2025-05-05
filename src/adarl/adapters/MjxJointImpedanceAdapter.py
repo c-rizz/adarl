@@ -425,7 +425,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         return ret
     
     @override
-    def get_last_applied_command(self) -> th.Tensor:
+    def get_current_joint_impedance_command(self) -> th.Tensor:
         return self._last_applied_jimp_cmd
     
     @override
@@ -436,3 +436,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
         super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
         self._reset_filters()
+
+    @override
+    def control_period(self):
+        self._sim_step_dt_th

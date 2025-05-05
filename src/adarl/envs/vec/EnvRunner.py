@@ -24,7 +24,7 @@ from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.utils.utils import to_string_tensor
-
+from adarl.utils.tensor_trees import deep_copy
 
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
@@ -145,12 +145,19 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
             # Assess the situation
             with self._getObsRewDurationAverage:
+                # ts = []
+                # ts.append(time.monotonic())
                 terminateds = self._adarl_env.are_states_terminal(consequent_states)
+                # ts.append(time.monotonic())
                 truncateds = self._adarl_env.are_states_timedout(consequent_states)
                 sub_rewardss : Dict[str,th.Tensor] = {}
+                # ts.append(time.monotonic())
                 rewards = self._adarl_env.compute_rewards(consequent_states, sub_rewards_return = sub_rewardss)
+                # ts.append(time.monotonic())
                 consequent_observations = self._adarl_env.get_observations(consequent_states)
+                # ts.append(time.monotonic())
                 consequent_infos = self._build_info(consequent_states)
+                # ts.append(time.monotonic())
                 
                 self._last_terminated = terminateds
                 self._last_truncated = truncateds
@@ -165,6 +172,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 self._tot_ep_sub_rewards += sub_rewards_tens
                 for k,v in self._ep_sub_rewards.items():
                     v += sub_rewardss[k]
+                # ts.append(time.monotonic())
+                # ggLog.info(f"obs rew comp times = tot {ts[-1]-ts[0]} = sum("+str([f"{(ts[i+1]-ts[i])/(ts[-1]-ts[0]):.3f}" for i in range(len(ts)-1)])+")")
+
 
             with self._reinitDurationAverage:
                 self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
@@ -432,7 +442,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                             th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
-        return copy.deepcopy(info)
+        return deep_copy(info)
     
     @override
     def get_max_episode_steps(self):

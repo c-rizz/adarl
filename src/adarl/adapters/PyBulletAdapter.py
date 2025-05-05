@@ -424,7 +424,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                 lightAmbientCoeff = self._lightAmbientCoeff,
                                 lightDiffuseCoeff = self._lightDiffuseCoeff,
                                 lightSpecularCoeff = self._lightSpecularCoeff)
-            ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
+            ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromEpStart()))
         return ret
 
     def _apply_controls(self):

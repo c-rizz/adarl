@@ -11,6 +11,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import time
 from typing_extensions import override
 from rreal.algorithms.rl_agent import RLAgent
+import adarl.utils.session
 
 class TrainingCallback():
 
@@ -183,6 +184,7 @@ class CheckpointCallbackRB(TrainingCallback):
         self._episode_counter = 0
         self._save_best = save_best
         self._step_counter = 0
+        self._save_count = 0
 
         self._successes = [0]*50
         self._success_ratio = 0.0
@@ -197,10 +199,11 @@ class CheckpointCallbackRB(TrainingCallback):
 
     def _save_model(self, is_best, count_ep):
         self._best_success_ratio = max(self._best_success_ratio, self._success_ratio)
+        run_id = adarl.utils.session.default_session.run_info["run_id"]
+        fname_base = f"{run_id}_{self._save_count}_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_steps"
         if is_best:
-            path = os.path.join(self.save_path, f"best_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_{int(self._success_ratio*100)}_steps")
-        else:
-            path = os.path.join(self.save_path, f"{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_{int(self._success_ratio*100)}_steps")
+            fname_base = "best_"+fname_base
+        path = os.path.join(self.save_path, fname_base)
         self._model.save(path)
         if not is_best:
             if count_ep:
@@ -209,13 +212,12 @@ class CheckpointCallbackRB(TrainingCallback):
                 self._step_last_model_checkpoint = self._step_counter
         
         if self.save_replay_buffer:
-            self._save_replay_buffer(is_best)
+            self._save_replay_buffer(fname_base)
+        self._save_count += 1
 
-    def _save_replay_buffer(self, is_best):
-        if is_best:
-            path = os.path.join(self.save_path, f"best_{self.name_prefix}_replay_buffer_{self._episode_counter:09d}_{self._step_counter:09d}_steps")+".pkl"
-        else:
-            path = os.path.join(self.save_path, f"{self.name_prefix}_replay_buffer_{self._episode_counter:09d}_{self._step_counter:09d}_steps")+".pkl"
+    def _save_replay_buffer(self, fname_base):
+        fname_base = fname_base+"_buffer.pkl"
+        path = os.path.join(self.save_path, fname_base)        
         t0 = time.monotonic()
         if self._buffer is not None:
             ggLog.info(f"Saving replay buffer with transitions {self._buffer.replay_buffer.size()}/{self._buffer.replay_buffer.buffer_size}...")

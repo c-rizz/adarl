@@ -287,7 +287,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             if self._record_infoobs:
                 self._write_vecbuffer(filename,self._vecBuffer)
                 self._write_infobuffer(filename+"_info",self._infoBuffer)
-
+            self._saved_eps_count += 1
         
         
 
@@ -337,7 +337,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 # In this case do not save the last obs/action/etcetera, they have already been saved in the last step
                 self._record_step(last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-            fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
+            fname = f"ep_{run_id}_{self._saved_eps_count}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}"
             if self._saveBestEpisodes and self._ep_rewards[self._env_idx] > self._bestReward:
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(f"{self._outFolder}/best/{fname}")            
@@ -345,7 +345,6 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             if self._saveFrequency_ep==1 or (self._saveFrequency_ep>0 and ep_count - self._last_saved_ep >= self._saveFrequency_ep):
                 self._saveLastEpisode(f"{self._outFolder}/{fname}")
                 self._last_saved_ep = ep_count
-                self._saved_eps_count += 1
 
         if self._saveBestEpisodes and self._ep_rewards[self._env_idx]>self._bestReward and envs_ended_mask[self._env_idx]:
             self._bestReward = self._ep_rewards[self._env_idx]
@@ -364,7 +363,9 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         # ggLog.info(f"self._outFolder = {self._outFolder}")
         # self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}".zfill(6)+f"_{self._epReward}.mp4"))
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
-        fname = f"ep_{self._saved_best_eps_count:09d}_{ep_count:09d}_{self._ep_rewards[self._env_idx]:09.9g}"
+        run_id = adarl.utils.session.default_session.run_info["run_id"]
+        step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
+        fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
         self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self._runner.close()
 

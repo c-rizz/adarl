@@ -1287,7 +1287,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         """
         ggLog.info(f"MjxAdapter resetting")
-        self.__lastResetTime = self.getEnvTimeFromStartup()
+        super().resetWorld()
 
         self._sim_state = self._sim_state.replace_d({   "mjx_data": copy.deepcopy(self._original_mjx_data),
                                                         "mjx_model": copy.deepcopy(self._original_mjx_model)})

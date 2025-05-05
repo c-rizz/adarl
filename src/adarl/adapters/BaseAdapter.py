@@ -1,4 +1,4 @@
-"""This file implements the Envitronment controller class, whic is the superclass for all th environment controllers."""
+"""This file implements the base Adapter class, which is the superclass for all environment adapters."""
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import List, Tuple, Dict, Callable, Optional
@@ -78,21 +78,18 @@ class BaseAdapter(ABC):
         return self._monitored_cameras
 
     def startup(self):
-        """Start up the controller."""
-        pass
-
-    def stopController(self):
+        """Start up the adapter."""
         pass
     
     @abstractmethod
     def build_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of adapter"""
         raise NotImplementedError()
     
 
     @abstractmethod
     def destroy_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of adapter"""
         raise NotImplementedError()
 
     @abstractmethod
@@ -109,7 +106,7 @@ class BaseAdapter(ABC):
         Returns
         -------
         float
-            Duration of the step in simulation time (in seconds)"""
+            Duration of the step in environment time (in seconds)"""
 
         raise NotImplementedError()
 
@@ -229,22 +226,27 @@ class BaseAdapter(ABC):
 
         """
         self.__lastResetTime = self.getEnvTimeFromStartup()
+        self.initialize_for_episode()
 
+    def initialize_for_episode(self):
+        """Performs initializations steps necessary to start an episode.
+            After this you can start stepping the environment using step().
+        """
+        self.__episode_start_env_time = self.getEnvTimeFromStartup()
 
     @abstractmethod
     def getEnvTimeFromStartup(self) -> float:
         """Get the current time within the simulation."""
         raise NotImplementedError()
 
+    def getEnvTimeFromEpStart(self) -> float:
+        """Get the current time within the simulation."""
+        return self.getEnvTimeFromStartup() - self.__episode_start_env_time
+
     @abstractmethod
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
         raise NotImplementedError()
-
-
-    def getEnvTimeFromReset(self) -> float:
-        """Get the current time within the simulation."""
-        return self.getEnvTimeFromStartup() - self.__lastResetTime
 
     def run_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
         # ggLog.info(f"run async loop")

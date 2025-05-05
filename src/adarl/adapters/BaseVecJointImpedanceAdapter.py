@@ -111,7 +111,7 @@ class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
         raise NotImplementedError()
 
     @abstractmethod
-    def get_last_applied_command(self) -> th.Tensor:
+    def get_current_joint_impedance_command(self) -> th.Tensor:
         """Returns the last command that was applied to the controlled joints.
 
         Returns
@@ -127,3 +127,15 @@ class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
         jimp_cmd[:,:,2] = efforts
         self.setJointsImpedanceCommand(joint_impedances_pvesd=jimp_cmd,
                                        joint_names=joint_names)
+
+    @abstractmethod
+    def control_period(self) -> th.Tensor:
+        """The control period of the joint impedance adapter.
+
+        Returns
+        -------
+        th.Tensor
+            zero-dimensional tensor, containing the control dt in seconds
+            
+        """
+        raise NotImplementedError()
