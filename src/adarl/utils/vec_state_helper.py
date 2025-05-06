@@ -197,9 +197,9 @@ class ThBoxStateHelper(StateHelper):
         hlmax = self._limits_minmax[1].expand(self._state_size)
         obs_def = self.ObservationDef(obs_names, obs_shape, unflattened_obs_shape, full_observation_mask, observed_field_size, 
                                       observable_indexes, observable_fields, observable_subfields_mask, obs_history_length, None,None)
-        obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, obs_def), high=self.observe(hlmax, obs_def), shape=self._main_obs_def.obs_shape,
+        obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, obs_def), high=self.observe(hlmax, obs_def), shape=obs_def.obs_shape,
                                     dtype=self._obs_dtype, labels=obs_names)
-        obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, obs_def)[0], high=self.observe(hlmax, obs_def)[0], shape=self._main_obs_def.obs_shape[1:],
+        obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, obs_def)[0], high=self.observe(hlmax, obs_def)[0], shape=obs_def.obs_shape[1:],
                                         dtype=self._obs_dtype, labels=obs_names)
         return obs_def
 
@@ -320,7 +320,7 @@ class ThBoxStateHelper(StateHelper):
             obs = state
         else:
             if obs_def.observed_field_size == self.field_size:
-                obs = state[:,:self._main_obs_def.obs_history_length,obs_def.observable_indexes]
+                obs = state[:,:obs_def.obs_history_length,obs_def.observable_indexes]
             else:
                 obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
         if self._flatten_observation:
@@ -334,9 +334,23 @@ class ThBoxStateHelper(StateHelper):
     def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_mask):
         obs_names = np.empty(shape=(obs_history_length,len(observable_fields))+observed_field_size, dtype=object)
         for h in range(obs_history_length):
+            print(f"observed_field_size = {observed_field_size}")
             for fn in range(len(observable_fields)):
-                for s in np.ndindex(observed_field_size):
-                    if not observable_subfields_mask[s]:
+                indexes = list(np.ndindex(observed_field_size))
+                print(f"observed_field_size = {observed_field_size}")
+                print(f"indexes = {indexes}")
+                for s in indexes:
+                    # print(f"observable_subfields_mask[{s}] = {observable_subfields_mask[s]}")
+                    if len(observable_subfields_mask.shape)>1:
+                        first_element_observable = observable_subfields_mask[s].flatten()[0]
+                        # print(f"first_element_observable = {first_element_observable}")
+                        # print(f"observable_subfields_mask[{s}] = {observable_subfields_mask[s]}")
+                        if th.any(observable_subfields_mask[s] != first_element_observable):
+                            raise RuntimeError(f"subfield not fully observable or fully not observable, not supported yet")
+                        observable = first_element_observable
+                    else:
+                        observable = observable_subfields_mask[s]
+                    if not observable:
                         continue
                     f = observable_fields[fn]
                     if isinstance(f, Enum):
