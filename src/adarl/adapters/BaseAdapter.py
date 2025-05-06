@@ -93,9 +93,16 @@ class BaseAdapter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
+    def initialize_for_step(self):
+        raise NotImplementedError()
+    
+    @abstractmethod
     def step(self) -> float:
-        """Run a the environment for one step.
-
+        """Run a simulation step. This does not necessarily have a constant duration, depending on the adapter the duration may depend
+          on something. For example if position commands are involved, the step may depend on the duration of the movement.
+          This step function always calls initialize_for_step() at the beginning, so any step-initialziation logc must be placed there.
+          In this way an environment can also choose to call run() to subdivide the step manually.
+          
         Returns
         -------
         float

@@ -124,7 +124,7 @@ class WandbWrapper():
                     # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
                     if t-last_logged<throttle_period:
                         if not silent_throttling:
-                            ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=1, width=2, inline=True)}")
+                            ggLog.info(f"wandb_log throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=2, width=2, inline=True)}")
                         return
                     # ggLog.info(f"[{str(keys)[:10]}]: Sending")
 

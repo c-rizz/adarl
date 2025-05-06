@@ -51,16 +51,16 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         ----------
         requestedCameras : List[str]
             List containing the names of the cameras to get the images of
+        vec_mask: th.Tensor
+            Which envirnoments to render, if None, renders all
 
         Returns
         -------
-        tuple[th.Tensor, th.Tensor]
+        tuple[list[th.Tensor], th.Tensor]
             A tuple with a batch of batches of images in the first element and the sim time of each image
             in the second. The order is that of the requestedCameras argument.
             The first element contains a list of length len(requestedCameras) containing tensors of shape
-            (th.count_nonzero(vec_mask), <image_shape>) and the second has shape(th.count_nonzero(vec_mask), len(requestedCameras))
-        vec_mask: th.Tensor
-            Which envirnoments to render, if None, renders all
+            (th.count_nonzero(vec_mask), image_shape) and the second has shape(th.count_nonzero(vec_mask), len(requestedCameras))
 
         """
         raise NotImplementedError()

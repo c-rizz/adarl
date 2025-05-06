@@ -6,6 +6,7 @@ import torch as th
 from typing import Any, SupportsFloat, Tuple, Dict
 import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.tensor_trees import unstack_tensor_tree, is_all_finite, is_all_bounded
+from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check_bounded
 import copy
 import adarl.utils.session as session
 import time
@@ -16,6 +17,10 @@ class VectorEnvChecker(
     def __init__(self,  env: VectorEnv,
                         just_warn : bool = False):
         self._just_warn = just_warn
+        self._obs_min = -255.0
+        self._obs_max =  255.0
+        self._rew_min = -100.0
+        self._rew_max =  100.0
         super().__init__(env)
 
     def step(
@@ -45,27 +50,9 @@ class VectorEnvChecker(
         return observation, info
     
     def _check(self, observation, reward):
-        if observation is not None and not is_all_finite(observation):
-            msg = f"Non-finite values in obs {observation}"
-            if self._just_warn:
-                ggLog.warn(msg)
-            else:
-                raise RuntimeError(msg)
-        if observation is not None and not is_all_bounded(observation, min=-100, max=100):
-            msg = f"Values over 100 in obs {observation}"
-            if self._just_warn:
-                ggLog.warn(msg)
-            else:
-                raise RuntimeError(msg)
-        if reward is not None and not is_all_finite(reward):
-            msg = f"Non-finite values in reward {reward}"
-            if self._just_warn:
-                ggLog.warn(msg)
-            else:
-                raise RuntimeError(msg)
-        if reward is not None and not is_all_bounded(reward, min=-100, max=100):
-            msg = f"Values over 100 in reward {reward}"
-            if self._just_warn:
-                ggLog.warn(msg)
-            else:
-                raise RuntimeError(msg)
+        if observation is not None:
+            dbg_check_finite(observation, async_assert=True)
+            dbg_check_bounded(observation, min=self._obs_min, max=self._obs_max, async_assert=False, just_warn=self._just_warn)
+        if reward is not None:
+            dbg_check_finite(reward, async_assert=True)
+            dbg_check_bounded(reward, min = self._rew_min, max = self._rew_max, async_assert=False, just_warn=self._just_warn)

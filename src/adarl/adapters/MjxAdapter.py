@@ -319,6 +319,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_frequency : float = 15,
                         gui_env_index : int = 0,
                         add_ground : bool = True,
+                        add_sky : bool = True,
                         log_freq : int = -1,
                         opt_preset : Literal["fast","faster","fastest"] | None = "fast",
                         log_folder : str = "./",
@@ -340,6 +341,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_stepping_wtime_since_build = 0
         self._run_wtime_since_build = 0
         self._add_ground = add_ground
+        self._add_sky = add_sky
         self._log_freq = log_freq
         self._log_folder = log_folder
         self._last_log_iters = -log_freq 
@@ -421,7 +423,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                                         <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
                                                                         <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
                                                                     </asset>
-                                                                        <worldbody>
+                                                                    <worldbody>
                                                                         <body name="ground_link">
                                                                             <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
                                                                                     ambient="0.2 0.2 0.2"
@@ -435,6 +437,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                            format="mjcf",
                                            pose=None,
                                            kwargs={}))
+        elif self._add_sky:
+            models.append(ModelSpawnDef( name="ground",
+                                           definition_string="""<mujoco>
+                                                                    <compiler angle="radian"/>
+                                                                    <asset>
+                                                                        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+                                                                        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
+                                                                        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
+                                                                    </asset>
+                                                                    <worldbody>
+                                                                        <body name="ground_link">
+                                                                            <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
+                                                                                    ambient="0.2 0.2 0.2"
+                                                                                    diffuse="0.7 0.7 0.7"
+                                                                                    specular="0.5 0.5 0.5"
+                                                                                    castshadow="true"/>
+                                                                            <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 -10"/>
+                                                                        </body>
+                                                                    </worldbody>
+                                                                </mujoco>""",
+                                           format="mjcf",
+                                           pose=None,
+                                           kwargs={}))
+
         specs = []
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
         for model in models:
@@ -488,20 +514,20 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._mj_model.opt.iterations = 1 # constraint solver iterations
             self._mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 100 # see comment above
+            self._mj_model.opt.impratio = 10 # see comment above
         elif self._opt_preset == "faster":
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 3
             self._mj_model.opt.ls_iterations = 3
             self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
             self._mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
-            self._mj_model.opt.impratio = 100 # see comment above
+            self._mj_model.opt.impratio = 10 # see comment above
         elif self._opt_preset == "fast":
             self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
             self._mj_model.opt.iterations = 10
             self._mj_model.opt.ls_iterations = 5
             # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 100 # see comment above
+            self._mj_model.opt.impratio = 10 # see comment above
         else:
             raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
         if self._opt_override is not None:
@@ -817,6 +843,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._monitored_lids = jnp.array([self._lname2lid[ln] for ln in self._monitored_links], device=self._jax_device)
 
     @override
+    def initialize_for_step(self):
+        self._sim_state = self._clear_joint_state_step_stats(self._sim_state)
+
+    @override
     def step(self) -> float:
         """Run a simulation step.
 
@@ -825,7 +855,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         float
             Duration of the step in simulation time (in seconds)"""
         t0 = time.monotonic()
-        self._sim_state = self._clear_joint_state_step_stats(self._sim_state)
+        self.initialize_for_step()
         t1 = time.monotonic()
         stepLength = self.run(self._step_length_sec)
         tf = time.monotonic()
@@ -981,7 +1011,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
     @override
-    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : list[str], vec_mask : th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
         if len(self._renderers)==0:
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
         if vec_mask is None:

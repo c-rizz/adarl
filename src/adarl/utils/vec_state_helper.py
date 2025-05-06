@@ -802,7 +802,7 @@ class RobotStateHelper(ThBoxStateHelper):
         joint_limit_minmax_pveae = {jn:th.cat([
                                         lim_pve,
                                         th.as_tensor([[-5000.0], [5000]], device = lim_pve.device), # Can we have better acceleration limits?
-                                        th.as_tensor([[-10000.0], [10000.0]], device = lim_pve.device) # Can we have better sensed effort limits?
+                                        th.as_tensor([[-1000_000.0], [1000_000.0]], device = lim_pve.device) # Can we have better sensed effort limits?
                                     ], dim=-1)
                         for jn,lim_pve in joint_limit_minmax_pveae.items()}
         if isinstance(stiffness_minmax,tuple):
