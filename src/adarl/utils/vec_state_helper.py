@@ -106,55 +106,55 @@ class ThBoxStateHelper(StateHelper):
         obs_history_length : int
         obs_space : spaces.ThBox
         single_obs_space : spaces.ThBox
+        fully_observable : bool
+    @dataclass
+    class SimpleObsDef():
+        observable_fields : Sequence[FieldName] | None
+        observable_subfields : list[str|int] | np.ndarray | None
+        obs_history_length : int
 
-    def __init__(self,  field_names : Sequence[FieldName], obs_dtype : th.dtype,
+    def __init__(self,  field_names : Sequence[FieldName], dtype : th.dtype,
                         th_device : th.device, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
                         field_size : list[int] | tuple[int,...],
                         vec_size : int, 
                         history_length : int = 1,
-                        observable_fields : Sequence[FieldName] | None = None,
                         subfield_names : list[str] | np.ndarray | None = None,
-                        observable_subfields : list[str|int] | np.ndarray | None = None,
                         flatten_observation = False,
-                        obs_history_length : int = 1):
-        if obs_history_length>history_length:
-            raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than history_length ({history_length})")
+                        observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None = None):
         self.field_names = field_names
         self.field_shape = tuple(field_size)
         self.subfield_names = self._fix_subfield_names(subfield_names)
-        observable_fields = field_names if observable_fields is None else observable_fields
-        self._observable_subfields = self._fix_observable_subfields(observable_subfields)
-        self._obs_dtype = obs_dtype
+        self._dtype = dtype
         self._th_device = th_device
         self._history_length = history_length
         self._flatten_observation = flatten_observation
         self._state_names = None
         self._vec_size = vec_size
-
-        self._fully_observable = observable_fields is None and obs_history_length==self._history_length and self._observable_subfields is None
         self._field_idxs = {n:field_names.index(n) for n in field_names}
         self._field_idx_cache = {}
-        if self.subfield_names is not None:
-            self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)}
-        else:
-            self._subfield_idxs = None
+        self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)} if self.subfield_names is not None else None
         self._fields_num = len(field_names)
-        self._state_size = (self._vec_size, self._history_length, self._fields_num) + self.field_shape
-        self._obs_size = (self._vec_size, obs_history_length, len(observable_fields)) + self.field_shape
-        if self._flatten_observation:
-            self._obs_size = (self._vec_size, int(np.prod(self._obs_size[1:])))
+        self._state_shape = (self._vec_size, self._history_length, self._fields_num) + self.field_shape
         self._limits_minmax = self.build_limits(fields_minmax)
         assert self._limits_minmax.size() == (2, self._fields_num,)+self.field_shape, f"failed {self._limits_minmax.size()} == {(2, self._fields_num,)+self.field_shape}"
 
-        hlmin = self._limits_minmax[0].expand(self._state_size)
-        hlmax = self._limits_minmax[1].expand(self._state_size)
-        self._vec_state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_size)
-        self._single_state_space = spaces.ThBox(low=hlmin[0], high=hlmax[0], shape=self._state_size[1:])
+        hlmin = self._limits_minmax[0].expand(self._state_shape)
+        hlmax = self._limits_minmax[1].expand(self._state_shape)
+        self._vec_state_space = spaces.ThBox(low=hlmin, high=hlmax, shape=self._state_shape)
+        self._single_state_space = spaces.ThBox(low=hlmin[0], high=hlmax[0], shape=self._state_shape[1:])
 
-        self._main_obs_def = self._build_obs_def(observable_fields, observable_subfields, obs_history_length)
+        if observation_definitions is None:
+            observation_definitions = ThBoxStateHelper.SimpleObsDef(None, None, 1)
+        if isinstance(observation_definitions, ThBoxStateHelper.SimpleObsDef):
+            observation_definitions = {"main":observation_definitions}
+        self._obs_defs = {k:self._build_obs_def(v) for k,v in observation_definitions.items()}
+        self._main_obs_def = next(iter(self._obs_defs))
         
 
-    def _build_obs_def(self, observable_fields, observable_subfields, obs_history_length):
+    def _build_obs_def(self, obs_def : SimpleObsDef):
+        observable_fields, observable_subfields, obs_history_length = obs_def.observable_fields, obs_def.observable_subfields, obs_def.obs_history_length
+        if obs_history_length>self._history_length:
+            raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than state history_length ({self._history_length})")
         if observable_subfields is None:
             observable_subfields_mask = th.ones(self.field_shape,dtype=th.bool)
             observed_field_shape = self.field_shape
@@ -176,6 +176,7 @@ class ThBoxStateHelper(StateHelper):
             elif isinstance(observable_subfields, (np.ndarray)):
                 raise NotImplementedError()
             observed_field_shape : tuple[int,...] = (th.count_nonzero(observable_subfields_mask).item(),)
+        observable_fields = self.field_names if observable_fields is None else observable_fields
         observable_fields = [f for f in self.field_names if f in observable_fields] # to ensure they are ordered
         observable_indexes = th.as_tensor([self.field_names.index(n) for n in observable_fields], dtype=th.int32).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
         observable_fields_mask = th.zeros((self._fields_num,), dtype=th.bool)
@@ -198,15 +199,17 @@ class ThBoxStateHelper(StateHelper):
                                             observable_fields,
                                             observed_field_shape,
                                             observable_subfields_mask)
-        hlmin = self._limits_minmax[0].expand(self._state_size)
-        hlmax = self._limits_minmax[1].expand(self._state_size)
-        obs_def = self.ObservationDef(obs_names, obs_shape, unflattened_obs_shape, full_observation_mask, observed_field_shape, 
-                                      observable_indexes, observable_fields, observable_subfields_mask, obs_history_length, None,None)
-        obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, obs_def), high=self.observe(hlmax, obs_def), shape=obs_def.obs_shape,
-                                    dtype=self._obs_dtype, labels=obs_names)
-        obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, obs_def)[0], high=self.observe(hlmax, obs_def)[0], shape=obs_def.obs_shape[1:],
-                                        dtype=self._obs_dtype, labels=obs_names)
-        return obs_def
+        hlmin = self._limits_minmax[0].expand(self._state_shape)
+        hlmax = self._limits_minmax[1].expand(self._state_shape)
+        fully_observable = observable_fields is None and obs_history_length==self._history_length and observable_subfields is None
+        full_obs_def = self.ObservationDef(obs_names, obs_shape, unflattened_obs_shape, full_observation_mask, observed_field_shape, 
+                                      observable_indexes, observable_fields, observable_subfields_mask, obs_history_length, 
+                                      None,None, fully_observable)
+        full_obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, full_obs_def), high=self.observe(hlmax, full_obs_def), shape=full_obs_def.obs_shape,
+                                    dtype=self._dtype, labels=obs_names)
+        full_obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, full_obs_def)[0], high=self.observe(hlmax, full_obs_def)[0], shape=full_obs_def.obs_shape[1:],
+                                        dtype=self._dtype, labels=obs_names)
+        return full_obs_def
 
 
     def _fix_subfield_names(self, subfield_names : list[str] | np.ndarray | None):
@@ -223,8 +226,6 @@ class ThBoxStateHelper(StateHelper):
             subfield_names = np.array(subfield_names, dtype=object)
         return subfield_names
 
-    def _fix_observable_subfields(self, observable_subfields : list[str|int] | np.ndarray | None):
-        return observable_subfields
 
 
 
@@ -240,7 +241,7 @@ class ThBoxStateHelper(StateHelper):
                 raise RuntimeError(f"Field {n} has size {minmax.size()}, should be {(2,)+self.field_shape}")
             new_minmax[n]=minmax
         fields_minmax = new_minmax
-        return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._obs_dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
+        return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:
         # ggLog.info(f"self._vec_size = {self._vec_size}, self.field_size = {self.field_size}, instantaneous_state = {instantaneous_state}")
@@ -256,11 +257,11 @@ class ThBoxStateHelper(StateHelper):
             # ggLog.info(f"resetting from mapping: initial_values = {initial_values}, size = {initial_values.size()}")
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
-        initial_values = initial_values.expand(self._vec_size,*self._state_size[2:]).to(device=self._th_device, dtype=self._obs_dtype, non_blocking=self._th_device.type=="cuda")
-        dbg_check_size(initial_values, (self._state_size[0],)+self._state_size[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
-        state = initial_values.unsqueeze(1).expand(*self._state_size).clone() # repeat along the history dimension
+        initial_values = initial_values.expand(self._vec_size,*self._state_shape[2:]).to(device=self._th_device, dtype=self._dtype, non_blocking=self._th_device.type=="cuda")
+        dbg_check_size(initial_values, (self._state_shape[0],)+self._state_shape[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
+        state = initial_values.unsqueeze(1).expand(*self._state_shape).clone() # repeat along the history dimension
         # state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))
-        assert state.size() == self._state_size,    f"Unexpected resulting state size {state.size()}, should be {self._state_size}."\
+        assert state.size() == self._state_shape,    f"Unexpected resulting state size {state.size()}, should be {self._state_shape}."\
                                                     f" Fields are {self.field_names}, subfields are {self.subfield_names}"
         return state
     
@@ -321,7 +322,7 @@ class ThBoxStateHelper(StateHelper):
     def observe(self, state : th.Tensor, obs_def : ThBoxStateHelper.ObservationDef | None = None):
         if obs_def is None:
             obs_def = self._main_obs_def
-        if self._fully_observable:
+        if obs_def.fully_observable:
             obs = state
         else:
             if obs_def.observed_field_size == self.field_shape:
@@ -789,7 +790,7 @@ class RobotStateHelper(ThBoxStateHelper):
         subfield_names = ["pos","vel","cmdeff","acc","senseff","refpos","refvel","refeff","stiff","damp"]
         self._th_device = th_device
         super().__init__(   field_names=list(joint_limit_minmax_pveae.keys()),
-                            obs_dtype=obs_dtype,
+                            dtype=obs_dtype,
                             th_device=th_device,
                             field_size=(len(subfield_names),),
                             fields_minmax= self._build_fields_minmax(joint_limit_minmax_pveae, stiffness_minmax, damping_minmax),
@@ -860,7 +861,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                                         th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1),
                                         minmax_pve[:,[2]]], dim=1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
         super().__init__(   field_names = list(jlims_minmax_pvae.keys()),
-                            obs_dtype = obs_dtype,
+                            dtype = obs_dtype,
                             th_device = th_device,
                             field_size = (len(subfield_names),),
                             fields_minmax= self._build_fields_minmax(jlims_minmax_pvae),
