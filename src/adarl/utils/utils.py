@@ -548,14 +548,16 @@ def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
 
 def ros_rpy_to_quaternion_xyzw_th(rpy):
     rpy = th.as_tensor(rpy)
-    roll  = th.as_tensor([th.sin(rpy[0]/2),  0.0,               0.0,                th.cos(rpy[0]/2)], device=rpy.device)
-    pitch = th.as_tensor([0.0,               th.sin(rpy[1]/2),  0.0,                th.cos(rpy[1]/2)], device=rpy.device)
-    yaw   = th.as_tensor([0.0,               0.0,               th.sin(rpy[2]/2),   th.cos(rpy[2]/2)], device=rpy.device)
+    zero = th.zeros_like(rpy[...,0])
+    roll   = th.stack([th.sin(rpy[...,0]/2),    zero,                   zero,                   th.cos(rpy[...,0]/2)], dim=-1)
+    pitch  = th.stack([zero,                    th.sin(rpy[...,1]/2),   zero,                   th.cos(rpy[...,1]/2)], dim=-1)
+    yaw    = th.stack([zero,                    zero,                   th.sin(rpy[...,2]/2),   th.cos(rpy[...,2]/2)], dim=-1)
     # On fixed axes:
     # First rotate around x (roll)
     # Then rotate around y (pitch)
     # Then rotate around z (yaw)
-    return quat_mul_xyzw(yaw, quat_mul_xyzw(pitch, roll))
+    r = quat_mul_xyzw(yaw, quat_mul_xyzw(pitch, roll))
+    return r
 
 def ros_rpy_to_quaternion_xyzw(rpy):
     q = ros_rpy_to_quaternion_xyzw_th(rpy)

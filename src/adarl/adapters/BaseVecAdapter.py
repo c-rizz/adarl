@@ -11,10 +11,17 @@ from adarl.utils.utils import JointState, LinkState, th_quat_rotate, masked_assi
 from typing import overload, Sequence, Generic
 from adarl.adapters.BaseAdapter import BaseAdapter
 from typing_extensions import override
+from dataclasses import dataclass
+from enum import IntEnum
 JointName = Tuple[str,str]
 LinkName = Tuple[str,str]
 LinkIdSequence = TypeVar("LinkIdSequence")
 JointIdSequence = TypeVar("JointIdSequence")
+
+JointType=IntEnum("JointType", ["REVOLUTE", "PRISMATIC", "FIXED", "FLOATING", "SPHERICAL"], start=0)
+@dataclass
+class JointProperties:
+    joint_type : JointType
 
 class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     """Base class for implementing environment adapters. Adapters allow to interface with a variety of 
@@ -253,6 +260,9 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
     def get_detected_joints(self) -> Sequence[tuple[str,str]]:
         return []
+    
+    def get_detected_joints_properties(self) -> dict[tuple[str,str],JointProperties]:
+        return {}
     
     def get_detected_links(self) -> Sequence[tuple[str,str]]:
         return []

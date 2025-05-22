@@ -303,7 +303,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                         jnp.zeros(shape=(self._vec_size, len(self._imp_controlled_joint_names),12),
                                                                     dtype=jnp.float32,
                                                                     device=self._jax_device))
-            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","constr_eff","pref","vref","eref","stiff","damp","neweff"]] for jn in self._monitored_joints],[])).unsqueeze(0)
+            self._full_history_labels = to_string_tensor(sum([[f"{v}.{jn[1]}" for v in ["pos","vel","cmd_eff","acc","eff","constr_eff","pref","vref","eref","stiff","damp","neweff"]] 
+                                                              for jn in self._imp_controlled_joint_names],[])).unsqueeze(0)
             
 
     def _reset_cmd_queue(self):
