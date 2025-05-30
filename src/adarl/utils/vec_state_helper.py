@@ -109,9 +109,9 @@ class ThBoxStateHelper(StateHelper):
         fully_observable : bool
     @dataclass
     class SimpleObsDef():
-        observable_fields : Sequence[FieldName] | None
-        observable_subfields : list[str|int] | np.ndarray | None
-        obs_history_length : int
+        observable_fields : Sequence[FieldName] | None = None
+        observable_subfields : list[str|int] | np.ndarray | None = None
+        obs_history_length : int = 1
 
     def __init__(self,  field_names : Sequence[FieldName], dtype : th.dtype,
                         th_device : th.device, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
@@ -148,7 +148,7 @@ class ThBoxStateHelper(StateHelper):
         if isinstance(observation_definitions, ThBoxStateHelper.SimpleObsDef):
             observation_definitions = {"main":observation_definitions}
         self._obs_defs = {k:self._build_obs_def(v) for k,v in observation_definitions.items()}
-        self._main_obs_def = next(iter(self._obs_defs))
+        self._main_obs_def = next(iter(self._obs_defs.values()))
         
 
     def _build_obs_def(self, obs_def : SimpleObsDef):
@@ -319,7 +319,9 @@ class ThBoxStateHelper(StateHelper):
         return unnormalize(state, self._limits_minmax[0], self._limits_minmax[1])
     
     @override
-    def observe(self, state : th.Tensor, obs_def : ThBoxStateHelper.ObservationDef | None = None):
+    def observe(self, state : th.Tensor, obs_def : ThBoxStateHelper.ObservationDef | str | None = None):
+        if isinstance(obs_def, str):
+            obs_def = self._obs_defs[obs_def]
         if obs_def is None:
             obs_def = self._main_obs_def
         if obs_def.fully_observable:
@@ -332,10 +334,6 @@ class ThBoxStateHelper(StateHelper):
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
         return obs
-    
-
-    def observe_priviledged(self, state : th.Tensor):
-        return self.observe(state, self._obs_def_priviledged)
 
     def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_mask):
         obs_names = np.empty(shape=(obs_history_length,len(observable_fields))+observed_field_size, dtype=object)
@@ -395,16 +393,24 @@ class ThBoxStateHelper(StateHelper):
         return self._vec_state_space
     
     @override
-    def get_vec_obs_space(self):
-        return self._main_obs_def.obs_space
-    
+    def get_vec_obs_space(self, obs_def : ThBoxStateHelper.ObservationDef | str | None = None):
+        if isinstance(obs_def, str):
+            obs_def = self._obs_defs[obs_def]
+        if obs_def is None:
+            obs_def = self._main_obs_def
+        return obs_def.obs_space
+
     @override
     def get_single_space(self):
         return self._single_state_space
     
     @override
-    def get_single_obs_space(self):
-        return self._main_obs_def.single_obs_space
+    def get_single_obs_space(self, obs_def : ThBoxStateHelper.ObservationDef | str | None = None):
+        if isinstance(obs_def, str):
+            obs_def = self._obs_defs[obs_def]
+        if obs_def is None:
+            obs_def = self._main_obs_def
+        return obs_def.single_obs_space
     
     # @override
     # def get(self, state : th.Tensor, field_names : Sequence[FieldName] | tuple[Sequence[FieldName],Sequence[FieldName]]):
@@ -560,62 +566,103 @@ class StateNoiseGenerator:
 
 # State = TypeVar("State", bound=Mapping)
 class DictStateHelper(StateHelper):
-    def __init__(self, state_helpers : dict[str, ThBoxStateHelper],
-                 observable_fields : list[str] | None = None,
-                 noise : Mapping[str,StateNoiseGenerator] = {},
-                 flatten_in_obs : list[str] = [],
-                 flattened_part_name : str = "vec"):
+
+    @dataclass
+    class SimpleDictObsDef():
+        observable_substates : list[str]
+        flattened_subfields : list[str]
+        noise_generators : dict[str,StateNoiseGenerator]
+        flattened_part_name : str
+    @dataclass
+    class DictObsDef():
+        observable_substates : list[str]
+        flattened_subfields : list[str]
+        vec_obs_space : spaces.gym_spaces.Dict
+        single_obs_space : spaces.gym_spaces.Dict
+        noise_generators : dict[str,StateNoiseGenerator]
+        flattened_part_name : str
+
+
+    def __init__(self,  state_helpers : dict[str, ThBoxStateHelper],
+                        obs_definitions : SimpleDictObsDef | dict[str,SimpleDictObsDef] | None = None,
+                        observable_fields : list[str] | dict[str,list[str]] | None = None,
+                        noise : Mapping[str,StateNoiseGenerator] = {},
+                        flatten_in_obs : list[str] = [],
+                        flattened_part_name : str = "vec"):
         # Would be nice to make this recursive (i.e. make this contain also DictStateHelpers), 
         # but it becomes a bit of a mess from the typing point of view
         self.sub_helpers = state_helpers
-        self._flatten_in_obs = flatten_in_obs
-        self._flatten_part_name = flattened_part_name
-        for k in state_helpers:
-            if k.endswith("_n"):
-                raise RuntimeError(f"keys ending in '_n' are not allowed, as they are used internally")
-        self.noise_generators = noise
-        for k in self.noise_generators:
-            if k not in self.sub_helpers:
-                raise RuntimeError(f"Received noise for state '{k}', but no state '{k}' was specified.")
+        if obs_definitions is None:
+            obs_definitions = DictStateHelper.SimpleDictObsDef(list(state_helpers.keys()),
+                                                               [],
+                                                               {},
+                                                               "vec")
+        if isinstance(obs_definitions, DictStateHelper.SimpleDictObsDef):
+            obs_definitions = {"main":obs_definitions}
+        self._init_obs_defs = obs_definitions
         self._vec_size = next(iter(state_helpers.values()))._vec_size
         for k,sh in state_helpers.items():
             if sh._vec_size != self._vec_size:
                 raise RuntimeError(f"Unmatched vec_size found in state_helpers. Found {sh._vec_size} and {self._vec_size}")
-        if observable_fields is None:
-            observable_fields = list(state_helpers.keys())
-        self._observable_fields = observable_fields
-        vec_subspaces = {k:s.get_vec_space() for k,s in self.sub_helpers.items()}
-        vec_subspaces.update({k+"_n":s.get_vec_space() for k,s in self.noise_generators.items()})
-        self._vec_state_space = spaces.gym_spaces.Dict(vec_subspaces)
-        single_subspaces = {k:s.get_single_space() for k,s in self.sub_helpers.items()}
-        single_subspaces.update({k+"_n":s.get_single_space() for k,s in self.noise_generators.items()})
-        self._single_state_space = spaces.gym_spaces.Dict(single_subspaces)
-        vec_obs_subspaces = {k:self.sub_helpers[k].get_vec_obs_space() for k in self._observable_fields if k not in self._flatten_in_obs}
-        single_obs_subspaces = {k:self.sub_helpers[k].get_single_obs_space() for k in self._observable_fields if k not in self._flatten_in_obs}
-        if len(self._flatten_in_obs)>0:
-            self._single_flattened_part_size = typing.cast(int,
-                                            sum([np.prod(self.sub_helpers[k].get_single_obs_space().shape) 
-                                                 for k in self._flatten_in_obs ]))
-            flattened_dtype = self.sub_helpers[self._flatten_in_obs[0]].get_single_obs_space().dtype
-            for k in self._flatten_in_obs:
-                if k not in self._observable_fields:
-                    raise RuntimeError(f"Field {k} is present in flatten_in_obs but not in observable_fields")
-                d = self.sub_helpers[k].get_single_obs_space().dtype
-                if d != flattened_dtype:
-                    raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
-                                       f"but {self._flatten_in_obs[0]} has {flattened_dtype} and {k} has {d}")
-            ggLog.info(f"setting self.observation_names()[{self._flatten_part_name}]={self.observation_names()[self._flatten_part_name]}")
-            obs_labels = adarl.utils.utils.to_string_tensor(self.observation_names()[self._flatten_part_name])
-            vec_obs_subspaces[self._flatten_part_name] = spaces.ThBox(low = -1.0, high = 1.0,
-                                                                      shape=(self._vec_size, self._single_flattened_part_size,),
-                                                                      dtype=flattened_dtype,
-                                                                      labels=obs_labels)            
-            single_obs_subspaces[self._flatten_part_name] = spaces.ThBox(   low = -1.0, high = 1.0,
-                                                                            shape=(self._single_flattened_part_size,),
-                                                                            dtype=flattened_dtype,
-                                                                            labels=obs_labels)
-        self._vec_obs_space = spaces.gym_spaces.Dict(vec_obs_subspaces)
-        self._single_obs_space = spaces.gym_spaces.Dict(single_obs_subspaces)
+        self._build_obs_defs()
+
+    def _build_obs_defs(self):
+        self._obs_defs = {}
+        vec_state_subspaces = {k:s.get_vec_space() for k,s in self.sub_helpers.items()}
+        single_state_subspaces = {k:s.get_single_space() for k,s in self.sub_helpers.items()}
+        all_noise_names = []
+        for obsname,init_obs_def in self._init_obs_defs.items():
+            vec_noise_subspaces = {}
+            single_noise_subspaces = {}
+            for state_name,noise in init_obs_def.noise_generators.items():
+                noise_name = state_name+"_noise_"+obsname
+                vec_noise_subspaces[noise_name] = noise.get_vec_space()
+                single_noise_subspaces[noise_name] = noise.get_single_space()
+                all_noise_names.append(noise_name)
+            vec_state_subspaces.update(vec_noise_subspaces)
+            single_state_subspaces.update(single_noise_subspaces)
+
+            flattened_subobs = init_obs_def.flattened_subfields
+            flattened_name = init_obs_def.flattened_part_name
+            vec_obs_subspaces = {k:self.sub_helpers[k].get_vec_obs_space(obsname) for k in init_obs_def.observable_substates if k not in init_obs_def.flattened_subfields}
+            single_obs_subspaces = {k:self.sub_helpers[k].get_single_obs_space(obsname) for k in init_obs_def.observable_substates if k not in init_obs_def.flattened_subfields}
+            if len(flattened_subobs)>0:
+                self._single_flattened_part_size = typing.cast(int, 
+                                                sum([np.prod(self.sub_helpers[k].get_single_obs_space().shape) 
+                                                    for k in flattened_subobs ]))
+                flattened_dtype = self.sub_helpers[flattened_subobs[0]].get_single_obs_space().dtype
+                for obsname in flattened_subobs:
+                    if obsname not in init_obs_def.observable_substates:
+                        raise RuntimeError(f"Field {obsname} is present in flatten_in_obs but not in observable_fields")
+                    d = self.sub_helpers[obsname].get_single_obs_space().dtype
+                    if d != flattened_dtype:
+                        raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
+                                        f"but {flattened_subobs[0]} has {flattened_dtype} and {obsname} has {d}")
+                ggLog.info(f"setting self.observation_names()[{flattened_name}]={self.observation_names()[flattened_name]}")
+                obs_labels = adarl.utils.utils.to_string_tensor(self.observation_names()[flattened_name])
+                vec_obs_subspaces[flattened_name] = spaces.ThBox(low = -1.0, high = 1.0,
+                                                                        shape=(self._vec_size, self._single_flattened_part_size,),
+                                                                        dtype=flattened_dtype,
+                                                                        labels=obs_labels)            
+                single_obs_subspaces[flattened_name] = spaces.ThBox(   low = -1.0, high = 1.0,
+                                                                                shape=(self._single_flattened_part_size,),
+                                                                                dtype=flattened_dtype,
+                                                                                labels=obs_labels)
+            obs_def = DictStateHelper.DictObsDef(observable_substates=init_obs_def.observable_substates,
+                                       flattened_subfields=init_obs_def.flattened_subfields,
+                                       noise_generators=init_obs_def.noise_generators,
+                                       flattened_part_name=init_obs_def.flattened_part_name,
+                                       vec_obs_space=spaces.gym_spaces.Dict(vec_obs_subspaces),
+                                       single_obs_space=spaces.gym_spaces.Dict(single_obs_subspaces))
+            self._obs_defs[obsname] = obs_def
+        self._vec_state_space = spaces.gym_spaces.Dict(vec_state_subspaces)
+        self._single_state_space = spaces.gym_spaces.Dict(single_state_subspaces)
+        
+        for obsname in self.sub_helpers:
+            if obsname in all_noise_names:
+                raise RuntimeError(f"Sub state name '{obsname}' clashes with noise state name. Choose a different name to avoid this.")
+        self._main_obs_def = next(iter(self._obs_defs.values()))
+
         
     def add_substate(self,  state_name : str,
                             state_helper : ThBoxStateHelper,
@@ -694,12 +741,12 @@ class DictStateHelper(StateHelper):
         return ret
 
     @override
-    def observe(self, state:  Mapping[str,th.Tensor]):
+    def observe(self, state:  Mapping[str,th.Tensor], obs_def_name: None | str = None):
         # ggLog.info(f"observing state {state}")
         state = self.normalize(state)
         # ggLog.info(f"normalized state = {state}")
         noisy_state = {k:ss+state[k+"_n"] if k in self.noise_generators else ss for k,ss in state.items()}
-        nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k]) for k in  self._observable_fields}
+        nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k], obs_def=obs_def_name) for k in  self._observable_fields}
         # ggLog.info(f"non_flat_obs = {nonflat_obs}")
         flattened_parts = []
         obs = {}
@@ -796,10 +843,10 @@ class RobotStateHelper(ThBoxStateHelper):
                             fields_minmax= self._build_fields_minmax(joint_limit_minmax_pveae, stiffness_minmax, damping_minmax),
                             history_length=history_length,
                             subfield_names = subfield_names,
-                            obs_history_length=obs_history_length,
                             vec_size=vec_size,
-                            observable_fields=observable_joints,
-                            observable_subfields=observable_subfields)
+                            observation_definitions=ThBoxStateHelper.SimpleObsDef(observable_fields=observable_joints,
+                                                                                  observable_subfields=observable_subfields,
+                                                                                  obs_history_length=obs_history_length))
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
