@@ -604,13 +604,14 @@ class DictStateHelper(StateHelper):
 
     def _build_state_obs_defs(self):
         self._obs_defs : dict[str,DictStateHelper.DictObsDef]= {}
-        self._obs_defs_main_name = next(iter(self._init_obs_defs.keys()))
         vec_state_subspaces : dict[str,spaces.gym.Space] = {k:s.get_vec_space() for k,s in self.sub_helpers.items()}
         single_state_subspaces : dict[str,spaces.gym.Space] = {k:s.get_single_space() for k,s in self.sub_helpers.items()}
         all_noise_names = []
         all_noises = set()
         self._all_noise_generators : dict[str,StateNoiseGenerator] = {}
         self._state2noise_names : dict[str,str] = {}
+        all_vec_obs_subspaces   : dict[str,spaces.gym.Space] = {}
+        all_single_obs_subspaces   : dict[str,spaces.gym.Space] = {}
         for obsname,init_obs_def in self._init_obs_defs.items():
             for state_name,noise in init_obs_def.noise_generators.items():
                 if noise not in all_noises:
@@ -661,9 +662,13 @@ class DictStateHelper(StateHelper):
                                        flattened_part_name=init_obs_def.flattened_part_name,
                                        vec_obs_space=spaces.gym_spaces.Dict(vec_obs_subspaces),
                                        single_obs_space=spaces.gym_spaces.Dict(single_obs_subspaces))
+            all_vec_obs_subspaces.update({obsname+"_"+k:v for k,v in vec_obs_subspaces.items()})
+            all_single_obs_subspaces.update({obsname+"_"+k:v for k,v in single_obs_subspaces.items()})
             self._obs_defs[obsname] = obs_def
         self._vec_state_space = spaces.gym_spaces.Dict(vec_state_subspaces)
         self._single_state_space = spaces.gym_spaces.Dict(single_state_subspaces)
+        self._full_vec_obs_space = spaces.gym_spaces.Dict(all_vec_obs_subspaces)
+        self._full_single_obs_space = spaces.gym_spaces.Dict(all_single_obs_subspaces)
         print(f"self._obs_defs = {self._obs_defs}")
 
 
@@ -735,15 +740,7 @@ class DictStateHelper(StateHelper):
         ret.update({k:ng.unnormalize(state[k]) for k,ng in self._all_noise_generators.items()})
         return ret
 
-    @override
-    def observe(self, state:  Mapping[str,th.Tensor], obs_def_name: None | str = None):
-        # ggLog.info(f"observing state {state}")
-        state = self.normalize(state)
-        # ggLog.info(f"normalized state = {state}")
-        noisy_state = {k:ss+state[self._state2noise_names[k]] if k in self._state2noise_names else ss for k,ss in state.items()}
-
-        if obs_def_name is None:
-            obs_def_name = self._obs_defs_main_name
+    def _observe(self, noisy_state:  Mapping[str,th.Tensor], obs_def_name : str):
         obs_def = self._obs_defs[obs_def_name]
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k], obs_def=obs_def_name) for k in  obs_def.observable_substates}
         # ggLog.info(f"non_flat_obs = {nonflat_obs}")
@@ -760,12 +757,23 @@ class DictStateHelper(StateHelper):
             #     ggLog.warn(f"observation values exceed -1,1 normalization: nonflat_obs = {nonflat_obs},\nstate = {state}")
         return obs
 
-    @override    
-    def observation_names(self, obs_def_name: None | str = None, obs_def : DictObsDef | None = None):
-        if obs_def_name is None:
-            obs_def_name = self._obs_defs_main_name
-        if obs_def is None:
-            obs_def = self._obs_defs[obs_def_name]
+    @override
+    def observe(self, state:  Mapping[str,th.Tensor], obs_def_name: None | str = None):
+        # ggLog.info(f"observing state {state}")
+        state = self.normalize(state)
+        # ggLog.info(f"normalized state = {state}")
+        noisy_state = {k:ss+state[self._state2noise_names[k]] if k in self._state2noise_names else ss for k,ss in state.items()}
+
+        if obs_def_name is not None:
+            return self._observe(noisy_state, obs_def_name)
+        else:
+            observations = {}
+            for obs_name in self._obs_defs:
+                obs = self._observe(noisy_state, obs_def_name=obs_name)
+                observations.update({obs_name+"_"+subobs_name:subobs for subobs_name,subobs in obs.items()})
+            return observations
+
+    def _obs_names(self, obs_def : DictObsDef):
         flattened_parts_names = []
         obs_names = {}
         for k in obs_def.observable_substates:
@@ -778,27 +786,46 @@ class DictStateHelper(StateHelper):
             obs_names[obs_def.flattened_part_name] = flattened_parts_names
         return obs_names
 
+    @override    
+    def observation_names(self, obs_def_name: None | str = None, obs_def : DictObsDef | None = None):
+        if obs_def_name is not None:
+            obs_def = self._obs_defs[obs_def_name]
+        if obs_def is not None:
+            return self._obs_names(obs_def)
+        else:
+            obs_fields_names = {}
+            for obs_name in self._obs_defs:
+                obs_fields_names = self._obs_names(self._obs_defs[obs_name])
+                obs_fields_names.update({obs_name+"_"+subobs_name:obsfield_name for subobs_name,obsfield_name in obs_fields_names.items()})
+            return obs_fields_names
+
     
     @override
     def get_vec_space(self):
         return self._vec_state_space
     
     @override
-    def get_vec_obs_space(self, obs_def_name: None | str = None):
-        if obs_def_name is None:
-            obs_def_name = self._obs_defs_main_name
-        return self._obs_defs[obs_def_name].vec_obs_space
-    
-    @override
     def get_single_space(self):
         return self._single_state_space
     
     @override
+    def get_vec_obs_space(self, obs_def_name: None | str = None):
+        if obs_def_name is None:
+            return self._full_vec_obs_space
+        return self._obs_defs[obs_def_name].vec_obs_space
+    
+    @override
     def get_single_obs_space(self, obs_def_name: None | str = None):
         if obs_def_name is None:
-            obs_def_name = self._obs_defs_main_name
+            return self._full_single_obs_space
         return self._obs_defs[obs_def_name].single_obs_space
     
+    def get_vec_full_obs_space(self):
+        return self._full_vec_obs_space
+    
+    def get_single_full_obs_space(self):
+        return self._full_single_obs_space
+
     # @override
     # def get(self, state : dict[str,th.Tensor],
     #         field_names : Sequence[tuple[str,Sequence[FieldName] | tuple[Sequence[FieldName],Sequence[FieldName]]]]):
