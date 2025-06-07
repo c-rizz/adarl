@@ -293,8 +293,8 @@ class ThBoxStateHelper(StateHelper):
     def flatten(self, state : th.Tensor):
         return state.flatten(start_dim=1)
     
-    def flat_obs_names(self):
-        return self.observation_names().flatten()
+    def flat_obs_names(self, obs_def : ObservationDef | str | None = None):
+        return self.observation_names(obs_def).flatten()
     
     @override
     def flat_state_names(self):
@@ -369,8 +369,12 @@ class ThBoxStateHelper(StateHelper):
         return obs_names
     
     @override
-    def observation_names(self):
-        return self._main_obs_def.single_obs_space.labels
+    def observation_names(self, obs_def : ObservationDef | str | None = None):
+        if obs_def is None:
+            obs_def = self._main_obs_def
+        elif isinstance(obs_def, str):
+            obs_def = self._obs_defs[obs_def]
+        return obs_def.single_obs_space.labels
     
     def state_names(self):
         if self._state_names is None:
@@ -581,6 +585,7 @@ class DictStateHelper(StateHelper):
         single_obs_space : spaces.gym_spaces.Dict
         noise_generators : dict[str,StateNoiseGenerator]
         flattened_part_name : str
+        name : str
 
 
     def __init__(self,  state_helpers : dict[str, ThBoxStateHelper],
@@ -631,22 +636,23 @@ class DictStateHelper(StateHelper):
             vec_obs_subspaces    : dict[str,spaces.gym.Space] = {k:self.sub_helpers[k].get_vec_obs_space(obsname)    for k in nonflat_obss}
             single_obs_subspaces : dict[str,spaces.gym.Space] = {k:self.sub_helpers[k].get_single_obs_space(obsname) for k in nonflat_obss}
             if len(flattened_subobss)>0:
-                flattened_dtype = self.sub_helpers[flattened_subobss[0]].get_single_obs_space().dtype
+                flattened_dtype = self.sub_helpers[flattened_subobss[0]].get_single_obs_space(obsname).dtype
                 for subobsname in flattened_subobss:
                     if subobsname not in init_obs_def.observable_substates:
                         raise RuntimeError(f"Field {subobsname} is present in flatten_in_obs but not in observable_fields")
-                    if self.sub_helpers[subobsname].get_single_obs_space().dtype != flattened_dtype:
+                    if self.sub_helpers[subobsname].get_single_obs_space(obsname).dtype != flattened_dtype:
                         raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
-                                        f"but {flattened_subobss[0]} has {flattened_dtype} and {subobsname} has {self.sub_helpers[subobsname].get_single_obs_space().dtype}")
+                                        f"but {flattened_subobss[0]} has {flattened_dtype} and {subobsname} has {self.sub_helpers[subobsname].get_single_obs_space(obsname).dtype}")
                 single_flattened_part_size = typing.cast(int, 
-                                                sum([np.prod(self.sub_helpers[k].get_single_obs_space().shape) 
+                                                sum([np.prod(self.sub_helpers[k].get_single_obs_space(obsname).shape) 
                                                     for k in flattened_subobss ]))
                 obs_labels = adarl.utils.utils.to_string_tensor(self.observation_names(obs_def=DictStateHelper.DictObsDef(observable_substates=init_obs_def.observable_substates,
                                                                                                 flattened_subfields=init_obs_def.flattened_subobss,
                                                                                                 noise_generators=init_obs_def.noise_generators,
                                                                                                 flattened_part_name=init_obs_def.flattened_part_name,
                                                                                                 vec_obs_space=None,
-                                                                                                single_obs_space=None)
+                                                                                                single_obs_space=None,
+                                                                                                name=obsname)
                                                                                                 )[flattened_name])
                 vec_obs_subspaces[flattened_name] = spaces.ThBox(low = -1.0, high = 1.0,
                                                                         shape=(self._vec_size, single_flattened_part_size,),
@@ -661,9 +667,10 @@ class DictStateHelper(StateHelper):
                                        noise_generators=init_obs_def.noise_generators,
                                        flattened_part_name=init_obs_def.flattened_part_name,
                                        vec_obs_space=spaces.gym_spaces.Dict(vec_obs_subspaces),
-                                       single_obs_space=spaces.gym_spaces.Dict(single_obs_subspaces))
-            all_vec_obs_subspaces.update({obsname+"_"+k:v for k,v in vec_obs_subspaces.items()})
-            all_single_obs_subspaces.update({obsname+"_"+k:v for k,v in single_obs_subspaces.items()})
+                                       single_obs_space=spaces.gym_spaces.Dict(single_obs_subspaces),
+                                       name=obsname)
+            all_vec_obs_subspaces.update({obsname+"."+k:v for k,v in vec_obs_subspaces.items()})
+            all_single_obs_subspaces.update({obsname+"."+k:v for k,v in single_obs_subspaces.items()})
             self._obs_defs[obsname] = obs_def
         self._vec_state_space = spaces.gym_spaces.Dict(vec_state_subspaces)
         self._single_state_space = spaces.gym_spaces.Dict(single_state_subspaces)
@@ -681,6 +688,8 @@ class DictStateHelper(StateHelper):
         state_helpers = {state_name:state_helper}
         state_helpers.update(self.sub_helpers)
         for obs_name,init_obs_def in self._init_obs_defs.items():
+            if obs_name not in obs_defs:
+                continue
             obs_def = obs_defs[obs_name]
             if obs_def["observable"]:
                 init_obs_def.observable_substates.append(state_name)
@@ -770,17 +779,18 @@ class DictStateHelper(StateHelper):
             observations = {}
             for obs_name in self._obs_defs:
                 obs = self._observe(noisy_state, obs_def_name=obs_name)
-                observations.update({obs_name+"_"+subobs_name:subobs for subobs_name,subobs in obs.items()})
+                observations.update({obs_name+"."+subobs_name:subobs for subobs_name,subobs in obs.items()})
             return observations
 
     def _obs_names(self, obs_def : DictObsDef):
+        
         flattened_parts_names = []
         obs_names = {}
         for k in obs_def.observable_substates:
             if k in obs_def.flattened_subfields:
-                flattened_parts_names.extend([k+"_"+str(n) for n in self.sub_helpers[k].flat_obs_names()])
+                flattened_parts_names.extend([k+"."+str(n) for n in self.sub_helpers[k].flat_obs_names(obs_def.name)])
             else:
-                obs_names[k] = self.sub_helpers[k].observation_names()
+                obs_names[k] = self.sub_helpers[k].observation_names(obs_def.name)
         if len(flattened_parts_names) > 0:
             # ggLog.info(f"flattened_parts_names = {flattened_parts_names}")
             obs_names[obs_def.flattened_part_name] = flattened_parts_names
@@ -793,11 +803,11 @@ class DictStateHelper(StateHelper):
         if obs_def is not None:
             return self._obs_names(obs_def)
         else:
-            obs_fields_names = {}
+            all_obs_fields_names = {}
             for obs_name in self._obs_defs:
                 obs_fields_names = self._obs_names(self._obs_defs[obs_name])
-                obs_fields_names.update({obs_name+"_"+subobs_name:obsfield_name for subobs_name,obsfield_name in obs_fields_names.items()})
-            return obs_fields_names
+                all_obs_fields_names.update({obs_name+"."+subobs_name:obsfield_name for subobs_name,obsfield_name in obs_fields_names.items()})
+            return all_obs_fields_names
 
     
     @override
