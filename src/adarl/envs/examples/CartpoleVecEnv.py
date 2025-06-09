@@ -154,7 +154,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             maxPoleAngle = 0.261791667 #15 degrees
             vstates = states["vec"]            
             pole_angle = th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS])
-            return th.logical_or(th.abs(vstates[:,self._CART_POS]) > maxCartDist, pole_angle > maxPoleAngle)
+            return th.logical_or(th.abs(vstates[:,self._CART_POS]) > maxCartDist, th.abs(pole_angle) > maxPoleAngle)
         else:
             return th.zeros((self.num_envs,), dtype=th.bool, device=self._th_device)
     
@@ -202,13 +202,14 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                           link_states_pose_vel=th.as_tensor([0.0,-3.0,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13))
         self._adapter.setJointsEffortCommand(   joint_names = (("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")), 
                                                 efforts = self._thzeros((self.num_envs,2)))
-        sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None]
-        for i in range(self._img_obs_frame_stacking_size):
-            imgs_vec_chw, times = self._adapter.getRenderings([self._ui_camera_name])
-            # ggLog.info(f"imgs_vec_chw[0].shape = {imgs_vec_chw[0].shape}")
-            imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_chw[0].permute(0,3,1,2))
-            sub_step_imgs_vec_hw[i] = imgs_vec_hw
-        self._stacked_img = th.stack(sub_step_imgs_vec_hw,dim=1)
+        if self._img_obs:
+            sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None]
+            for i in range(self._img_obs_frame_stacking_size):
+                imgs_vec_chw, times = self._adapter.getRenderings([self._ui_camera_name])
+                # ggLog.info(f"imgs_vec_chw[0].shape = {imgs_vec_chw[0].shape}")
+                imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_chw[0].permute(0,3,1,2))
+                sub_step_imgs_vec_hw[i] = imgs_vec_hw
+            self._stacked_img = th.stack(sub_step_imgs_vec_hw,dim=1)
 
     @override
     def get_ui_renderings(self, vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
@@ -309,7 +310,9 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
     def step(self):
         if not self._img_obs:
-            super().step()
+            r =  super().step()
+            # ggLog.info(f"state = {self.get_states()}")
+            return r
         self.pre_step()
         estimated_step_duration_sec = 0.0
         t0 = time.monotonic()

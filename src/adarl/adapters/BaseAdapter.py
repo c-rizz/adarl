@@ -33,6 +33,7 @@ class BaseAdapter(ABC):
         self._monitored_joints = []
         self._monitored_links = []
         self._monitored_cameras = []
+        self.__episode_start_env_time = 0
 
     def set_monitored_joints(self, jointsToObserve : Sequence[tuple[str,str]]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.

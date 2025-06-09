@@ -32,7 +32,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._rng = th.Generator(device=th_device)
         self._rng.manual_seed(seed)
         self._rng_cpu = th.Generator(device="cpu")
-        self._rng_cpu.manual_seed(int(th.randint(0,1000_000_000,(1,),generator=self._rng, device="cuda").item()))
+        self._rng_cpu.manual_seed(int(th.randint(0,1000_000_000,(1,),generator=self._rng, device=th_device).item()))
         self._th_device = th_device
         self._obs_dtype = obs_dtype
         self.single_action_space = single_action_space

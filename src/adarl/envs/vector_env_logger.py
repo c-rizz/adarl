@@ -193,7 +193,9 @@ class VectorEnvLogger(
                     final_infos = {k:v.to(dtype=th.float32) for k,v in final_infos.items()}
                     for k in final_infos:
                         if k not in self._completed_final_infos_since_log:
-                            self._completed_final_infos_since_log[k] = th.zeros_like(final_infos[k])
+                            t = final_infos[k]
+                            self._completed_final_infos_since_log[k] = th.zeros(size = (t.size()[0]*2,)+t.size()[1:],
+                                                                                device=t.device)
 
                     #Would be nice to do the following just with masks, avoiding
                     completed_eps_count = th.count_nonzero(completed_eps)
