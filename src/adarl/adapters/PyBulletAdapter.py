@@ -346,6 +346,10 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         if self._verbose:
             ggLog.info(f"tot_step_stime = {self._simTime}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
 
+    def initialize_for_step(self):
+        self._reset_joint_state_step_stats()
+        self._reset_detected_contacts()
+
     def step(self) -> float:
         """Run the simulation for the specified time.
 
@@ -363,8 +367,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             Why the exception is raised.
 
         """
-        self._reset_joint_state_step_stats()
-        self._reset_detected_contacts()
+        self.initialize_for_step()
         stepLength = self.run(self._stepLength_sec)
         # self.clear_commands() Do not clear commands, if we clear them, action delaying doesn't work properly anymore as he doesn't know what to do
         return stepLength

@@ -198,8 +198,16 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
         self._sub_adapter.run(duration_sec)
 
     @override
+    def initialize_for_step(self):
+        return self._sub_adapter.initialize_for_step()
+
+    @override
     def step(self) -> float:
         return self._sub_adapter.step()
+    
+    @override
+    def control_period(self) -> th.Tensor:
+        return self._sub_adapter.control_period()
     
     @override
     def resetWorld(self):

@@ -86,4 +86,16 @@ class BaseJointImpedanceAdapter(BaseAdapter):
         th.Tensor
             Tensor of size (len(impedance_controlled_joints), 5)
         """
-        ...
+        ... 
+
+    @abstractmethod
+    def control_period(self) -> th.Tensor:
+        """The control period of the joint impedance adapter.
+
+        Returns
+        -------
+        th.Tensor
+            zero-dimensional tensor, containing the control dt in seconds
+            
+        """
+        raise NotImplementedError()

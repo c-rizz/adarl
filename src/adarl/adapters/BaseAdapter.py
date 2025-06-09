@@ -98,9 +98,9 @@ class BaseAdapter(ABC):
     
     @abstractmethod
     def step(self) -> float:
-        """Run a simulation step. This does not necessarily have a constant duration, depending on the adapter the duration may depend
+        """Run a simulation step. This does not necessarily have a constant duration. Depending on the adapter the duration may depend
           on something. For example if position commands are involved, the step may depend on the duration of the movement.
-          This step function always calls initialize_for_step() at the beginning, so any step-initialziation logc must be placed there.
+          This step function always calls initialize_for_step() at the beginning, so any step-initialization logic must be placed there.
           In this way an environment can also choose to call run() to subdivide the step manually.
           
         Returns

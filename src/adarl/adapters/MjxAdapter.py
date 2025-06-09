@@ -30,6 +30,7 @@ from typing import Iterable
 from functools import partial
 import dataclasses
 from dataclasses import dataclass 
+import pprint
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
@@ -258,6 +259,7 @@ def get_data_into(
     d,
     exclude : list[str] = []
 ):
+  # Copy of get_data_into from mjx, with an exclude argument added, as some useless fields were causing issues
   """Gets mjx.Data from a device into an existing mujoco.MjData or list."""
   batched = isinstance(result, list)
   if batched and len(d.qpos.shape) < 2:
@@ -401,6 +403,22 @@ mj_jnt_type_to_adarl = {
     mujoco.mjtJoint.mjJNT_BALL : JointType.SPHERICAL
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @dataclass
@@ -520,7 +538,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             ))
 
     @override
-    def build_scenario(self, models : list[ModelSpawnDef]):
+    def build_scenario(self, models : list[ModelSpawnDef],
+                       default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
         ggLog.info(f"MjxAdapter building scenario")
         if self._add_ground:
@@ -696,29 +715,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
         ggLog.info(f"self._lname2lid = {self._lname2lid}")
         ggLog.info(f"self._jname2jid = {self._jname2jid}")
+        if default_link_group_collisions is not None:
+            # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possivble collisions 
+            # So it may be necessary to set the collisions masks before creatign mjx_data
+            geom_contype, geom_conaffinity, body_contype, body_conaffinity = self._compute_collision_masks(default_link_group_collisions)
+            self._mj_model.geom_contype = geom_contype
+            self._mj_model.geom_conaffinity = geom_conaffinity
+            self._mj_model.body_contype = body_contype
+            self._mj_model.body_conaffinity = body_conaffinity
 
-
-        # self.set_body_collisions([  (('kyon', 'pelvis'), False),
-        #                             (('kyon', 'base_link'), False),
-        #                             (('kyon', 'imu_link'), False),
-        #                             (('kyon', 'hip_roll_1_link'), False),
-        #                             (('kyon', 'hip_pitch_1_link'), False),
-        #                             (('kyon', 'knee_pitch_1_link'), False),
-        #                             (('kyon', 'contact_1'), False),
-        #                             (('kyon', 'hip_roll_2_link'), False),
-        #                             (('kyon', 'hip_pitch_2_link'), False),
-        #                             (('kyon', 'knee_pitch_2_link'), False),
-        #                             (('kyon', 'contact_2'), False),
-        #                             (('kyon', 'hip_roll_3_link'), False),
-        #                             (('kyon', 'hip_pitch_3_link'), False),
-        #                             (('kyon', 'knee_pitch_3_link'), False),
-        #                             (('kyon', 'contact_3'), False),
-        #                             (('kyon', 'hip_roll_4_link'), False),
-        #                             (('kyon', 'hip_pitch_4_link'), False),
-        #                             (('kyon', 'knee_pitch_4_link'), False),
-        #                             (('kyon', 'contact_4'), False)])
-        # self._mj_model.body_conaffinity[:] = 0
-        # self._mj_model.geom_conaffinity[:] = 0
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
@@ -732,6 +737,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
+        data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data) # reset all data to 0
+        ggLog.info(f"mjx_data nbytes = {pprint.pformat(data_nbytes)}")
+        import operator
+        ggLog.info(f"tot = {jax.tree.reduce(operator.add, data_nbytes)} bytes")
+        ggLog.info(f"estimated vectorized size = {jax.tree.reduce(operator.add, data_nbytes)*self._vec_size/1024**2} MB") # more or less
+        
         mjx_data = jax.vmap(lambda: mjx_data, axis_size=self._vec_size)()
         # mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), mjx_data)
         ggLog.info(f"mjx_data.qpos.shape = {mjx_data.qpos.shape}")
@@ -823,9 +834,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         _ = self._mjx_integrate_and_forward(self._sim_state.mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
         ggLog.info(f"Compiled.")
 
-    @override
-    def set_body_collisions(self,   link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
-                                    explicit_groups : list[tuple[tuple[str,str],...]] = []):
+    def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
+                                        explicit_groups : list[tuple[tuple[str,str],...]] = []) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
         ggLog.info(f"input_collision_groups = {input_collision_groups}")
 
@@ -894,10 +904,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._sim_state.mjx_model.geom_contype =     {self._sim_state.mjx_model.geom_contype}")
         # print(f"self._sim_state.mjx_model.geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
 
-        body_contype = self._sim_state.mjx_model.body_contype.copy()
-        body_conaffinity = self._sim_state.mjx_model.body_conaffinity.copy()
-        geom_contype = self._sim_state.mjx_model.geom_contype.copy()
-        geom_conaffinity = self._sim_state.mjx_model.geom_conaffinity.copy()
+        body_contype : jnp.ndarray = self._mj_model.body_contype.copy()
+        body_conaffinity : jnp.ndarray = self._mj_model.body_conaffinity.copy()
+        geom_contype : jnp.ndarray = self._mj_model.geom_contype.copy()
+        geom_conaffinity : jnp.ndarray = self._mj_model.geom_conaffinity.copy()
         for lname in all_links:
             body_id = self._lname2lid[lname]
             for geom_id in range(self._mj_model.body_geomadr[body_id],
@@ -920,7 +930,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 if not visual:
                     geom_conaffinity[geom_id] = aff
                     geom_contype[geom_id] = typ
-
+        return geom_contype, geom_conaffinity, body_contype, body_conaffinity
+    
+    @override
+    def set_body_collisions(self,   link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
+                                    explicit_groups : list[tuple[tuple[str,str],...]] = []):
+        geom_contype, geom_conaffinity, body_contype, body_conaffinity = self._compute_collision_masks(link_group_collisions, explicit_groups)
         self._mj_model.geom_contype = geom_contype
         self._mj_model.geom_conaffinity = geom_conaffinity
         self._mj_model.body_contype = body_contype
@@ -940,6 +955,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
         ggLog.info(f"New geom_contype =     {self._sim_state.mjx_model.geom_contype}")
         ggLog.info(f"New geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
+        new_mjxdata = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
+        if new_mjxdata.nefc > self._sim_state.mjx_data.nefc:
+            # maybe something could be done here by regenereating the mjx_data and coping values from the old one
+            raise RuntimeError(f"New collision setup requires a higher number of efc constraints than"
+                               f" the initial one ({new_mjxdata.nefc} > {self._sim_state.mjx_data.nefc}), this is not supported yet. ")
         self._mark_forward_needed()
         self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         self._rebuild_lower_funcs()

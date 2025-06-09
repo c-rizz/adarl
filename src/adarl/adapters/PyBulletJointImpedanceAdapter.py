@@ -165,4 +165,8 @@ class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
         
     @override
     def get_current_joint_impedance_command(self) -> th.Tensor:
-        return self._last_applied_jimp_cmd
+        return self._last_applied_jimp_cmd\
+        
+    @override
+    def control_period(self):
+        return self._simulation_step
