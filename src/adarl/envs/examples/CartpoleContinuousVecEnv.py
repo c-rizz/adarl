@@ -31,16 +31,12 @@ from torchvision.transforms.functional import rgb_to_grayscale, resize
 import time
 
 class CartpoleContinuousVecEnv(ControlledVecEnv):
-    """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
-
-
 
     def __init__(   self,
                     adapter : BaseVecJointImpedanceAdapter, # could be made into BaseVecJointEffortAdapter, but need to use setJointEffortCommand
-                    maxStepsPerEpisode : int = 500,
+                    max_episode_steps : int = 500,
                     render : bool = False,
                     step_duration_sec : float = 0.05,
-                    startSimulation : bool = True,
                     wall_sim_speed = False,
                     seed = 1,
                     th_device : th.device = th.device("cpu"),
@@ -110,7 +106,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                          single_reward_space=ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device),
                          info_space=None, #type: ignore : Will be set later
                          step_duration_sec=step_duration_sec,
-                         adapter=adapter)
+                         adapter=adapter,
+                         max_episode_steps=max_episode_steps)
         example_labels : dict[str,th.Tensor] = {}
         example_state = {k:th.as_tensor((s.low+s.high)/2).to(device=th_device).unsqueeze(0) for k,s in states_dict.items()}
         example_infos = self.get_infos(example_state, example_labels)

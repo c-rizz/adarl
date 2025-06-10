@@ -18,6 +18,7 @@ import adarl
 from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter, ModelSpawnDef
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
+from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.VecSimJointImpedanceAdapterWrapper import VecSimJointImpedanceAdapterWrapper
 import torch as th
 from adarl.utils.spaces import ThBox, gym_spaces
@@ -30,17 +31,15 @@ from torchvision.transforms.functional import rgb_to_grayscale, resize
 import time
 from adarl.envs.examples.CartpoleContinuousVecEnv import CartpoleContinuousVecEnv
 
-class CartpoleContinuousVisualVecEnv(ControlledVecEnv):
+class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
     """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
 
 
 
     def __init__(   self,
-                    adapter : BaseVecJointEffortAdapter,
-                    maxStepsPerEpisode : int = 500,
+                    adapter : BaseVecJointImpedanceAdapter,
                     render : bool = False,
                     step_duration_sec : float = 0.05,
-                    startSimulation : bool = True,
                     wall_sim_speed = False,
                     seed = 1,
                     th_device : th.device = th.device("cpu"),
