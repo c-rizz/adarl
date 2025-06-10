@@ -60,7 +60,10 @@ jax.config.update('jax_default_matmul_precision', "highest")
 #                 else:
 #                     raise e
 
-from mujoco.mjx._src.forward import euler, forward
+from mujoco.mjx._src.forward import euler, forward, fwd_acceleration, fwd_actuation, fwd_position, fwd_velocity
+from mujoco.mjx._src import sensor
+from mujoco.mjx._src import solver
+
 
 def th2jax(tensor : th.Tensor, jax_device : jax.Device):
     # apparently there are issues with non-contiguous tensors (https://github.com/jax-ml/jax/issues/7657)
@@ -107,6 +110,39 @@ def add_compiler_options(urdf_def : str,
 # def tree_replace(tree, leafs_path_value : Mapping[tuple[str,...],Any]):
 #     return jax.tree_util.tree_map_with_path(lambda path, leaf: leafs_path_value.get(path2tstr(path),leaf), tree)
 
+def _forward_pre(mjx_model : mjx.Model, mjx_data : mjx.Data):
+    # Some values in mjData depend on qfrc_applied, and must be recomputed befor the step
+    # see for example what happens in fwd_acceleration.
+    # To have these correctly set we have to compute at least a part of the forward pass before the step,
+    # but after we have decided qfrc_applied.
+    # To avoid doing operations twice
+    # A forward pass is also done after the step to have updated values for computing observations (e.g. forward kinematics).
+    # To avoid doing redundant work, and avoiding to compute force/acceleratons with inproper torque inputs, actuation-dependant
+    # forward will only be computed before the physics integration, here in this method.
+
+    # The following is adapted from mjx.forward
+    # some of these steps can be pointed to th epipeline at https://mujoco.readthedocs.io/en/stable/computation/index.html#simulation-pipeline
+    mjx_data = fwd_actuation(mjx_model, mjx_data) # pipeline step 19
+    mjx_data = fwd_acceleration(mjx_model, mjx_data) # pipeline step 20
+    mjx_data = sensor.sensor_acc(mjx_model, mjx_data) # pipelin step 22 (Is it ok that this is before the solver.solve?)
+
+    if mjx_data.efc_J.size == 0:
+        mjx_data = mjx_data.replace(qacc=mjx_data.qacc_smooth)
+        return mjx_data
+
+    with jax.named_scope("MjxAdapter._act_forward"):
+        mjx_data = solver.solve(mjx_model, mjx_data) # pipeline step 21, writes in to qacc, qacc_warmstart, qfrc_constraint, efc_force
+
+    return mjx_data
+
+def _forward_post(mjx_model: mjx.Model, mjx_data: mjx.Data) -> mjx.Data:
+    # See comment on _forward_pre
+    mjx_data = fwd_position(mjx_model, mjx_data)
+    mjx_data = sensor.sensor_pos(mjx_model, mjx_data)
+    mjx_data = fwd_velocity(mjx_model, mjx_data)
+    mjx_data = sensor.sensor_vel(mjx_model, mjx_data)
+    return mjx_data
+
 def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
     """First integrate the physics, then compute forward kinematics/dynamics.
         This is a flipped-around version of mjx.step(), essentially doing mj_step2 and then mj_step1.
@@ -114,8 +150,10 @@ def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
         to call forward once before calling this for the first time. I believe dm_control does
         something similar."""
     # see: https://github.com/google-deepmind/mujoco/issues/430#issuecomment-1208489785
+    d = _forward_pre(m,d) # compute values that depend on qfrc_applied
     d = euler(m, d)
-    d = forward(m, d)
+    # d = forward(m,d) # compute forward, so that we have an up-to-date sim state for computing observation
+    d = _forward_post(m, d) # compute forward, so that we have an up-to-date sim state for computing observation
     return d
 
 def set_rows_cols(array : jnp.ndarray,
@@ -530,6 +568,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _rebuild_lower_funcs(self):
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
+        # self._mjx_forward_post = jax.jit(jax.vmap(_forward_post, in_axes=(self._mjx_model_in_axes, 0)))
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
         self._mjx_ray_vec = jax.jit(jax.vmap(
                                 fun=jax.vmap(mjx.ray,
@@ -1448,7 +1487,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             Nothing is returned
 
         """
-        ggLog.info(f"MjxAdapter resetting")
+        # ggLog.info(f"MjxAdapter resetting")
         super().resetWorld()
 
         self._sim_state = self._sim_state.replace_d({   "mjx_data": copy.deepcopy(self._original_mjx_data),

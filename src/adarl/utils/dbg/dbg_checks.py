@@ -5,7 +5,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import inspect
 
 def get_caller_info():
-    frame = inspect.currentframe().f_back  # Get the previous frame (caller)
+    frame = inspect.currentframe().f_back.f_back  # Get the previous frame (caller)
     filename = frame.f_code.co_filename
     lineno = frame.f_lineno
     return filename, lineno

@@ -414,6 +414,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         self._vec_ep_info["ep_frames_count"] = self._ep_step_counts
         self._vec_ep_info["ep_reward"] = self._tot_ep_rewards
+        # ggLog.info(f"_tot_ep_rewards = {self._tot_ep_rewards}")
         # self._dbg_info.update(self._ggEnv.getInfo(state))
         if len(self._sub_rewards_names)==0: # at the first step and episode this must be populated to at least know which fields we'll have
             sub_rewards : dict[str, th.Tensor] = {}

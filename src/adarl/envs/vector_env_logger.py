@@ -9,7 +9,7 @@ import copy
 import adarl.utils.session as session
 import time
 from adarl.utils.utils import masked_assign_sc
-
+import pprint
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
 ):
@@ -194,8 +194,10 @@ class VectorEnvLogger(
                     for k in final_infos:
                         if k not in self._completed_final_infos_since_log:
                             t = final_infos[k]
-                            self._completed_final_infos_since_log[k] = th.zeros(size = (t.size()[0]*2,)+t.size()[1:],
-                                                                                device=t.device)
+                            max_size = t.size()[0]*2
+                            self._completed_final_infos_since_log[k] = th.full(fill_value = float("nan"),
+                                                                               size = (max_size,)+t.size()[1:],
+                                                                               device=t.device)
 
                     #Would be nice to do the following just with masks, avoiding
                     completed_eps_count = th.count_nonzero(completed_eps)
@@ -206,15 +208,17 @@ class VectorEnvLogger(
                     self._completed_eps_since_log += completed_eps_count
                 if self._completed_eps_since_log >= self._num_envs:
                     logs = {}
-                    avgs = {k:v.mean() for k,v in self._completed_final_infos_since_log.items()}
+                    logged_infos = {k:v[:self._completed_eps_since_log] for k,v in self._completed_final_infos_since_log.items()}
+                    # ggLog.info(f"VecEnvLogger: _completed_final_infos_since_log = {pprint.pformat(logged_infos)}")
+                    avgs = {k:v.mean() for k,v in logged_infos.items()}
 
                     logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in avgs.items()})
                     logs.update({"VecEnvLogger/"+k:v.mean() for k,v in avgs.items()})
-                    logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in self._completed_final_infos_since_log.items()})
-                    logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in self._completed_final_infos_since_log.items()})
-                    logs.update({"VecEnvLogger/med."+k:v.median()  for k,v in self._completed_final_infos_since_log.items()})
-                    logs.update({"VecEnvLogger/q95."+k:v.quantile(0.95)  for k,v in self._completed_final_infos_since_log.items()})
-                    logs.update({"VecEnvLogger/q05."+k:v.quantile(0.05)  for k,v in self._completed_final_infos_since_log.items()})
+                    logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in logged_infos.items()})
+                    logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in logged_infos.items()})
+                    logs.update({"VecEnvLogger/med."+k:v.median()  for k,v in logged_infos.items()})
+                    logs.update({"VecEnvLogger/q95."+k:v.quantile(0.95)  for k,v in logged_infos.items()})
+                    logs.update({"VecEnvLogger/q05."+k:v.quantile(0.05)  for k,v in logged_infos.items()})
                     wall_single_fps = (self.__vstep_count - self._step_count_last_log)/(time.monotonic()-self._time_last_log)
                     logs["VecEnvLogger/wall_fps_vec"] = wall_single_fps*self._num_envs
                     logs["VecEnvLogger/wall_fps_single"] = wall_single_fps
@@ -240,7 +244,7 @@ class VectorEnvLogger(
                     self._overhead_min = float("+inf")
                     self._completed_eps_since_log = 0
                     for k in self._completed_final_infos_since_log:
-                        self._completed_final_infos_since_log[k].fill_(float("nan"))
+                        self._completed_final_infos_since_log[k].fill_(float("nan")) # Fill with nans, so that we see if something goes wrong
                     # final_info_list = unstack_tensor_tree(final_infos)
                     # for i in range(self._num_envs):
                     #     if terminated[i] or truncated[i]: # we only log the info of the last step
