@@ -1,15 +1,11 @@
-from abc import ABC, abstractmethod
-import adarl.utils.spaces as spaces
-import numpy as np
+from __future__ import annotations
 import torch as th
-from typing import final, TypeVar, Mapping, Generic
-from gymnasium.vector.utils.spaces import batch_space
-import adarl.utils.dbg.ggLog as ggLog
+from typing import final, TypeVar, Mapping, Generic, Tuple, Union
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 from typing_extensions import override
 
-State = Mapping[str | tuple[str,...], th.Tensor]
-Observation = TypeVar("Observation", bound=Mapping[str | tuple[str,...], th.Tensor])
+State = Mapping[Union[str , Tuple[str,...]], th.Tensor]
+Observation = TypeVar("Observation", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
 Action = th.Tensor
 
 class LrVecWrapper(BaseVecEnv[Observation]):
