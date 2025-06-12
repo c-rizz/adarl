@@ -10,7 +10,7 @@ import copy
 from typing import Iterable, TypedDict
 import itertools
 import faulthandler
-from pinocchio.visualize import GepettoVisualizer
+# from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
 from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conj_xyzw_np
@@ -20,15 +20,15 @@ class JointProperties(TypedDict):
     joint_type : str
 
 class Robot():
-    JOINT_TYPES = Enum("JOINT_TYPES",["PRISMATIC",
-                                  "REVOLUTE",
-                                  "FIXED",
-                                  "FLOATING",
-                                  "CONTINUOUS"])
+    JOINT_TYPES = Enum("JOINT_TYPES",[  "PRISMATIC",
+                                        "REVOLUTE",
+                                        "FIXED",
+                                        "FLOATING",
+                                        "CONTINUOUS"])
     
     def __init__(self, model_urdf_string : str):
         self._urdf_string = model_urdf_string
-        self._model = pinocchio.buildModelFromXML(model_urdf_string)
+        self._model = pinocchio.buildModelFromXML(self._urdf_string)
         self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
                                                                        self._urdf_string,
                                                                        pinocchio.GeometryType.COLLISION)
@@ -66,7 +66,25 @@ class Robot():
         self._current_collision_geom_pairs = set()
         self.set_collision_pairs("all")
 
-    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal['all'] = []):
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        # del d["_model"]
+        del d["_collision_geom_model"]
+        del d["_collision_geom_model_data"]
+        # print(f"pickling Robot d = {d}")
+        return d
+
+    def __setstate__(self, d):
+        print(f"unpickling Robot")
+        # Needed because of https://github.com/stack-of-tasks/pinocchio/issues/2089
+        # d["_model"] = pinocchio.buildModelFromXML(d["_urdf_string"])
+        d["_collision_geom_model"] = pinocchio.buildGeomFromUrdfString(d["_model"],
+                                                                       d["_urdf_string"],
+                                                                       pinocchio.GeometryType.COLLISION)
+        d["_collision_geom_model_data"] = pinocchio.GeometryData(self._collision_geom_model)
+        self.__dict__.update(d)
+
+    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal["all"] = []):
         self._collision_pairs = copy.deepcopy(geom_pairs)
         geoms_num = self._collision_geom_model.ngeoms
         geom_names = [g.name for g in self._collision_geom_model.geometryObjects]
