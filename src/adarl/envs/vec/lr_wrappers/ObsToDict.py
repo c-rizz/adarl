@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
-"""
-Base-class for cresting GAzebo-based gym environments.
-
-The provided class must be extended to define a specific environment
-"""
-
-
+from __future__ import annotations
 from adarl.envs.vec.lr_wrappers.lr_vec_wrapper import LrVecWrapper
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv, Observation
 import adarl.utils.spaces as spaces
-import adarl.utils.dbg.ggLog as ggLog
 from typing import Mapping, TypeVar
 import torch as th
 

@@ -25,7 +25,7 @@ def _fix_histogram_range(value):
         detect the range. This doesnt make much sense.
         So I compute the range myself, excuding infs and nans, and produce a numpy histogram.
     """
-    if isinstance(value, (th.Tensor | np.ndarray)):
+    if isinstance(value, (th.Tensor, np.ndarray)):
         if not isinstance(value, th.Tensor):
             value = th.as_tensor(value)
         if value.ndim>0 and len(value) > 1:

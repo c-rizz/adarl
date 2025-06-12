@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-"""
-Class implementing Gazebo-based gym cartpole environment.
-
-Based on ControlledEnv
-"""
-
-
-
-import adarl.utils.spaces as spaces
+from __future__ import annotations
 import numpy as np
 from typing import Tuple, Dict, Any
 import adarl.utils.dbg.ggLog as ggLog
-import random
 
 from adarl.envs.vec.ControlledVecEnv import ControlledVecEnv
 import adarl
@@ -24,11 +15,8 @@ import torch as th
 from adarl.utils.spaces import ThBox, gym_spaces
 from adarl.utils.tensor_trees import space_from_tree
 from typing_extensions import override
-from typing import Generic
 from pathlib import Path
 import adarl.utils.utils
-from torchvision.transforms.functional import rgb_to_grayscale, resize
-import time
 
 class CartpoleContinuousVecEnv(ControlledVecEnv):
 
@@ -42,24 +30,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     th_device : th.device = th.device("cpu"),
                     task : str = "balance",
                     sparse_reward = True):
-        """Short summary.
-
-        Parameters
-        ----------
-        maxStepsPerEpisode : int
-            maximum number of frames per episode. The step() function will return
-            done=True after being called this number of times
-        render : bool
-            Perform rendering at each timestep
-            Disable this if you don't need the rendering
-        stepLength_sec : float
-            Duration in seconds of each simulation step. Lower values will lead to
-            slower simulation. This value should be kept higher than the gazebo
-            max_step_size parameter.
-        environmentController : BaseAdapter
-            Specifies which simulator controller to use. By default it connects to Gazebo
-
-
+        """
         """
 
         self._spawned = False

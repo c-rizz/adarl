@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""
-Class implementing Gazebo-based gym cartpole environment.
-
-Based on ControlledEnv
-"""
-
-
-
+from __future__ import annotations
 import adarl.utils.spaces as spaces
 import numpy as np
 from typing import Tuple, Dict, Any
@@ -32,10 +25,6 @@ import time
 from adarl.envs.examples.CartpoleContinuousVecEnv import CartpoleContinuousVecEnv
 
 class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
-    """This class implements an OpenAI-gym environment with Gazebo, representing the classic cart-pole setup."""
-
-
-
     def __init__(   self,
                     adapter : BaseVecJointImpedanceAdapter,
                     render : bool = False,
@@ -48,25 +37,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
                     img_obs_resolution : int = 64,
                     img_obs_frame_stacking_size : int = 3,
                     sparse_reward = True):
-        """Short summary.
-
-        Parameters
-        ----------
-        maxStepsPerEpisode : int
-            maximum number of frames per episode. The step() function will return
-            done=True after being called this number of times
-        render : bool
-            Perform rendering at each timestep
-            Disable this if you don't need the rendering
-        stepLength_sec : float
-            Duration in seconds of each simulation step. Lower values will lead to
-            slower simulation. This value should be kept higher than the gazebo
-            max_step_size parameter.
-        environmentController : BaseAdapter
-            Specifies which simulator controller to use. By default it connects to Gazebo
-
-
-        """
+        
 
         self._spawned = False
         self._wall_sim_speed = wall_sim_speed
