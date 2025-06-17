@@ -174,3 +174,4 @@ Werkzeug==3.1.3
 xacro @ git+https://github.com/c-rizz/xacro_standalone@extra_find_pkg_path
 xmltodict==0.13.0
 zipp==3.20.2
+xacro @ git+https://github.com/c-rizz/hdf5plot
