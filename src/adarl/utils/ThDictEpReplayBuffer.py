@@ -371,6 +371,9 @@ class EpisodeStorage():
                 
 
 class ThDictEpReplayBuffer(BaseValidatingBuffer):
+    """A Replay buffer that handles dict observation spaces and manages experience in episodes,
+        allowing to sample trajectories and not just single transition samples.
+    """
     def __init__(
         self,
         buffer_size: int,

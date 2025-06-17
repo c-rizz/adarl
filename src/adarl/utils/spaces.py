@@ -18,7 +18,36 @@ class ThBox(gym.spaces.Box):
                     seed: int | np.random.Generator | None = None,
                     torch_device : th.device = th.device("cpu"),
                     labels : th.Tensor | None = None,
-                    generator : th.Generator | None = None):
+                    generator : th.Generator | None = None,
+                    default_value : th.Tensor | None = None):
+        """ Box space, like the openai gym one, but based on torch Tensors, and with some additional functionality.
+
+        Parameters
+        ----------
+        low : SupportsFloat | NDArray[Any] | th.Tensor
+            Lower limit of the space, will be broadcasted up to the shape of the space
+        high : SupportsFloat | NDArray[Any] | th.Tensor
+            Higher limit of the space
+        shape : Sequence[int] | None, optional
+            Shape of the space, if None, it will be determined from low and high
+        dtype : type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str, optional
+            dtype of the space, by default np.float32
+        seed : int | np.random.Generator | None, optional
+            Seed or generator for the underlying gym class, by default None
+        torch_device : th.device, optional
+            Torch device to be used, by default th.device("cpu")
+        labels : th.Tensor | None, optional
+            Names of the fields of this space, by default None
+        generator : th.Generator | None, optional
+            Torch generator used by the sample() function, by default None
+        default_value : th.Tensor | None, optional
+            Default value, useful for example for initializing a policy network, if it is None (low+high)/2 is used, by default None
+
+        Raises
+        ------
+        RuntimeError
+            _description_
+        """
         self._th_device = torch_device
         self._rng = generator
         if isinstance(low,th.Tensor):
@@ -36,6 +65,11 @@ class ThBox(gym.spaces.Box):
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
         self._high_th = th.as_tensor(self.high, device=self._th_device)
         self._low_th = th.as_tensor(self.low, device=self._th_device)
+        if default_value is not None:
+            self.zero_action = default_value.expand_as(self._high_th)
+        else:
+            self.zero_action = (self._high_th+self._low_th)/2
+    
 
     def sample(self):
         # ggLog.info(f"Sampling ThBox, rng state = {hash_tensor(self._rng.get_state()) if self._rng is not None else None}")

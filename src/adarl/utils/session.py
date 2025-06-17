@@ -274,7 +274,7 @@ class Session():
             if not all_children_terminated:
                 sig = signal.SIGINT if time.monotonic() < timeout + t0_chterm - 10 else signal.SIGKILL
                 ggLog.warn(f"Session is shutting down, but still have {len(child_procs)} child processes. Sending signal {sig} to all")
-                ggLog.warn(f"Procs are: {child_procs}")
+                ggLog.warn(f"Processess are: {child_procs}")
                 for p in child_procs:
                     os.kill(p.pid, sig)
                 for p in child_procs:

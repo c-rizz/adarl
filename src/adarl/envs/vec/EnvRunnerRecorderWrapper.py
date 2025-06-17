@@ -24,6 +24,7 @@ import adarl.utils.dbg.dbg_img
 import adarl.utils.dbg.dbg_img as dbg_img 
 from adarl.utils.spaces import get_space_labels
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
+import hdf5plot.save
 
 class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def __init__(self,  runner : EnvRunnerInterface[ObsType],
@@ -86,8 +87,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._saved_best_eps_count = 0
         self._stored_frames = 0
 
-        self._info_labels = flatten_tensor_tree(get_space_labels(self._runner.info_space))
-        self._info_labels = map_tensor_tree(self._info_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
+        space_labels = get_space_labels(self._runner.info_space)
+        self._info_labels_np = map_tensor_tree(space_labels, lambda t: t.detach().cpu().numpy() if t is not None else None)
         # self._vecobs_labels = get_space_labels(self._runner.single_observation_space)
         # # ggLog.info(f"self._vecobs_labels = {self._vecobs_labels}")
         # if self._vec_obs_key is not None:
@@ -237,18 +238,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             writer.close()
         
     def _write_infobuffer(self, out_filename, infobuffer):
-
-        infos = tt.map_tensor_tree(infobuffer, lambda t: th.as_tensor(t).detach().cpu())
+        infos = tt.map_tensor_tree(infobuffer, lambda t: th.as_tensor(t).detach())
         infos = tt.stack_tensor_tree(infos)
-        infos = tt.flatten_tensor_tree(infos)
-
-        hd_filename = out_filename+".hdf5"
-        with h5py.File(hd_filename, "w") as f:
-            for k,v in infos.items():
-                field_name = ".".join(k)
-                f.create_dataset(field_name, data=v)
-                if k in self._info_labels and self._info_labels[k] is not None:
-                    f.create_dataset(field_name+"_labels", data=self._info_labels[k])
+        infos_np = tt.map_tensor_tree(infos, lambda t: t.cpu().numpy())
+        hdf5plot.save.save_dict(out_filename+".hdf5", infos_np, self._info_labels_np)
 
         
     def _write_vecbuffer(self, out_filename, vecbuffer, vecbuffer_labels={}):

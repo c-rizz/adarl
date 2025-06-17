@@ -11,19 +11,24 @@ def get_caller_info():
     return filename, lineno
 
 printed_dbg_check_msg = False
-def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None, just_warn : bool = False):
+def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None, just_warn : bool = False,
+              async_assert : bool = False):
     from adarl.utils.session import default_session
     if default_session.debug_level>0:
         global printed_dbg_check_msg
         if not printed_dbg_check_msg:
             ggLog.warn(f"dbg_check is enabled")
             printed_dbg_check_msg = True
-        if not is_check_passed():
-            msg = build_msg() if build_msg is not None else f"dbg_check failed"
-            if just_warn:
-                ggLog.warn(msg)
-            else:
-                raise RuntimeError(msg)
+        passed = is_check_passed()
+        if async_assert and isinstance(passed, th.Tensor):
+            th._assert_async(passed, f"Async assert failed at {get_caller_info()}")
+        else:
+            if not passed:
+                msg = build_msg() if build_msg is not None else f"dbg_check failed"
+                if just_warn:
+                    ggLog.warn(msg)
+                else:
+                    raise RuntimeError(msg)
     # else:
     #     print(f"Dbg check skipped")
     

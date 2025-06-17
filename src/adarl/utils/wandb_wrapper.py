@@ -38,6 +38,11 @@ def _fix_histogram_range(value):
 
 
 class WandbWrapper():
+    """Wrap Weight and Biases calls:
+          - Avoding making excessive requests to the server
+          - Managing logging from different subprocesses
+          - Asynchronously transferring torch tensors from cuda to cpu for logging without introducing CUDA syncs
+    """
     def __init__(self):
         self.req_count = 0
         self.max_reqs_per_min = 40

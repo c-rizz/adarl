@@ -146,7 +146,7 @@ class ThBoxStateHelper(StateHelper):
         if observation_definitions is None:
             observation_definitions = ThBoxStateHelper.SimpleObsDef(None, None, 1)
         if isinstance(observation_definitions, ThBoxStateHelper.SimpleObsDef):
-            observation_definitions = {"main":observation_definitions}
+            observation_definitions = {"base":observation_definitions}
         self._obs_defs = {k:self._build_obs_def(v) for k,v in observation_definitions.items()}
         self._main_obs_def = next(iter(self._obs_defs.values()))
         
@@ -599,7 +599,7 @@ class DictStateHelper(StateHelper):
                                                                {},
                                                                "vec")
         if isinstance(obs_definitions, DictStateHelper.SimpleDictObsDef):
-            obs_definitions = {"main":obs_definitions}
+            obs_definitions = {"base":obs_definitions}
         self._init_obs_defs = obs_definitions
         self._vec_size = next(iter(state_helpers.values()))._vec_size
         for k,sh in state_helpers.items():
@@ -989,6 +989,8 @@ class RobotStatsStateHelper(ThBoxStateHelper):
 
 
 class JointImpedanceActionHelper:
+    """Helper class for managing actions for controlling joints via joint impedance control.
+    """
     CONTROL_MODES = IntEnum("CONTROL_MODES", [  "VELOCITY",
                                                 "TORQUE",
                                                 "POSITION",
@@ -1014,7 +1016,34 @@ class JointImpedanceActionHelper:
                         safe_damping : th.Tensor,
                         th_device : th.device,
                         generator : th.Generator | None,
-                        vec_size : int = 1):
+                        vec_size : int,
+                        center_position : th.Tensor | dict[tuple[str,str], th.Tensor]):
+        """
+
+        Parameters
+        ----------
+        control_mode : CONTROL_MODES
+            Which control mode will be exposed via actual actions (Just the reference positions? All the references? Also the gains?)
+        joints : Sequence[tuple[str,str]]
+            Joints to be controlled, each tuple is a joint identifier (<robot name>,<joint name>), defines the order of the 
+            joints in the action definition.
+        joints_minmax_pvesd : th.Tensor | dict[tuple[str,str], th.Tensor]
+            Min and max limits for position, velocity, effort, stiffness and damping. Either tensor of size (joints_num, 2, 5), or dict 
+            with joint names as keys and values tensors of size (2,5)
+        safe_stiffness : th.Tensor
+            Default stiffness to used if no stiffness is specified by the action
+        safe_damping : th.Tensor
+            Default stiffness to used if no stiffness is specified by the action
+        th_device : th.device
+            Torch device to be used
+        generator : th.Generator | None
+            Random number generator give to be used by the underlying spaces
+        vec_size : int
+            Vectorization size, i.e. how many parallel environments are going to be controlled
+        center_position : th.Tensor | dict[tuple[str,str], th.Tensor]
+            Center joint positions for all the joints
+
+        """
         self._joints = joints
         self._control_mode = control_mode
         self._joints_num = len(self._joints)
@@ -1069,16 +1098,27 @@ class JointImpedanceActionHelper:
         self._act_to_pvesd_idx = th.as_tensor(act_to_pvesd,
                                               dtype=th.int32,
                                               device=self._th_device)
+        if isinstance(center_position, dict):
+            center_position = th.as_tensor([center_position[k] for k in self._joints],
+                                           device=self._th_device,
+                                           dtype=self._dtype)
+        else:
+            center_position = center_position
+        zero_cmd = th.zeros(size=(1, self._joints_num, 5), dtype=self._dtype, device=self._th_device)
+        zero_cmd[:,:,0] = center_position
+        zero_action = self.pvesd_to_action(zero_cmd).view(self.single_action_len())
         high = th.ones(self.single_action_len())
         self._single_action_space = spaces.ThBox(low  = -high,
                                                  high = high,
                                                  torch_device=th_device,
-                                                 generator = generator)
+                                                 generator = generator,
+                                                 default_value = zero_action)
         vec_high = th.ones(self.single_action_len()).expand(size=(self._vec_size, self.single_action_len()))
         self._vec_action_space = spaces.ThBox(  low  = -vec_high,
                                                 high = vec_high,
                                                 torch_device=th_device,
-                                                generator = generator)
+                                                generator = generator,
+                                                default_value = zero_action)
         
     def single_action_len(self):
         return self.action_lengths[self._control_mode]*self._joints_num
@@ -1128,5 +1168,6 @@ class JointImpedanceActionHelper:
         cmd_vec_joint_pvesd = self._base_v_j_pvesd.detach().clone()
         cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action.view(self._vec_size, self._joints_num, self.action_lengths[self._control_mode])
         cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
-        dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,:,[3,4]] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}")
+        dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,:,3:5] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}",
+                  async_assert=True)
         return cmd_vec_joint_pvesd

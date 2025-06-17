@@ -1,3 +1,7 @@
+""" Utilities for managing trees of tensors, menaing nested container structures that 
+    contain tensors (and possibly other data types) as leaf nodes.
+"""
+
 from __future__ import annotations
 from adarl.utils.spaces import gym_spaces, ThBox
 import torch as th
