@@ -755,7 +755,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"self._lname2lid = {self._lname2lid}")
         ggLog.info(f"self._jname2jid = {self._jname2jid}")
         if default_link_group_collisions is not None:
-            # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possivble collisions 
+            # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possible collisions 
             # So it may be necessary to set the collisions masks before creatign mjx_data
             geom_contype, geom_conaffinity, body_contype, body_conaffinity = self._compute_collision_masks(default_link_group_collisions)
             self._mj_model.geom_contype = geom_contype

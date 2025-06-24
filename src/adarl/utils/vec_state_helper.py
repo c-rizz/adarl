@@ -131,7 +131,7 @@ class ThBoxStateHelper(StateHelper):
         self._state_names = None
         self._vec_size = vec_size
         self._field_idxs = {n:field_names.index(n) for n in field_names}
-        self._field_idx_cache = {}
+        self._field_idx_cache : dict[tuple[FieldName,...] | FieldName, th.Tensor] = {}
         self._subfield_idxs = {self.subfield_names[idx]:idx for idx in np.ndindex(self.subfield_names.shape)} if self.subfield_names is not None else None
         self._fields_num = len(field_names)
         self._state_shape = (self._vec_size, self._history_length, self._fields_num) + self.field_shape
@@ -185,7 +185,7 @@ class ThBoxStateHelper(StateHelper):
         observable_hist_mask[:obs_history_length] = True
         full_observation_mask = _build_full_mask([  observable_hist_mask, 
                                                     observable_fields_mask, 
-                                                    observable_subfields_mask])
+                                                    observable_subfields_mask]).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
         obs_hist_count = int(th.count_nonzero(observable_hist_mask).item())
         obs_fields_count = int(th.count_nonzero(observable_fields_mask).item())
         unflattened_obs_shape = ( self._vec_size, obs_hist_count, obs_fields_count)+observed_field_shape
@@ -330,7 +330,8 @@ class ThBoxStateHelper(StateHelper):
             if obs_def.observed_field_size == self.field_shape:
                 obs = state[:,:obs_def.obs_history_length,obs_def.observable_indexes]
             else:
-                obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
+                obs = th.masked_select(state, obs_def.full_observation_mask).view(obs_def.unflattened_obs_shape)
+                # obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
         return obs
@@ -425,6 +426,20 @@ class ThBoxStateHelper(StateHelper):
 
     @override
     def field_idx(self, field_names : tuple[FieldName,...] | FieldName):
+        """Returns an index tensor for a list of fields. This is useful for avoiding CUDA syncs,
+            as indexing directly with the list would result in a sync while this does not. Also, 
+            this function caches previously used index tensors for efficiency.
+
+        Parameters
+        ----------
+        field_names : tuple[FieldName,...] | FieldName
+            List of field names to be selected
+
+        Returns
+        -------
+        th.Tensor
+            The index tensor
+        """
         idx = self._field_idx_cache.get(field_names, None)
         if idx is None:
             if isinstance(field_names, Sequence):

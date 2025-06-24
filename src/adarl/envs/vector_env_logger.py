@@ -36,14 +36,14 @@ class VectorEnvLogger(
         self._num_envs = env.unwrapped.num_envs
         self._env_th_device = env_th_device
 
-        self._ep_rewards = th.zeros(size=(self._num_envs,), device=self._env_th_device)
-        self._ep_durations = th.zeros(size=(self._num_envs,), device=self._env_th_device, dtype=th.long)
-        self._completed_ep_rewards_sum_sl = th.as_tensor(0.0, device=self._env_th_device)
-        self._completed_ep_rewards_min_sl = th.as_tensor(float("+inf"), device=self._env_th_device)
-        self._completed_ep_rewards_max_sl = th.as_tensor(float("-inf"), device=self._env_th_device)
-        self._completed_ep_durations_sum_sl = th.as_tensor(0.0, device=self._env_th_device)
-        self._completed_ep_durations_min_sl = th.as_tensor(float("+inf"), device=self._env_th_device)
-        self._completed_ep_durations_max_sl = th.as_tensor(float("-inf"), device=self._env_th_device)
+        self._ep_rewards = th.zeros(size=(self._num_envs,)).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._ep_durations = th.zeros(size=(self._num_envs,), dtype=th.long).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_sum_sl = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_min_sl = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_max_sl = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_sum_sl = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_min_sl = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_max_sl = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._completed_ep_count_sl = 0
         self._tot_completed_ep_count = 0
         self._overhead_count = 0
