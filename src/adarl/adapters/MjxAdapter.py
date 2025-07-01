@@ -769,6 +769,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
         mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
+        self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
         # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
         self._recompute_mjxmodel_inaxes(mjx_model)
         mjx_model = jax.vmap(lambda: mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
@@ -1484,6 +1485,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _get_local_links_linear_acceleration_jax(self, body_ids : jnp.ndarray, mjx_data, mjx_model) -> jnp.ndarray:
         #Inspired by mujoco/mjx/_src/sensor.py:513
         @jax.vmap
+        @jax.vmap
         def _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat):
             local_angvel = body_rotmat.T @ com_angvel
             local_linvel = body_rotmat.T @ (com_linvel - jnp.cross(com_offset_xyz, com_angvel))
@@ -1494,7 +1496,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         com_angacc = mjx_data.cacc[:,body_ids,:3] # com angular acceleration
         body_rotmat = mjx_data.xmat[:,body_ids]
         body_pos_xyz = mjx_data.xpos[:,body_ids] # body position
-        body_com_pos_xyz = mjx_data.subtree_com[mjx_model.body_rootid[:, body_ids]]
+        root_body_ids = self._body_rootid[body_ids] # root body ids for each body
+        body_com_pos_xyz = mjx_data.subtree_com[:, root_body_ids]
         com_linvel = mjx_data.cvel[:,body_ids,3:6]
         com_angvel = mjx_data.cvel[:,body_ids,0:3]
         com_offset_xyz = body_pos_xyz - body_com_pos_xyz
