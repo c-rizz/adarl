@@ -299,6 +299,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     def _thzeros(self, size : tuple[int,...]):
         return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+    
+    def _thfull(self, fill_value : float, size : tuple[int,...]):
+        return th.full(fill_value=fill_value, size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
 
     def _thrand(self, size : tuple[int,...]):
         return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)

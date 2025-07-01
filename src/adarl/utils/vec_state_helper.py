@@ -954,7 +954,7 @@ class RobotStateHelper(ThBoxStateHelper):
 
 class RobotStatsStateHelper(ThBoxStateHelper):
     def __init__(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
-                        obs_dtype : th.dtype,
+                        dtype : th.dtype,
                         th_device : th.device,
                         vec_size : int,
                         history_length : int = 1):
@@ -967,7 +967,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                                         th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1),
                                         minmax_pve[:,[2]]], dim=1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
         super().__init__(   field_names = list(jlims_minmax_pvae.keys()),
-                            dtype = obs_dtype,
+                            dtype = dtype,
                             th_device = th_device,
                             field_size = (len(subfield_names),),
                             fields_minmax= self._build_fields_minmax(jlims_minmax_pvae),

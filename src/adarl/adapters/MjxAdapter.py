@@ -121,10 +121,9 @@ def _forward_pre(mjx_model : mjx.Model, mjx_data : mjx.Data):
     # forward will only be computed before the physics integration, here in this method.
 
     # The following is adapted from mjx.forward
-    # some of these steps can be pointed to th epipeline at https://mujoco.readthedocs.io/en/stable/computation/index.html#simulation-pipeline
+    # some of these steps can be pointed to the pipeline at https://mujoco.readthedocs.io/en/stable/computation/index.html#simulation-pipeline
     mjx_data = fwd_actuation(mjx_model, mjx_data) # pipeline step 19
     mjx_data = fwd_acceleration(mjx_model, mjx_data) # pipeline step 20
-    mjx_data = sensor.sensor_acc(mjx_model, mjx_data) # pipelin step 22 (Is it ok that this is before the solver.solve?)
 
     if mjx_data.efc_J.size == 0:
         mjx_data = mjx_data.replace(qacc=mjx_data.qacc_smooth)
@@ -132,6 +131,8 @@ def _forward_pre(mjx_model : mjx.Model, mjx_data : mjx.Data):
 
     with jax.named_scope("MjxAdapter._act_forward"):
         mjx_data = solver.solve(mjx_model, mjx_data) # pipeline step 21, writes in to qacc, qacc_warmstart, qfrc_constraint, efc_force
+    
+    mjx_data = sensor.sensor_acc(mjx_model, mjx_data) # pipeline step 22
 
     return mjx_data
 
@@ -141,6 +142,7 @@ def _forward_post(mjx_model: mjx.Model, mjx_data: mjx.Data) -> mjx.Data:
     mjx_data = sensor.sensor_pos(mjx_model, mjx_data)
     mjx_data = fwd_velocity(mjx_model, mjx_data)
     mjx_data = sensor.sensor_vel(mjx_model, mjx_data)
+    mjx_data = sensor.sensor_acc(mjx_model, mjx_data) # Also comutes cacc. This ends up being done two times, maybe I don't need to do it before the step?
     return mjx_data
 
 def mjx_integrate_and_forward(m: mjx.Model, d: mjx.Data) -> mjx.Data:
@@ -1476,6 +1478,41 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # t3 = time.monotonic()
         # ggLog.info(f"getLinksState: getids={t1-t0} getvals={t2-t1} convert={t3-t2}")
         return r
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _get_local_links_linear_acceleration_jax(self, body_ids : jnp.ndarray, mjx_data, mjx_model) -> jnp.ndarray:
+        #Inspired by mujoco/mjx/_src/sensor.py:513
+        @jax.vmap
+        def _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat):
+            local_angvel = body_rotmat.T @ com_angvel
+            local_linvel = body_rotmat.T @ (com_linvel - jnp.cross(com_offset_xyz, com_angvel))
+            acc = body_rotmat.T @ (com_linacc - jnp.cross(com_offset_xyz, com_angacc))
+            correction = jnp.cross(local_angvel, local_linvel)
+            return acc + correction
+        com_linacc = mjx_data.cacc[:,body_ids,3:6] # com linear acceleration
+        com_angacc = mjx_data.cacc[:,body_ids,:3] # com angular acceleration
+        body_rotmat = mjx_data.xmat[:,body_ids]
+        body_pos_xyz = mjx_data.xpos[:,body_ids] # body position
+        body_com_pos_xyz = mjx_data.subtree_com[mjx_model.body_rootid[:, body_ids]]
+        com_linvel = mjx_data.cvel[:,body_ids,3:6]
+        com_angvel = mjx_data.cvel[:,body_ids,0:3]
+        com_offset_xyz = body_pos_xyz - body_com_pos_xyz
+
+        frame_acc = _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
+        return frame_acc
+    
+    @override
+    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
+        if requestedLinks is None:
+            body_ids = self._monitored_lids
+        elif isinstance(requestedLinks, jnp.ndarray):
+            body_ids = requestedLinks
+        else:
+            body_ids = self.get_links_ids(requestedLinks)
+        self._forward_if_needed()
+        t = self._get_local_links_linear_acceleration_jax(body_ids, self._sim_state.mjx_data, self._sim_state.mjx_model)
+        return jax2th(t, th_device=self._out_th_device)
 
     @override
     def resetWorld(self):

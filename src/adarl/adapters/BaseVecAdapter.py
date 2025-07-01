@@ -197,6 +197,22 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     @overload
     def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
         raise NotImplementedError()
+    
+    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
+        """Get the acceleration of the requested links.
+
+        Parameters
+        ----------
+        requestedLinks : Sequence[LinkName] | None
+            Links to get the acceleration of. If None, returns the acceleration of all links
+
+        Returns
+        -------
+        th.Tensor
+            A tensor of shape (vec_size, len(requestedLinks), 3) containing the acceleration of each requested link.
+            The acceleration is expressed in the link frame.
+        """
+        raise NotImplementedError()
 
 
     def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
