@@ -215,6 +215,43 @@ class BaseAdapter(ABC):
         gdirs = {ln:th_quat_rotate(th.as_tensor([-1., 0., 0.]), state.pose.orientation_xyzw) for ln,state in ls.items()}
         return th.stack([gdirs[ln] for ln in requestedLinks])
 
+    def get_link_relative_angular_velocity(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        """Get the relative angular velocity of the requested links.
+            This should be what an IMU would give you.
+
+        Parameters
+        ----------
+        requestedLinks : Sequence[LinkName]
+            List of links to get the angular velocity of. Each element of the list represents a link in the format [model_name, link_name]
+
+        Returns
+        -------
+        th.Tensor
+            Tensor containing the relative angular velocity of each link in the requestedLinks list.
+            The shape is (len(requestedLinks), 3) and contains the angular velocity in radians per second.
+
+        """
+        ls = self.getLinksState(requestedLinks=requestedLinks)
+        angvels = {ln:th_quat_rotate(state.ang_velocity_xyz,state.pose.orientation_xyzw) for ln,state in ls.items()}
+        return th.stack([angvels[ln] for ln in requestedLinks])
+
+    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        """Get the local linear acceleration of the requested links.
+            This should be what an accelerometer would give you.
+
+        Parameters
+        ----------
+        requestedLinks : Sequence[LinkName]
+            List of links to get the linear acceleration of. Each element of the list represents a link in the format [model_name, link_name]
+
+        Returns
+        -------
+        th.Tensor
+            Tensor containing the local linear acceleration of each link in the requestedLinks list.
+            The shape is (len(requestedLinks), 3) and contains the linear acceleration in meters per second squared.
+
+        """
+        raise NotImplementedError()
 
     @abstractmethod
     def resetWorld(self):
