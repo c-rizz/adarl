@@ -457,7 +457,7 @@ def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Ten
     # ggLog.info(f"moriginalask.size() = {original.size()}")
     if len(row_mask.size()) != 1 or row_mask.size()[0] != original.size()[0]:
         raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
-    mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (kinda a reverse broadcast)
+    mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
     th.where(mask,
              newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
              original,
@@ -636,7 +636,7 @@ def th_quat_rotate_py(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
     return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
 
 @th.jit.script
-def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
+def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor) -> th.Tensor:
     return th_quat_rotate_py(vector_xyz=vector_xyz, quaternion_xyzw=quaternion_xyzw)
 
 

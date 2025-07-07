@@ -8,7 +8,7 @@ from adarl.utils.tensor_trees import unstack_tensor_tree, filter_tensor_tree, Te
 import copy
 import adarl.utils.session as session
 import time
-from adarl.utils.utils import masked_assign_sc
+from adarl.utils.utils import masked_assign
 import pprint
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
@@ -85,14 +85,14 @@ class VectorEnvLogger(
         completed_eps = th.logical_or(th_terminateds, th_truncateds)
         completed_eps_count = completed_eps.count_nonzero()
         if completed_eps_count>0:
-            completed_rews = self._ep_rewards[completed_eps]
-            completed_durs = self._ep_durations[completed_eps]
-            self._completed_ep_rewards_sum_sl += th.sum(completed_rews)
-            self._completed_ep_rewards_min_sl = th.min(th.min(completed_rews), self._completed_ep_rewards_min_sl)
-            self._completed_ep_rewards_max_sl = th.max(th.max(completed_rews), self._completed_ep_rewards_max_sl)
-            self._completed_ep_durations_sum_sl += th.sum(completed_durs)
-            self._completed_ep_durations_min_sl = th.min(th.min(completed_durs), self._completed_ep_durations_min_sl)
-            self._completed_ep_durations_max_sl = th.max(th.max(completed_durs), self._completed_ep_durations_max_sl)
+            completed_rews = th.masked.masked_tensor(self._ep_rewards, completed_eps)
+            completed_durs = th.masked.masked_tensor(self._ep_durations, completed_eps)
+            self._completed_ep_rewards_sum_sl += completed_rews.sum().to_tensor(0)
+            self._completed_ep_rewards_min_sl = th.minimum(th.amin(completed_rews).to_tensor(0), self._completed_ep_rewards_min_sl)
+            self._completed_ep_rewards_max_sl = th.maximum(th.amax(completed_rews).to_tensor(0), self._completed_ep_rewards_max_sl)
+            self._completed_ep_durations_sum_sl += th.sum(completed_durs).to_tensor(0)
+            self._completed_ep_durations_min_sl = th.minimum(th.amin(completed_durs).to_tensor(0), self._completed_ep_durations_min_sl)
+            self._completed_ep_durations_max_sl = th.maximum(th.amax(completed_durs).to_tensor(0), self._completed_ep_durations_max_sl)
             self._completed_ep_count_sl += completed_eps_count
             self._tot_completed_ep_count += completed_eps_count
             if self._completed_ep_count_sl >= self._num_envs:
@@ -106,8 +106,8 @@ class VectorEnvLogger(
                 self._completed_ep_durations_min_sl.fill_(float("+inf"))
                 self._completed_ep_durations_max_sl.fill_(float("-inf"))
                 self._completed_ep_count_sl = 0
-            self._ep_rewards[completed_eps] = 0.0
-            self._ep_durations[completed_eps] = 0
+            masked_assign(self._ep_rewards, completed_eps, 0.0)
+            masked_assign(self._ep_durations, completed_eps, 0)
             
 
             if self._log_infos:
@@ -179,41 +179,35 @@ class VectorEnvLogger(
                 #     self._overhead_max = float("-inf")
                 #     self._overhead_min = float("+inf")
 
-                if th.any(completed_eps):
-                    final_infos = infos["final_info"]
-                    final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
-                    final_infos = flatten_tensor_tree(final_infos)
-                    final_infos = {"lastinfo."+(".".join(k)):v for k,v in final_infos.items()} # convert keys to strings
-                    final_infos = map_tensor_tree(final_infos, lambda l: int(l) if isinstance(l, bool) else l)
-                    final_infos = map_tensor_tree(final_infos,
-                                                            lambda l: th.as_tensor(l) if isinstance(l, (int, float, bool, np.ndarray, np.number)) else l)
-                    final_infos = {k:v for k,v in final_infos.items() if isinstance(v,th.Tensor)}
-                    final_infos = {k:v.reshape(-1) for k,v in final_infos.items()}
-                    final_infos = {k:v for k,v in final_infos.items() if v.view(-1).size()==(self._num_envs,)}
-                    final_infos = {k:v.to(dtype=th.float32) for k,v in final_infos.items()}
-                    for k in final_infos:
-                        if k not in self._completed_final_infos_since_log:
-                            t = final_infos[k]
-                            max_size = t.size()[0]*2
-                            self._completed_final_infos_since_log[k] = th.full(fill_value = float("nan"),
-                                                                               size = (max_size,)+t.size()[1:],
-                                                                               device=t.device)
+                final_infos = infos["final_info"]
+                final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
+                final_infos = flatten_tensor_tree(final_infos)
+                final_infos = {"lastinfo."+(".".join(k)):v for k,v in final_infos.items()} # convert keys to strings
+                final_infos = {k:int(v) if isinstance(v, bool) else v for k,v in final_infos.items()}
+                final_infos = {k:th.as_tensor(v) if isinstance(v, (int,float,bool,np.ndarray,np.number)) else v for k,v in final_infos.items()}
+                final_infos = {k:v for k,v in final_infos.items() if isinstance(v,th.Tensor)}
+                final_infos = {k:v.reshape(-1) for k,v in final_infos.items()}
+                final_infos = {k:v for k,v in final_infos.items() if v.size()==(self._num_envs,)}
+                final_infos = {k:v.to(dtype=th.float32) for k,v in final_infos.items()}
+                for k in final_infos:
+                    if k not in self._completed_final_infos_since_log:
+                        t = final_infos[k]
+                        max_size = t.size()[0]*2
+                        self._completed_final_infos_since_log[k] = th.full(fill_value = float("nan"),
+                                                                            size = (max_size,)+t.size()[1:],
+                                                                            device=t.device)
 
-                    #Would be nice to do the following just with masks, avoiding
-                    completed_eps_count = th.count_nonzero(completed_eps)
-                    completed_final_infos = {k:v[completed_eps] for k,v in final_infos.items()}
-                    for k in final_infos:
-                        # ggLog.info(f"[{k}][{self._completed_eps_since_log}:{self._completed_eps_since_log+completed_eps_count}]={completed_final_infos[k].size()}")
-                        self._completed_final_infos_since_log[k][self._completed_eps_since_log:self._completed_eps_since_log+completed_eps_count] = completed_final_infos[k]
-                    self._completed_eps_since_log += completed_eps_count
+                #Would be nice to do the following just with masks, avoiding
+                completed_final_infos = {k:v[completed_eps] for k,v in final_infos.items()}
+                for k in final_infos:
+                    # ggLog.info(f"[{k}][{self._completed_eps_since_log}:{self._completed_eps_since_log+completed_eps_count}]={completed_final_infos[k].size()}")
+                    self._completed_final_infos_since_log[k][self._completed_eps_since_log:self._completed_eps_since_log+completed_eps_count] = completed_final_infos[k]
+                self._completed_eps_since_log += completed_eps_count
+                
                 if self._completed_eps_since_log >= self._num_envs:
                     logs = {}
                     logged_infos = {k:v[:self._completed_eps_since_log] for k,v in self._completed_final_infos_since_log.items()}
-                    # ggLog.info(f"VecEnvLogger: _completed_final_infos_since_log = {pprint.pformat(logged_infos)}")
-                    avgs = {k:v.mean() for k,v in logged_infos.items()}
-
-                    logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in avgs.items()})
-                    logs.update({"VecEnvLogger/"+k:v.mean() for k,v in avgs.items()})
+                    logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in logged_infos.items()})
                     logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in logged_infos.items()})
                     logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in logged_infos.items()})
                     logs.update({"VecEnvLogger/med."+k:v.median()  for k,v in logged_infos.items()})

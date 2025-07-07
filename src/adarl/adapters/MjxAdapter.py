@@ -31,6 +31,7 @@ from functools import partial
 import dataclasses
 from dataclasses import dataclass 
 import pprint
+from adarl.utils.tensor_trees import map_tensor_tree
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
@@ -563,12 +564,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return mjname[:sep],mjname[sep+len(model_element_separator):]
 
     def _recompute_mjxmodel_inaxes(self, mjx_model):
+        # ggLog.info(f"jax.tree.structure(mjx_model) = {jax.tree.structure(mjx_model)}")
         out_axes = jax.tree_util.tree_map(lambda l:None, mjx_model)
         out_axes = out_axes.tree_replace({"body_mass":0,
-                                          "geom_friction":0}) # model fields to be vmapped
+                                          "geom_friction":0,
+                                          "body_ipos":0,
+                                          "body_iquat":0}) # model fields to be vmapped
+        # out_axes = map_tensor_tree(mjx_model, lambda l:None)
+        # out_axes = out_axes.tree_replace({"body_mass":0,
+        #             "geom_friction":0,
+        #             "body_ipos":0,
+        #             "body_iquat":0})
         self._mjx_model_in_axes = out_axes
 
     def _rebuild_lower_funcs(self):
+        ggLog.info(f"Rebuilding with self._mjx_model_in_axes= {self._mjx_model_in_axes}")
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
         # self._mjx_forward_post = jax.jit(jax.vmap(_forward_post, in_axes=(self._mjx_model_in_axes, 0)))
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
@@ -1754,17 +1764,27 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
+        # print(f"r0 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
         # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         self._sim_state = self._reset_model_alterations(vec_mask_jnp, self._sim_state)
         # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
+        # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 
     @partial(jax.jit, static_argnames=["self"])
     def _reset_model_alterations(self, vec_mask : jnp.ndarray, sim_state : SimState):
-        sim_state.mjx_model.body_mass.copy()
-        resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1), self._original_mjx_model.body_mass, sim_state.mjx_model.body_mass)
-        resetted_geom_friction= jnp.where(jnp.expand_dims(vec_mask,(1,2)), self._original_mjx_model.geom_friction, sim_state.mjx_model.geom_friction)
-        resetted_model = sim_state.mjx_model.replace(   body_mass = resetted_body_mass,
-                                                        geom_friction = resetted_geom_friction)
+        orig_mjx_mod = self._original_mjx_model
+        resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
+                                       orig_mjx_mod.body_mass, sim_state.mjx_model.body_mass)
+        resetted_geom_friction= jnp.where(jnp.expand_dims(vec_mask,(1,2)),
+                                          orig_mjx_mod.geom_friction, sim_state.mjx_model.geom_friction)
+        resetted_body_ipos = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_ipos.shape[::-1]).T,
+                                       orig_mjx_mod.body_ipos, sim_state.mjx_model.body_ipos)
+        resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_iquat.shape[::-1]).T, 
+                                        orig_mjx_mod.body_iquat, sim_state.mjx_model.body_iquat)
+        resetted_model = sim_state.mjx_model.replace(body_mass = resetted_body_mass,
+                                                     body_ipos = resetted_body_ipos,
+                                                     body_iquat = resetted_body_iquat,
+                                                     geom_friction = resetted_geom_friction)
         return sim_state.replace_v("mjx_model", resetted_model)
 
     def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor],
@@ -1792,7 +1812,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mjx_model = self._sim_state.mjx_model
         if len(masses_body_ids)>0:            
             current_mass = mjx_model.body_mass[:,masses_body_ids]
-            body_mass = mjx_model.body_mass.at[:,masses_body_ids].set(current_mass + current_mass*body_masses_ratio_change)
+            body_mass = mjx_model.body_mass.at[:,masses_body_ids].add(current_mass*body_masses_ratio_change)
             replacements["body_mass"] = jnp.clip(body_mass, min = 0.0)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
@@ -1812,6 +1832,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"altering model with {replacements}")
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
+    def alter_model_sum(self, com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None,
+                              com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor]):
+        replacements = {}
+        mjx_model = self._sim_state.mjx_model
+        if com_position_diffs is not None:
+            com_position_diff_xyz = th2jax(com_position_diffs[1],jax_device=self._jax_device)
+            ggLog.info(f"com_position_diff_xyz.shape={com_position_diff_xyz.shape}")
+            com_body_ids = com_position_diffs[0]
+            replacements["body_ipos"] = mjx_model.body_ipos.at[:,com_body_ids].add(com_position_diff_xyz)
+        if com_quatxyzw_diffs is not None:
+            com_quat_diff_xyzw = th2jax(com_quatxyzw_diffs[1],jax_device=self._jax_device)
+            com_body_ids = com_quatxyzw_diffs[0]
+            altered_quat = mjx._src.math.quat_mul(com_quat_diff_xyzw[:,[3,0,1,2]],mjx_model.body_iquat)
+            replacements["body_ipos"] = mjx_model.body_iquat.at[:,com_body_ids].set(altered_quat)
+        mjx_model = mjx_model.replace(**replacements)
+        self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
 
     def get_current_contacts_num(self) -> th.Tensor:
         """Gets the number of contacts in this instant.

@@ -309,8 +309,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
     def _thrandn(self, size : tuple[int,...]):
         return th.randn(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)
     
-
-    def _thrand_truncnorm(self, size : tuple[int,...], mean : float, std : float, min_val : float, max_val : float):
+    def _thrandn_truncnorm(self, size : tuple[int,...], mean : float, std : float, min_val : float, max_val : float):
         t = th.empty(size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
         th.nn.init.trunc_normal_(t, mean,std,min_val,max_val, generator=self._rng)
         return t
