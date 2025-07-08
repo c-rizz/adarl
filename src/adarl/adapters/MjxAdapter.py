@@ -569,7 +569,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         out_axes = out_axes.tree_replace({"body_mass":0,
                                           "geom_friction":0,
                                           "body_ipos":0,
-                                          "body_iquat":0}) # model fields to be vmapped
+                                          "body_iquat":0,
+                                          "dof_armature":0}) # model fields to be vmapped
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
         #             "geom_friction":0,
@@ -785,8 +786,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mjx_model = jax.vmap(lambda: mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
         # mjx_model = jax.vmap(lambda: mjx_model, axis_size=self._vec_size, in_axes=None)()
         
-        self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
-        self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properli in jit
+        self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
+        self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data) # reset all data to 0
@@ -864,9 +865,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
 
-        ggLog.info("Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        ggLog.info("Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        ggLog.info(f"dof armatures:{self._mj_model.dof_armature}")
+        ggLog.info("MJX: Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info("MJX: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info(f"MJX: dof armatures:{self._mj_model.dof_armature}")
         
         ggLog.info("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
         ggLog.info("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
@@ -1463,7 +1464,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
+        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device, dtype=jnp.uint16) # TODO: would make sense to return a mask here instead of indexes
 
     @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | jnp.ndarray | None = None, use_com_pose : bool = False) -> th.Tensor:
@@ -1775,20 +1776,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         orig_mjx_mod = self._original_mjx_model
         resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
                                        orig_mjx_mod.body_mass, sim_state.mjx_model.body_mass)
-        resetted_geom_friction= jnp.where(jnp.expand_dims(vec_mask,(1,2)),
+        resetted_geom_friction = jnp.where(jnp.expand_dims(vec_mask,(1,2)),
                                           orig_mjx_mod.geom_friction, sim_state.mjx_model.geom_friction)
         resetted_body_ipos = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_ipos.shape[::-1]).T,
                                        orig_mjx_mod.body_ipos, sim_state.mjx_model.body_ipos)
+        resetted_dof_armature = jnp.where(jnp.expand_dims(vec_mask, 1),
+                                       orig_mjx_mod.dof_armature, sim_state.mjx_model.dof_armature)
         resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_iquat.shape[::-1]).T, 
                                         orig_mjx_mod.body_iquat, sim_state.mjx_model.body_iquat)
         resetted_model = sim_state.mjx_model.replace(body_mass = resetted_body_mass,
                                                      body_ipos = resetted_body_ipos,
                                                      body_iquat = resetted_body_iquat,
-                                                     geom_friction = resetted_geom_friction)
+                                                     geom_friction = resetted_geom_friction,
+                                                     dof_armature = resetted_dof_armature)
         return sim_state.replace_v("mjx_model", resetted_model)
 
-    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor],
-                              link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None):
+    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None):
         """_summary_
 
         Parameters
@@ -1803,19 +1808,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
         #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
         #    some world parameters? e.g. gravity
-        body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
-        if link_frictions is not None:
-            body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
         replacements = {}
-
-        masses_body_ids = link_masses[0]
         mjx_model = self._sim_state.mjx_model
-        if len(masses_body_ids)>0:            
+        if link_masses is not None:            
+            masses_body_ids = link_masses[0]
+            body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
             current_mass = mjx_model.body_mass[:,masses_body_ids]
             body_mass = mjx_model.body_mass.at[:,masses_body_ids].add(current_mass*body_masses_ratio_change)
             replacements["body_mass"] = jnp.clip(body_mass, min = 0.0)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
+            body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
             frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
             frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
             frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax]
@@ -1827,6 +1830,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                       mjx_model.geom_friction)
             replacements["geom_friction"] = jnp.clip(replacements["geom_friction"],
                                                      min = 0.0)
+        if joint_armature_ratios is not None:
+            armatures_jids = joint_armature_ratios[0]
+            # ggLog.info(f"armatures_jids = {armatures_jids}")
+            armatures_dof_ids = self._jnt_dofadr_jax[armatures_jids] # This would need some additional logic for multi-dimensional joints
+            dof_armatures_ratio_change = th2jax(joint_armature_ratios[1],jax_device=self._jax_device)
+            current_armatures = mjx_model.body_mass[:,armatures_dof_ids]
+            new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].add(current_armatures*dof_armatures_ratio_change)
+            replacements["dof_armature"] = jnp.clip(new_armatures, min = 0.0001)
         mjx_model = mjx_model.replace(**replacements)
         self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
         # ggLog.info(f"altering model with {replacements}")

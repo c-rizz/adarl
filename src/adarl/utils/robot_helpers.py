@@ -75,7 +75,6 @@ class Robot():
         return d
 
     def __setstate__(self, d):
-        print(f"unpickling Robot")
         # Needed because of https://github.com/stack-of-tasks/pinocchio/issues/2089
         # d["_model"] = pinocchio.buildModelFromXML(d["_urdf_string"])
         d["_collision_geom_model"] = pinocchio.buildGeomFromUrdfString(d["_model"],
