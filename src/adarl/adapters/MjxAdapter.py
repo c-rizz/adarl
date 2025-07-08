@@ -570,7 +570,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "geom_friction":0,
                                           "body_ipos":0,
                                           "body_iquat":0,
-                                          "dof_armature":0}) # model fields to be vmapped
+                                          "dof_armature":0,
+                                          "dof_frictionloss":0}) # model fields to be vmapped
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
         #             "geom_friction":0,
@@ -1782,18 +1783,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        orig_mjx_mod.body_ipos, sim_state.mjx_model.body_ipos)
         resetted_dof_armature = jnp.where(jnp.expand_dims(vec_mask, 1),
                                        orig_mjx_mod.dof_armature, sim_state.mjx_model.dof_armature)
-        resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_iquat.shape[::-1]).T, 
+        resetted_dof_frictionloss = jnp.where(jnp.expand_dims(vec_mask, 1),
+                                       orig_mjx_mod.dof_frictionloss, sim_state.mjx_model.dof_frictionloss)
+        resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_iquat.shape[::-1]).T,
                                         orig_mjx_mod.body_iquat, sim_state.mjx_model.body_iquat)
         resetted_model = sim_state.mjx_model.replace(body_mass = resetted_body_mass,
                                                      body_ipos = resetted_body_ipos,
                                                      body_iquat = resetted_body_iquat,
                                                      geom_friction = resetted_geom_friction,
-                                                     dof_armature = resetted_dof_armature)
+                                                     dof_armature = resetted_dof_armature,
+                                                     dof_frictionloss = resetted_dof_frictionloss)
         return sim_state.replace_v("mjx_model", resetted_model)
 
     def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
-                              joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None):
+                              joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None):
         """_summary_
 
         Parameters
@@ -1813,9 +1818,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if link_masses is not None:            
             masses_body_ids = link_masses[0]
             body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
-            current_mass = mjx_model.body_mass[:,masses_body_ids]
-            body_mass = mjx_model.body_mass.at[:,masses_body_ids].add(current_mass*body_masses_ratio_change)
-            replacements["body_mass"] = jnp.clip(body_mass, min = 0.0)
+            body_mass = mjx_model.body_mass.at[:,masses_body_ids].mul(body_masses_ratio_change+1)
+            replacements["body_mass"] = jnp.clip(body_mass, min = 0.0001)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
             body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
@@ -1832,12 +1836,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                      min = 0.0)
         if joint_armature_ratios is not None:
             armatures_jids = joint_armature_ratios[0]
-            # ggLog.info(f"armatures_jids = {armatures_jids}")
             armatures_dof_ids = self._jnt_dofadr_jax[armatures_jids] # This would need some additional logic for multi-dimensional joints
             dof_armatures_ratio_change = th2jax(joint_armature_ratios[1],jax_device=self._jax_device)
-            current_armatures = mjx_model.body_mass[:,armatures_dof_ids]
-            new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].add(current_armatures*dof_armatures_ratio_change)
+            new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].mul(dof_armatures_ratio_change+1)
             replacements["dof_armature"] = jnp.clip(new_armatures, min = 0.0001)
+        if joint_frictionloss_ratios is not None:
+            frictionloss_jids = joint_frictionloss_ratios[0]
+            frictionloss_dof_ids = self._jnt_dofadr_jax[frictionloss_jids]
+            dof_frictionloss_ratio_change = th2jax(joint_frictionloss_ratios[1],jax_device=self._jax_device)
+            new_frictionloss = mjx_model.dof_frictionloss.at[:,frictionloss_dof_ids].mul(dof_frictionloss_ratio_change+1)
+            replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min = 0.0001)
         mjx_model = mjx_model.replace(**replacements)
         self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
         # ggLog.info(f"altering model with {replacements}")
