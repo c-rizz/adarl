@@ -457,7 +457,9 @@ def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Ten
     # ggLog.info(f"moriginalask.size() = {original.size()}")
     if len(row_mask.size()) != 1 or row_mask.size()[0] != original.size()[0]:
         raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
-    mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
+    # mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
+    mask = row_mask.expand(original.size()[::-1])
+    mask = mask.permute(*th.arange(mask.ndim - 1, -1, -1))
     th.where(mask,
              newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
              original,

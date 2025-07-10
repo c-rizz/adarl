@@ -5,27 +5,100 @@ os.environ["MUJOCO_GL"] = "egl"
 
 from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
-from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import to_string_tensor
 from typing import Any, Literal
 import jax
-import mujoco
-from mujoco import mjx
-import mujoco.viewer
-import time
 from typing_extensions import override
 from typing import overload, Sequence
 import torch as th
 import jax.numpy as jnp
-import jax.scipy.spatial.transform
-from adarl.utils.utils import build_pose
-import adarl.utils.dbg.ggLog as ggLog
-import jax.core
 from functools import partial
 import jax.tree_util
 from dataclasses import dataclass
-import dataclasses
-import traceback
+
+@jax.jit
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of simulations
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of joints
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of references (pos,vel,torque)
+def _second_order_filter(u, filter_coeffs, filter_state):
+    """Applies a second order filter to the input signal u.
+    
+    From xbot2:
+    This is a second order filter with transfer function
+                        1
+    P(s) =  -----------------------,  w = natural frequency, eps = damping ratio
+            (s/w)^2 + 2*eps/w*s + 1
+    
+    and discretized according to a trapezoidal (aka Tustin) scheme. This yields
+    a difference equation of the following form:
+    
+        a0*y + a1*yd + a2*ydd = u + b1*ud + b2*udd
+        i.e.:
+        y = u/a0 + b1/a0*ud + b2/a0*udd - a1/a0*yd - a2/a0*ydd 
+    
+    where yd = y(k-1), ydd = y(k-2) and so on (d = delayed).
+
+    Parameters
+    ----------
+    u : jnp.ndarray
+        Input signal to be filtered.
+    filter_coeffs : jnp.ndarray
+        Coefficients of the filter.
+    filter_state : jnp.ndarray
+        Current state of the filter.
+    
+    Returns
+    -------
+    jnp.ndarray, jnp.ndarray
+        Filtered output signal and new filter state
+    """
+    # at this point the state is [ u_prev, u_prev2, u_prev3, y_prev, y_prev2]
+    new_filter_state = filter_state.at[1:3].set(filter_state[0:2])  # Shift u state
+    new_filter_state = new_filter_state.at[0].set(u)  # Update the first state with the new input
+    # at this point the state is [ u, u_prev, u_prev2, y_prev, y_prev2]
+    y = new_filter_state @ filter_coeffs    
+    new_filter_state = new_filter_state.at[4].set(new_filter_state[3])  # Shift the y state
+    new_filter_state = new_filter_state.at[3].set(y)  # Update the last state with the output
+    # at this point the state is [ u, u_prev, u_prev2, y, y_prev]
+    return y, new_filter_state
+
+@jax.jit
+@partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of simulations
+@partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of joints
+@partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of references (pos,vel,torque)
+def _compute_filter_coeffs_and_state(dt, cutoff_freq, initial_value, eps=1.0):
+    """Computes the coefficients and initial state for a second order filter.
+
+    The filter is designed to have a cutoff frequency of `cutoff_freq` and a damping ratio of `eps`.
+    The filter is discretized using the trapezoidal (Tustin) method.
+    
+    Parameters
+    ----------
+    dt : float
+        Time step for the discretization.
+    cutoff_freq : float
+        Cutoff frequency for the filter.
+    initial_value : float
+        Initial value for the filter state.
+    eps : float
+        Damping ratio for the filter.
+
+    Returns
+    -------
+    jnp.ndarray, jnp.ndarray
+        Filter coefficients and initial filter state.
+    """
+    omega = 2*jnp.pi*cutoff_freq
+    b1 = 2.0
+    b2 = 1.0
+
+    a0 = 1.0 + 4.0*eps/(omega*dt) + 4.0/jnp.power(omega*dt, 2.0)
+    a1 = 2 - 8.0/jnp.power(omega*dt, 2.0)
+    a2 = 1.0 + 4.0/jnp.power(omega*dt, 2.0) - 4.0*eps/(omega*dt)
+    return jnp.array([1/a0, b1/a0, b2/a0, -a1/a0, -a2/a0], dtype=jnp.float32), jnp.full(fill_value=initial_value, shape=(5,), dtype=jnp.float32)
+
+
+
 @jax.tree_util.register_dataclass
 @dataclass
 class SimStateJimp(SimState):
@@ -34,6 +107,8 @@ class SimStateJimp(SimState):
     vec_impjoints_pveaecpvesde : jnp.ndarray
     filtered_pv_references : jnp.ndarray
     filtered_pve_states : jnp.ndarray
+    ref_filter_coeffs : jnp.ndarray
+    ref_filter_state : jnp.ndarray
 
     def replace_d(self, name_values : dict[str,Any]):
         # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
@@ -50,7 +125,10 @@ class SimStateJimp(SimState):
              "filtered_pv_references" : self.filtered_pv_references,
              "filtered_pve_states" : self.filtered_pve_states,
              "impulse_startends_stime" : self.impulse_startends_stime,
-             "impulses_xfrc" : self.impulses_xfrc}
+             "impulses_xfrc" : self.impulses_xfrc,
+             "ref_filter_coeffs" : self.ref_filter_coeffs,
+             "ref_filter_state" : self.ref_filter_state
+            }
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -89,7 +167,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         log_folder="./",
                         safe_revolute_dof_armature = 0.01,
                         revolute_dof_armature_override = None,
-                        opt_override : dict[str,Any] | None = None):
+                        opt_override : dict[str,Any] | None = None,
+                        reference_filter_cutoff_frequency : float = 20.0):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -122,11 +201,16 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         filtered_pv_references=jnp.empty((vec_size,0,2), device = jax_device),
                                         filtered_pve_states = jnp.empty((vec_size,0,3), device = jax_device),
                                         impulse_startends_stime=jnp.empty((0,), device = jax_device),
-                                        impulses_xfrc=jnp.empty((0,), device = jax_device))
+                                        impulses_xfrc=jnp.empty((0,), device = jax_device),
+                                        ref_filter_coeffs=jnp.empty((vec_size,0,4), device = jax_device),
+                                        ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
         pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
         pve_sens_filter_decimation_time = 0.005
+
+        self._ref_filter_cutoff_freq = reference_filter_cutoff_frequency
+        
         self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))
-        self._pve_sens_filter_alpha = 0.1**(1/pve_sens_filter_decimation_time/self._sim_step_dt)
+        self._pve_sensing_filter_alpha = 0.1**(1/pve_sens_filter_decimation_time/self._sim_step_dt)
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
@@ -322,8 +406,20 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                     dtype=jnp.float32,
                                     device=self._jax_device)
             current_pv = current_pve[:,:,:2]
+        ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
+                                                                                self._ref_filter_cutoff_freq,
+                                                                                current_pve)
+        expected_coeff_shape = (5,)
+        if ref_filter_coeffs.shape != expected_coeff_shape:
+            raise RuntimeError(f"ref_filter_coeffs shape {ref_filter_coeffs.shape} does not match expected shape {expected_coeff_shape}")
+        expected_state_shape = (self._vec_size, len(self._imp_controlled_joint_names), 3, 5)
+        if ref_filter_state.shape != expected_state_shape:
+            raise RuntimeError(f"ref_filter_state shape {ref_filter_state.shape} does not match expected shape {expected_state_shape}")
+
         self._sim_state = self._sim_state.replace_d({"filtered_pv_references" : current_pv,
-                                                     "filtered_pve_states" : current_pve})
+                                                     "filtered_pve_states" : current_pve,
+                                                     "ref_filter_coeffs" : ref_filter_coeffs,
+                                                     "ref_filter_state" : ref_filter_state})
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter
@@ -377,34 +473,40 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         current_cmd_v_j_pvesd, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._get_cmd_and_cleanup_vec(   sim_state.cmds_queue,
                                                                                                                     sim_state.cmds_queue_times,
                                                                                                                     sim_state.sim_time)
-        new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
-        current_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
-        vec_jstate = self._get_vec_joint_states_raw_pveaec(self._jids_to_imp_cdm_qpadr,
+        filtered_refs, new_ref_filter_state = _second_order_filter( current_cmd_v_j_pvesd[:,:,:3],
+                                                                    sim_state.ref_filter_coeffs,
+                                                                    sim_state.ref_filter_state)
+        filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:3].set(filtered_refs)
+        # new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
+        # filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
+        vec_jstate = self._get_vec_joint_states_raw_pveaec( self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data)
         vec_jstate_pve = vec_jstate[:,:,:3]
-        new_filtered_pve_states = sim_state.filtered_pve_states*self._pve_sens_filter_alpha + vec_jstate_pve*(1-self._pve_sens_filter_alpha)
+        new_filtered_pve_states = sim_state.filtered_pve_states*self._pve_sensing_filter_alpha + vec_jstate_pve*(1-self._pve_sensing_filter_alpha)
         # jax.debug.print("t={t} \t new_filtered_pve_states={new_filtered_pve_states} \t vec_jstate_pve={vec_jstate_pve}",
         #                 t=sim_state.sim_time, new_filtered_pve_states=new_filtered_pve_states, vec_jstate_pve=vec_jstate)
         # new_filtered_pve_states = vec_jstate_pve
-        vec_efforts = self._compute_imp_cmds(   current_cmd_v_j_pvesd,
+        vec_efforts = self._compute_imp_cmds(   filtered_cmd_v_j_pvesd,
                                                 self._imp_control_max_torque,
                                                 new_filtered_pve_states)
         if self._record_joint_hist:
-            vec_impjoints_pveaecpvesde = jnp.concat([vec_jstate, current_cmd_v_j_pvesd, jnp.expand_dims(vec_efforts,2)], axis = 2)
+            vec_impjoints_pveaecpvesde = jnp.concat([vec_jstate, filtered_cmd_v_j_pvesd, jnp.expand_dims(vec_efforts,2)], axis = 2)
         else:
             vec_impjoints_pveaecpvesde = None
         if self._record_joint_hist:
             sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
                                             "cmds_queue_times" : new_cmds_queue_times,
                                             "vec_impjoints_pveaecpvesde" : vec_impjoints_pveaecpvesde,
-                                            "filtered_pv_references" : new_filtered_pv_references,
-                                            "filtered_pve_states" : new_filtered_pve_states})
+                                            # "filtered_pv_references" : new_filtered_pv_references,
+                                            "filtered_pve_states" : new_filtered_pve_states,
+                                            "ref_filter_state" : new_ref_filter_state})
         else:
             sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
                                             "cmds_queue_times" : new_cmds_queue_times,
-                                            "filtered_pv_references" : new_filtered_pv_references,
-                                            "filtered_pve_states" : new_filtered_pve_states})
+                                            # "filtered_pv_references" : new_filtered_pv_references,
+                                            "filtered_pve_states" : new_filtered_pve_states,
+                                            "ref_filter_state" : new_ref_filter_state})
 
         
         # vec_efforts = jnp.zeros_like(vec_efforts)

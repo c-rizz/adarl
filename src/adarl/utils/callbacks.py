@@ -200,7 +200,9 @@ class CheckpointCallbackRB(TrainingCallback):
     def _save_model(self, is_best, count_ep):
         self._best_success_ratio = max(self._best_success_ratio, self._success_ratio)
         run_id = adarl.utils.session.default_session.run_info["run_id"]
-        fname_base = f"{run_id}_{self._save_count}_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_steps"
+        exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
+        fname_base = f"{exp_name}_{run_id}_{self._save_count}_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_steps"
+        fname_base = fname_base.replace(".", "_")
         if is_best:
             fname_base = "best_"+fname_base
         path = os.path.join(self.save_path, fname_base)

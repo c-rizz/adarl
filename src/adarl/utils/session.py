@@ -81,6 +81,8 @@ class Session():
         else:
             debug_level = debug
         self.debug_level = debug_level
+        if experiment_name is None:
+            experiment_name = os.path.basename(main_file_path)
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
         # ggLog.info(f"Initializing session {self} in process {os.getpid()}")
@@ -211,8 +213,6 @@ class Session():
 
         if use_wandb:
             import wandb
-            if experiment_name is None:
-                experiment_name = os.path.basename(file)
             try:
                 ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
                 config_s = "\n".join([str(t) for t in config.items()])
