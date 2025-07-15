@@ -1857,7 +1857,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mjx_model = self._sim_state.mjx_model
         if com_position_diffs is not None:
             com_position_diff_xyz = th2jax(com_position_diffs[1],jax_device=self._jax_device)
-            ggLog.info(f"com_position_diff_xyz.shape={com_position_diff_xyz.shape}")
             com_body_ids = com_position_diffs[0]
             replacements["body_ipos"] = mjx_model.body_ipos.at[:,com_body_ids].add(com_position_diff_xyz)
         if com_quatxyzw_diffs is not None:

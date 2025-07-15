@@ -34,7 +34,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                         saveBestEpisodes = False, 
                         saveFrequency_ep = 1,
                         vec_obs_key = None,
-                        overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,Any],str]] = None,
+                        overlay_text_func : Optional[Callable[[Any,Any,Any,Any,Any,dict,dict],str]] = None,
                         overlay_text_xy = (0.05,0.05),
                         overlay_text_height = 0.04,
                         overlay_text_color_rgb = (20,20,255),
@@ -58,7 +58,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._record_infoobs = record_infoobs
         self._record_video = record_video
         self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
-        self._infoBuffer = []
+        self._infoBuffer : list[dict] = []
+        self._extra_info_buffer : list[dict] = [] # extra info that comes from outside via add_to_info
         self._outFolder = outFolder
         self._saveBestEpisodes = saveBestEpisodes
         self._saveFrequency_ep = saveFrequency_ep
@@ -122,6 +123,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._update_buffers(img, vecobs, action, reward, terminated, truncated, info)
         # ggLog.info(f"recorded step: action = {action}, stored_steps = {self._stored_steps}")
 
+    def add_to_extra_info(self, info : dict):
+        """Add info to the extra info dict of the last step"""
+        self._extra_info_buffer[-1].update(info)
+
     @override
     def step(self, actions):
         # ggLog.info(f"rec.step()")
@@ -160,6 +165,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._imgBuffer.append(img)
         self._update_vecbuffer(vecobs, action, reward, terminated, truncated)
         self._infoBuffer.append(info)
+        self._extra_info_buffer.append({})
         self._stored_frames += 1
 
     def _update_vecbuffer(self, vecobs, action, reward, terminated, truncated):
@@ -172,7 +178,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             self._vecBuffer["truncated"].append(truncated)
 
 
-    def _writeVideo(self, outFilename : str, imgs : list[th.Tensor | None], vecs, infos):
+    def _writeVideo(self, outFilename : str, imgs : list[th.Tensor | None], vecs, infos, extra_infos):
         if len(imgs)>0:
             # ggLog.info(f"RecorderGymWrapper: {len(imgs)} frames: "+outFilename)
             #outFile = self._outVideoFile+str(self._episodeCounter).zfill(9)
@@ -211,6 +217,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             for i in range(len(npimgs)):
                 npimg = npimgs[i]
                 info = infos[i]
+                extra_info = extra_infos[i]
                 if npimg is None:
                     npimg = np.zeros_like(goodImg)
                 npimg = cv2.resize(npimg,dsize=out_resolution_wh,interpolation=cv2.INTER_NEAREST)
@@ -227,7 +234,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                         reward = vecs["reward"][i-1]
                         terminated = vecs["terminated"][i-1]
                         truncated = vecs["truncated"][i-1]
-                    text = self._overlay_text_func(vecobs, action, reward, terminated, truncated, info)
+                    text = self._overlay_text_func(vecobs, action, reward, terminated, truncated, info, extra_info)
                     puttext_cv(npimg, text,
                                 origin = (int(npimg.shape[1]*self._overlay_text_xy[0]), int(npimg.shape[0]*self._overlay_text_xy[1])),
                                 rowheight = int(npimg.shape[0]*self._overlay_text_height),
@@ -276,7 +283,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                     self._vecBuffer["vecobs"][i] = map_tensor_tree(flatten_tensor_tree(vecobs),
                                                                 lambda l: vecobs if isinstance(vecobs, np.ndarray) else l.cpu().numpy())
             if self._record_video:
-                self._writeVideo(filename,self._imgBuffer, self._vecBuffer, self._infoBuffer)
+                self._writeVideo(filename,self._imgBuffer, self._vecBuffer, self._infoBuffer, self._extra_info_buffer)
             if self._record_infoobs:
                 self._write_vecbuffer(filename,self._vecBuffer)
                 self._write_infobuffer(filename+"_info",self._infoBuffer)
@@ -349,6 +356,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             self._imgBuffer = []
             self._vecBuffer = {"vecobs":[], "action":[], "reward":[], "terminated":[], "truncated":[]}
             self._infoBuffer = []
+            self._extra_info_buffer = []
             self._stored_frames = 0
         
 

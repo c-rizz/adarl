@@ -204,13 +204,14 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         impulses_xfrc=jnp.empty((0,), device = jax_device),
                                         ref_filter_coeffs=jnp.empty((vec_size,0,4), device = jax_device),
                                         ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
-        pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
-        pve_sens_filter_decimation_time = 0.005
-
+        self._use_second_order_filter = True
         self._ref_filter_cutoff_freq = reference_filter_cutoff_frequency
+
+        pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
+        pve_sensing_filter_decimation_time = 0.005        
+        self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))        
+        self._pve_sensing_filter_alpha = 0.1**(1/pve_sensing_filter_decimation_time/self._sim_step_dt)
         
-        self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))
-        self._pve_sensing_filter_alpha = 0.1**(1/pve_sens_filter_decimation_time/self._sim_step_dt)
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
@@ -464,51 +465,37 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_impedance_cmds(self, sim_state : SimStateJimp):
-        # current_cmd, has_cmd, self._sim_state.cmds_queue, self._sim_state.cmds_queue_times = self._get_cmd_and_cleanup_vec( self._sim_state.cmds_queue,
-        #                                                                                                 self._sim_state.cmds_queue_times,
-        #                                                                                                 self._simTime)
-        # vec_jstate = self._get_vec_joint_states_raw_pve(self._jids_to_imp_cdm_qpadr, self._jids_to_imp_cdm_qvadr, self._mjx_data)
-        # vec_efforts = self._compute_impedance_torques_vec(current_cmd, vec_jstate, self._imp_control_max_torque)
-
+        
+        new_state = {}
         current_cmd_v_j_pvesd, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._get_cmd_and_cleanup_vec(   sim_state.cmds_queue,
                                                                                                                     sim_state.cmds_queue_times,
                                                                                                                     sim_state.sim_time)
-        filtered_refs, new_ref_filter_state = _second_order_filter( current_cmd_v_j_pvesd[:,:,:3],
-                                                                    sim_state.ref_filter_coeffs,
-                                                                    sim_state.ref_filter_state)
-        filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:3].set(filtered_refs)
-        # new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
-        # filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
+        new_state["cmds_queue"] = new_cmds_queue
+        new_state["cmds_queue_times"] = new_cmds_queue_times
+        if self._use_second_order_filter:
+            filtered_refs, new_ref_filter_state = _second_order_filter( current_cmd_v_j_pvesd[:,:,:3],
+                                                                        sim_state.ref_filter_coeffs,
+                                                                        sim_state.ref_filter_state)
+            filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:3].set(filtered_refs)
+            new_state["ref_filter_state"] = new_ref_filter_state
+        else:
+            new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
+            filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
+            new_state["filtered_pv_references"] = new_filtered_pv_references
         vec_jstate = self._get_vec_joint_states_raw_pveaec( self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data)
         vec_jstate_pve = vec_jstate[:,:,:3]
         new_filtered_pve_states = sim_state.filtered_pve_states*self._pve_sensing_filter_alpha + vec_jstate_pve*(1-self._pve_sensing_filter_alpha)
-        # jax.debug.print("t={t} \t new_filtered_pve_states={new_filtered_pve_states} \t vec_jstate_pve={vec_jstate_pve}",
-        #                 t=sim_state.sim_time, new_filtered_pve_states=new_filtered_pve_states, vec_jstate_pve=vec_jstate)
-        # new_filtered_pve_states = vec_jstate_pve
+        new_state["filtered_pve_states"] = new_filtered_pve_states
         vec_efforts = self._compute_imp_cmds(   filtered_cmd_v_j_pvesd,
                                                 self._imp_control_max_torque,
                                                 new_filtered_pve_states)
         if self._record_joint_hist:
             vec_impjoints_pveaecpvesde = jnp.concat([vec_jstate, filtered_cmd_v_j_pvesd, jnp.expand_dims(vec_efforts,2)], axis = 2)
-        else:
-            vec_impjoints_pveaecpvesde = None
-        if self._record_joint_hist:
-            sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
-                                            "cmds_queue_times" : new_cmds_queue_times,
-                                            "vec_impjoints_pveaecpvesde" : vec_impjoints_pveaecpvesde,
-                                            # "filtered_pv_references" : new_filtered_pv_references,
-                                            "filtered_pve_states" : new_filtered_pve_states,
-                                            "ref_filter_state" : new_ref_filter_state})
-        else:
-            sim_state = sim_state.replace_d({"cmds_queue" : new_cmds_queue,
-                                            "cmds_queue_times" : new_cmds_queue_times,
-                                            # "filtered_pv_references" : new_filtered_pv_references,
-                                            "filtered_pve_states" : new_filtered_pve_states,
-                                            "ref_filter_state" : new_ref_filter_state})
+            new_state["vec_impjoints_pveaecpvesde"] = vec_impjoints_pveaecpvesde
 
-        
+        sim_state = sim_state.replace_d(new_state)        
         # vec_efforts = jnp.zeros_like(vec_efforts)
         # ggLog.info(f"setting efforts {vec_efforts}")
         sim_state = self._set_effort_command(sim_state, self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
