@@ -850,6 +850,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 return mujoco.Renderer(self._mj_model,height=h,width=w)
             self._render_scene_option = mujoco.MjvOption()
             self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+            self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
+            self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
                             for resolution in set(self._camera_sizes.values())}
             self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
