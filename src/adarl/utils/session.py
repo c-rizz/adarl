@@ -170,7 +170,7 @@ class Session():
             os.makedirs(folderName, exist_ok=True)
             script_out_folder = str(Path(folderName).parent.absolute())
 
-        createSymlink(src = folderName, dst = script_out_folder+"/latest")
+        createSymlink(src = str(Path(folderName).relative_to(script_out_folder)), dst = script_out_folder+"/latest")
         shutil.copyfile(file, folderName+"/main_script.py")
         if currentframe is not None:
             args, _, _, config = inspect.getargvalues(currentframe)
