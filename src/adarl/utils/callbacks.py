@@ -139,7 +139,7 @@ class EvalCallback(TrainingCallback):
         self.last_mean_reward = mean_reward
 
         if self.verbose > 0:
-            print(f"Eval took {tf-t0 :.2f}s:\n"
+            print(f"Eval took {tf-t0 :.2f}s over {results['collected_episodes']} episodes:\n"
                   f"    episode_reward: {mean_reward:.2f} +/- {std_reward:.2f}"
                   f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
         

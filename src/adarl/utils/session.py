@@ -125,6 +125,7 @@ class Session():
                     warnings.simplefilter("always")
                 override_warning_func()
                 th.cuda.set_sync_debug_mode("warn")
+                th._logging.set_logs(recompiles=True)
             th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
