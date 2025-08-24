@@ -50,6 +50,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
             max_episode_steps = th.full(fill_value=max_episode_steps, size=(num_envs,),dtype=th.long, device=th_device)
         self._max_ep_steps = max_episode_steps
         self._tot_step_counter = 0
+        self._th_tot_step_counter = th.as_tensor(0, dtype=th.long, device=th_device)
         self._ep_step_counter = th.zeros(size=(num_envs,), device=th_device, dtype=th.long)
         self._ep_counter = th.full(size=(num_envs,), fill_value=-1, device=th_device, dtype=th.long)
         self._tot_init_counter = 0
@@ -146,6 +147,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self.pre_step()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
+        self._th_tot_step_counter+=1
         self.post_step()
 
     @abstractmethod
@@ -304,12 +306,24 @@ class BaseVecEnv(ABC, Generic[Observation]):
         return th.full(fill_value=fill_value, size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
 
     def _thrand(self, size : tuple[int,...]):
-        return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)
-    
+        if th.compiler.is_compiling():
+            rng = None
+        else:
+            rng = self._rng
+        return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=rng)
+
     def _thrandn(self, size : tuple[int,...]):
-        return th.randn(size=size, dtype=self._obs_dtype, device=self._th_device, generator=self._rng)
+        if th.compiler.is_compiling():
+            rng = None
+        else:
+            rng = self._rng
+        return th.randn(size=size, dtype=self._obs_dtype, device=self._th_device, generator=rng)
     
     def _thrandn_truncnorm(self, size : tuple[int,...], mean : float, std : float, min_val : float, max_val : float):
+        if th.compiler.is_compiling():
+            rng = None
+        else:
+            rng = self._rng
         t = th.empty(size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
-        th.nn.init.trunc_normal_(t, mean,std,min_val,max_val, generator=self._rng)
+        th.nn.init.trunc_normal_(t, mean,std,min_val,max_val, generator=rng)
         return t

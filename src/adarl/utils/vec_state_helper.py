@@ -560,7 +560,7 @@ class StateNoiseGenerator:
                                                                               squash_sigma=self._squash_sigma),
                                            self._step_std.expand(self._noise_shape)])
 
-    def _generate_noise(self):
+    def _generate_noise(self):        
         return adarl.utils.utils.randn_from_mustd(self._current_ep_mustd,
                                                   size = self._noise_shape,
                                                   generator=self._rng,

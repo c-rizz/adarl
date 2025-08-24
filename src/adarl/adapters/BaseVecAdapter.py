@@ -217,7 +217,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
     def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
         ls = self.getLinksState(requestedLinks=requestedLinks)
-        return th_quat_rotate(th.as_tensor([0., 0., -1.]).expand(self._vec_size,3), th_quat_conj(ls[:3:7]))
+        return th_quat_rotate(th.as_tensor([0., 0., -1.], device=ls.device).expand(self._vec_size,3), th_quat_conj(ls[:3:7]))
     
     
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:

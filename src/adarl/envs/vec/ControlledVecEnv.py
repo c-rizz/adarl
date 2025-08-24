@@ -59,10 +59,12 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
 
     def step(self) -> None:
+        t0 = time.monotonic()
+        th.compiler.cudagraph_mark_step_begin()
         self.pre_step()
         estimated_step_duration_sec = 0.0
         adapter_step_count = 0
-        t0 = time.monotonic()
+        t1 = time.monotonic()
         while True: # Do at least one step, then check if we need more
             estimated_step_duration_sec += self._adapter.step()
             adapter_step_count+=1
@@ -78,14 +80,17 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                     ggLog.warn( f"Simulation stepped more than required step length ({estimated_step_duration_sec}>{self._intendedStepLength_sec})\n"
                                 f"Tolerance is {self._step_precision_tolerance}, increase it to ignore these errors")
                     break
-        t1 = time.monotonic()
+        t2 = time.monotonic()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
+        self._th_tot_step_counter+=1
         self._estimated_env_times += estimated_step_duration_sec
         if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
             ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
         self.post_step()
         tf = time.monotonic()
+        # if self._tot_step_counter%500==0:
+        # ggLog.info(f"controlledvecenv step: tot={tf-t0:.6f}s pre={t1-t0:.6f}={(t1-t0)/(tf-t0)*100:.0f}% step={t2-t1:.6f}={(t2-t1)/(tf-t0)*100:.0f}%  post={tf-t2:.6f}={(tf-t2)/(tf-t0)*100:.0f}%")
         # ggLog.info(f"ControlledEnv: adapter_step_count = {adapter_step_count} adapter_step = {t1-t0:.6f} (vec_env_fps={1/(t1-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(t1-t0):.2f}), env_step={tf-t0:.6f} (vec_env_fps={1/(tf-t0)*self.num_envs:.2f}, rt={estimated_step_duration_sec*self.num_envs/(tf-t0):.2f})")
 
     @override

@@ -125,7 +125,14 @@ class Session():
                     warnings.simplefilter("always")
                 override_warning_func()
                 th.cuda.set_sync_debug_mode("warn")
-                th._logging.set_logs(recompiles=True)
+                import logging
+                th._logging.set_logs(recompiles=True,
+                                     graph_breaks=True,
+                                     inductor=logging.INFO,
+                                     cudagraphs=True)
+                import torch._inductor.config as iconfig
+                iconfig.trace.enabled = True
+                iconfig.trace.graph_diagram = True
             th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():

@@ -12,7 +12,8 @@ def get_caller_info():
 
 printed_dbg_check_msg = False
 def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None, just_warn : bool = False,
-              async_assert : bool = False):
+              async_assert : bool = False,
+              assert_msg : str | None = None):
     from adarl.utils.session import default_session
     if default_session.debug_level>0:
         global printed_dbg_check_msg
@@ -21,7 +22,9 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
             printed_dbg_check_msg = True
         passed = is_check_passed()
         if async_assert and isinstance(passed, th.Tensor):
-            th._assert_async(passed, f"Async assert failed at {get_caller_info()}")
+            if assert_msg is None:
+                assert_msg = f"dbg_check failed at {get_caller_info()}"
+            th._assert_async(passed, assert_msg)
         else:
             if not passed:
                 msg = build_msg() if build_msg is not None else f"dbg_check failed"
@@ -37,10 +40,12 @@ def dbg_run(func : Callable[[],Any]):
     if default_session.debug_level>0:
         func()
 
-def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn : bool = False):
+def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn : bool = False, assert_msg : str | None = None):
     from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite, is_leaf_bounded
     if async_assert:
-        th._assert_async(is_all_finite(tensor_tree), f"non-finite values in tensor at {get_caller_info()}")
+        if assert_msg is None:
+            assert_msg = f"non-finite values in tensor at {get_caller_info()}"
+        th._assert_async(is_all_finite(tensor_tree), assert_msg)
         return
     dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
               build_msg=lambda: (   f"Non-finite values in tensor tree: \n"

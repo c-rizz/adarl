@@ -1,5 +1,7 @@
 from __future__ import annotations
+import functools
 
+from adarl.utils.dbg.dbg_checks import dbg_check
 import numpy as np
 import time
 from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, TypeVar, Sequence
@@ -11,6 +13,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import torch as th
 from dataclasses import dataclass
 from adarl.utils.base_utils import *
+import functools
 
 numpy_to_torch_dtype_dict = {
     bool          : th.bool,
@@ -394,9 +397,11 @@ def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.G
                     dtype=t.dtype,
                     device=t.device)*std + mu
 
-def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
+def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator | None,
                      squash_sigma : float = -1.0,
-                     size : Sequence[int] | None = None):
+                     size : Sequence[int] | None = None):    
+    if th.compiler.is_compiling():
+        generator = None
     if size is None:
         size = mu_std[0].size()
     noise =  th.randn(size=size,
@@ -459,7 +464,7 @@ def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Ten
         raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
     # mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
     mask = row_mask.expand(original.size()[::-1])
-    mask = mask.permute(*th.arange(mask.ndim - 1, -1, -1))
+    mask = mask.permute(*list(range(mask.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
     th.where(mask,
              newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
              original,
@@ -685,11 +690,17 @@ def quat_angle_xyzw(q_xyzw : th.Tensor) -> th.Tensor:
     return 2*th.atan2(th.norm(q_xyzw[...,0:3], dim=-1),q_xyzw[...,3])
 
 def orthogonal_vec(v : th.Tensor):
-    shortest_axis = th.zeros_like(v)
-    minvals = th.min(v, dim = -1)[0]
+    minvals = th.amin(v, dim = -1)
     # print(f"v.size() = {v.size()}")
     # print(f"minvals.size() = {minvals.size()}")
-    shortest_axis[v==minvals.unsqueeze(-1).expand_as(v)] = 1
+    minvals_expanded = minvals.unsqueeze(-1).expand_as(v)
+    # print(f"minvals_expanded = {minvals_expanded}")
+    minvals_locations = v==minvals_expanded
+    # print(f"minvals_locations = {minvals_locations}")
+    first_minvals_locations = th.logical_and(minvals_locations.cumsum(dim=-1)==1, minvals_locations)
+    # print(f"first_minvals = {first_minvals_locations}")
+    shortest_axis = first_minvals_locations.to(dtype=v.dtype)
+    # shortest_axis[v==minvals.unsqueeze(-1).expand_as(v)] = 1
     # print(f"shortest_axis = {shortest_axis}")
     # print(f"th.min(v, dim = -1) = {minvals}")
     return th.linalg.cross(v,shortest_axis)
@@ -707,13 +718,17 @@ def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
     quats_xyzw = th.zeros(size=v1.size()[:-1]+(4,), device=v1.device, dtype=v1.dtype)
     vdot = th.linalg.vecdot(v1, v2)
     k = th.linalg.norm(v1, dim = -1) * th.linalg.norm(v2, dim = -1)
-    th.linalg.cross(v1,v2, out=quats_xyzw[...,:3])
+    if th.compiler.is_compiling():
+        quats_xyzw[...,:3] = th.linalg.cross(v1,v2) # th.compile does not like non-contiguous out tensors :(
+    else:
+        th.linalg.cross(v1,v2, out=quats_xyzw[...,:3])
     quats_xyzw[...,3] = k + vdot
-    quats_xyz = quats_xyzw[...,:3]
-    quats_w = quats_xyzw[...,3]
     flipped_vecs = vdot/k==-1
-    masked_assign(quats_xyz.view(-1,3), flipped_vecs.view(-1), orthogonal_vec(v1).view(-1,3))
-    masked_assign(quats_w.view(-1,1), flipped_vecs.view(-1), 0)
+    ortho_quats = th.zeros_like(quats_xyzw)
+    ortho_quats[...,:3] = orthogonal_vec(v1) # make quats that are orthogonal to v1 in the xyz components and zero in w
+    masked_assign(quats_xyzw.view(-1,4),
+                  flipped_vecs.view(-1),
+                  ortho_quats.view(-1,4))
     # quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
     # quats_xyzw[vdot/k==-1,3] = 0
     # print(f"vdot = {vdot}")
@@ -748,3 +763,37 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
                     last_warn_time = t
                     ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
                 env_controller.run(step_duration_sec)
+
+
+def th_compile_ext(copy_outs : bool = False, *compile_args, **compile_kwargs):
+    """A wrapper for torch.compile that can automatically copy outputs, useful for problematic cudagraphs
+
+    Parameters
+    ----------
+    copy_outs : bool, optional
+        Whether to copy outputs, by default False
+
+    Returns
+    -------
+    Callable
+        A wrapped version of the original function that is compiled with torch.compile.
+    """
+    from adarl.utils.tensor_trees import clone_tensor_tree
+    # th._dynamo.utils.cmp_log()
+    # ggLog.info(f"th.compiler.is_compiling()={th.compiler.is_compiling()}, stacktrace={''.join(traceback.format_stack())}")
+    def compiling_decorator(func):
+        if th.compiler.is_compiling():
+            # If already compiling, do nothing
+            return func
+        else:
+            compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
+            if copy_outs:
+                def compile_and_clone(*args, **kwargs):
+                    outs = compiled_func(*args, **kwargs)
+                    return clone_tensor_tree(outs)
+                return compile_and_clone
+            else:
+                def compile(*args, **kwargs):
+                    return compiled_func(*args, **kwargs)                
+                return compile
+    return compiling_decorator

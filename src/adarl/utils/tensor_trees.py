@@ -323,5 +323,5 @@ def to_contiguous_tensor(value):
         value = np.ascontiguousarray(value)
     return th.as_tensor(value)
 
-def deep_copy(tensor_tree : TensorTree):
+def clone_tensor_tree(tensor_tree : TensorTree):
     return map_tensor_tree(tensor_tree, lambda l: l.detach().clone() if isinstance(l, th.Tensor) else np.copy(l))

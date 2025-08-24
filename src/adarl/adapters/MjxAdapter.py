@@ -580,7 +580,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_model_in_axes = out_axes
 
     def _rebuild_lower_funcs(self):
-        ggLog.info(f"Rebuilding with self._mjx_model_in_axes= {self._mjx_model_in_axes}")
+        # ggLog.info(f"Rebuilding with self._mjx_model_in_axes= {self._mjx_model_in_axes}")
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
         # self._mjx_forward_post = jax.jit(jax.vmap(_forward_post, in_axes=(self._mjx_model_in_axes, 0)))
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash

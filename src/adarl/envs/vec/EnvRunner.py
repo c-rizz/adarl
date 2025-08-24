@@ -24,7 +24,7 @@ from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.utils.utils import to_string_tensor
-from adarl.utils.tensor_trees import deep_copy
+from adarl.utils.tensor_trees import clone_tensor_tree
 
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
@@ -402,7 +402,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._dbg_info["avg_act_wall_duration"] = self._submitActionDurationAverage.getAverage()
         self._dbg_info["avg_sta_wall_duration"] = self._getStateDurationAverage.getAverage()
         self._dbg_info["avg_obs_rew_wall_duration"] = self._getObsRewDurationAverage.getAverage()
-        self._dbg_info["avg_reinit_wall_duration"] = self._getObsRewDurationAverage.getAverage()
+        self._dbg_info["avg_reinit_wall_duration"] = self._reinitDurationAverage.getAverage()
         # self._dbg_info["tot_ep_sim_duration"] = self._last_step_end_etime
         # self._dbg_info["reset_count"] = self._reset_count
         # self._dbg_info["time_from_start"] = t - self._build_time
@@ -443,7 +443,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                             th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
-        return deep_copy(info)
+        return clone_tensor_tree(info)
     
     @override
     def get_max_episode_steps(self):
