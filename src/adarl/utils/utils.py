@@ -790,10 +790,17 @@ def th_compile_ext(copy_outs : bool = False, *compile_args, **compile_kwargs):
             if copy_outs:
                 def compile_and_clone(*args, **kwargs):
                     outs = compiled_func(*args, **kwargs)
-                    return clone_tensor_tree(outs)
+                    return clone_tensor_tree(outs, detach=False)
                 return compile_and_clone
             else:
                 def compile(*args, **kwargs):
                     return compiled_func(*args, **kwargs)                
                 return compile
     return compiling_decorator
+
+def get_func_input_args(exclude : list[str] = []) -> dict:
+    _, _, _, values_flocals = inspect.getargvalues(inspect.currentframe().f_back) #type: ignore
+    values = dict(values_flocals)
+    for name in exclude:
+        values.pop(name, None)
+    return values

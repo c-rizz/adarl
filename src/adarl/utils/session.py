@@ -181,9 +181,10 @@ class Session():
         createSymlink(src = str(Path(folderName).relative_to(script_out_folder)), dst = script_out_folder+"/latest")
         shutil.copyfile(file, folderName+"/main_script.py")
         if currentframe is not None:
-            args, _, _, config = inspect.getargvalues(currentframe)
+            _, _, _, config_flocals = inspect.getargvalues(currentframe)
+            config = dict(config_flocals)
         else:
-            args, config = ([],{})
+            _, config = ([],{})
 
         has_torch = False
         cuda_available = False
@@ -206,7 +207,19 @@ class Session():
         #     print(str(inputargs), file=input_args_file)
         args_yaml_file = folderName+"/input_args.yaml"
         with open(args_yaml_file, "w") as input_args_yamlfile:
-            yaml.dump(config,input_args_yamlfile, default_flow_style=None)
+            try:
+                yaml.dump(config,input_args_yamlfile, default_flow_style=None)
+            except TypeError as e:
+                ggLog.error(f"Failed to save input args to yaml file {args_yaml_file}: {adarl.utils.utils.exc_to_str(e)}")
+                # Remove non-serializable entries
+                clean_config = {}
+                for k,v in config.items():
+                    try:
+                        yaml.dump({k:v}, default_flow_style=None)
+                        clean_config[k] = v
+                    except TypeError as e2:
+                        ggLog.error(f"Could not serialize config entry {k}:{v}\n{adarl.utils.utils.exc_to_str(e2)}")
+                yaml.dump(clean_config,input_args_yamlfile, default_flow_style=None)
         # ggLog.info(f"values = {values}")
 
         if "modelFile" in config:
@@ -234,7 +247,7 @@ class Session():
                             sync_tensorboard = True, # Save tensorboard stuff,
                             notes = comment
                             )
-            except wandb.sdk.wandb_manager.ManagerConnectionError as e: # type: ignore
+            except Exception as e: # type: ignore
                 ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
 
         return folderName

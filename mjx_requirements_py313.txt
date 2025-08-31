@@ -1,0 +1,171 @@
+absl-py
+asttokens
+blinker
+brax
+catkin-pkg
+certifi
+charset-normalizer
+chex
+click
+cloudpickle
+# cmeel
+# cmeel-assimp
+# cmeel-boost
+# cmeel-console-bridge
+# cmeel-octomap
+# cmeel-qhull
+# cmeel-tinyxml
+# cmeel-urdfdom
+colorlog
+contourpy
+cycler
+Cython
+decorator
+defusedxml
+distro
+# dm_control
+# dmc2gym @ git+https://github.com/c-rizz/dmc2gym
+# dmc2gymnasium @ git+https://github.com/imgeorgiev/dmc2gymnasium
+docker-pycreds
+docutils
+eigenpy
+empy
+etils
+exceptiongroup
+executing
+Farama-Notifications
+filelock
+Flask
+Flask-Cors
+flax
+fonttools
+fsspec
+gitdb
+GitPython
+glfw
+grpcio
+gymnasium==0.29.1
+h5py
+# hpp-fcl
+humanize
+idna
+igor
+imageio
+importlib_resources
+ipython
+itsdangerous
+jax
+jax-cuda12-pjrt
+jax-cuda12-plugin
+jaxlib
+jaxopt
+jedi
+Jinja2
+kiwisolver
+llvmlite
+lxml
+Markdown
+markdown-it-py
+MarkupSafe
+matplotlib
+matplotlib-inline
+mdurl
+mediapy
+ml_collections
+ml_dtypes
+mpmath
+msgpack
+mujoco @ https://github.com/c-rizz/mujoco/releases/download/3.3.1-mesh-reimport-fix/mujoco-3.3.1-cp313-cp313-linux_x86_64.whl
+mujoco-mjx==3.3.0
+nest-asyncio
+networkx
+nose
+nptyping
+numba
+numpy
+numpy-quaternion
+nvidia-cublas-cu12
+nvidia-cuda-cupti-cu12
+nvidia-cuda-nvcc-cu12
+nvidia-cuda-nvrtc-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cudnn-cu12
+nvidia-cufft-cu12
+nvidia-curand-cu12
+nvidia-cusolver-cu12
+nvidia-cusparse-cu12
+nvidia-cusparselt-cu12
+nvidia-nccl-cu12
+nvidia-nvjitlink-cu12
+nvidia-nvtx-cu12
+opencv-python
+opt_einsum
+optax
+orbax-checkpoint
+packaging
+pandas
+parso
+pexpect
+pillow
+pin==3.7.0
+pip-chill
+platformdirs
+prompt_toolkit
+protobuf
+psutil
+ptyprocess
+pure_eval
+py-cpuinfo
+pybullet
+pydlpack
+pygame
+Pygments
+pynvml
+PyOpenGL
+pyparsing
+python-dateutil
+pytinyrenderer
+pytz
+PyYAML
+pyzmq
+Quaternion
+quaternionic
+requests
+rich
+rospkg
+scipy
+sdformat
+# sdformat-mjcf
+sentry-sdk
+setproctitle
+simplejson
+six
+smmap
+sshkeyboard
+stable-baselines3
+stack-data
+sympy
+tensorboard
+tensorboard-data-server
+tensorboardX
+tensorstore
+tomli
+toolz
+torch==2.8.0
+torchaudio
+torchvision
+tqdm
+traitlets
+trimesh
+typing_extensions
+typish
+tzdata
+urllib3
+vidgear
+wandb
+wcwidth
+Werkzeug
+xacro @ git+https://github.com/c-rizz/xacro_standalone@extra_find_pkg_path
+xmltodict
+zipp
+hdf5plot @ git+https://github.com/c-rizz/hdf5plot

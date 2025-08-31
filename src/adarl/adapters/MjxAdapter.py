@@ -792,18 +792,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
         data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data) # reset all data to 0
-        ggLog.info(f"mjx_data nbytes = {pprint.pformat(data_nbytes)}")
+        # ggLog.info(f"mjx_data nbytes = {pprint.pformat(data_nbytes)}")
         import operator
-        ggLog.info(f"tot = {jax.tree.reduce(operator.add, data_nbytes)} bytes")
+        ggLog.info(f"mjx_data size = {jax.tree.reduce(operator.add, data_nbytes)} bytes")
         ggLog.info(f"estimated vectorized size = {jax.tree.reduce(operator.add, data_nbytes)*self._vec_size/1024**2} MB") # more or less
         
         mjx_data = jax.vmap(lambda: mjx_data, axis_size=self._vec_size)()
         # mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), mjx_data)
-        ggLog.info(f"mjx_data.qpos.shape = {mjx_data.qpos.shape}")
-        ggLog.info(f"mjx_data.qLD.shape = {mjx_data.qLD.shape}")
-        ggLog.info(f"mj_data.qLD.shape = {self._mj_data.qLD.shape}")
-        ggLog.info(f"mjx_model.nM = {mjx_model.nM}")
-        ggLog.info(f"self._mj_model.nM = {self._mj_model.nM}")
+        # ggLog.info(f"mjx_data.qpos.shape = {mjx_data.qpos.shape}")
+        # ggLog.info(f"mjx_data.qLD.shape = {mjx_data.qLD.shape}")
+        # ggLog.info(f"mj_data.qLD.shape = {self._mj_data.qLD.shape}")
+        # ggLog.info(f"mjx_model.nM = {mjx_model.nM}")
+        # ggLog.info(f"self._mj_model.nM = {self._mj_model.nM}")
         # mujoco.mj_forward(self._mj_model, self._mj_data) # Compute all fields
 
         self._original_mjx_data = copy.deepcopy(mjx_data)

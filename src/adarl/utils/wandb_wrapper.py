@@ -85,7 +85,6 @@ class WandbWrapper():
         if self._wandb_initialized:
             raise RuntimeError(f"Tried to initialize wandb wrapper twice (original pid {self._init_pid}, current pid = {os.getpid()}")
         self._init_pid = os.getpid()
-        wandb.require("core")
         wandb.init(**kwargs)
         self._wandb_initialized = True
         # self._worker_thread = threading.Thread(target=self._worker)

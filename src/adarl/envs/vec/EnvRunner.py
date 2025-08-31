@@ -443,7 +443,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                             th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
-        return clone_tensor_tree(info)
+        return clone_tensor_tree(info, detach=True)
     
     @override
     def get_max_episode_steps(self):
