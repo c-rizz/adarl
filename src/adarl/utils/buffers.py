@@ -670,7 +670,7 @@ class ThDReplayBuffer(BaseBuffer):
         return self._addcount*self.n_envs
 
     @override
-    @th_compile_ext(mode="max-autotune", fullgraph=True, copy_outs=True)
+    @th_compile_ext(mode="max-autotune-no-cudagraphs", fullgraph=True, copy_outs=True)
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
