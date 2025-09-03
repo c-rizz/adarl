@@ -118,6 +118,7 @@ class Session():
             self.run_info["gpu"] = th.cuda.get_device_name()
             th.set_printoptions(linewidth=160)
             pyTorch_makeDeterministic(seed)
+            th._dynamo.config.capture_scalar_outputs = True
             if debug_level>0:
                 if debug_level>1:
                     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
