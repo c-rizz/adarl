@@ -15,7 +15,7 @@ class ThBox(gym.spaces.Box):
                     high: SupportsFloat | NDArray[Any] | th.Tensor,
                     shape: Sequence[int] | None = None,
                     dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str = np.float32,
-                    seed: int | np.random.Generator | None = None,
+                    seed: int | None = None,
                     torch_device : th.device = th.device("cpu"),
                     labels : th.Tensor | None = None,
                     generator : th.Generator | None = None,
@@ -32,7 +32,7 @@ class ThBox(gym.spaces.Box):
             Shape of the space, if None, it will be determined from low and high
         dtype : type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str, optional
             dtype of the space, by default np.float32
-        seed : int | np.random.Generator | None, optional
+        seed : int | None, optional
             Seed or generator for the underlying gym class, by default None
         torch_device : th.device, optional
             Torch device to be used, by default th.device("cpu")
@@ -49,7 +49,14 @@ class ThBox(gym.spaces.Box):
             _description_
         """
         self._th_device = torch_device
-        self._rng = generator
+        self._seed = seed
+        if generator is None:
+            generator = th.Generator(device=self._th_device)
+            if seed is not None:
+                generator.manual_seed(seed)
+        elif seed is not None:
+            raise RuntimeError("Cannot provide both a generator and a seed")
+        self._th_rng = generator
         if isinstance(low,th.Tensor):
             low = low.cpu().numpy()
         if isinstance(high,th.Tensor):
@@ -63,6 +70,7 @@ class ThBox(gym.spaces.Box):
         self.torch_dtype_str = str(torch_dtype).split(".")[1] # yaml cannot save this directly as str-based __reduce__ (used by dtypes) is not supported by yaml, see https://github.com/pytorch/pytorch/issues/78720
         self.labels = labels
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
+        del self._np_random # disable the numpy rng, we don't use it and it is annoying to pickle through numpy 2.0/1.x
         self._high_th = th.as_tensor(self.high, device=self._th_device)
         self._low_th = th.as_tensor(self.low, device=self._th_device)
         if default_value is not None:
@@ -78,12 +86,15 @@ class ThBox(gym.spaces.Box):
         # only works for uniform
         r = th.rand(self._high_th.size(),
                     device=self._th_device,
-                    generator=self._rng,
+                    generator=self._th_rng,
                     dtype=getattr(th,self.torch_dtype_str))
         return r*(self._high_th-self._low_th)+self._low_th
         # return th.as_tensor(super().sample(), device = self._th_device) # does not use the torch rng
-    
-    
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_np_random",None)
+        return state
 
 def get_space_labels(space : gym_spaces.Dict | ThBox):
     if isinstance(space, ThBox):
@@ -100,4 +111,4 @@ def batch_space_box(space, n=1):
     # ggLog.info(f"batched lims (memsize={low.nbytes/1024/1024} MB)")
     # repeats = tuple([n] + [1] * space.low.ndim)
     # low, high = np.tile(space.low, repeats), np.tile(space.high, repeats)
-    return ThBox(low=low, high=high, dtype=space.dtype, seed=deepcopy(space.np_random))
+    return ThBox(low=low, high=high, dtype=space.dtype, seed=space._seed)
