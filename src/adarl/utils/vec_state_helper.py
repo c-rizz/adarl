@@ -681,16 +681,16 @@ class DictStateHelper(StateHelper):
                                        flattened_subfields=init_obs_def.flattened_subobss,
                                        noise_generators=init_obs_def.noise_generators,
                                        flattened_part_name=init_obs_def.flattened_part_name,
-                                       vec_obs_space=spaces.gym_spaces.Dict(vec_obs_subspaces),
-                                       single_obs_space=spaces.gym_spaces.Dict(single_obs_subspaces),
+                                       vec_obs_space=spaces.ThDict(vec_obs_subspaces),
+                                       single_obs_space=spaces.ThDict(single_obs_subspaces),
                                        name=obsname)
             all_vec_obs_subspaces.update({obsname+"."+k:v for k,v in vec_obs_subspaces.items()})
             all_single_obs_subspaces.update({obsname+"."+k:v for k,v in single_obs_subspaces.items()})
             self._obs_defs[obsname] = obs_def
-        self._vec_state_space = spaces.gym_spaces.Dict(vec_state_subspaces)
-        self._single_state_space = spaces.gym_spaces.Dict(single_state_subspaces)
-        self._full_vec_obs_space = spaces.gym_spaces.Dict(all_vec_obs_subspaces)
-        self._full_single_obs_space = spaces.gym_spaces.Dict(all_single_obs_subspaces)
+        self._vec_state_space = spaces.ThDict(vec_state_subspaces)
+        self._single_state_space = spaces.ThDict(single_state_subspaces)
+        self._full_vec_obs_space = spaces.ThDict(all_vec_obs_subspaces)
+        self._full_single_obs_space = spaces.ThDict(all_single_obs_subspaces)
         print(f"self._obs_defs = {self._obs_defs}")
 
 

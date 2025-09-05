@@ -1,6 +1,7 @@
 from __future__ import annotations
 import gymnasium as gym
 from typing import Any, SupportsFloat, Sequence
+from matplotlib.pylab import Generator
 from numpy.typing import NDArray
 import numpy as np
 import torch as th
@@ -9,6 +10,8 @@ from copy import deepcopy
 from gymnasium.vector.utils.spaces import batch_space
 from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
 import adarl.utils.dbg.ggLog as ggLog
+from collections import OrderedDict
+
 class ThBox(gym.spaces.Box):
     def __init__(   self,
                     low: SupportsFloat | NDArray[Any] | th.Tensor,
@@ -17,7 +20,7 @@ class ThBox(gym.spaces.Box):
                     dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str = np.float32,
                     seed: int | None = None,
                     torch_device : th.device = th.device("cpu"),
-                    labels : th.Tensor | None = None,
+                    labels : th.Tensor | np.ndarray | None = None,
                     generator : th.Generator | None = None,
                     default_value : th.Tensor | None = None):
         """ Box space, like the openai gym one, but based on torch Tensors, and with some additional functionality.
@@ -94,7 +97,25 @@ class ThBox(gym.spaces.Box):
     def __getstate__(self):
         state = self.__dict__.copy()
         state.pop("_np_random",None)
+        # serialize ndarrays as torch tensors to avoid issues with numpy 2.0/1.x
+        state["bounded_above"] = th.as_tensor(self.bounded_above)
+        state["bounded_below"] = th.as_tensor(self.bounded_above)
+        state["high"] = th.as_tensor(self.high)
+        state["low"] = th.as_tensor(self.low)
+        if isinstance(self.labels,np.ndarray):
+            state["labels"] = self.labels.tolist()
+        state.pop("dtype", None)
         return state
+    
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self.bounded_above = self.bounded_above.cpu().numpy().astype(np.bool_)
+        self.bounded_below = self.bounded_below.cpu().numpy().astype(np.bool_)
+        self.high = self.high.cpu().numpy()
+        self.low = self.low.cpu().numpy()
+        self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
+        if isinstance(self.labels,list):
+            self.labels = np.array(self.labels, dtype=object)
 
 def get_space_labels(space : gym_spaces.Dict | ThBox):
     if isinstance(space, ThBox):
@@ -112,3 +133,47 @@ def batch_space_box(space, n=1):
     # repeats = tuple([n] + [1] * space.low.ndim)
     # low, high = np.tile(space.low, repeats), np.tile(space.high, repeats)
     return ThBox(low=low, high=high, dtype=space.dtype, seed=space._seed)
+
+
+class ThDict(gym_spaces.Dict):
+    """
+    Wrap gymnasium.spaces.Dict to avoid using numpy random generator, which is not pickleable across numpy 2.0/1.x
+
+    """
+
+    def __init__(self, spaces: None | dict[str, gym_spaces.Space] | Sequence[tuple[str, gym_spaces.Space]] = None, seed: dict | int | Generator | None = None, **spaces_kwargs: gym.Space):
+        super().__init__(spaces, seed, **spaces_kwargs)
+        del self._np_random
+        self._th_rng = th.Generator(device=th.device("cpu"))
+        self._seed = seed
+        if seed is not None:
+            thseed = self._np_random.integers(np.iinfo(np.int32).max, size=1)[0]
+            self._th_rng.manual_seed(int(thseed))
+
+    def seed(self, seed: dict[str, Any] | int | None = None) -> list[int]:
+        if isinstance(seed, int):
+            seeds = [seed]
+            self._th_rng.manual_seed(seed)
+            subseeds = th.randint(0, np.iinfo(np.int32).max, (len(self.spaces),), generator=self._th_rng).tolist()
+            for subspace, subseed in zip(self.spaces.values(), subseeds):
+                seeds += subspace.seed(int(subseed))
+            return seeds
+        else:
+            return super().seed(seed)
+        
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_np_random",None)
+        return state
+    
+@batch_space.register(ThDict)
+def batch_space_dict(space, n=1):
+    return ThDict(
+        OrderedDict(
+            [
+                (key, batch_space(subspace, n=n))
+                for (key, subspace) in space.spaces.items()
+            ]
+        ),
+        seed=space._seed,
+    )
