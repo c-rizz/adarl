@@ -17,9 +17,9 @@ import jax.tree_util
 from dataclasses import dataclass
 
 @jax.jit
-@partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0,    0)) #vectorize along the number of simulations
-@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(None, 0)) #vectorize along the number of references (pos,vel,torque)
-@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(None, 0)) #vectorize along the number of joints
+@partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0, 0)) #vectorize along the number of simulations
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of references (pos,vel,torque)
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of joints
 def _second_order_filter(u, filter_coeffs, filter_state):
     """Applies a second order filter to the input signal u.
     
@@ -409,8 +409,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                     dtype=jnp.float32,
                                     device=self._jax_device)
             current_pv = current_pve[:,:,:2]
-        print(f"current_pve.shape = {current_pve.shape}")
-        print(f"_ref_filter_cutoff_freqs.shape = {self._ref_filter_cutoff_freqs.shape}")
+        # print(f"current_pve.shape = {current_pve.shape}")
+        # print(f"_ref_filter_cutoff_freqs.shape = {self._ref_filter_cutoff_freqs.shape}")
         vec_ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
                                                                                 self._ref_filter_cutoff_freqs,
                                                                                 current_pve)
