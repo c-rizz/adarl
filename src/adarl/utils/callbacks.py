@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Union, Optional, List, Any, Callable
+from adarl.utils.base_utils import exc_to_str
 import gymnasium as gym
 import numpy as np
 import os
@@ -14,6 +15,7 @@ from rreal.algorithms.rl_agent import RLAgent
 import adarl.utils.session
 import adarl.utils.utils
 import yaml
+import pickle
 
 class TrainingCallback():
 
@@ -150,13 +152,22 @@ class EvalCallback(TrainingCallback):
         
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
-        output_path = os.path.join(self._output_folder, f"{self.eval_name}_{exp_name}_{train_iter:09d}it_eval.yaml")
-        with open(output_path, "w") as output_file:
-            try:
-                yaml.dump(results, output_file, default_style=None)
-            except TypeError as e:
-                ggLog.error(f"Failed to save eval results to {output_path}: {e}")
-        
+        output_path = os.path.join(self._output_folder, f"{self.eval_name}_{exp_name}_{train_iter:09d}it_eval")
+        try:
+            with open(output_path+".yaml", "w") as output_file:
+                try:
+                    results_readable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k,v in results.items()}
+                    yaml.dump(results_readable, output_file, default_style=None)
+                except TypeError as e:
+                    ggLog.error(f"Failed to save eval results to {output_path}: {e}")
+        except Exception as e:
+            ggLog.error(f"Failed to save eval results to {output_path}: {exc_to_str(e)}")
+        try:
+            with open(output_path+".pkl", "wb") as f:
+                pickle.dump(results, f)
+        except Exception as e:
+            ggLog.error(f"Failed to save eval pickled results to {output_path}: {exc_to_str(e)}")
+
         if mean_reward > self.best_mean_reward:
             if self.verbose > 0:
                 print("New best mean reward!")

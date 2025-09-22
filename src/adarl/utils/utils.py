@@ -237,7 +237,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         rewards = np.empty((buffsizes,), dtype = np.float32)
         durations_steps = np.empty((buffsizes,), dtype = np.int32)
         extra_stats = {k:np.empty((buffsizes,), dtype = np.float32) for k in extra_info_stats}
-        successes = np.empty((buffsizes,), dtype = np.int32)
+        successes = np.zeros((buffsizes,), dtype = np.int32)
         collected_eps = 0
         collected_steps = 0
         #frames = []
@@ -283,7 +283,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "reward_std" : np.std(rewards[:episodes]),
                         "steps_mean" : np.mean(durations_steps[:episodes]),
                         "steps_std" : np.std(durations_steps[:episodes]),
-                        "success_ratio" : sum(successes[:episodes])/episodes,
+                        "success_ratio" : np.sum(successes[:episodes])/episodes,
                         "fps" : collected_steps/(tf-t0),
                         "collected_steps" : collected_steps,
                         "collected_episodes" : collected_eps}
