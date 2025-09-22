@@ -52,7 +52,7 @@ def _second_order_filter(u, filter_coeffs, filter_state):
     jnp.ndarray, jnp.ndarray
         Filtered output signal and new filter state
     """
-    print(f"in u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
+    # print(f"in u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
     # at this point the state is [ u_prev, u_prev2, u_prev3, y_prev, y_prev2]
     new_filter_state = filter_state.at[1:3].set(filter_state[0:2])  # Shift u state
     new_filter_state = new_filter_state.at[0].set(u)  # Update the first state with the new input
@@ -61,7 +61,7 @@ def _second_order_filter(u, filter_coeffs, filter_state):
     new_filter_state = new_filter_state.at[4].set(new_filter_state[3])  # Shift the y state
     new_filter_state = new_filter_state.at[3].set(y)  # Update the last state with the output
     # at this point the state is [ u, u_prev, u_prev2, y, y_prev]
-    print(f"out u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
+    # print(f"out u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
     return y, new_filter_state
 
 @jax.jit

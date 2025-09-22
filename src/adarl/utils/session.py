@@ -432,7 +432,9 @@ def runFunction_wrapper(seed,
                    f"Out folder = {seedFolder}\n"
                    f"Run id = {run_id}")
         os.makedirs(folderName,exist_ok=True)
-        adarl.utils.utils.createSymlink(src = folderName, dst = str(Path(folderName).parent.absolute())+"/latest")
+        parent = Path(folderName).parent.absolute()
+        createSymlink(src = str(Path(folderName).relative_to(parent)), dst = str(parent)+"/latest")
+
         # time.sleep(seed)
         # if resumeModelFile is not None:
         #     os.makedirs(seedFolder,exist_ok=True)            
