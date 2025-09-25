@@ -8,8 +8,8 @@ import psutil
 import warnings
 import time
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer
-from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree
+from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer, BaseBuffer
+from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree, flatten_tensor_tree
 from typing_extensions import override
 from adarl.utils.dbg.dbg_checks import dbg_check_finite
 
@@ -30,10 +30,10 @@ def take_frames(buff, episodes, frames):
 
 
 class EpisodeStorage():
-    def __init__(self, episodes_num, max_episode_duration, buffer, min_ep_length):
+    def __init__(self, episodes_num, max_episode_duration, buffer : BaseBuffer, min_ep_length):
         self._max_episodes = episodes_num
         self._storage_torch_device = buffer._storage_torch_device
-        self._output_device = th.device(buffer.device)
+        self._output_device = th.device(buffer.out_device)
         self._min_ep_length = min_ep_length
         self._max_episode_duration = max_episode_duration
         self._buffer = buffer
@@ -377,7 +377,7 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
     def __init__(
         self,
         buffer_size: int,
-        observation_space: spaces.Space,
+        observation_space: spaces.Dict,
         action_space: spaces.Space,
         max_episode_duration : int | float,
         device: th.device = th.device("cpu"),
@@ -398,7 +398,7 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
         self.max_frames = buffer_size
         self.buffer_size = max(buffer_size // n_envs, 1)
-        self._observation_space = observation_space
+        self._observation_space : spaces.Dict = observation_space
         self._action_space = action_space
         storage_torch_device = th.device(storage_torch_device)
         self._storage_torch_device = storage_torch_device
@@ -419,11 +419,16 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         else:
             assert validation_buffer_size%max_episode_duration == 0, f"validation_buffer_size must be a multiple of max_episode_duration bit they are respectively {buffer_size} and {max_episode_duration}"
         
+        example_obs = self._observation_space.sample()
+        obs_size = sum([th.as_tensor(o).nelement()*th.as_tensor(o).element_size() for o in flatten_tensor_tree(example_obs).values()])
+
+
 
         if self._storage_torch_device.type == "cuda" and fallback_to_cpu_storage:
-            pred_avail = self.predict_memory_consumption()
-            consumptionRatio = pred_avail[0]/pred_avail[1]
-            if consumptionRatio>0.6:
+            pred_usage,tot = self.predict_memory_consumption()
+            consumptionRatio = pred_usage/tot
+            if consumptionRatio>1.0:
+                ggLog.warn(f"Observations are of size {obs_size} bytes, total buffer size is {self.buffer_size*n_envs} transitions")
                 warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                                 f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB)\n"
                                  "Falling back to CPU memory\n"
@@ -433,12 +438,13 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         pred_avail = self.predict_memory_consumption()
         consumptionRatio = pred_avail[0]/pred_avail[1]
         if consumptionRatio>0.6:
+            ggLog.warn(f"Observations are of size {obs_size} bytes, total buffer size is {self.buffer_size*n_envs} transitions")
             warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                             f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
                              "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
             time.sleep(3)
         if consumptionRatio > 1.0:
-            raise RuntimeError(f"Not enough memory on device {self.storage_torch_device}, would use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory")
+            raise RuntimeError(f"Not enough memory on device {self.storage_torch_device()}, would use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory")
         # ggLog.info(f"Buffer will consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB")
 
         self._allocate_buffers(self._max_episodes, self._max_val_episodes)

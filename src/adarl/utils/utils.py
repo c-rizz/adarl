@@ -1,7 +1,7 @@
 from __future__ import annotations
 import functools
 
-from adarl.utils.dbg.dbg_checks import dbg_check
+from adarl.utils.dbg.dbg_checks import dbg_check, dbg_check_size
 import numpy as np
 import time
 from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, TypeVar, Sequence
@@ -441,7 +441,7 @@ def conditioned_assign(original : th.Tensor, do_copy : th.Tensor, newvalues : th
     masked_assign(original.unsqueeze(0), do_copy.view(-1), newvalues)
 
 
-def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int):
+def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int | bool):
     """Inplace assign values to the original tensor, in locations defined by mask.
         newvalues must have the same shape as original.
         Should equivalent to:
@@ -492,6 +492,66 @@ def masked_assign_sc(original : th.Tensor, mask : th.Tensor, newvalues : th.Tens
                              newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"))
 
 
+def move_masked_to_start(tensor : th.Tensor, row_mask : th.Tensor, out : th.Tensor | None = None):
+    """Make a tensor where the rows of tensor where row_mask is True are moved to the start.
+        This does not incur in CUDA syncs.
+
+    Parameters
+    ----------
+    tensor : th.Tensor
+        tensor to take the rows from
+    row_mask : th.Tensor
+        Mask defining which rows to move
+
+    Raises
+    ------
+    RuntimeError
+        _description_
+    """
+    # We create and indexing tensor that says where to place each element of tensor into out
+    # So each index 3 of i says in what row of out the row 3 of tensor must go
+    # In all the places where row_mask is False, we put -1, so that all those rows are placed in the last element of out,
+    # in this way we always put the last element of tensor in the last element of out, which is always correct.
+    i = th.where(row_mask, row_mask.cumsum(0)-1, -1)
+    if out is None:
+        out = th.zeros_like(tensor)
+    out.index_put_((i,), tensor)
+    return out
+
+def masked_to_masked_assign(dest_tensor : th.Tensor, dest_row_mask : th.Tensor, src_tensor : th.Tensor, src_row_mask : th.Tensor):
+    """Inplace assign values from src_tensor to dest_tensor, in locations defined by src_mask and dest_mask.
+        The result is the same as doing:
+            dest_tensor[dest_mask] = src_tensor[src_mask]
+        However this does not incur in CUDA syncs.
+        If the number of True values in src_mask is different from the number of True values in dest_mask,
+        the extra elements are ignored, following their order along the zero dimension.
+
+    Parameters
+    ----------
+    dest_tensor : th.Tensor
+        _description_
+    dest_mask : th.Tensor
+        _description_
+    src_tensor : th.Tensor
+        _description_
+    src_mask : th.Tensor
+        _description_
+
+    Returns
+    -------
+    th.Tensor
+        The mask indicating which elements where actually set
+    """
+    dbg_check_size(dest_row_mask, (dest_tensor.size()[0],), "dest_mask must be 1D and have the same size as dest_tensor first dimension")
+    dbg_check_size(src_row_mask, (src_tensor.size()[0],),   "src_mask must be 1D and have the same size as src_tensor first dimension")
+    masked_src = th.empty_like(dest_tensor)
+    full_src_mask = src_row_mask.expand(src_tensor.size()[::-1]) # expand to the reversed size of source
+    full_src_mask = full_src_mask.permute(*list(range(full_src_mask.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
+    reordered_src = move_masked_to_start(masked_src, src_row_mask) # move the selected rows to the start
+    src_elements_count = th.count_nonzero(src_row_mask)
+    clamped_dest_mask = th.logical_and(dest_row_mask, dest_row_mask.cumsum(0)<=src_elements_count) # clamp the dest mask to the number of available elements in src
+    dest_tensor.masked_scatter_(clamped_dest_mask, reordered_src) # Move the selected rows to the destination
+    return clamped_dest_mask
 
 _T = TypeVar('_T', float, th.Tensor)
 
@@ -765,7 +825,7 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
                 env_controller.run(step_duration_sec)
 
 
-def th_compile_ext(copy_outs : bool = False, *compile_args, **compile_kwargs):
+def th_compile_ext(copy_outs : bool = False, just_graphit : bool = False, *compile_args, **compile_kwargs):
     """A wrapper for torch.compile that can automatically copy outputs, useful for problematic cudagraphs
 
     Parameters
@@ -781,21 +841,26 @@ def th_compile_ext(copy_outs : bool = False, *compile_args, **compile_kwargs):
     from adarl.utils.tensor_trees import clone_tensor_tree
     # th._dynamo.utils.cmp_log()
     # ggLog.info(f"th.compiler.is_compiling()={th.compiler.is_compiling()}, stacktrace={''.join(traceback.format_stack())}")
-    def compiling_decorator(func):
-        if th.compiler.is_compiling():
-            # If already compiling, do nothing
-            return func
-        else:
-            compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
-            if copy_outs:
-                def compile_and_clone(*args, **kwargs):
-                    outs = compiled_func(*args, **kwargs)
-                    return clone_tensor_tree(outs, detach=False)
-                return compile_and_clone
+    if just_graphit:
+        from adarl.utils.torch_graphing import graphit
+        disable = compile_kwargs.pop("disable", False)
+        return graphit(disable=disable)
+    else:
+        def compiling_decorator(func):
+            if th.compiler.is_compiling():
+                # If already compiling, do nothing
+                return func
             else:
-                def compile(*args, **kwargs):
-                    return compiled_func(*args, **kwargs)                
-                return compile
+                compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
+                if copy_outs:
+                    def compile_and_clone(*args, **kwargs):
+                        outs = compiled_func(*args, **kwargs)
+                        return clone_tensor_tree(outs, detach=False)
+                    return compile_and_clone
+                else:
+                    def compile(*args, **kwargs):
+                        return compiled_func(*args, **kwargs)                
+                    return compile
     return compiling_decorator
 
 def get_func_input_args(exclude : list[str] = []) -> dict:

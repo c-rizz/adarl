@@ -47,8 +47,7 @@ import warnings
 #                 self.pos = 0
 #             copied += to_copy
 
-class BaseBuffer(ABC):
-    
+class BaseBuffer(ABC):    
     def __init__(self,  buffer_size: int,
                         observation_space: spaces.Space,
                         action_space: spaces.Space,
@@ -62,7 +61,7 @@ class BaseBuffer(ABC):
 
         self.action_dim = int(np.prod(action_space.shape))
         self.full = False
-        self.out_device = out_device
+        self.out_device = th.device(out_device)
         self.out_th_device = th.device(out_device)
         self._storage_torch_device = th.device(storage_torch_device)
         self.n_envs = n_envs
