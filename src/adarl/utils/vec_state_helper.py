@@ -280,7 +280,7 @@ class ThBoxStateHelper(StateHelper):
                          state_name : str = ""):
         if instantaneous_state is not None:
             if isinstance(instantaneous_state, th.Tensor):
-                dbg_check_size(instantaneous_state, (self._vec_size,self._fields_num,*self.field_shape))
+                dbg_check_size(instantaneous_state, (self._vec_size,self._fields_num,*self.field_shape), msg=f"Unexpected size at state '{state_name}' {instantaneous_state.size()}, should be {(self._vec_size,self._fields_num,*self.field_shape)}: ")
             else:
                 for k,t in instantaneous_state.items():
                     dbg_check_size(t,
@@ -957,15 +957,26 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                         dtype : th.dtype,
                         th_device : th.device,
                         vec_size : int,
-                        history_length : int = 1):
-        subfield_names = [  "minpos","minvel","minacc","mineff",
-                            "maxpos","maxvel","maxacc","maxeff",
-                            "avgpos","avgvel","avgacc","avgeff",
-                            "stdpos","stdvel","stdacc","stdeff"]
+                        history_length : int = 1,
+                        include_senseff = False):
+        self._include_senseff = include_senseff
         joint_limit_minmax_pve = {k:th.as_tensor(v) for k,v in joint_limit_minmax_pve.items()}
-        jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2],
-                                        th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1),
-                                        minmax_pve[:,[2]]], dim=1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
+        acc_minmax = {jn:th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
+        if include_senseff:
+            subfield_names = [  "minpos","minvel","minacc","mineff","minseff",
+                                "maxpos","maxvel","maxacc","maxeff","maxseff",
+                                "avgpos","avgvel","avgacc","avgeff","avgseff",
+                                "stdpos","stdvel","stdacc","stdeff","stdseff"]
+            senseff_minmax = th.as_tensor([[-10_000.0], [10_000.0]], device = th_device) # Can we have better sensed effort limits?
+            jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2], acc_minmax[jn], minmax_pve[:,[2]], senseff_minmax], dim=1) 
+                                 for jn,minmax_pve in joint_limit_minmax_pve.items()}
+        else:
+            subfield_names = [  "minpos","minvel","minacc","mineff",
+                                "maxpos","maxvel","maxacc","maxeff",
+                                "avgpos","avgvel","avgacc","avgeff",
+                                "stdpos","stdvel","stdacc","stdeff"]
+            jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2], acc_minmax[jn], minmax_pve[:,[2]]], dim=1)
+                                 for jn,minmax_pve in joint_limit_minmax_pve.items()}
         super().__init__(   field_names = list(jlims_minmax_pvae.keys()),
                             dtype = dtype,
                             th_device = th_device,
@@ -975,13 +986,13 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                             subfield_names = subfield_names,
                             vec_size=vec_size)
 
-    def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor]
-                             ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
+    def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor] ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
         ret = {}
         for joint,limits_minmax_pve in joint_limit_minmax_pve.items():
             limits_minmax_pve = th.as_tensor(limits_minmax_pve)
-            if limits_minmax_pve.size() != (2,4):
-                raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be (2,3), but it's {limits_minmax_pve.size()}")
+            expected_size = (2,5) if self._include_senseff else (2,4)
+            if limits_minmax_pve.size() != expected_size:
+                raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be {expected_size}, but it's {limits_minmax_pve.size()}")
             std_max_pve = th.sqrt((limits_minmax_pve[0]**2+limits_minmax_pve[1]**2)/2 - ((limits_minmax_pve[0]+limits_minmax_pve[1])/2)**2)
             std_min_pve = th.zeros_like(limits_minmax_pve[0])
             std_minmax_pve = th.stack([std_min_pve,std_max_pve])
