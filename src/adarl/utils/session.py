@@ -270,6 +270,7 @@ class Session():
             wandb.finish()
             ggLog.info(f"Told wandb to finish.")
             
+
         t0 = time.monotonic()
         timeout = 30
         if threading.current_thread() == threading.main_thread():
@@ -287,6 +288,8 @@ class Session():
         if len(active_threads)>1:
             ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 
+        if mp_helper.was_manager_created():
+            mp_helper.get_manager().shutdown()
         all_children_terminated = False
         t0_chterm = time.monotonic()
         while not all_children_terminated and time.monotonic() < t0_chterm+timeout:
@@ -429,7 +432,9 @@ def runFunction_wrapper(seed,
                    f"Out folder = {seedFolder}\n"
                    f"Run id = {run_id}")
         os.makedirs(folderName,exist_ok=True)
-        adarl.utils.utils.createSymlink(src = folderName, dst = str(Path(folderName).parent.absolute())+"/latest")
+        parent = Path(folderName).parent.absolute()
+        createSymlink(src = str(Path(folderName).relative_to(parent)), dst = str(parent)+"/latest")
+
         # time.sleep(seed)
         # if resumeModelFile is not None:
         #     os.makedirs(seedFolder,exist_ok=True)            

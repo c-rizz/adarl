@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Union, Optional, List, Any, Callable
+from adarl.utils.base_utils import exc_to_str
 import gymnasium as gym
 import numpy as np
 import os
@@ -12,6 +13,9 @@ import time
 from typing_extensions import override
 from rreal.algorithms.rl_agent import RLAgent
 import adarl.utils.session
+import adarl.utils.utils
+import yaml
+import pickle
 
 class TrainingCallback():
 
@@ -65,7 +69,8 @@ class EvalCallback(TrainingCallback):
         deterministic: bool = True,
         verbose: int = 1,
         eval_name : str = "eval",
-        random_eval_at_start: bool = True
+        random_eval_at_start: bool = True,
+        output_folder : str | None = None
     ):
         if not isinstance(eval_env, gym.vector.VectorEnv):
             raise NotImplementedError(f"eval_env can only be a gym.vector.VectorEnv for now, it's a {type(eval_env)}")
@@ -84,6 +89,8 @@ class EvalCallback(TrainingCallback):
         self._episode_counter = 0
         self._step_counter = 0
         self.eval_name = eval_name
+        self._output_folder = output_folder if output_folder is not None else "./"+eval_name
+        os.makedirs(self._output_folder, exist_ok=True)
 
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
@@ -143,6 +150,24 @@ class EvalCallback(TrainingCallback):
                   f"    episode_reward: {mean_reward:.2f} +/- {std_reward:.2f}"
                   f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
         
+        exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
+        train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
+        output_path = os.path.join(self._output_folder, f"{self.eval_name}_{exp_name}_{train_iter:09d}it_eval")
+        try:
+            with open(output_path+".yaml", "w") as output_file:
+                try:
+                    results_readable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k,v in results.items()}
+                    yaml.dump(results_readable, output_file, default_style=None)
+                except TypeError as e:
+                    ggLog.error(f"Failed to save eval results to {output_path}: {e}")
+        except Exception as e:
+            ggLog.error(f"Failed to save eval results to {output_path}: {exc_to_str(e)}")
+        try:
+            with open(output_path+".pkl", "wb") as f:
+                pickle.dump(results, f)
+        except Exception as e:
+            ggLog.error(f"Failed to save eval pickled results to {output_path}: {exc_to_str(e)}")
+
         if mean_reward > self.best_mean_reward:
             if self.verbose > 0:
                 print("New best mean reward!")
@@ -167,7 +192,7 @@ class CheckpointCallbackRB(TrainingCallback):
     def __init__(self,  save_path: str, 
                         model,
                         buffer = None, 
-                        name_prefix: str = "rl_model",
+                        name_prefix: str = "model",
                         save_replay_buffer : bool = False,
                         save_freq: Optional[int] = None,
                         save_freq_ep : Optional[int] = None,
@@ -201,7 +226,8 @@ class CheckpointCallbackRB(TrainingCallback):
         self._best_success_ratio = max(self._best_success_ratio, self._success_ratio)
         run_id = adarl.utils.session.default_session.run_info["run_id"]
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
-        fname_base = f"{exp_name}_{run_id}_{self._save_count}_{self.name_prefix}_{self._episode_counter:09d}_{self._step_counter:09d}_steps"
+        train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
+        fname_base = f"{exp_name}_{run_id}_{self._save_count:05d}_{self.name_prefix}_{self._episode_counter:09d}ep_{self._step_counter:09d}st_{train_iter:09d}it"
         fname_base = fname_base.replace(".", "_")
         if is_best:
             fname_base = "best_"+fname_base

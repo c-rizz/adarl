@@ -17,9 +17,9 @@ import jax.tree_util
 from dataclasses import dataclass
 
 @jax.jit
-@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of simulations
-@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of joints
+@partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0, 0)) #vectorize along the number of simulations
 @partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of references (pos,vel,torque)
+@partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of joints
 def _second_order_filter(u, filter_coeffs, filter_state):
     """Applies a second order filter to the input signal u.
     
@@ -52,6 +52,7 @@ def _second_order_filter(u, filter_coeffs, filter_state):
     jnp.ndarray, jnp.ndarray
         Filtered output signal and new filter state
     """
+    # print(f"in u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
     # at this point the state is [ u_prev, u_prev2, u_prev3, y_prev, y_prev2]
     new_filter_state = filter_state.at[1:3].set(filter_state[0:2])  # Shift u state
     new_filter_state = new_filter_state.at[0].set(u)  # Update the first state with the new input
@@ -60,10 +61,11 @@ def _second_order_filter(u, filter_coeffs, filter_state):
     new_filter_state = new_filter_state.at[4].set(new_filter_state[3])  # Shift the y state
     new_filter_state = new_filter_state.at[3].set(y)  # Update the last state with the output
     # at this point the state is [ u, u_prev, u_prev2, y, y_prev]
+    # print(f"out u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
     return y, new_filter_state
 
 @jax.jit
-@partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of simulations
+@partial(jax.vmap, in_axes=(None, 0,    0), out_axes=(0,    0)) #vectorize along the number of simulations
 @partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of joints
 @partial(jax.vmap, in_axes=(None, None, 0), out_axes=(None, 0)) #vectorize along the number of references (pos,vel,torque)
 def _compute_filter_coeffs_and_state(dt, cutoff_freq, initial_value, eps=1.0):
@@ -202,10 +204,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         filtered_pve_states = jnp.empty((vec_size,0,3), device = jax_device),
                                         impulse_startends_stime=jnp.empty((0,), device = jax_device),
                                         impulses_xfrc=jnp.empty((0,), device = jax_device),
-                                        ref_filter_coeffs=jnp.empty((vec_size,0,4), device = jax_device),
+                                        ref_filter_coeffs=jnp.empty((vec_size,0,5), device = jax_device),
                                         ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
         self._use_second_order_filter = True
-        self._ref_filter_cutoff_freq = reference_filter_cutoff_frequency
+        self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
 
         pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
         pve_sensing_filter_decimation_time = 0.005        
@@ -398,7 +400,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                      "cmds_queue_times" : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
         
 
-    def _reset_filters(self):
+    def _reset_filters(self, reset_state : bool = True):
         if len(self._imp_controlled_joint_names)>0:
             current_pve = self._get_vec_joint_states_pve(self._sim_state.mjx_model, self._sim_state.mjx_data, self._imp_control_jids)
             current_pv = current_pve[:,:,:2]
@@ -407,20 +409,36 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                     dtype=jnp.float32,
                                     device=self._jax_device)
             current_pv = current_pve[:,:,:2]
-        ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
-                                                                                self._ref_filter_cutoff_freq,
+        # print(f"current_pve.shape = {current_pve.shape}")
+        # print(f"_ref_filter_cutoff_freqs.shape = {self._ref_filter_cutoff_freqs.shape}")
+        vec_ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
+                                                                                self._ref_filter_cutoff_freqs,
                                                                                 current_pve)
-        expected_coeff_shape = (5,)
-        if ref_filter_coeffs.shape != expected_coeff_shape:
-            raise RuntimeError(f"ref_filter_coeffs shape {ref_filter_coeffs.shape} does not match expected shape {expected_coeff_shape}")
+        expected_coeff_shape = (self._vec_size, 5)
+        if vec_ref_filter_coeffs.shape != expected_coeff_shape:
+            raise RuntimeError(f"ref_filter_coeffs shape {vec_ref_filter_coeffs.shape} does not match expected shape {expected_coeff_shape}")
         expected_state_shape = (self._vec_size, len(self._imp_controlled_joint_names), 3, 5)
-        if ref_filter_state.shape != expected_state_shape:
+        if reset_state and ref_filter_state.shape != expected_state_shape:
             raise RuntimeError(f"ref_filter_state shape {ref_filter_state.shape} does not match expected shape {expected_state_shape}")
 
-        self._sim_state = self._sim_state.replace_d({"filtered_pv_references" : current_pv,
-                                                     "filtered_pve_states" : current_pve,
-                                                     "ref_filter_coeffs" : ref_filter_coeffs,
-                                                     "ref_filter_state" : ref_filter_state})
+        state_repl = {  "filtered_pv_references" : current_pv,
+                        "filtered_pve_states" : current_pve,
+                        "ref_filter_coeffs" : vec_ref_filter_coeffs}
+        if reset_state:
+            state_repl["ref_filter_state"] = ref_filter_state
+        self._sim_state = self._sim_state.replace_d(state_repl)
+        
+    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
+        """Set the parameters of the filter applied to the command references
+
+        Parameters
+        ----------
+        reference_filter_cutoff_frequency : float
+            Cutoff frequency of the filter in Hz
+
+        """
+        self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+        self._reset_filters(reset_state=False)
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter
