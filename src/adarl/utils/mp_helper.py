@@ -21,3 +21,7 @@ def get_manager(method : Literal["fork","spawn","forkserver"] = "forkserver"):
     if _manager is None:
         _manager = ctx.Manager()
     return _manager
+
+def was_manager_created():
+    global _manager
+    return _manager is not None

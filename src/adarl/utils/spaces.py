@@ -1,6 +1,6 @@
 from __future__ import annotations
 import gymnasium as gym
-from typing import Any, SupportsFloat, Sequence
+from typing import Any, SupportsFloat, Sequence, Union, Tuple, Dict, overload
 from matplotlib.pylab import Generator
 from numpy.typing import NDArray
 import numpy as np
@@ -87,10 +87,17 @@ class ThBox(gym.spaces.Box):
         # import traceback
         # traceback.print_stack()
         # only works for uniform
-        r = th.rand(self._high_th.size(),
-                    device=self._th_device,
-                    generator=self._th_rng,
-                    dtype=getattr(th,self.torch_dtype_str))
+        dtype : th.dtype = getattr(th,self.torch_dtype_str)
+        if dtype.is_floating_point:
+            r = th.rand(self._high_th.size(),
+                        device=self._th_device,
+                        generator=self._th_rng,
+                        dtype=dtype)
+        elif self.dtype not in [th.int8, th.int16, th.int32, th.int64, th.uint8, th.uint16, th.uint32, th.uint64]:
+            r = th.rand(self._high_th.size(),
+                        device=self._th_device,
+                        generator=self._th_rng)
+            r = (r*(self._high_th-self._low_th)+self._low_th).to(dtype)
         return r*(self._high_th-self._low_th)+self._low_th
         # return th.as_tensor(super().sample(), device = self._th_device) # does not use the torch rng
 
@@ -177,3 +184,40 @@ def batch_space_dict(space, n=1):
         ),
         seed=space._seed,
     )
+
+@overload
+def get_obs_shape(
+    observation_space: gym_spaces.Dict,
+) -> Dict[str, Tuple[int, ...]]:
+    ...
+
+@overload
+def get_obs_shape(
+    observation_space: gym_spaces.Box,
+) -> Tuple[int, ...]:
+    ...
+
+def get_obs_shape(
+    observation_space: gym_spaces.Space,
+) -> Union[Tuple[int, ...], Dict[str, Tuple[int, ...]]]:
+    """
+    Get the shape of the observation (useful for the buffers).
+
+    :param observation_space:
+    :return:
+    """
+    if isinstance(observation_space, gym_spaces.Box):
+        return observation_space.shape
+    elif isinstance(observation_space, gym_spaces.Discrete):
+        # Observation is an int
+        return (1,)
+    elif isinstance(observation_space, gym_spaces.MultiDiscrete):
+        # Number of discrete features
+        return (int(len(observation_space.nvec)),)
+    elif isinstance(observation_space, gym_spaces.MultiBinary):
+        # Number of binary features
+        return observation_space.shape
+    elif isinstance(observation_space, gym_spaces.Dict):
+        return {key: get_obs_shape(subspace) for (key, subspace) in observation_space.spaces.items()}  # type: ignore[misc]
+    else:
+        raise NotImplementedError(f"{observation_space} observation space is not supported")

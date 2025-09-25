@@ -312,7 +312,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
             rng = self._rng
         return th.rand(size=size, dtype=self._obs_dtype, device=self._th_device, generator=rng)
     
-    def _thrand_clamp(self, size : tuple[int,...], min, max):
+    def _thrandn_clamp(self, size : tuple[int,...], min, max):
         if th.compiler.is_compiling():
             rng = None
         else:

@@ -58,13 +58,17 @@ def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), asyn
               just_warn=just_warn)
         
 
-def dbg_check_bounded(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn=False):
+def dbg_check_bounded(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn=False,
+                      assert_msg : str | None = None):
     from adarl.utils.tensor_trees import is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_bounded
     if async_assert:
-        th._assert_async(is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), f"out-of-bounds values in tensor at {get_caller_info()}")
+        if assert_msg is None:
+            assert_msg = f"out of bounds values in tensor at {get_caller_info()}"
+        th._assert_async(is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), assert_msg)
         return
     dbg_check(  is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
-                build_msg=lambda:   f"out of bounds values in tensor tree: {tensor_tree}\n"
+                build_msg=lambda:   (assert_msg if assert_msg is not None else "")+
+                                    f"out of bounds values in tensor tree: {tensor_tree}\n"
                                     f"    bounds  = {min}, {max}\n"
                                     f"    minmax  = "+str([f"{k}:{l.min(), l.max()}"                          for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
                                     f"    indexes = "+str([f"{k}:{th.logical_not(is_leaf_bounded(l,min,max)).nonzero()}"    for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
