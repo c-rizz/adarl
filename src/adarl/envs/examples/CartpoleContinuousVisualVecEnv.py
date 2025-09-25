@@ -36,7 +36,8 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
                     img_obs : bool = False,
                     img_obs_resolution : int = 64,
                     img_obs_frame_stacking_size : int = 3,
-                    sparse_reward = True):
+                    sparse_reward = True,
+                    max_episode_steps : int = 1000):
         
 
         self._spawned = False
@@ -85,16 +86,17 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         state_space = gym_spaces.Dict(states_dict)
 
         act_max = np.array([1.0])
-        super(CartpoleContinuousVecEnv).__init__(th_device=th_device,
-                         seed=seed,
-                         obs_dtype=th.float32,
-                         single_action_space = ThBox(-act_max,act_max, torch_device=th_device),
-                         single_observation_space = single_observation_space,
-                         single_state_space=state_space,
-                         single_reward_space=ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device),
-                         info_space=None,
-                         step_duration_sec=step_duration_sec,
-                         adapter=adapter)
+        super(CartpoleContinuousVecEnv,self).__init__(th_device=th_device,
+                                                seed=seed,
+                                                obs_dtype=th.float32,
+                                                single_action_space = ThBox(-act_max,act_max, torch_device=th_device),
+                                                single_observation_space = single_observation_space,
+                                                single_state_space=state_space,
+                                                single_reward_space=ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device),
+                                                info_space=None,
+                                                step_duration_sec=step_duration_sec,
+                                                adapter=adapter,
+                                                max_episode_steps=max_episode_steps)
         example_labels : dict[str,th.Tensor] = {}
         example_state = {k:th.as_tensor((s.low+s.high)/2).to(device=th_device).unsqueeze(0) for k,s in states_dict.items()}
         example_infos = self.get_infos(example_state, example_labels)
