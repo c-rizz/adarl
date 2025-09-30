@@ -576,7 +576,7 @@ def normalize(value : _T, min : _T, max : _T):
 
 
 @th.jit.script
-def vector_projection(v1 : th.Tensor, v2 : th.Tensor):
+def vector_projection(v1 : th.Tensor, v2 : th.Tensor, eps : float = 1e-8):
     """Project v1 onto the direction of v2
     """
     # print(f"v1.size() = {v1.size()}")
@@ -585,9 +585,15 @@ def vector_projection(v1 : th.Tensor, v2 : th.Tensor):
     v2_norm = v2/th.linalg.norm(v2, dim = -1, keepdim=True)
     # print(f"v2_norm.size() = {v2_norm.size()}")
     # print(f"th.linalg.vecdot(v1,v2_norm, dim=-1).size() = {th.linalg.vecdot(v1,v2_norm, dim=-1).size()}")
-    return th.linalg.vecdot(v1,v2_norm, dim=-1).unsqueeze(-1)*v2_norm
+    return th.linalg.vecdot(v1,v2_norm, dim=-1).unsqueeze(-1)*(v2_norm + eps)
 
-
+def vectors_angle(v1 : th.Tensor, v2 : th.Tensor, eps : float = 1e-8):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+        angle = arccos( dot(v1, v2) / (||v1||*||v2||) )
+    """
+    v1_u = v1 / (th.linalg.norm(v1, dim=-1, keepdim=True) + eps)
+    v2_u = v2 / (th.linalg.norm(v2, dim=-1, keepdim=True) + eps)
+    return th.acos(th.clamp(th.linalg.vecdot(v1_u, v2_u, dim=-1), -1.0, 1.0))
 
 
 def quaternionDistance(q1 : quaternion.quaternion, q2 : quaternion.quaternion ):
