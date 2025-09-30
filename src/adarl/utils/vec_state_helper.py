@@ -485,7 +485,7 @@ class StateNoiseGenerator:
                         step_std : Mapping[FieldName,th.Tensor] | th.Tensor | list[float] | tuple[float] | float,
                         dtype : th.dtype, device : th.device,
                         squash_sigma : float = 3.0):
-        ggLog.info(f"building noise for helper of size: {state_helper.get_vec_space().shape}")
+        # ggLog.info(f"building noise for helper of size: {state_helper.get_vec_space().shape}")
         self._state_helper = state_helper
         self._field_names = state_helper.field_names
         self._fields_num = len(self._field_names)
@@ -691,7 +691,6 @@ class DictStateHelper(StateHelper):
         self._single_state_space = spaces.ThDict(single_state_subspaces)
         self._full_vec_obs_space = spaces.ThDict(all_vec_obs_subspaces)
         self._full_single_obs_space = spaces.ThDict(all_single_obs_subspaces)
-        print(f"self._obs_defs = {self._obs_defs}")
 
 
         
@@ -1000,7 +999,7 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                                     limits_minmax_pve,
                                     limits_minmax_pve,
                                     std_minmax_pve], dim=1)
-        ggLog.info(f"stats minmax = \n{ret}")
+        # ggLog.info(f"stats minmax = \n{ret}")
         return ret
         
     def state_names(self):

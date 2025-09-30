@@ -32,10 +32,12 @@ import dataclasses
 from dataclasses import dataclass 
 import pprint
 from adarl.utils.tensor_trees import map_tensor_tree
+from packaging.version import Version
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+jax.config.update("jax_enable_compilation_cache", False)
 # jax.config.update("jax_log_compiles", True)
 #jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
@@ -300,6 +302,10 @@ def get_data_into(
     d,
     exclude : list[str] = []
 ):
+  
+  if Version(mujoco.__version__) >= Version("3.3.6"):
+      return mjx.get_data_into(result, m, d)
+
   # Copy of get_data_into from mjx, with an exclude argument added, as some useless fields were causing issues
   """Gets mjx.Data from a device into an existing mujoco.MjData or list."""
   batched = isinstance(result, list)
@@ -518,6 +524,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
         self._discardvisual = False
         self._opt_override = opt_override
+        self._mjx_impl = "jax"
 
         self._realtime_factor = realtime_factor
         self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
@@ -780,7 +787,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = mujoco.MjData(self._mj_model)
         mujoco.mj_resetData(self._mj_model, self._mj_data)
 
-        mjx_model = mjx.put_model(self._mj_model, device = self._jax_device)
+        mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
         # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
         self._recompute_mjxmodel_inaxes(mjx_model)
@@ -790,7 +797,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
         self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
 
-        mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
+        mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
         data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data) # reset all data to 0
         # ggLog.info(f"mjx_data nbytes = {pprint.pformat(data_nbytes)}")
         import operator
@@ -1011,7 +1018,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
         ggLog.info(f"New geom_contype =     {self._sim_state.mjx_model.geom_contype}")
         ggLog.info(f"New geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
-        new_mjxdata = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device)
+        new_mjxdata = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
         if new_mjxdata.nefc > self._sim_state.mjx_data.nefc:
             # maybe something could be done here by regenereating the mjx_data and coping values from the old one
             raise RuntimeError(f"New collision setup requires a higher number of efc constraints than"
