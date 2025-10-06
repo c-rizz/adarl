@@ -73,13 +73,13 @@ class VecEpisodeStorage():
         self._rng = rng
 
         # here 'frame' means 'transition'
-        self._stored_episodes_counts = th.zeros((self._vec_size,), dtype=th.uint32, device=self._storage_torch_device)
-        self._stored_vframes_th = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
-        self._current_ep_frame_counts = th.zeros((self._vec_size,), dtype=th.uint32, device=self._storage_torch_device)
-        self._tot_stored_frames = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
-        self._tot_stored_episodes = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
-        self._added_episodes = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
-        self._added_vframes_th = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
+        self._stored_episodes_counts = th.zeros((self._vec_size,), dtype=th.int32, device=self._storage_torch_device)
+        self._stored_vframes_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        self._current_ep_frame_counts = th.zeros((self._vec_size,), dtype=th.int32, device=self._storage_torch_device)
+        self._tot_stored_frames = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        self._tot_stored_episodes = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        self._added_episodes = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        self._added_vframes_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
         self._added_vframes = 0
         self.full = False
         self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
@@ -107,7 +107,7 @@ class VecEpisodeStorage():
                                     size = (self._vec_size, self._buffer_size_vframes,), dtype=th.uint8,
                                     device = self._storage_torch_device)
         self.ep_frame_count = th.zeros(size = (self._vec_size, self._buffer_size_vframes,),
-                                            dtype = th.uint32,
+                                            dtype = th.int32,
                                             device = self._storage_torch_device)
         
         if self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds:
@@ -186,7 +186,7 @@ class VecEpisodeStorage():
         self._added_vframes_th += 1
         self._added_vframes += 1
         self._added_episodes += th.sum(eps_finishing)
-        self._stored_episodes_counts += eps_finishing-newly_deleted_eps
+        self._stored_episodes_counts += eps_finishing.to(th.int32)-newly_deleted_eps.to(th.int32)
         self._stored_vframes_th += th.logical_not(overriding)
         self._tot_stored_episodes += eps_finishing.sum()-newly_deleted_eps.sum()
         self._tot_stored_frames += self._vec_size*th.logical_not(overriding)
@@ -479,7 +479,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._allocate_buffers(self.buffer_size, self._validation_buffer_size)
         self._addcount = 0
         self._collected_frames = 0
-        self._collected_eps_th = th.as_tensor(0, dtype=th.uint64, device=self._storage_torch_device)
+        self._collected_eps_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
         
     def validation_set_enabled(self):
         return not self._disable_validation_set
@@ -550,7 +550,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         return self._collected_frames
 
     def stored_episodes(self, validation_set = False, training_set = True):
-        if validation_set and self._disable_validation_set:
+        if training_set and (validation_set and not self._disable_validation_set):
             return self._storage.stored_episodes()+self._validation_storage.stored_episodes()
         elif training_set:
             return self._storage.stored_episodes()
@@ -559,7 +559,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
     
     @override
     def stored_frames(self, validation_set = False, training_set = True):
-        if validation_set and self._disable_validation_set:
+        if training_set and (validation_set and not self._disable_validation_set):
             return self._storage.stored_frames()+self._validation_storage.stored_frames()
         elif training_set:
             return self._storage.stored_frames()
