@@ -55,6 +55,8 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self._ep_counter = th.full(size=(num_envs,), fill_value=-1, device=th_device, dtype=th.long)
         self._tot_init_counter = 0
         self._init_counter_since_reset = 0
+        self._no_envs = th.zeros((self.num_envs,), dtype=th.bool, device=th_device)
+        self._all_envs = th.ones((self.num_envs,), dtype=th.bool, device=th_device)
 
         if build_and_initialize_ep:
             self._build()
