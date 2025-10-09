@@ -252,10 +252,15 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         if obs_return is not None:
             running_obss = [[] for i in range(num_envs)]
         t0 = time.monotonic()
+        tot_step_time = 0.0
+        tot_pred_time = 0.0
         obss, infos = vec_env.reset()
         while collected_eps < episodes:
+            ts0 = time.monotonic()
             acts, _states = predict_func_(obss, deterministic = deterministic)
+            ts1 = time.monotonic()
             obss, rews, terms, truncs, infos = vec_env.step(acts)
+            ts2 = time.monotonic()
             collected_steps += num_envs
             for i in range(num_envs):
                 running_rews[i] += rews[i]
@@ -278,6 +283,10 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                     if obs_return is not None:
                         running_obss[i] = []
                     collected_eps += 1
+            ts3 = time.monotonic()
+            tot_step_time += ts2 - ts1
+            tot_pred_time += ts1 - ts0
+
         tf = time.monotonic()
         eval_results = {"reward_mean" : np.mean(rewards[:episodes]),
                         "reward_std" : np.std(rewards[:episodes]),
@@ -286,7 +295,9 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "success_ratio" : np.sum(successes[:episodes])/episodes,
                         "fps" : collected_steps/(tf-t0),
                         "collected_steps" : collected_steps,
-                        "collected_episodes" : collected_eps}
+                        "collected_episodes" : collected_eps,
+                        "avg_pred_time" : tot_pred_time/(collected_steps/num_envs),
+                        "avg_step_time" : tot_step_time/(collected_steps/num_envs)}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
         if model is not None:

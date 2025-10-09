@@ -148,7 +148,10 @@ class EvalCallback(TrainingCallback):
         if self.verbose > 0:
             print(f"Eval took {tf-t0 :.2f}s over {results['collected_episodes']} episodes:\n"
                   f"    episode_reward: {mean_reward:.2f} +/- {std_reward:.2f}"
-                  f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
+                  f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}"
+                  f"    avg pred time: {results.get('avg_pred_time', 0):.5f}s"
+                  f"    avg step time: {results.get('avg_step_time', 0):.5f}s"
+                  f"    fps: {results['fps']:.2f}")
         
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
