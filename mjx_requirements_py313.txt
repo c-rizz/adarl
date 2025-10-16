@@ -75,8 +75,8 @@ ml_collections
 ml_dtypes
 mpmath
 msgpack
-mujoco @ https://github.com/c-rizz/mujoco/releases/download/3.3.1-mesh-reimport-fix/mujoco-3.3.1-cp313-cp313-linux_x86_64.whl
-mujoco-mjx==3.3.0
+mujoco @ https://github.com/c-rizz/mujoco/releases/download/3.3.6-mesh-reimport-fix/mujoco-3.3.6-cp313-cp313-linux_x86_64.whl
+mujoco-mjx==3.3.6
 nest-asyncio
 networkx
 nose
@@ -120,7 +120,6 @@ pybullet
 pydlpack
 pygame
 Pygments
-pynvml
 PyOpenGL
 pyparsing
 python-dateutil

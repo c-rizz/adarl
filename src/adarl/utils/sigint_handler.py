@@ -140,7 +140,7 @@ def haltOnSigintReceived() -> bool:
     def prompt():
         while True:
                 print("Pause request received:")
-                print(f"{session.default_session.run_info['experiment_name']} : {session.default_session.run_info['run_id']}")
+                print(f"{session.default_session.run_info['experiment_name']} : {session.default_session.run_info['run_id']} : {session.default_session.run_info['comment']}")
                 answer = input(f"  Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":
                     session.default_session.mark_shutting_down()

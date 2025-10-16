@@ -37,7 +37,7 @@ from packaging.version import Version
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-jax.config.update("jax_enable_compilation_cache", False)
+jax.config.update("jax_enable_compilation_cache", True)
 # jax.config.update("jax_log_compiles", True)
 #jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
@@ -578,7 +578,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "body_ipos":0,
                                           "body_iquat":0,
                                           "dof_armature":0,
-                                          "dof_frictionloss":0}) # model fields to be vmapped
+                                          "dof_frictionloss":0,
+                                          "body_pos":0,
+                                          "body_quat":0}) # model fields to be vmapped
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
         #             "geom_friction":0,
@@ -602,52 +604,41 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                        default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
         ggLog.info(f"MjxAdapter building scenario")
-        if self._add_ground:
-            models.append(ModelSpawnDef( name="ground",
-                                           definition_string="""<mujoco>
-                                                                    <compiler angle="radian"/>
-                                                                    <asset>
-                                                                        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
-                                                                        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
-                                                                        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
-                                                                    </asset>
-                                                                    <worldbody>
-                                                                        <body name="ground_link">
-                                                                            <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
-                                                                                    ambient="0.2 0.2 0.2"
-                                                                                    diffuse="0.7 0.7 0.7"
-                                                                                    specular="0.5 0.5 0.5"
-                                                                                    castshadow="true"/>
-                                                                            <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" />
-                                                                        </body>
-                                                                    </worldbody>
-                                                                </mujoco>""",
-                                           format="mjcf",
-                                           pose=None,
-                                           kwargs={}))
-        elif self._add_sky:
-            models.append(ModelSpawnDef( name="ground",
-                                           definition_string="""<mujoco>
-                                                                    <compiler angle="radian"/>
-                                                                    <asset>
-                                                                        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
-                                                                        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
-                                                                        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
-                                                                    </asset>
-                                                                    <worldbody>
-                                                                        <body name="ground_link">
-                                                                            <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
-                                                                                    ambient="0.2 0.2 0.2"
-                                                                                    diffuse="0.7 0.7 0.7"
-                                                                                    specular="0.5 0.5 0.5"
-                                                                                    castshadow="true"/>
-                                                                            <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 -10"/>
-                                                                        </body>
-                                                                    </worldbody>
-                                                                </mujoco>""",
-                                           format="mjcf",
-                                           pose=None,
-                                           kwargs={}))
+        if self._add_ground or self._add_sky:
+            n="\n"
+            ground_geoms = []
+            assets = []
+            self._uneven_ground = False
+            if self._add_ground:
+                ground_geoms.append('<geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
+                assets.append('<texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
+                assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
+            if self._uneven_ground:
+                ground_geoms.append('<geom name="uneven_ground" type="hfield" hfield="uneven_ground" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
+                assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')
+            if self._add_sky:
+                assets.append('<texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />')
+            models.append(ModelSpawnDef(name="ground",
+                                        definition_string=f"""
+                                        <mujoco>
+                                            <compiler angle="radian"/>
+                                            <asset>
+                                                {n.join(assets)}
+                                            </asset>
+                                            <worldbody>
+                                                <body name="ground_link">
+                                                    <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
+                                                            ambient="0.2 0.2 0.2"
+                                                            diffuse="0.7 0.7 0.7"
+                                                            specular="0.5 0.5 0.5"
+                                                            castshadow="true"/>
+                                                    {n.join(ground_geoms)}
+                                                </body>
+                                            </worldbody>
+                                        </mujoco>""",
+                                        format="mjcf",
+                                        pose=None,
+                                        kwargs={}))
 
         specs = []
         ggLog.info(f"Spawning models: {[model.name for model in models]}")
@@ -1652,19 +1643,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
                 #     and fixed joints are represented as fixed transforms in the model.
 
-                #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, broadcast_in_dim
-                if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
-                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
-                                       f"{link_states_pose_vel_jnp[0,i]}\n"
-                                       f"!=\n"
-                                       f"{link_states_pose_vel_jnp[:,i]}")
+                # #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, broadcast_in_dim
+                # if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
+                #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
+                #                        f"{link_states_pose_vel_jnp[0,i]}\n"
+                #                        f"!=\n"
+                #                        f"{link_states_pose_vel_jnp[:,i]}")
                 #TODO: the following line triggers jit recompile
-                if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
-                    raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
+                # if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
+                #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
                 #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, convert_element_type
-                model_body_pos = model_body_pos.at[lid].set(link_states_pose_vel_jnp[0,i,:3])
+                model_body_pos = model_body_pos.at[:,lid].set(link_states_pose_vel_jnp[:,i,:3])
                 #TODO: the following line triggers jit recompile, also on add, select_n, concatenate, gather, scatter
-                model_body_quat = model_body_quat.at[lid].set(link_states_pose_vel_jnp[0,i,[6,3,4,5]])
+                model_body_quat = model_body_quat.at[:,lid].set(link_states_pose_vel_jnp[:,i,[6,3,4,5]])
                 # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
             elif parent_joints_num == 1 and parent_body_id==0:
                 jid = self._mj_model.body_jntadr[lid]
@@ -1993,6 +1984,26 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         is_queried = jnp.any(jnp.logical_or(a_to_b,b_to_a), axis=-1) # (vec_size, collision_num)
         return is_queried
 
+    @partial(jax.jit, static_argnames=["self"])
+    def _get_total_contact_forces_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray):
+        """Get the total contact forces for a set of body pairs.
+
+        Parameters
+        ----------
+        sim_state : SimState
+            _description_
+        queried_body_pairs : jnp.ndarray
+            size (number_of_pairs,2)
+
+        Returns
+        -------
+        jnp.ndarray
+            size (vec_size, number_of_pairs, 6) with the total force:torque for each environment and each body pair.
+            If there are no contacts for an environment and body pair, the force:torque will be zero.
+        """
+        total_forces = jax.vmap(lambda x: self._get_total_contact_force_for_pair(sim_state, x), in_axes=[None, 0])(queried_body_pairs) # (number_of_pairs, vec_size, 6)
+        return jnp.transpose(total_forces, (1,0,2)) # (vec_size, number_of_pairs, 6)
+
     def _get_total_contact_force_for_pair(self, sim_state : SimState, queried_body_pair : jnp.ndarray):
         """Get the total contact force for a specific body pair.
 
@@ -2014,24 +2025,34 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         net_force = jax.vmap(lambda x, y: self._get_net_6d_force_for_contacts(x, y), in_axes=(0, 0))(sim_state.mjx_data, contacts_mask) # (vec_size, 6)
         return net_force
 
-    def _get_total_contact_forces_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray):
-        """Get the total contact forces for a set of body pairs.
+    def _get_net_6d_force_for_contacts(self, single_mjx_data : mjx.Data, single_contacts_mask : jnp.ndarray):
+        """Get the net 6D force for a set of contacts, on a single simulation.
 
         Parameters
         ----------
-        sim_state : SimState
-            _description_
-        queried_body_pairs : jnp.ndarray
-            size (number_of_pairs,2)
+        single_mjx_data : mjx.Data
+            The Mujoco data object containing the contact forces. (not vectorized)
+        single_contacts_mask : jnp.ndarray
+            A mask indicating which contacts to consider.
 
         Returns
         -------
         jnp.ndarray
-            size (vec_size, number_of_pairs, 6) with the total force:torque for each environment and each body pair.
-            If there are no contacts for an environment and body pair, the force:torque will be zero.
+            The net force:torque for the specified contacts, size (6,).
         """
-        total_forces = jax.vmap(lambda x: self._get_total_contact_force_for_pair(sim_state, x), in_axes=[None, 0])(queried_body_pairs) # (number_of_pairs, vec_size, 6)
-        return jnp.transpose(total_forces, (1,0,2)) # (vec_size, number_of_pairs, 6)
+        forces = self._get_force(single_mjx_data, single_mjx_data.contact.efc_address) # (ncon, 10)
+        forces : jnp.ndarray = jnp.where(jnp.expand_dims(single_contacts_mask,-1), forces, 0.0)
+        if self._mj_model.opt.cone == mjx.ConeType.ELLIPTIC:
+            cond_dims = single_mjx_data.contact.dim # (ncon,)
+            invalid_components = jnp.arange(0,forces.shape[-1]) >= cond_dims # (ncon,10)
+            forces = forces.at[:,invalid_components].set(0.0)
+            # net_3d_force = jnp.sum(forces[:,:3], axis=0) # (3,)
+            # net_3d_torque = jnp.sum(forces[:,3:6], axis=0) # (3,)
+            net_6d_force = jnp.sum(forces, axis=0) # (6,) # can I sum directly?
+            return net_6d_force
+        else:
+            raise NotImplementedError("Pyramidal friction cone not implemented yet")
+            forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
 
     @staticmethod
     @partial(jax.vmap, in_axes=(None, 1))
@@ -2052,22 +2073,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """
         return single_mjx_data.efc_force[efc_addr:efc_addr + 10] # return the maximum size of each
 
-    def _get_net_6d_force_for_contacts(self, single_mjx_data : mjx.Data, single_contacts_mask : jnp.ndarray):
-        forces = self._get_force(single_mjx_data, single_mjx_data.contact.efc_address) # (ncon, 10)
-        forces : jnp.ndarray = jnp.where(jnp.expand_dims(single_contacts_mask,-1), forces, 0.0)
-        if self._mj_model.opt.cone == mjx.ConeType.ELLIPTIC:
-            cond_dims = single_mjx_data.contact.dim # (ncon,)
-            invalid_components = jnp.arange(0,forces.shape[-1]) >= cond_dims # (ncon,10)
-            forces = forces.at[:,invalid_components].set(0.0)
-            # net_3d_force = jnp.sum(forces[:,:3], axis=0) # (3,)
-            # net_3d_torque = jnp.sum(forces[:,3:6], axis=0) # (3,)
-            net_6d_force = jnp.sum(forces, axis=0) # (6,) # can I sum directly?
-            return net_6d_force
-        else:
-            raise NotImplementedError("Pyramidal friction cone not implemented yet")
-            forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
-
-        
 
     def _get_current_colliding_link_id_pairs_and_forces(self, sim_state : SimState) -> jnp.ndarray:
         # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")

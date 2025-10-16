@@ -106,7 +106,7 @@ class ThBox(gym.spaces.Box):
         state.pop("_np_random",None)
         # serialize ndarrays as torch tensors to avoid issues with numpy 2.0/1.x
         state["bounded_above"] = th.as_tensor(self.bounded_above)
-        state["bounded_below"] = th.as_tensor(self.bounded_above)
+        state["bounded_below"] = th.as_tensor(self.bounded_below)
         state["high"] = th.as_tensor(self.high)
         state["low"] = th.as_tensor(self.low)
         if isinstance(self.labels,np.ndarray):
