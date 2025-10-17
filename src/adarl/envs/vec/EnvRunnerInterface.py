@@ -7,7 +7,7 @@ import torch as th
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override, final
 from abc import ABC, abstractmethod
-from adarl.utils.spaces import gym_spaces
+from adarl.utils.spaces import gym_spaces, ThBox, ThDict
 
 ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
 
@@ -28,13 +28,13 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
 
     def __init__(self,
                  num_envs : int,
-                 vec_observation_space : gym_spaces.Space,
-                 vec_action_space : gym_spaces.Space,
-                 vec_reward_space : gym_spaces.Space,
+                 vec_observation_space : ThDict,
+                 vec_action_space : ThBox,
+                 vec_reward_space : ThBox,
                  info_space : gym_spaces.Dict,
-                 single_observation_space : gym_spaces.Space,
-                 single_action_space : gym_spaces.Space,
-                 single_reward_space : gym_spaces.Space,
+                 single_observation_space : ThDict,
+                 single_action_space : ThBox,
+                 single_reward_space : ThBox,
                  autoreset : bool,
                  ui_render_envs_indexes : th.Tensor,
                  th_device : th.device):

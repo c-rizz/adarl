@@ -265,7 +265,8 @@ class BasicStorage():
         n_envs: int = 1,
         storage_torch_device: Union[str,th.device] = "cpu",
         share_mem : bool = True,
-        allow_rollover = False
+        allow_rollover = False,
+        rewards_num : int = 1
     ):
 
         assert isinstance(observation_space, spaces.Dict), "BasicStorage must be used with Dict obs space only"
@@ -277,6 +278,7 @@ class BasicStorage():
         self.n_envs = n_envs
         self._share_mem = share_mem
         self._allow_rollover = allow_rollover
+        self._rewards_num = rewards_num
         
         self._allocate_buffers(self.buffer_size)
         # self._addcount = 0
@@ -327,7 +329,7 @@ class BasicStorage():
         self.actions = th.zeros((buffer_size, self.n_envs) + self._action_space.shape, 
                                 dtype=numpy_to_torch_dtype(self._action_space.dtype),
                                 device = self._storage_torch_device)
-        self.rewards = th.zeros((buffer_size, self.n_envs), dtype=th.float32, device = self._storage_torch_device)
+        self.rewards = th.zeros((buffer_size, self.n_envs, self._rewards_num), dtype=th.float32, device = self._storage_torch_device)
         self.terminated = th.zeros((buffer_size, self.n_envs), dtype=th.uint8, device = self._storage_torch_device)
         self.truncated = th.zeros((buffer_size, self.n_envs), dtype=th.uint8,  device = self._storage_torch_device)
 
@@ -399,9 +401,12 @@ class BasicStorage():
         ep_ends = th.logical_or(terminated, truncated).count_nonzero().to(device="cpu", non_blocking=True)
         # ggLog.info(f"ep_ends = {ep_ends}")
 
+        reward_th = th.as_tensor(reward)
+        if reward_th.dim() == 1:
+            reward_th = reward_th.unsqueeze(-1)
         # print(f"storing action[{pos}] {action}")
         self.actions[pos].copy_(th.as_tensor(action), non_blocking=True)
-        self.rewards[pos].copy_(th.as_tensor(reward), non_blocking=True)
+        self.rewards[pos].copy_(reward_th, non_blocking=True)
         self.terminated[pos].copy_(th.as_tensor(terminated), non_blocking=True)
         self.truncated[pos].copy_(th.as_tensor(truncated), non_blocking=True)
         for device in devices_to_sync:

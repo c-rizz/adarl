@@ -11,6 +11,7 @@ from gymnasium.vector.utils.spaces import batch_space
 from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
 import adarl.utils.dbg.ggLog as ggLog
 from collections import OrderedDict
+import numpy.typing as npt
 
 class ThBox(gym.spaces.Box):
     def __init__(   self,
@@ -20,7 +21,7 @@ class ThBox(gym.spaces.Box):
                     dtype: type[np.floating[Any]] | type[np.integer[Any]] | th.dtype | str = np.float32,
                     seed: int | None = None,
                     torch_device : th.device = th.device("cpu"),
-                    labels : th.Tensor | np.ndarray | None = None,
+                    labels : npt.NDArray[np.object_] | None = None,
                     generator : th.Generator | None = None,
                     default_value : th.Tensor | None = None):
         """ Box space, like the openai gym one, but based on torch Tensors, and with some additional functionality.
@@ -39,7 +40,7 @@ class ThBox(gym.spaces.Box):
             Seed or generator for the underlying gym class, by default None
         torch_device : th.device, optional
             Torch device to be used, by default th.device("cpu")
-        labels : th.Tensor | None, optional
+        labels : th.Tensor | np.ndarray | None, optional
             Names of the fields of this space, by default None
         generator : th.Generator | None, optional
             Torch generator used by the sample() function, by default None
@@ -71,8 +72,10 @@ class ThBox(gym.spaces.Box):
             numpy_dtype = dtype
             torch_dtype = numpy_to_torch_dtype_dict[dtype]
         self.torch_dtype_str = str(torch_dtype).split(".")[1] # yaml cannot save this directly as str-based __reduce__ (used by dtypes) is not supported by yaml, see https://github.com/pytorch/pytorch/issues/78720
-        self.labels = labels
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
+        if labels is None:
+            labels = np.full(fill_value="", shape=self.shape, dtype=object)
+        self.labels : npt.NDArray[np.object_] = labels
         del self._np_random # disable the numpy rng, we don't use it and it is annoying to pickle through numpy 2.0/1.x
         self._high_th = th.as_tensor(self.high, device=self._th_device)
         self._low_th = th.as_tensor(self.low, device=self._th_device)
