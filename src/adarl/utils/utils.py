@@ -886,24 +886,3 @@ def get_func_input_args(exclude : list[str] = []) -> dict:
     for name in exclude:
         values.pop(name, None)
     return values
-
-_t0 = 0
-_rec_times = []
-def record_time(name : str):
-    t = time.monotonic()
-    _rec_times.append((name, t-_t0))
-
-_doprint = False
-def maybeprint(msg : str):
-    if _doprint:
-        print(msg)
-
-def clear_recorded_times():
-    global _rec_times
-    global _t0
-    _rec_times = []
-    _t0 = time.monotonic()
-
-def print_recorded_times():
-    for i in range(0, len(_rec_times)):
-        ggLog.info(f"{_rec_times[i][1]:.9f} : {_rec_times[i][0]}")

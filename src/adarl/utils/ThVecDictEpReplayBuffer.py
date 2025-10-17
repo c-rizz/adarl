@@ -41,7 +41,8 @@ class VecEpisodeStorage():
                         observation_space : spaces.ThDict,
                         action_space : spaces.ThBox,
                         min_episode_length : int = 0,
-                        rng : th.Generator | None = None):
+                        rng : th.Generator | None = None,
+                        rewards_num : int = 1):
         """_summary_
 
         Parameters
@@ -71,6 +72,7 @@ class VecEpisodeStorage():
         self._vec_size = vec_size
         self._min_episode_length = min_episode_length
         self._rng = rng
+        self._rewards_num = rewards_num
 
         # here 'frame' means 'transition'
         self._stored_episodes_counts_th = th.zeros((self._vec_size,), dtype=th.int32, device=self._storage_torch_device)
@@ -98,7 +100,7 @@ class VecEpisodeStorage():
                                     dtype=numpy_to_torch_dtype(self._action_space.dtype),
                                     device = self._storage_torch_device)
         self.rewards    = th.full(  fill_value=magic_value,
-                                    size = (self._vec_size, self._buffer_size_vframes,), dtype=th.float32,
+                                    size = (self._vec_size, self._buffer_size_vframes, self._rewards_num), dtype=th.float32,
                                     device = self._storage_torch_device)
         self.terminated = th.full(  fill_value=magic_value,
                                     size = (self._vec_size, self._buffer_size_vframes,), dtype=th.uint8,
@@ -308,7 +310,7 @@ class VecEpisodeStorage():
         trajs_next_obs = {key: self.observations[key][env_idxs, (frame_idxs+1)%self._buffer_size_vframes] for key in self.observations.keys()}
 
         dbg_check_size(trajs_actions, (batch_size, sample_duration, self._action_dim), "Sampled actions have wrong size")
-        dbg_check_size(trajs_rewards, (batch_size, sample_duration), "Sampled rewards have wrong size")
+        dbg_check_size(trajs_rewards, (batch_size, sample_duration, self._rewards_num), "Sampled rewards have wrong size")
         dbg_check_size(trajs_terminateds, (batch_size, sample_duration), "Sampled terminateds have wrong size")
         dbg_check_size(trajs_truncateds, (batch_size, sample_duration), "Sampled truncateds have wrong size")
         for key in self.observations.keys():
@@ -331,7 +333,7 @@ class VecEpisodeStorage():
                 next_observations[key] = trajs_next_obs[key].view((batch_size,)+obs_shape)
             actions     = trajs_actions.view((batch_size,)+trajs_actions.size()[2:])
             terminateds = trajs_terminateds.view(batch_size,1)
-            rewards     = trajs_rewards.view(batch_size,1)
+            rewards     = trajs_rewards.view(batch_size,self._rewards_num)
 
         dbg_check_finite((observations, next_observations, actions, rewards), async_assert=True, assert_msg="Nonfinite values in sampled transition")
         return TransitionBatch(
@@ -435,7 +437,8 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         disable_validation_set : bool = True,
         fill_val_buffer_to_min_at_ep : float = float("+inf"),
         fill_val_buffer_to_min_at_step : float = float("+inf"),
-        val_buffer_min_size : int = 0
+        val_buffer_min_size : int = 0,
+        rewards_num : int = 1
     ):
         self.obs_shape : dict[str, tuple[int, ...]]
         super().__init__(buffer_size, observation_space, action_space, output_device, n_envs=n_envs)
@@ -453,6 +456,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._observation_space = observation_space
         self._action_space = action_space
         self._storage_torch_device = storage_torch_device
+        self._rewards_num = rewards_num
         
         self._max_episode_duration = max_episode_duration
         self._min_episode_duration = min_episode_duration
@@ -543,7 +547,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._addcount+=1
 
         action = action.view((self.n_envs, self.action_dim))
-        reward = reward.view((self.n_envs,))
+        reward = reward.view((self.n_envs, self._rewards_num))
         terminated = terminated.view((self.n_envs,)).to(th.uint8)
         truncated  = truncated.view((self.n_envs,)).to(th.uint8)
         obs      = {k:v.view((self.n_envs,) + self.obs_shape[k]) for k,v in obs.items()} # shallow copy the observations

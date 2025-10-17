@@ -111,7 +111,7 @@ class ThBoxStateHelper(StateHelper):
     class SimpleObsDef():
         observable_fields : Sequence[FieldName] | None = None
         """Defines the observable fields for the observation. If None, all fields are observable."""
-        observable_subfields : list[str|int] | np.ndarray | None = None
+        observable_subfields : Sequence[str|int] | np.ndarray | None = None
         """Defines the observable subfields for the observation. If None, all subfields are observable. Only supported for 1-dimensional fields."""
         obs_history_length : int = 1
         """Defines how many history steps are observable. Must be less than or equal to the state history_length."""
@@ -521,7 +521,8 @@ class StateNoiseGenerator:
                 raise RuntimeError(f"Unexpected episode_mu_std size {episode_mu_std.size()}, should either be (2,) or {required_size}")
             self._episode_mu_std = self._episode_mu_std.to(dtype=self._dtype,device=self._device)
         elif isinstance(episode_mu_std,Mapping):
-            self._episode_mu_std = th.as_tensor([episode_mu_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).permute(1,0)
+            episode_mu_std = {k:v.unsqueeze(-1) if v.dim()==1 else v for k,v in episode_mu_std.items()}
+            self._episode_mu_std = th.stack([episode_mu_std[k].expand(2,*self._field_size) for k in self._field_names], dim=1)
 
         if isinstance(step_std,th.Tensor):
             required_size = (self._fields_num,)+self._field_size
@@ -535,10 +536,11 @@ class StateNoiseGenerator:
                 raise RuntimeError(f"Unexpected step_std size {step_std.size()}, should either be (1,),(,) or {required_size}")
             self._step_std = self._step_std.to(dtype=self._dtype,device=self._device)
         elif isinstance(step_std,Mapping):
-            self._step_std = th.as_tensor([step_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).reshape(self._noise_shape)
+            self._step_std = th.stack([step_std[k].expand(self._field_size) for k in self._field_names], dim=0)
+            # self._step_std = th.as_tensor([step_std[k] for k in self._field_names], dtype=self._dtype, device=self._device).reshape(self._noise_shape)
 
         assert self._episode_mu_std.size() == (2,)+self._noise_shape[1:], f"{self._episode_mu_std.size()} != {(2,)+self._noise_shape}"
-        assert self._step_std.size() == self._noise_shape[1:]
+        assert self._step_std.size() == self._noise_shape[1:], f"{self._step_std.size()} != {self._noise_shape[1:]}"
 
         # # ggLog.info(f"Noise generator got [{self._episode_mu_std},{self._step_std}]")
         state_limits = state_helper.get_limits()
@@ -898,9 +900,7 @@ class RobotStateHelper(ThBoxStateHelper):
                         th_device : th.device,
                         vec_size : int,
                         history_length : int = 1,
-                        obs_history_length : int = 1,
-                        observable_joints = None,
-                        observable_subfields = None):
+                        observation_definitions : dict[str,ThBoxStateHelper.SimpleObsDef] | ThBoxStateHelper.SimpleObsDef | None = None):
         subfield_names = ["pos","vel","cmdeff","acc","senseff","refpos","refvel","refeff","stiff","damp"]
         self._th_device = th_device
         super().__init__(   field_names=list(joint_limit_minmax_pveae.keys()),
@@ -911,9 +911,7 @@ class RobotStateHelper(ThBoxStateHelper):
                             history_length=history_length,
                             subfield_names = subfield_names,
                             vec_size=vec_size,
-                            observation_definitions=ThBoxStateHelper.SimpleObsDef(observable_fields=observable_joints,
-                                                                                  observable_subfields=observable_subfields,
-                                                                                  obs_history_length=obs_history_length))
+                            observation_definitions=observation_definitions)
 
     def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                                     stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],

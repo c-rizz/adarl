@@ -222,7 +222,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         Returns
         -------
         th.Tensor
-            Tensor of shape (num_envs,) containing the reward for each state
+            Tensor of shape (num_envs,num_rewards) containing the rewards for each state
         """
         ...
 
