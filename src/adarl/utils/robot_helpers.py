@@ -247,7 +247,7 @@ class Robot():
         ret = {}
         ref_pose = None
         for frame in self._model.frames:
-            joint_frame_pose = self._model_data.oMi[frame.parentJoint]
+            joint_frame_pose = self._model_data.oMi[frame.parent]
             link_pose = joint_frame_pose*frame.placement
             if frames is None or frame.name in frames:
                 ret[frame.name] = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)

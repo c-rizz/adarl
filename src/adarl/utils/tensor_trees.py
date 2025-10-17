@@ -127,9 +127,12 @@ def map2_tensor_tree(src_tree1 : TensorTree[U],
     if isinstance(src_tree1, dict):
         if not isinstance(src_tree2, dict):
             raise RuntimeError(f"Tensor tree types do not match {type(src_tree1)} != {type(src_tree2)}")
-        r = {}
-        for k in src_tree1.keys():
-            r[k] = map2_tensor_tree(src_tree1[k], src_tree2[k], func = func)
+        try:
+            r = {k: map2_tensor_tree(src_tree1[k], src_tree2[k], func = func) for k in src_tree1.keys()}
+        except KeyError as e:
+            raise RuntimeError(f"Tensor tree keys do not match: {e.args[0]} in src_tree1 = {e.args[0] in src_tree1}, in src_tree2 = {e.args[0] in src_tree2}")
+        # for k in src_tree1.keys():
+        #     r[k] = map2_tensor_tree(src_tree1[k], src_tree2[k], func = func)
         return r
     elif isinstance(src_tree1, tuple):
         if not isinstance(src_tree2, tuple):
