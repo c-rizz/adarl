@@ -9,6 +9,7 @@ import copy
 import adarl.utils.session as session
 import time
 from adarl.utils.utils import masked_assign
+from adarl.utils.spaces import get_1d_space_size
 import pprint
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
@@ -35,12 +36,17 @@ class VectorEnvLogger(
         self._log_infos = log_infos
         self._num_envs = env.unwrapped.num_envs
         self._env_th_device = env_th_device
+        if hasattr(env.unwrapped, "single_reward_space"):
+            reward_space = env.unwrapped.single_reward_space
+        else:
+            reward_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32)
+        rewards_num = get_1d_space_size(reward_space)
 
-        self._ep_rewards = th.zeros(size=(self._num_envs,)).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._ep_rewards = th.zeros(size=(self._num_envs,rewards_num)).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._ep_durations = th.zeros(size=(self._num_envs,), dtype=th.long).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_sum_sl = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_min_sl = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_max_sl = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_sum_sl =   th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_min_sl =   th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_max_sl =   th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._completed_ep_durations_sum_sl = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._completed_ep_durations_min_sl = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._completed_ep_durations_max_sl = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
@@ -80,25 +86,32 @@ class VectorEnvLogger(
         self.__vstep_count += 1
 
         th_terminateds, th_truncateds = th.as_tensor(terminated), th.as_tensor(truncated)
-        self._ep_rewards += reward
+        self._ep_rewards += reward.view(-1, self._ep_rewards.shape[1])
         self._ep_durations += 1
         completed_eps = th.logical_or(th_terminateds, th_truncateds)
         completed_eps_count = completed_eps.count_nonzero()
         if completed_eps_count>0:
-            completed_rews = th.masked.masked_tensor(self._ep_rewards, completed_eps)
+            # ggLog.info(f"self._ep_rewards = {self._ep_rewards}")
+            tot_rewards = self._ep_rewards.sum(dim=1)
+            completed_tot_rewards = th.masked.masked_tensor(tot_rewards, completed_eps)
             completed_durs = th.masked.masked_tensor(self._ep_durations, completed_eps)
-            self._completed_ep_rewards_sum_sl += completed_rews.sum().to_tensor(0)
-            self._completed_ep_rewards_min_sl = th.minimum(th.amin(completed_rews).to_tensor(0), self._completed_ep_rewards_min_sl)
-            self._completed_ep_rewards_max_sl = th.maximum(th.amax(completed_rews).to_tensor(0), self._completed_ep_rewards_max_sl)
+            self._completed_ep_rewards_sum_sl += completed_tot_rewards.sum(dim=0).to_tensor(0)
+            self._completed_ep_rewards_min_sl = th.minimum(th.amin(completed_tot_rewards, dim=0).to_tensor(0), self._completed_ep_rewards_min_sl)
+            self._completed_ep_rewards_max_sl = th.maximum(th.amax(completed_tot_rewards, dim=0).to_tensor(0), self._completed_ep_rewards_max_sl)
             self._completed_ep_durations_sum_sl += th.sum(completed_durs).to_tensor(0)
             self._completed_ep_durations_min_sl = th.minimum(th.amin(completed_durs).to_tensor(0), self._completed_ep_durations_min_sl)
             self._completed_ep_durations_max_sl = th.maximum(th.amax(completed_durs).to_tensor(0), self._completed_ep_durations_max_sl)
             self._completed_ep_count_sl += completed_eps_count
             self._tot_completed_ep_count += completed_eps_count
             if self._completed_ep_count_sl >= self._num_envs:
+                ggLog.info(f"Completed {self._completed_ep_count_sl} episodes since last log")
+                ggLog.info(f"self._completed_ep_rewards_sum_sl = {self._completed_ep_rewards_sum_sl}")
+                ggLog.info(f"self.ep_rewards = {self._ep_rewards}")
+                ggLog.info(f"self._completed_ep_durations_sum_sl = {self._completed_ep_durations_sum_sl}")
+                ggLog.info(f"self.ep_durations = {self._ep_durations}")
                 ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
                 davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
-                ggLog.info(f"VecEnvLogger: ep={self._tot_completed_ep_count} reward avg={ravg}, min={self._completed_ep_rewards_min_sl}, max={self._completed_ep_rewards_max_sl}, length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
+                ggLog.info(f"{self._logs_id}VecEnvLogger: ep={self._tot_completed_ep_count} reward avg={ravg}, min={self._completed_ep_rewards_min_sl}, max={self._completed_ep_rewards_max_sl}, length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
                 self._completed_ep_rewards_sum_sl.fill_(0.0)
                 self._completed_ep_rewards_min_sl.fill_(float("+inf"))
                 self._completed_ep_rewards_max_sl.fill_(float("-inf"))

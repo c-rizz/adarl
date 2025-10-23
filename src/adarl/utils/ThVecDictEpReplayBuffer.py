@@ -528,7 +528,14 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
 
 
     def _allocate_buffers(self, buffer_size, validation_buffer_size):
-        self._storage = VecEpisodeStorage(buffer_size, self.n_envs, self._storage_torch_device, self.out_device, self._observation_space, self._action_space, self._min_episode_duration)
+        self._storage = VecEpisodeStorage(buffer_size=buffer_size,
+                                          vec_size=self.n_envs,
+                                          storage_torch_device=self._storage_torch_device,
+                                          output_device=self.out_device,
+                                          observation_space=self._observation_space,
+                                          action_space=self._action_space,
+                                          min_episode_length=self._min_episode_duration,
+                                          rewards_num=self._rewards_num)
         self._validation_storage : VecEpisodeStorage = None
 
 

@@ -33,6 +33,8 @@ from dataclasses import dataclass
 import pprint
 from adarl.utils.tensor_trees import map_tensor_tree
 from packaging.version import Version
+import faulthandler
+faulthandler.enable()
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)

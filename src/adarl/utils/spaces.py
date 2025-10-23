@@ -108,8 +108,8 @@ class ThBox(gym.spaces.Box):
         state = self.__dict__.copy()
         state.pop("_np_random",None)
         # serialize ndarrays as torch tensors to avoid issues with numpy 2.0/1.x
-        state["bounded_above"] = th.as_tensor(self.bounded_above)
-        state["bounded_below"] = th.as_tensor(self.bounded_below)
+        state["bounded_above"] = th.as_tensor(self.bounded_above*1, dtype=th.bool)
+        state["bounded_below"] = th.as_tensor(self.bounded_below*1, dtype=th.bool)
         state["high"] = th.as_tensor(self.high)
         state["low"] = th.as_tensor(self.low)
         if isinstance(self.labels,np.ndarray):
@@ -224,3 +224,28 @@ def get_obs_shape(
         return {key: get_obs_shape(subspace) for (key, subspace) in observation_space.spaces.items()}  # type: ignore[misc]
     else:
         raise NotImplementedError(f"{observation_space} observation space is not supported")
+    
+def get_1d_space_size(space : gym.Space) -> int:
+    """ Returns the size of a 1D space. Useful to get the size of a one-dimensional action spae, or reward space.
+
+    Parameters
+    ----------
+    space : gym.Space
+        The space to evaluate
+
+    Returns
+    -------
+    int
+        The size of the space if it is 1D, otherwise raises an error
+
+    """
+    if isinstance(space, gym.spaces.Box):
+        if len(space.shape) == 0:
+            rewards_num = 1
+        elif len(space.shape) == 1:
+            rewards_num = space.shape[0]
+        else:
+            raise RuntimeError(f"AsyncProcessExperienceCollector: unsupported space shape {space.shape}, dimensionality can only be 0 or 1.")
+    else:
+        raise RuntimeError(f"AsyncProcessExperienceCollector: unsupported space type {space}")
+    return rewards_num

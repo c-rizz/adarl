@@ -25,6 +25,7 @@ import adarl.utils.dbg.dbg_img as dbg_img
 from adarl.utils.spaces import get_space_labels
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 import hdf5plot.save
+import adarl.utils.spaces as spaces
 
 class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def __init__(self,  runner : EnvRunnerInterface[ObsType],
@@ -65,8 +66,9 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._saveFrequency_ep = saveFrequency_ep
         self._bestReward = float("-inf")
         self._tot_vstep_counter = 0
+        rewards_num = spaces.get_1d_space_size(self._runner.single_reward_space)
         self._ep_counts = th.zeros((self.num_envs,), device=runner.th_device, dtype=th.long)
-        self._ep_rewards = th.zeros((self.num_envs,), device=runner.th_device, dtype=th.float32)
+        self._ep_rewards = th.zeros((self.num_envs,rewards_num), device=runner.th_device, dtype=th.float32)
         self._ep_step_counts = th.zeros((self.num_envs,), device=runner.th_device, dtype=th.long)
         self._vec_obs_key = vec_obs_key
         self._has_vec_obs = False
@@ -89,7 +91,17 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._stored_frames = 0
 
         space_labels = get_space_labels(self._runner.info_space)
-        self._info_labels_np = map_tensor_tree(space_labels, lambda t: t.detach().cpu().numpy() if t is not None else None)
+        def to_np(t):
+            if t is not None:
+                if isinstance(t, th.Tensor):
+                    return t.detach().cpu().numpy()
+                elif isinstance(t, np.ndarray):
+                    return t
+                else:
+                    raise RuntimeError(f"Unsupported type for info labels: {type(t)}")
+            else:
+                return None
+        self._info_labels_np = map_tensor_tree(space_labels, to_np)
         # self._vecobs_labels = get_space_labels(self._runner.single_observation_space)
         # # ggLog.info(f"self._vecobs_labels = {self._vecobs_labels}")
         # if self._vec_obs_key is not None:
@@ -133,7 +145,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         self._ep_step_counts += 1
         self._tot_vstep_counter += 1
         vstep_ret_tuple =  self._runner.step(actions)
-        self._ep_rewards += vstep_ret_tuple[2]
+        self._ep_rewards += vstep_ret_tuple[2].view(-1, self._ep_rewards.shape[1])
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
             # ggLog.info(f"Recording step (ep_count={ep_count}, freq={self._saveFrequency_ep}), pub={self._publish_imgs}, sbest={self._saveBestEpisodes}")
@@ -255,24 +267,27 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         out_filename += ".hdf5"
         i = 0
         # ggLog.info(f"writing buffer {vecbuffer}")
-        with h5py.File(out_filename, "w") as f:
-            # loop through obs, action, reward, terminated, truncation
-            for k,v in vecbuffer.items():
-                if k == "vecobs" and not self._has_vec_obs:
-                    continue
-                # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
-                try:
-                    # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
-                    v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
-                    v = stack_tensor_tree(src_trees=v)
-                    v = flatten_tensor_tree(v) # flatten in case we have complex observations
-                    for sk,sv in v.items():
-                        f.create_dataset(f"{k}.{sk}", data=sv)
-                    # if self._vecobs_labels is not None:
-                    #     for sk,sv in self._vecobs_labels.items():
-                    #         f.create_dataset(f"{k}.{sk}_labels", data=sv)
-                except TypeError as e:
-                    raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
+        try:
+            with h5py.File(out_filename, "w") as f:
+                # loop through obs, action, reward, terminated, truncation
+                for k,v in vecbuffer.items():
+                    if k == "vecobs" and not self._has_vec_obs:
+                        continue
+                    # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
+                    try:
+                        # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
+                        v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
+                        v = stack_tensor_tree(src_trees=v)
+                        v = flatten_tensor_tree(v) # flatten in case we have complex observations
+                        for sk,sv in v.items():
+                            f.create_dataset(f"{k}.{sk}", data=sv)
+                        # if self._vecobs_labels is not None:
+                        #     for sk,sv in self._vecobs_labels.items():
+                        #         f.create_dataset(f"{k}.{sk}_labels", data=sv)
+                    except TypeError as e:
+                        raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
+        except Exception as e:
+            raise RuntimeError(f"Error saving vecbuffer to {out_filename}, exception={adarl.utils.utils.exc_to_str(e)}")
 
 
     def _saveLastEpisode(self, filename : str):
@@ -295,6 +310,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         # ggLog.info(f"raw frame shape = {img_whc.shape}")
         if img_hwc.dtype == np.float32:
             img_hwc = (img_hwc*255).astype(dtype=np.uint8, copy=False)
+        if img_hwc.dtype == np.int32 or img_hwc.dtype == np.int64:
+            img_hwc = img_hwc.astype(dtype=np.uint8, copy=False)
 
         if len(img_hwc.shape) not in [2,3] or img_hwc.shape[2] not in [1,3] or img_hwc.dtype != np.uint8:
             raise RuntimeError(f"Unsupported image format, dtpye={img_hwc.dtype}, shape={img_hwc.shape}")
@@ -328,6 +345,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         # ggLog.info(f"rec._on_ep_end()")
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         run_id = adarl.utils.session.default_session.run_info["run_id"]
+        tot_ep_reward = self._ep_rewards[self._env_idx].sum()
         if self._may_episode_be_saved(ep_count) and envs_ended_mask[self._env_idx] and self._stored_frames > 1:
             # Episode with at least a full step finishing
             if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
@@ -337,8 +355,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 # In this case do not save the last obs/action/etcetera, they have already been saved in the last step
                 self._record_step(last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds)
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-            fname = f"ep_{run_id}_{self._saved_eps_count}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}"
-            if self._saveBestEpisodes and self._ep_rewards[self._env_idx] > self._bestReward:
+            fname = f"ep_{run_id}_{self._saved_eps_count}_{ep_count:09d}_{step_count:010d}_{tot_ep_reward:09.9g}"
+            if self._saveBestEpisodes and tot_ep_reward > self._bestReward:
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(f"{self._outFolder}/best/{fname}")            
                     self._saved_best_eps_count += 1
@@ -346,8 +364,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 self._saveLastEpisode(f"{self._outFolder}/{fname}")
                 self._last_saved_ep = ep_count
 
-        if self._saveBestEpisodes and self._ep_rewards[self._env_idx]>self._bestReward and envs_ended_mask[self._env_idx]:
-            self._bestReward = self._ep_rewards[self._env_idx]
+        if self._saveBestEpisodes and tot_ep_reward>self._bestReward and envs_ended_mask[self._env_idx]:
+            self._bestReward = tot_ep_reward
         self._ep_rewards[envs_ended_mask] = 0.0
         self._ep_step_counts[envs_ended_mask] = 0
         self._ep_counts[envs_ended_mask] = 0
@@ -366,7 +384,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         run_id = adarl.utils.session.default_session.run_info["run_id"]
         step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-        fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{self._ep_rewards[self._env_idx]:09.9g}_{self._saved_eps_count}"
+        tot_ep_reward = self._ep_rewards[self._env_idx].sum()
+        fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{tot_ep_reward:09.9g}_{self._saved_eps_count}"
         self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self._runner.close()
 

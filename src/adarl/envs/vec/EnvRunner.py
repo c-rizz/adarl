@@ -16,7 +16,7 @@ import time
 import adarl
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 import adarl.utils.dbg.ggLog as ggLog
-import adarl.utils.session
+import adarl.utils.spaces as spaces
 import adarl.utils.utils
 import torch as th
 import copy
@@ -66,10 +66,11 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         self._verbose = verbose
         self._quiet = quiet
+        self._rewards_num = spaces.get_1d_space_size(env.single_reward_space)
 
-        self._tot_ep_rewards = th.zeros_like(self._no_vecs, dtype=th.float32)
+        self._tot_ep_rewards = th.zeros((self._adarl_env.num_envs, self._rewards_num), dtype=th.float32, device=self._no_vecs.device)
         self._sub_rewards_names = []
-        self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, 0), dtype=th.float32, device=self._no_vecs.device)
+        self._tot_ep_sub_rewards = th.zeros((self._adarl_env.num_envs, self._rewards_num), dtype=th.float32, device=self._no_vecs.device)
         self._ep_sub_rewards : dict[str,th.Tensor] = {}
         self._cached_states : dict[str,th.Tensor] | None = None
         self._cache_ep_step_counts = th.zeros_like(self._no_vecs, dtype=th.int64)
@@ -161,7 +162,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 
                 self._last_terminated = terminateds
                 self._last_truncated = truncateds
-                self._tot_ep_rewards += rewards
+                self._tot_ep_rewards += rewards.view(-1, self._rewards_num)
                 # if self._total_sub_rewards is None:
                 #     self._total_sub_rewards = {k:v for k,v in sub_rewards.items()}
                 # dbg_check(lambda: len(sub_rewardss) ==0 or th.all(th.sum(th.stack(list(sub_rewardss.values()), dim=1),dim=1) - rewards < 0.001),
@@ -414,6 +415,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         self._vec_ep_info["ep_frames_count"] = self._ep_step_counts
         self._vec_ep_info["ep_reward"] = self._tot_ep_rewards
+        self._vec_ep_info["ep_rewards_sum"] = th.sum(self._tot_ep_rewards, dim=1) # Sum of the subrewards, if using explicit sub rewards (self._tot_ep_rewards is then a 2D tensor)
         # ggLog.info(f"_tot_ep_rewards = {self._tot_ep_rewards}")
         # self._dbg_info.update(self._ggEnv.getInfo(state))
         if len(self._sub_rewards_names)==0: # at the first step and episode this must be populated to at least know which fields we'll have

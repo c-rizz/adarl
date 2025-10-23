@@ -38,6 +38,8 @@ class GymVecRunnerWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         self.observation_space = runner.vec_observation_space
         self.single_action_space = runner.single_action_space
         self.single_observation_space = runner.single_observation_space
+        self.reward_space = runner.vec_reward_space
+        self.single_reward_space = runner.single_reward_space
         if isinstance(runner, EnvRunner):
             self.metadata = runner.get_base_env().metadata
         if isinstance(runner, EnvRunnerWrapper):

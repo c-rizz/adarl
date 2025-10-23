@@ -268,14 +268,15 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                 if obs_return is not None:
                     running_obss[i].append(obss[i])
                 if terms[i] or truncs[i]:
-                    rewards[collected_eps] = running_rews[i]
+                    tot_reward = running_rews[i].sum()
+                    rewards[collected_eps] = tot_reward
                     durations_steps[collected_eps] = running_durations[i]
                     for k in extra_stats:
                         extra_stats[k][collected_eps] = infos[k][i]
                     if obs_return is not None:
                         obs_return.append(running_obss[i])
                     if on_ep_done_callback is not None:
-                        on_ep_done_callback(episodeReward=running_rews[i], steps=running_durations[i], episode=collected_eps)
+                        on_ep_done_callback(episodeReward=tot_reward, steps=running_durations[i], episode=collected_eps)
                     if "success" in infos.keys():
                         successes[collected_eps] = 1 if infos["success"][i] else 0
                     running_durations[i] = 0

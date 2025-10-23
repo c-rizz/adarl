@@ -39,7 +39,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self._ui_camera_name = "simple_camera"
         self._task = task
         self._sparse_reward = sparse_reward
-        self._upright_hinge_threshold = 3.14159/180*2
+        self._upright_hinge_threshold = 3.14159/180*5 # 5 degrees
         self._adapter : BaseVecJointImpedanceAdapter
         
         self._CART_POS = 0
@@ -67,6 +67,14 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         states_dict = {"vec" : vec_state_space}
         state_space = gym_spaces.Dict(states_dict) #type: ignore : gym Dict space uses dict instead of Mapping
 
+        if self._task == "center_2r":
+            reward_space = ThBox(low=th.as_tensor([0.0, 0.0], device=th_device),
+                                 high=th.as_tensor([float("+inf"), float("+inf")], device=th_device),
+                                 shape=(2,),
+                                 torch_device=th_device)
+        else:
+            reward_space = ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device)
+
         act_max = np.array([1.0])
         super().__init__(th_device=th_device,
                          seed=seed,
@@ -74,7 +82,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                          single_action_space = ThBox(-act_max,act_max, torch_device=th_device),
                          single_observation_space = single_observation_space,
                          single_state_space=state_space,
-                         single_reward_space=ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device),
+                         single_reward_space=reward_space,
                          info_space=None, #type: ignore : Will be set later
                          step_duration_sec=step_duration_sec,
                          adapter=adapter,
@@ -121,35 +129,58 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
     @override
     def compute_rewards(self,   states : dict[str,th.Tensor],
                                 sub_rewards_return : dict[str,th.Tensor] = {}) -> th.Tensor:
-        if not self._sparse_reward:
-            pole_angle = th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS])
-            up_reward = 1-th.abs(pole_angle/th.pi)
-            sub_rewards_return["up_reward"] = up_reward
-            return up_reward
-        else:
-            if self._task == "balance":
+        
+        pole_angle = th.abs(th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS]))
+        cart_pos = states["vec"][:,self._CART_POS]
+        centering_reward = 0.1*(1-th.clamp(th.abs(cart_pos)/2, min=0, max=1))
+        upright_reward = 1-th.abs(pole_angle/th.pi)
+        is_upright = (pole_angle < self._upright_hinge_threshold)*1
+        is_centered = (th.abs(cart_pos) < 0.05)*1
+        sub_rewards_return["upright"] = upright_reward
+        sub_rewards_return["centering"] = centering_reward
+        sub_rewards_return["is_upright"]  = is_upright
+        sub_rewards_return["is_centered"] = is_centered
+        if self._task.startswith("center"):
+            if self._task == "center_2r":
+                if self._sparse_reward:
+                    return th.stack([is_centered, is_upright], dim=1)
+                else:    
+                    return th.stack([centering_reward, upright_reward], dim=1)
+            elif self._task == "center_1r":
+                if self._sparse_reward:
+                    return is_centered*is_upright
+                else:
+                    return centering_reward + upright_reward        
+        elif self._task == "balance":
+            if self._sparse_reward:
                 health_reward = th.ones((self.num_envs,), device=self._th_device, dtype=th.float32)
                 sub_rewards_return["health"] = health_reward
                 return health_reward
-            elif self._task == "swingup":
-                pole_angle = th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS])
-                upright = pole_angle < self._upright_hinge_threshold
-                sub_rewards_return["upright"] = upright
-                return upright
             else:
-                raise RuntimeError(f"unknown task {self._task}")
+                return upright_reward
+        elif self._task == "swingup":
+            if self._sparse_reward:
+                is_upright = pole_angle < self._upright_hinge_threshold
+                sub_rewards_return["upright"] = is_upright
+                return is_upright
+            else:
+                return upright_reward
+        else:
+            raise RuntimeError(f"unknown task {self._task}")
 
     @override
     def _initialize_episodes(self, vec_mask : th.Tensor | None = None, options = {}) -> None:
         # ggLog.info(f"initializing eps {vec_mask}")
         if isinstance(self._adapter, BaseVecSimulationAdapter):
-            if self._task == "balance":
+            if self._task == "balance" or self._task == "center_2r" or self._task == "center_1r":
                 joint_states_pve=th.normal(mean=th.zeros((self.num_envs,2,3), device=self._th_device, dtype=th.float32),
                                             std=th.as_tensor([0.02, 0.0, 0.0], device=self._th_device, dtype=th.float32).expand(self.num_envs, 2, 3),
                                             generator=self._rng)
             elif self._task == "swingup":
                 joint_states_pve=self._thrandn((self.num_envs,2,3))*self._thtens([0.1, 0.0, 0.0])+self._thtens([[0.0, 0.0, 0.0],[th.pi, 0.0, 0.0]])
-                # joint_states_pve=self._thrand((self.num_envs,2,3))*th.as_tensor([2*th.pi, 0.0, 0.0])                
+                # joint_states_pve=self._thrand((self.num_envs,2,3))*th.as_tensor([2*th.pi, 0.0, 0.0])           
+            else:
+                raise NotImplementedError()     
             self._adapter.setJointsStateDirect( joint_names=(("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")),
                                                 joint_states_pve=joint_states_pve)
         else:
@@ -236,4 +267,12 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
     @override
     def get_infos(self,states, labels : dict[str, th.Tensor] | None = None) -> dict[str, th.Tensor]:
         vstates = states["vec"]
-        return {"pole_angle" : th.atan2(vstates[:,2],vstates[:,3])}
+        step_count = states["vec"][:,self._TIMESTEP]
+        sub_rewards : dict[str,th.Tensor] = {}
+        reward = self.compute_rewards(states, sub_rewards)
+        info =  {"pole_angle" : th.atan2(vstates[:,self._POLE_SIN],vstates[:,self._POLE_COS]),
+                "cart_pos" : vstates[:,self._CART_POS],
+                "step_count" : step_count,
+                "reward" : reward}
+        info.update({"reward_"+k:v for k,v in sub_rewards.items()})
+        return info

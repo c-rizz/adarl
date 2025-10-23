@@ -3,7 +3,6 @@
 from __future__ import annotations
 import pinocchio
 import numpy as np
-import adarl.utils.utils
 from pathlib import Path
 from typing import Literal, Sequence
 import copy
@@ -13,8 +12,7 @@ import faulthandler
 # from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
-from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conj_xyzw_np
-import pprint
+from adarl.utils.utils import quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
 
 class JointProperties(TypedDict):
     joint_type : str
@@ -247,12 +245,13 @@ class Robot():
         ret = {}
         ref_pose = None
         for frame in self._model.frames:
-            joint_frame_pose = self._model_data.oMi[frame.parent]
+            joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parent]
+            # print(f"joint_frame_pose = {type(joint_frame_pose)}")
             link_pose = joint_frame_pose*frame.placement
             if frames is None or frame.name in frames:
-                ret[frame.name] = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
+                ret[frame.name] = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
             if reference_frame is not None and reference_frame == frame.name:
-                ref_pose = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
+                ref_pose = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
         if reference_frame is not None:
             if ref_pose is None:
                 raise RuntimeError(f"Reference frame {reference_frame} not found")
@@ -429,12 +428,13 @@ class Robot():
 
 if __name__ == "__main__":
     import sys
+    from adarl.utils.utils import pkgutil_get_path, compile_xacro_string
     if len(sys.argv)==1:
-        leg_file = adarl.utils.utils.pkgutil_get_path("adarl_envs","models/leg_rig_simple.urdf.xacro")
+        leg_file = pkgutil_get_path("adarl_envs","models/leg_rig_simple.urdf.xacro")
     else:
         leg_file = sys.argv[1]
     # leg_file = adarl.utils.utils.pkgutil_get_path("adarl","models/cube.urdf")
-    model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
+    model_definition_string = compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
                                                                         model_kwargs={})
     robot = Robot(model_definition_string)
     n = '\n'
