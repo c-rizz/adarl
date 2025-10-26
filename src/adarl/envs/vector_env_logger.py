@@ -104,11 +104,11 @@ class VectorEnvLogger(
             self._completed_ep_count_sl += completed_eps_count
             self._tot_completed_ep_count += completed_eps_count
             if self._completed_ep_count_sl >= self._num_envs:
-                ggLog.info(f"Completed {self._completed_ep_count_sl} episodes since last log")
-                ggLog.info(f"self._completed_ep_rewards_sum_sl = {self._completed_ep_rewards_sum_sl}")
-                ggLog.info(f"self.ep_rewards = {self._ep_rewards}")
-                ggLog.info(f"self._completed_ep_durations_sum_sl = {self._completed_ep_durations_sum_sl}")
-                ggLog.info(f"self.ep_durations = {self._ep_durations}")
+                # ggLog.info(f"Completed {self._completed_ep_count_sl} episodes since last log")
+                # ggLog.info(f"self._completed_ep_rewards_sum_sl = {self._completed_ep_rewards_sum_sl}")
+                # ggLog.info(f"self.ep_rewards = {self._ep_rewards}")
+                # ggLog.info(f"self._completed_ep_durations_sum_sl = {self._completed_ep_durations_sum_sl}")
+                # ggLog.info(f"self.ep_durations = {self._ep_durations}")
                 ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
                 davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
                 ggLog.info(f"{self._logs_id}VecEnvLogger: ep={self._tot_completed_ep_count} reward avg={ravg}, min={self._completed_ep_rewards_min_sl}, max={self._completed_ep_rewards_max_sl}, length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
