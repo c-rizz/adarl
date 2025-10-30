@@ -590,6 +590,8 @@ def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ct
 
 _t0 = 0
 _rec_times = []
+_stats : dict[tuple[str,str], tuple[np.ndarray, int]]= {}
+_statslen  = 10
 def record_time(name : str):
     t = time.monotonic()
     _rec_times.append((name, t-_t0))
@@ -606,5 +608,31 @@ def clear_recorded_times():
     _t0 = time.monotonic()
 
 def print_recorded_times():
+    ggLog.info(f"   Time     :      Dt     :    Avg dt   : Name")
+    tot_dt = 0.0
+    tot_avg_dt = 0.0
     for i in range(0, len(_rec_times)):
-        ggLog.info(f"{_rec_times[i][1]:.9f} : {_rec_times[i][0]}")
+        t = _rec_times[i][1]
+        pt = _rec_times[i-1][1] if i>0 else t
+        n = _rec_times[i][0]
+        pn = _rec_times[i-1][0] if i>0 else ""
+        if i>0:
+            dt = t-pt
+            k = (pn, n)
+            if k not in _stats:
+                hist,count = (np.array([dt]*_statslen),1)
+            else:
+                hist, count = _stats[k]
+                hist[count % _statslen] = dt
+                count += 1
+            _stats[k] = (hist, count)
+            avg_dt = f"{_stats[k][0][:min(_statslen,count)].mean():.9f}"
+            dt_str = f"{dt:.9f}"
+            tot_dt += dt
+            tot_avg_dt += float(avg_dt)
+        else:
+            dt_str = "nan        "
+            avg_dt = "nan        "
+        ggLog.info(f"{_rec_times[i][1]:.9f} : {dt_str} : {avg_dt} : {_rec_times[i][0]}")
+    ggLog.info(f"            : {tot_dt:.9f} : {tot_avg_dt:.9f} : Total")
+        

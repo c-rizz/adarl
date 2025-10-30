@@ -414,7 +414,8 @@ def runFunction_wrapper(seed,
                         run_args,
                         start_adarl,
                         launch_file_path,
-                        debug_level):
+                        debug_level,
+                        use_wandb):
     try:
         seedFolder = folderName+f"/seed_{seed}"
         experiment_name = os.path.basename(launch_file_path)
@@ -426,7 +427,8 @@ def runFunction_wrapper(seed,
                                         experiment_name = experiment_name,
                                         run_id = run_id,
                                         debug = debug_level,
-                                        run_comment=run_args["comment"])
+                                        run_comment=run_args["comment"],
+                                        use_wandb=use_wandb)
 
         ggLog.info(f"Starting run with seed {seed}:\n"
                    f"Out folder = {seedFolder}\n"
@@ -510,7 +512,8 @@ def launchRun(runFunction,
             args = {},
             pkgs_to_save = ["adarl"],
             start_adarl : bool = True,
-            debug_level = 0):
+            debug_level = 0,
+            use_wandb : bool = True):
     experiment_name = os.path.basename(launchFilePath)
     script_out_folder = os.getcwd()+"/lrg_exps/"+experiment_name
     done = False
@@ -552,7 +555,8 @@ def launchRun(runFunction,
                   "run_args" : args,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
-                  "debug_level" : debug_level} for seed in seeds]
+                  "debug_level" : debug_level,
+                  "use_wandb" : use_wandb} for seed in seeds]
     else:
         resumeFolder = os.path.abspath(resumeFolder)
         ggLog.info(f"Resuming run from folder {resumeFolder}")
@@ -571,7 +575,8 @@ def launchRun(runFunction,
                   "run_args" : args,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
-                  "debug_level" : debug_level} for seed in detected_args]
+                  "debug_level" : debug_level}
+                    for seed in detected_args]
 
     ggLog.info(f"Will launch {argss} using {num_processes} processes") 
 
