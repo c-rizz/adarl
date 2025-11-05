@@ -25,6 +25,7 @@ from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.utils.utils import to_string_tensor
 from adarl.utils.tensor_trees import clone_tensor_tree
+from adarl.utils.base_utils import record_time
 
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
@@ -138,11 +139,13 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 self._adarl_env.step()
                 self._ep_step_counts+=1
                 self._cache_dirty = True
-            
+            record_time("EnvRunner stepped env")
 
             #Get new observation
             with self._getStateDurationAverage:
                 consequent_states = self._get_states_caching()
+
+            record_time("EnvRunner got state")
 
             # Assess the situation
             with self._getObsRewDurationAverage:
@@ -151,13 +154,18 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 terminateds = self._adarl_env.are_states_terminal(consequent_states)
                 # ts.append(time.monotonic())
                 truncateds = self._adarl_env.are_states_timedout(consequent_states)
-                sub_rewardss : Dict[str,th.Tensor] = {}
+                record_time("EnvRunner computed termination/truncation")
                 # ts.append(time.monotonic())
+                sub_rewardss : Dict[str,th.Tensor] = {}
                 rewards = self._adarl_env.compute_rewards(consequent_states, sub_rewards_return = sub_rewardss)
+                record_time("EnvRunner computed rewards")
+
                 # ts.append(time.monotonic())
                 consequent_observations = self._adarl_env.get_observations(consequent_states)
+                record_time("EnvRunner got observations")
                 # ts.append(time.monotonic())
                 consequent_infos = self._build_info(consequent_states)
+                record_time("EnvRunner built infos")
                 # ts.append(time.monotonic())
                 
                 self._last_terminated = terminateds
@@ -176,6 +184,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 # ts.append(time.monotonic())
                 # ggLog.info(f"obs rew comp times = tot {ts[-1]-ts[0]} = sum("+str([f"{(ts[i+1]-ts[i])/(ts[-1]-ts[0]):.3f}" for i in range(len(ts)-1)])+")")
 
+            record_time("EnvRunner got obs and rewards")
 
             with self._reinitDurationAverage:
                 self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
@@ -196,6 +205,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                     next_start_infos = consequent_infos
                     reinit_done = self._no_vecs
 
+        record_time("EnvRunner reinit end")
 
         tf = time.monotonic()
         self._last_step_end_etime = self._adarl_env.get_times_since_build()

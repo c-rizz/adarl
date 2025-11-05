@@ -607,6 +607,10 @@ def clear_recorded_times():
     _rec_times = []
     _t0 = time.monotonic()
 
+def set_recorded_times_stats_len(statslen : int):
+    global _statslen
+    _statslen = statslen
+
 def print_recorded_times():
     ggLog.info(f"   Time     :      Dt     :    Avg dt   : Name")
     tot_dt = 0.0

@@ -1,27 +1,32 @@
 import torch as th
 from time import monotonic
+from typing import Callable
 
-
-graphed_funcs = {}
+graphed_funcs : dict[tuple[Callable, tuple[tuple[int,...], ...]], Callable] = {}
 def graphit(disable=False):
     if not disable:
-        def graph_and_run(func, *args):
-            flatten_args = th.utils._pytree.arg_tree_leaves(*args)
-            args_sizes = tuple(v.size() for v in flatten_args)
-            func_and_sizes = (func, args_sizes)
-            graphed_func = graphed_funcs.get(func_and_sizes, None)
-            if graphed_func is None:
-                print(f"Graphing function {func} with args sizes {list(args_sizes)}")
-                graphed_func = th.cuda.make_graphed_callables(func, args)
-                graphed_funcs[func_and_sizes] = graphed_func
-            return graphed_func(*args)
-        return graph_and_run
+        def deferred_graphing_decorator(func):
+            # This takes thte function and replaces it with a function that on the first call graphs it with the input sizes
+            def graph_and_run(func, *args):
+                flatten_args = th.utils._pytree.arg_tree_leaves(*args)
+                args_sizes = tuple(v.size() for v in flatten_args)
+                func_and_sizes = (func, args_sizes)
+                graphed_func = graphed_funcs.get(func_and_sizes, None)
+                if graphed_func is None:
+                    print(f"Graphing function {func} with args sizes {list(args_sizes)}")
+                    graphed_func : Callable = th.cuda.make_graphed_callables(func, args)
+                    graphed_funcs[func_and_sizes] = graphed_func
+                return graphed_func(*args)
+            return lambda *args: graph_and_run(func, *args)
+        return deferred_graphing_decorator
     else:
-        return lambda func: func
+        def nope_decorator(func):
+            return func
+        return nope_decorator
 
 def test():
-    use_graph = False
-    iterations = 10000
+    use_graph = True
+    iterations = 100_000
     enc = th.nn.Sequential(
         th.nn.Linear(6, 128),
         th.nn.ReLU(),
@@ -75,3 +80,7 @@ def test():
     x = th.randn(4, 6).to("cuda")
     y, z = autoencode(x, enc_params, dec_params)
     print(f"Inference = {x} -> {z} -> {y}")
+
+
+if __name__ == "__main__":
+    test()
