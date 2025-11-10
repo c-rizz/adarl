@@ -240,7 +240,7 @@ class VectorEnvLogger(
                     if self._use_wandb:
                         from adarl.utils.wandb_wrapper import wandb_log
                         # ggLog.info(f"vecenvlogger logging: {list(logs.keys())}")
-                        wdblog = {f"{self._logs_id}{k}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()}
+                        wdblog = {f"{k.replace('VecEnvLogger/','VecEnvLogger/'+self._logs_id)}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()}
                         wandb_log(wdblog)
                     # ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
                     self._step_count_last_log = self.__vstep_count

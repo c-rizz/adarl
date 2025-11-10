@@ -74,7 +74,7 @@ class ThBox(gym.spaces.Box):
         self.torch_dtype_str = str(torch_dtype).split(".")[1] # yaml cannot save this directly as str-based __reduce__ (used by dtypes) is not supported by yaml, see https://github.com/pytorch/pytorch/issues/78720
         super().__init__(low=low,high=high,shape=shape,dtype=numpy_dtype,seed=seed)
         if labels is None:
-            labels = np.full(fill_value="", shape=self.shape, dtype=object)
+            labels = np.array([f"{i}" for i in range(np.prod(self.shape, dtype=int))], dtype=object)
         self.labels : npt.NDArray[np.object_] = labels
         del self._np_random # disable the numpy rng, we don't use it and it is annoying to pickle through numpy 2.0/1.x
         self._high_th = th.as_tensor(self.high, device=self._th_device)

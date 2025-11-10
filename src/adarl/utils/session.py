@@ -201,6 +201,12 @@ class Session():
         config["cuda_available"] = cuda_available
         config["cuda_device_name"] = cuda_device_name
         config["cpu_name"] = adarl.utils.utils.cpuinfo()
+        config["hostname"] = self.run_info["hostname"]
+        config["start_time"] = self.run_info["start_time"]
+        config["seed"] = self.run_info["seed"]
+        config["experiment_name"] = experiment_name
+        config["run_id"] = run_id
+        config["comment"] = comment
         
 
         # inputargs = [(i, values[i]) for i in args]

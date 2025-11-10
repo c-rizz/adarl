@@ -103,7 +103,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         #                                         efforts = (actions*20).expand(self.num_envs, 1, 1))
         # ggLog.info(f"Submitting actions {actions}")
         jimp_cmd = self._thzeros((self.num_envs,1,5))
-        jimp_cmd[:,:,2] = th.clamp(actions, -1, 1)*50
+        jimp_cmd[:,:,2] = th.clamp(actions, -1, 1)*20
         self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
         # ggLog.info(f"Sending cmd {actions}")
 
@@ -244,14 +244,15 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         if adarl.utils.utils.isinstance_noimport(self._adapter, "MjxAdapter"):
             self._adapter.build_scenario(models =self._get_spawn_defs())
         elif isinstance(self._adapter, VecSimJointImpedanceAdapterWrapper):
-            if adarl.utils.utils.isinstance_noimport(self._adapter.sub_adapter(), ("PyBulletJointImpedanceAdapter")):
-                self._adapter.build_scenario(models = self._get_spawn_defs())
-            elif adarl.utils.utils.isinstance_noimport(self._adapter.sub_adapter(), ("RosXbotAdapter", "RosXbotGazeboAdapter")):
-                self._adapter.build_scenario(launch_file_pkg_and_path = adarl.utils.utils.pkgutil_get_path( "adarl_envs",
-                                                                                                            "gazebo/all_gazebo_xbot.launch"),
-                                            launch_file_args={"gui":"false"})
-            else:
-                raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
+            for subadapter in self._adapter.sub_adapters():
+                if adarl.utils.utils.isinstance_noimport(subadapter, ("PyBulletJointImpedanceAdapter")):
+                    self._adapter.build_scenario(models = self._get_spawn_defs())
+                elif adarl.utils.utils.isinstance_noimport(subadapter, ("RosXbotAdapter", "RosXbotGazeboAdapter")):
+                    self._adapter.build_scenario(launch_file_pkg_and_path = adarl.utils.utils.pkgutil_get_path( "adarl_envs",
+                                                                                                                "gazebo/all_gazebo_xbot.launch"),
+                                                launch_file_args={"gui":"false"})
+                else:
+                    raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
         else:
             raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
         

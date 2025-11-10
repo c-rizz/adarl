@@ -41,7 +41,7 @@ jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 jax.config.update("jax_enable_compilation_cache", True)
 # jax.config.update("jax_log_compiles", True)
-#jax.config.update("jax_debug_nans", True) # May have a performance impact?
+jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
