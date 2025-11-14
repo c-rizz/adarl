@@ -5,7 +5,7 @@ from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 import torch as th
 
-class BaseVecJointImpedanceAdapter(BaseVecAdapter, BaseVecJointEffortAdapter):
+class BaseVecJointImpedanceAdapter(BaseVecJointEffortAdapter):
 
     @overload
     @abstractmethod

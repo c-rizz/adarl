@@ -206,14 +206,18 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         impulses_xfrc=jnp.empty((0,), device = jax_device),
                                         ref_filter_coeffs=jnp.empty((vec_size,0,5), device = jax_device),
                                         ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
+        # Reference filter
         self._use_second_order_filter = True
-        self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
-
-        pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
+        if self._use_second_order_filter:
+            self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+        else:
+            pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
+            self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))        
+        # Controlled joint state filter (Only used for the impedance control input, not by getJointState)
         pve_sensing_filter_decimation_time = 0.005        
-        self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))        
         self._pve_sensing_filter_alpha = 0.1**(1/pve_sensing_filter_decimation_time/self._sim_step_dt)
         
+
         self._queue_size = impedance_commands_queue_size
         self._max_joint_impedance_ctrl_torques = max_joint_impedance_ctrl_torques
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
@@ -232,7 +236,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None:
-            th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
+            delay = th.where(vec_mask, -1000.0, float("+inf"))
+        else:
+            delay = -1000.0
             # This could probably be implemented fairly easily
         # ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
@@ -269,11 +275,14 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None:
-            th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
+            delay = th.where(vec_mask, -1000.0, float("+inf"))
+        else:
+            delay = -1000.0
+            # th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
             # This could probably be implemented fairly easily
         # ggLog.info(f"Setting jimp command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
-                                    delay_sec=-1000)
+                                    delay_sec=delay)
         
     def _add_impedance_command(self,    joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor | float = 0.0) -> None:
@@ -328,6 +337,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         """
         # insert command in the first slot that has +inf time
         # if there's no space return some specific value in a ndarray
+        discard_command = jnp.isposinf(cmd_time) # if the command time is +inf we discard it
         empty_slots = jnp.isinf(cmds_queue_times) # if no command or a command for the same time
         same_time_slots = cmds_queue_times==cmd_time
         # If there is any slot at the same time, then do not use the empty ones
@@ -336,11 +346,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         writable_slots = jnp.logical_or(jnp.logical_and(empty_slots,jnp.logical_not(jnp.any(same_time_slots))), same_time_slots)
         found_slot = jnp.any(writable_slots)
         first_empty = jnp.argmax(writable_slots) # if there is no empty slot, then this is zero, but in that case we end up not selecting it, becuase we use 'found_slot'
-        selected_slots = jnp.zeros_like(cmds_queue_times) # Initialize all False
-        selected_slots = selected_slots.at[first_empty].set(found_slot) # if a slot was found, set its corresponding cell to True, the rest to False
+        # selected_slots = jnp.zeros_like(cmds_queue_times) # Initialize all False
+        # selected_slots = selected_slots.at[first_empty].set(found_slot) # if a slot was found, set its corresponding cell to True, the rest to False
 
-        cmds_queue_times = cmds_queue_times.at[first_empty].set(jnp.where(found_slot, cmd_time, cmds_queue_times[first_empty]))
-        cmds_queue = cmds_queue.at[first_empty].set(jnp.where(found_slot, cmd, cmds_queue[first_empty]))
+        do_write = jnp.logical_and(found_slot, jnp.logical_not(discard_command))
+        cmds_queue_times = cmds_queue_times.at[first_empty].set(jnp.where(do_write, cmd_time, cmds_queue_times[first_empty]))
+        cmds_queue = cmds_queue.at[first_empty].set(jnp.where(do_write, cmd, cmds_queue[first_empty]))
 
         return cmds_queue, cmds_queue_times, found_slot
 

@@ -111,7 +111,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         # # self._obs_labels = map_tensor_tree(self._obs_labels, lambda t: th.unsqueeze(t,0) if t is not None else None) # for back compatibility
         # # ggLog.info(f"obs labels = {self._vecobs_labels}")
 
-        self.add_on_ep_end_callback(self._on_ep_end)
+        self.add_on_ep_end_callback(self._on_ep_end) # Using a callback is necessary to catch also the autoresets
 
         os.makedirs(self._outFolder, exist_ok=True)
         os.makedirs(self._outFolder+"/best", exist_ok=True)
@@ -291,6 +291,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
 
     def _saveLastEpisode(self, filename : str):
+        # ggLog.info(f"rec._saveLastEpisode() filename={filename}")
         if len(self._imgBuffer) > 1:
             if self._has_vec_obs:
                 for i in range(len(self._vecBuffer)):
@@ -342,11 +343,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                             last_rewards : th.Tensor,
                             last_terminateds : th.Tensor, 
                             last_truncateds : th.Tensor):
-        # ggLog.info(f"rec._on_ep_end()")
+        # ggLog.info(f"rec._on_ep_end() envs_ended_mask={envs_ended_mask}")
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         run_id = adarl.utils.session.default_session.run_info["run_id"]
         tot_ep_reward = self._ep_rewards[self._env_idx].sum()
         if self._may_episode_be_saved(ep_count) and envs_ended_mask[self._env_idx] and self._stored_frames > 1:
+            # ggLog.info(f"maybe Saving episode {ep_count} with reward {tot_ep_reward}")
             # Episode with at least a full step finishing
             if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
                 # The if is needed to distinguish between an autoreset and a normal reset

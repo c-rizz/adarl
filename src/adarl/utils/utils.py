@@ -218,7 +218,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                    images_return = None,
                    obs_return = None,
                    extra_info_stats : list[str] = [],
-                   deterministic : bool = False):
+                   deterministic : bool = False) -> Dict[str, float]:
     with th.no_grad():
         if model is not None:
             is_training = model.training

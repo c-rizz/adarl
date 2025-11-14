@@ -10,6 +10,7 @@ from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter, ModelSpawnDef
 # from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
+from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.VecSimJointImpedanceAdapterWrapper import VecSimJointImpedanceAdapterWrapper
 import torch as th
 from adarl.utils.spaces import ThBox, gym_spaces
@@ -17,11 +18,40 @@ from adarl.utils.tensor_trees import space_from_tree
 from typing_extensions import override
 from pathlib import Path
 import adarl.utils.utils
+from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check
 
+gym_inverted_pendulum_model = """
+<mujoco model="inverted pendulum">
+	<compiler inertiafromgeom="true"/>
+	<default>
+		<joint armature="0" damping="1" limited="true"/>
+		<geom contype="0" friction="1 0.1 0.1" rgba="0.7 0.7 0 1"/>
+		<tendon/>
+		<motor ctrlrange="-3 3"/>
+	</default>
+	<option gravity="0 0 -9.81" integrator="RK4" timestep="0.02"/>
+	<size nstack="3000"/>
+	<worldbody>
+		<!--geom name="ground" type="plane" pos="0 0 0" /-->
+		<geom name="rail" pos="0 0 0" quat="0.707 0 0.707 0" rgba="0.3 0.3 0.7 1" size="0.02 1" type="capsule"/>
+		<body name="cart" pos="0 0 0">
+			<joint axis="1 0 0" limited="true" name="slider" pos="0 0 0" range="-1 1" type="slide"/>
+			<geom name="cart" pos="0 0 0" quat="0.707 0 0.707 0" size="0.1 0.1" type="capsule"/>
+			<body name="pole" pos="0 0 0">
+				<joint axis="0 1 0" name="hinge" pos="0 0 0" range="-90 90" type="hinge"/>
+				<geom fromto="0 0 0 0.001 0 0.6" name="cpole" rgba="0 0.7 0.7 1" size="0.049 0.3" type="capsule"/>
+				<!--                 <body name="pole2" pos="0.001 0 0.6"><joint name="hinge2" type="hinge" pos="0 0 0" axis="0 1 0"/><geom name="cpole2" type="capsule" fromto="0 0 0 0 0 0.6" size="0.05 0.3" rgba="0.7 0 0.7 1"/><site name="tip2" pos="0 0 .6"/></body>-->
+			</body>
+		</body>
+	</worldbody>
+	<actuator>
+		<motor ctrllimited="true" ctrlrange="-3 3" gear="100" joint="slider" name="slide"/>
+	</actuator>
+</mujoco>"""
 class CartpoleContinuousVecEnv(ControlledVecEnv):
 
     def __init__(   self,
-                    adapter : BaseVecJointImpedanceAdapter, # could be made into BaseVecJointEffortAdapter, but need to use setJointEffortCommand
+                    adapter : BaseVecJointEffortAdapter | BaseVecJointImpedanceAdapter,
                     max_episode_steps : int = 500,
                     render : bool = False,
                     step_duration_sec : float = 0.05,
@@ -29,7 +59,10 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     seed = 1,
                     th_device : th.device = th.device("cpu"),
                     task : str = "balance",
-                    sparse_reward = True):
+                    sparse_reward = True,
+                    terminate_on_rail_distance = False,
+                    terminate_on_pole_angle = True,
+                    use_gym_inverted_pendulum_model = True):
         """
         """
 
@@ -39,8 +72,15 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self._ui_camera_name = "simple_camera"
         self._task = task
         self._sparse_reward = sparse_reward
-        self._upright_hinge_threshold = 3.14159/180*5 # 5 degrees
-        self._adapter : BaseVecJointImpedanceAdapter
+        self._upright_hinge_threshold = 0.2 # like gym's InvertedPendulum
+        self._terminate_on_rail_distance = th.as_tensor(terminate_on_rail_distance, device=th_device)
+        self._terminate_on_pole_angle = th.as_tensor(terminate_on_pole_angle, device=th_device)
+        self._max_cart_dist = 2
+        self._init_noise_scale = 0.01
+        self._gym_inverted_pendulum = use_gym_inverted_pendulum_model
+        self._force_range = 3.0 #if use_gym_inverted_pendulum_model else 20.0
+
+        self._adapter : BaseVecJointImpedanceAdapter | BaseVecJointEffortAdapter
         
         self._CART_POS = 0
         self._CART_VEL = 1
@@ -99,13 +139,21 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
     @override
     def submit_actions(self, actions : th.Tensor) -> None:
-        # self._adapter.setJointsEffortCommand(   joint_names = (("cartpole_v0","foot_joint"),), 
-        #                                         efforts = (actions*20).expand(self.num_envs, 1, 1))
+        dbg_check_finite(actions, async_assert=True)
         # ggLog.info(f"Submitting actions {actions}")
-        jimp_cmd = self._thzeros((self.num_envs,1,5))
-        jimp_cmd[:,:,2] = th.clamp(actions, -1, 1)*20
-        self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
-        # ggLog.info(f"Sending cmd {actions}")
+        force_command = th.clamp(actions, -1, 1)*self._force_range
+        # ggLog.info(f"Applying force command {force_command}")
+        self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
+                                                efforts = force_command.expand(self.num_envs, 1))
+        # if isinstance(self._adapter, BaseVecJointImpedanceAdapter):            
+        #     jimp_cmd = self._thzeros((self.num_envs,1,5))
+        #     jimp_cmd[:,:,2] = force_command
+        #     self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
+        # elif isinstance(self._adapter, BaseVecJointEffortAdapter):
+        #     self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
+        #                                             efforts = force_command.expand(self.num_envs, 1))
+        # else:
+        #     raise RuntimeError(f"Unsupported adapter type {type(self._adapter)}")
 
     def post_step(self):
         # ggLog.info(f"Step {self.get_ep_step_counter()}")
@@ -114,11 +162,15 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
     @override
     def are_states_terminal(self, states : dict[str,th.Tensor]) -> th.Tensor:
         if self._task == "balance":
-            maxCartDist = 2
-            maxPoleAngle = 0.261791667 #15 degrees
+            
             vstates = states["vec"]            
             pole_angle = th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS])
-            return th.logical_or(th.abs(vstates[:,self._CART_POS]) > maxCartDist, th.abs(pole_angle) > maxPoleAngle)
+            cart_pos = vstates[:,self._CART_POS]
+
+            too_far = th.logical_and(th.abs(cart_pos) > self._max_cart_dist, self._terminate_on_rail_distance)
+            too_slanted = th.logical_and(th.abs(pole_angle) > self._upright_hinge_threshold, self._terminate_on_pole_angle)
+
+            return th.logical_or(too_far, too_slanted)
         else:
             return th.zeros((self.num_envs,), dtype=th.bool, device=self._th_device)
     
@@ -153,15 +205,11 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     return centering_reward + upright_reward        
         elif self._task == "balance":
             if self._sparse_reward:
-                health_reward = th.ones((self.num_envs,), device=self._th_device, dtype=th.float32)
-                sub_rewards_return["health"] = health_reward
-                return health_reward
+                return is_upright
             else:
                 return upright_reward
         elif self._task == "swingup":
             if self._sparse_reward:
-                is_upright = pole_angle < self._upright_hinge_threshold
-                sub_rewards_return["upright"] = is_upright
                 return is_upright
             else:
                 return upright_reward
@@ -173,21 +221,38 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         # ggLog.info(f"initializing eps {vec_mask}")
         if isinstance(self._adapter, BaseVecSimulationAdapter):
             if self._task == "balance" or self._task == "center_2r" or self._task == "center_1r":
-                joint_states_pve=th.normal(mean=th.zeros((self.num_envs,2,3), device=self._th_device, dtype=th.float32),
-                                            std=th.as_tensor([0.02, 0.0, 0.0], device=self._th_device, dtype=th.float32).expand(self.num_envs, 2, 3),
-                                            generator=self._rng)
+                joint_states_pve = self._thzeros((self.num_envs,2,3))
+                joint_states_pve[:,:,0].uniform_(-self._init_noise_scale, self._init_noise_scale, generator=self._rng) # cart pos
+                # joint_states_pve=th.normal(mean=th.zeros((self.num_envs,2,3),
+                #                                          device=self._th_device, dtype=th.float32),
+                #                             std=th.as_tensor([self._init_noise_scale, 0.0, 0.0],
+                #                                              device=self._th_device, dtype=th.float32).expand(self.num_envs, 2, 3),
+                #                             generator=self._rng)                
             elif self._task == "swingup":
                 joint_states_pve=self._thrandn((self.num_envs,2,3))*self._thtens([0.1, 0.0, 0.0])+self._thtens([[0.0, 0.0, 0.0],[th.pi, 0.0, 0.0]])
                 # joint_states_pve=self._thrand((self.num_envs,2,3))*th.as_tensor([2*th.pi, 0.0, 0.0])           
             else:
                 raise NotImplementedError()     
-            self._adapter.setJointsStateDirect( joint_names=(("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")),
-                                                joint_states_pve=joint_states_pve)
+            self._adapter.setJointsStateDirect( joint_names=(self._rail_joint, self._hinge_joint),
+                                                joint_states_pve=joint_states_pve,
+                                                vec_mask=vec_mask)
         else:
             raise NotImplementedError()
         self._adapter.setLinksStateDirect([("simple_camera", "simple_camera_link")],
-                                          link_states_pose_vel=th.as_tensor([0.0,-3.0,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13))
-        self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = self._thzeros((self.num_envs,1,5)))
+                                          link_states_pose_vel=th.as_tensor([0.0,-3.0,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+                                          vec_mask=vec_mask)
+        if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
+            pass
+            self._adapter.reset_joint_impedances_commands()
+            start_command = self._thzeros((self.num_envs,1,5))
+            self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = start_command, vec_mask=None)
+            self._adapter.set_current_joint_impedance_command(joint_impedances_pvesd = start_command, vec_mask=None)
+        elif isinstance(self._adapter, BaseVecJointEffortAdapter):
+            self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,),
+                                                    efforts = self._thzeros((self.num_envs, 1)),
+                                                    vec_mask=vec_mask)
+        else:
+            raise RuntimeError(f"Unsupported adapter type {type(self._adapter)}")
 
     @override
     def get_ui_renderings(self, vec_mask : th.Tensor) -> tuple[list[th.Tensor], th.Tensor]:
@@ -217,6 +282,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             self.get_ep_step_counter() #step
         ], dim = 1)
         state = {"vec" : vec_state}
+        dbg_check(lambda: th.isfinite(state["vec"]).all(),
+                  lambda: f"Non-finite values in state vec: {state['vec']}")
         return state
 
     def _get_spawn_defs(self):
@@ -224,6 +291,18 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             cam_file = "models/simple_camera.mjcf.xacro"
         else:            
             cam_file = "models/simple_camera.sdf.xacro"
+        
+        if self._gym_inverted_pendulum:
+            cartpole_model_string = gym_inverted_pendulum_model
+            model_format = "mjcf"
+            self._rail_joint = ("cartpole_v0","slider")
+            self._hinge_joint = ("cartpole_v0","hinge")
+        else:
+            cartpole_model_string = Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text()
+            model_format = "urdf.xacro"
+            self._rail_joint = ("cartpole_v0","foot_joint")
+            self._hinge_joint = ("cartpole_v0","cartpole_joint")
+
         camera_def = ModelSpawnDef( definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
                                     name="simple_camera",
                                     pose=None,
@@ -231,11 +310,11 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                     kwargs={"camera_width":426,
                                             "camera_height":240,
                                             "frame_rate":1/self._intendedStepLength_sec})
-        cartpole_def = ModelSpawnDef(definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
-                                                        name="cartpole_v0",
-                                                        pose=None,
-                                                        format="urdf.xacro",
-                                                        kwargs={"use_collisions" : "false"})
+        cartpole_def = ModelSpawnDef(definition_string=cartpole_model_string,
+                                        name="cartpole_v0",
+                                        pose=None,
+                                        format=model_format,
+                                        kwargs={"use_collisions" : "false"})
         return [cartpole_def, camera_def]
     
     @override
@@ -256,8 +335,9 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         else:
             raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
         
-        self._adapter.set_monitored_joints([("cartpole_v0","foot_joint"),("cartpole_v0","cartpole_joint")])
-        self._adapter.set_impedance_controlled_joints([("cartpole_v0","foot_joint")])
+        self._adapter.set_monitored_joints([self._rail_joint, self._hinge_joint])
+        if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
+            self._adapter.set_impedance_controlled_joints([self._rail_joint])
         # if self._renderingEnabled:
         #     self._adapter.set_monitored_cameras(["camera"])
 

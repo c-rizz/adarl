@@ -264,7 +264,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._linkName_to_bodyLinkIds = {}
         dynamics_infos = ["mass","lat_frict","loc_inertia_diag","loc_inertial_pos","loc_inertial_orn","restitution","roll_friction","spin_friction","contact_damping","contact_stiffness","body_type","collision_margin"]
         for bodyId in bodyIds:
-            base_link_name, _ = pybullet.getBodyInfo(bodyId)
+            base_link_name, body_name = pybullet.getBodyInfo(bodyId)
+            # ggLog.info(f"bodyId {bodyId} has base link name {base_link_name} and body name {body_name}")
             model_name = self._bodyId_to_modelName[bodyId]
             base_link_name = (model_name, base_link_name.decode("utf-8"))
             base_body_and_link_id = (bodyId, -1)

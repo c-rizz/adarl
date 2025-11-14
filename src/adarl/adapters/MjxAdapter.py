@@ -43,6 +43,7 @@ jax.config.update("jax_enable_compilation_cache", True)
 # jax.config.update("jax_log_compiles", True)
 jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
+# jax.config.update("jax_disable_jit", True)  # 
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
 # jax.config.update("jax_explain_cache_misses", True) # May have a performance impact
 # jax.config.update("jax_enable_x64",True)
@@ -437,7 +438,8 @@ class SimState:
              "sim_time" : self.sim_time,
              "stats_step_count" : self.stats_step_count,
              "impulse_startends_stime" : self.impulse_startends_stime,
-             "impulses_xfrc" : self.impulses_xfrc}
+             "impulses_xfrc" : self.impulses_xfrc,
+             "mon_joint_stats_arr_pvaee" : self.mon_joint_stats_arr_pvaee}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -766,8 +768,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
                            for jid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
-        ggLog.info(f"self._lname2lid = {self._lname2lid}")
-        ggLog.info(f"self._jname2jid = {self._jname2jid}")
         if default_link_group_collisions is not None:
             # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possible collisions 
             # So it may be necessary to set the collisions masks before creatign mjx_data
@@ -867,13 +867,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
 
+        ggLog.info(f"MJXAdapter: links  lname2lid = {self._lname2lid}")
+        ggLog.info(f"MJXAdapter: joints jname2jid = {self._jname2jid}")
 
-        ggLog.info("MJX: Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        ggLog.info("MJX: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
-        ggLog.info(f"MJX: dof armatures:{self._mj_model.dof_armature}")
+        ggLog.info(f"MJXAdapter: Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info(f"MJXAdapter: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
+        ggLog.info(f"MJXAdapter: dof armatures:{self._mj_model.dof_armature}")
         
-        ggLog.info("Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
-        ggLog.info("Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
+        ggLog.info(f"MJXAdapter: Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
+        ggLog.info(f"MJXAdapter: Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
         # ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
@@ -1286,6 +1288,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             self._forward_if_needed()           
             t = self._get_vec_joint_states_pve(self._sim_state.mjx_model, self._sim_state.mjx_data, jids)
+            # ggLog.info(f"getJointsState: t = {t}")
         return jax2th(t, th_device=self._out_th_device)
     
     @override
@@ -1733,10 +1736,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._viewer.close()
 
     @override
-    def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]] | None, efforts : th.Tensor) -> None:
+    def setJointsEffortCommand(self, joint_names : Sequence[tuple[str,str]] | None, efforts : th.Tensor, vec_mask : th.Tensor | None = None) -> None:
         jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
         qeff = th2jax(efforts, jax_device=self._jax_device)
-        self._sim_state = self._set_effort_command(self._sim_state, jids,qeff)
+        if vec_mask is not None:
+            vec_mask_jax = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jax = None
+        self._sim_state = self._set_effort_command(self._sim_state, jids,qeff, sims_mask=vec_mask_jax)
         # ggLog.info(f"self._sim_state.requested_qfrc_applied = {self._sim_state.requested_qfrc_applied}")
 
 

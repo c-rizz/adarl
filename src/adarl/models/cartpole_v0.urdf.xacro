@@ -3,31 +3,33 @@
 
 
 
-
-	<xacro:arg name="bar_width" default="0.1" />
-	<xacro:arg name="bar_length" default="0.05" />
-	<xacro:arg name="bar_height" default="0.8" />
-	<xacro:arg name="bar_mass" default="1" />
-	<xacro:arg name="bar_color" default="1 0.7 0.1 1" /> <!-- Orange -->
-	<xacro:arg name="base_width" default="0.4" />
+	<xacro:arg name="bar_width"   default="0.1" />
+	<xacro:arg name="bar_length"  default="0.05" />
+	<xacro:arg name="bar_height"  default="0.8" />
+	<xacro:arg name="bar_mass"    default="1" />
+	<xacro:arg name="base_width"  default="0.4" />
 	<xacro:arg name="base_length" default="0.2" />
 	<xacro:arg name="base_height" default="0.2" />
-	<xacro:arg name="base_mass" default="2.5" />
-	<xacro:arg name="base_color" default="0.5 0.5 0.5 1" /> <!-- grey -->
-	<xacro:arg name="rail_color" default="1 1 1 1" /> <!-- White -->
-	<xacro:arg name="rail_width" default="6" />
+	<xacro:arg name="base_mass"   default="1" />
+	<xacro:arg name="rail_width"  default="6" />
 	<xacro:arg name="rail_length" default="0.025" />
 	<xacro:arg name="rail_height" default="0.1" />
-	<xacro:arg name="rail_mass" default="5" />
-	<xacro:arg name="hinge_friction" default="0.1" />
-	<xacro:arg name="rail_friction" default="0.0" />
+	<xacro:arg name="rail_mass"   default="100" />
+	<xacro:arg name="hinge_friction" default="0.01" />
+	<xacro:arg name="rail_friction"  default="0.01" />
+	<xacro:arg name="hinge_damping"  default="0.1" />
+	<xacro:arg name="rail_damping"   default="0.1" />
+
 	<xacro:arg name="rail_x" default="0.0" />
 	<xacro:arg name="rail_y" default="0.0" />
 	<xacro:arg name="rail_z" default="0.0" />
-	<xacro:arg name="rail_roll" default="0.0" />
+	<xacro:arg name="rail_roll"  default="0.0" />
 	<xacro:arg name="rail_pitch" default="0.0" />
-	<xacro:arg name="rail_yaw" default="0.0" />
+	<xacro:arg name="rail_yaw"   default="0.0" />
 	<xacro:arg name="use_collisions" default="true" />
+	<xacro:arg name="bar_color"  default="1.0 0.7 0.1 1" /> <!-- Orange -->
+	<xacro:arg name="base_color" default="0.5 0.5 0.5 1" /> <!-- grey -->
+	<xacro:arg name="rail_color" default="1   1   1   1" /> <!-- White -->
 
 
 	<xacro:property name="bar_width" default="$(arg bar_width)" />
@@ -47,6 +49,8 @@
 	<xacro:property name="rail_mass" default="$(arg rail_mass)" />
 	<xacro:property name="hinge_friction" default="$(arg hinge_friction)" />
 	<xacro:property name="rail_friction" default="$(arg rail_friction)" />
+	<xacro:property name="hinge_damping" default="$(arg hinge_damping)" />
+	<xacro:property name="rail_damping" default="$(arg rail_damping)" />
 	<xacro:property name="rail_x" default="$(arg rail_x)" />
 	<xacro:property name="rail_y" default="$(arg rail_y)" />
 	<xacro:property name="rail_z" default="$(arg rail_z)" />
@@ -184,15 +188,15 @@
     	<parent link="base_link"/>
     	<child link="bar_link"/>
     	<origin xyz="0 0 0.32" rpy="0 0 0"/>
-		<dynamics damping="0.0" friction="${hinge_friction}"/>
-       	<limit effort="1" velocity="100"/>
+		<dynamics damping="${hinge_damping}" friction="${hinge_friction}"/>
+       	<limit effort="100" velocity="100"/>
         <axis xyz="0 1 0"/>
 	</joint>
 	<joint name="foot_joint" type="prismatic">
     	<parent link="foot_link"/>
     	<child link="base_link"/>
-		<dynamics damping="0.0" friction="${rail_friction}"/>
-       	<limit lower="-2.0" upper="2.0" effort="2000000" velocity="100000"/>
+		<dynamics damping="${rail_damping}" friction="${rail_friction}"/>
+       	<limit lower="-2.0" upper="2.0" effort="100" velocity="100"/>
         <axis xyz="1 0 0"/>
 	</joint>
 	<joint name="fixed" type="fixed">

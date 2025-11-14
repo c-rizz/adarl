@@ -95,6 +95,7 @@ class Session():
         self.run_info["collected_episodes"] = mp_helper.get_context().Value("i",0)
         self.run_info["collected_steps"] = mp_helper.get_context().Value("i",0)
         self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
+        self.run_info["extras"] = mp_helper.get_manager().dict() # For any extra info to be shared across processes
         self.run_info["seed"] = seed
         self.run_info["hostname"] = socket.gethostname()
         self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
