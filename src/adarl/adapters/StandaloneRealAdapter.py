@@ -4,16 +4,12 @@ import time
 from threading import Lock
 from typing import Dict, List, Tuple, Union
 
-import adarl.utils.beep
+# import adarl.utils.beep
 import adarl.utils.dbg.ggLog as ggLog
-import adarl.utils.utils
 from adarl.adapters.BaseAdapter import BaseAdapter, JointName, LinkName
-from adarl.utils.utils import JointState, LinkState, RequestFailError, Sequence
-import numpy as np
-import adarl.utils.sigint_handler
 import torch as th
 from typing_extensions import override
-
+import resource
 
 def precise_sleep(delay_sec : float):
     """Tries to sleep a bit more precisely than time.sleep(), but it is still quite bad,
@@ -24,9 +20,19 @@ def precise_sleep(delay_sec : float):
     delay_sec : float
         Time to sleep for, in seconds
     """
+    # usage = resource.getrusage(resource.RUSAGE_SELF)
+
     target = time.perf_counter_ns() + delay_sec * 1000_000_000
     while time.perf_counter_ns() < target:
         pass
+
+    # newusage = resource.getrusage(resource.RUSAGE_SELF)    
+    # prev_switches = usage.ru_nivcsw + usage.ru_nvcsw
+    # new_switches = newusage.ru_nivcsw + newusage.ru_nvcsw
+    # if new_switches > prev_switches:
+    #     ggLog.info(f"precise_sleep of {delay_sec} sec had {new_switches - prev_switches} context switches")
+    #     pass
+
 
 class AlteredClock():
     def __init__(self, realtime_factor : float = 1.0):
@@ -73,8 +79,9 @@ class StandaloneRealAdapter(BaseAdapter):
     def step(self) -> float:
         """Wait for the step time to pass."""
         #TODO: it may make sense to keep track of the time spend in the rest of the processing
-        sleepDuration = self._stepLength_sec - (self.getEnvTimeFromStartup() - self._last_step_end_env_time)
-        # ggLog.info(f"RosAdapeter will sleep of {sleepDuration} = {self._stepLength_sec} - ({self.getEnvTimeFromStartup()} - {self._last_step_end_env_time})")
+        tn = self.getEnvTimeFromStartup()
+        sleepDuration = self._stepLength_sec - (tn - self._last_step_end_env_time)
+        ggLog.info(f"{__class__.__name__} will sleep of {sleepDuration} = {self._stepLength_sec} - ({tn - self._last_step_end_env_time})")
         if sleepDuration <= 0:
             ggLog.warn("Too much time passed since last step call. Cannot respect step frequency, required sleepDuration = "+str(sleepDuration))
         self.run(max(sleepDuration,0))

@@ -245,7 +245,7 @@ class Robot():
         ret = {}
         ref_pose = None
         for frame in self._model.frames:
-            joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parent]
+            joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parentJoint if hasattr(frame,"parentJoint") else frame.parent]
             # print(f"joint_frame_pose = {type(joint_frame_pose)}")
             link_pose = joint_frame_pose*frame.placement
             if frames is None or frame.name in frames:

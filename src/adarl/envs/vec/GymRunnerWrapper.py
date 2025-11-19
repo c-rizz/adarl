@@ -36,6 +36,7 @@ from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface
 from adarl.envs.vec.EnvRunner import EnvRunner
 from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 from adarl.utils.tensor_trees import map_tensor_tree
+from adarl.utils.base_utils import record_time
 
 ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
 
@@ -89,11 +90,13 @@ class GymRunnerWrapper(gym.Env, Generic[ObsType]):
          next_start_infos,
          reinit_done) = self.vec_runner.step(actions.unsqueeze(0))
         # next_start_infos["final_infos"] = consequent_info
-        return (take_first(next_start_observations),
+        ret =  (take_first(next_start_observations),
                 reward[0],
                 terminated[0],
                 truncated[0],
                 take_first(next_start_infos))
+        record_time("GymRunnerWrapper step end")
+        return ret
     
 
     @override
