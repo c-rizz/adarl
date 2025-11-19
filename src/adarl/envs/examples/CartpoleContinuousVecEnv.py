@@ -89,14 +89,14 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self._POLE_VEL = 4
         self._TIMESTEP = 5
 
-        state_vec_max = th.as_tensor([  2.5 * 2, # cart position
+        state_vec_max = th.as_tensor([  2.5, # cart position
                                         np.finfo(np.float32).max, # cart velocity
                                         1.0, # pole angle sin
                                         1.0, # pole angle cos
                                         np.finfo(np.float32).max, # pole joint velocity
                                         float("+inf")], # timestep
                                     device=th_device)
-        state_vec_labels = ["cart_pos","cart_vel","pole_pos","pole_vel","timestep"]
+        state_vec_labels = ["cart_pos","cart_vel","pole_pos_sin", "pole_pos_cos","pole_vel","timestep"]
         vec_state_space = ThBox(-state_vec_max,state_vec_max,
                                 labels=to_string_tensor(state_vec_labels),
                                 torch_device=th_device)
@@ -143,19 +143,28 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         # ggLog.info(f"Submitting actions {actions}")
         force_command = th.clamp(actions, -1, 1)*self._force_range
         # ggLog.info(f"Applying force command {force_command}")
-        self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
-                                                efforts = force_command.expand(self.num_envs, 1))
-        # if isinstance(self._adapter, BaseVecJointImpedanceAdapter):            
-        #     jimp_cmd = self._thzeros((self.num_envs,1,5))
-        #     jimp_cmd[:,:,2] = force_command
-        #     self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
-        # elif isinstance(self._adapter, BaseVecJointEffortAdapter):
-        #     self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
-        #                                             efforts = force_command.expand(self.num_envs, 1))
-        # else:
-        #     raise RuntimeError(f"Unsupported adapter type {type(self._adapter)}")
+        # self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
+        #                                         efforts = force_command.expand(self.num_envs, 1))
+        if isinstance(self._adapter, BaseVecJointImpedanceAdapter):            
+            jimp_cmd = self._thzeros((self.num_envs,1,5))
+            jimp_cmd[:,:,2] = force_command
+            self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmd)
+        elif isinstance(self._adapter, BaseVecJointEffortAdapter):
+            self._adapter.setJointsEffortCommand(   joint_names = (self._rail_joint,), 
+                                                    efforts = force_command.expand(self.num_envs, 1))
+        else:
+            raise RuntimeError(f"Unsupported adapter type {type(self._adapter)}")
+        dbg_check_finite(self._adapter.getJointsState())
+        # ggLog.info(f"Action submitted")
 
+    def pre_step(self):
+        # ggLog.info(f"Pre-step")
+        dbg_check_finite(self._adapter.getJointsState())
+        return super().pre_step()
+    
     def post_step(self):
+        # ggLog.info(f"Post-step")
+        dbg_check_finite(self._adapter.getJointsState())
         # ggLog.info(f"Step {self.get_ep_step_counter()}")
         return super().post_step()
     
@@ -242,7 +251,6 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                           link_states_pose_vel=th.as_tensor([0.0,-3.0,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
                                           vec_mask=vec_mask)
         if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
-            pass
             self._adapter.reset_joint_impedances_commands()
             start_command = self._thzeros((self.num_envs,1,5))
             self._adapter.setJointsImpedanceCommand(joint_impedances_pvesd = start_command, vec_mask=None)
@@ -273,11 +281,12 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
     @override
     def get_states(self) -> dict[str,th.Tensor]:
         jstate_vec_j_pve : th.Tensor = self._adapter.getJointsState()
+        hinge_pos = jstate_vec_j_pve[:,1,0]
         vec_state = th.stack([
             jstate_vec_j_pve[:,0,0], # cart_pos
-            jstate_vec_j_pve[:,0,0], # cart_vel
-            th.sin(jstate_vec_j_pve[:,1,0]), # hinge_sin
-            th.cos(jstate_vec_j_pve[:,1,0]), # hinge_cos
+            jstate_vec_j_pve[:,0,1], # cart_vel
+            th.sin(hinge_pos), # hinge_sin
+            th.cos(hinge_pos), # hinge_cos
             jstate_vec_j_pve[:,1,1], # hinge_vel
             self.get_ep_step_counter() #step
         ], dim = 1)
@@ -355,5 +364,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                 "cart_pos" : vstates[:,self._CART_POS],
                 "step_count" : step_count,
                 "reward" : reward}
+        info["vecobs"] = self.get_observations(states)
+        if labels is not None:
+            labels["vecobs"] = self.single_observation_space.labels
         info.update({"reward_"+k:v for k,v in sub_rewards.items()})
         return info

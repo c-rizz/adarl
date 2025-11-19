@@ -69,15 +69,22 @@ jax.config.update('jax_default_matmul_precision', "highest")
 from mujoco.mjx._src.forward import euler, forward, fwd_acceleration, fwd_actuation, fwd_position, fwd_velocity
 from mujoco.mjx._src import sensor
 from mujoco.mjx._src import solver
+from packaging.version import Version
 
-
-def th2jax(tensor : th.Tensor, jax_device : jax.Device):
-    # apparently there are issues with non-contiguous tensors (https://github.com/jax-ml/jax/issues/7657)
-    # and with CPU tensors (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
-    return jnp.from_dlpack(tensor.contiguous().cuda(non_blocking=True)).to_device(jax_device)
+if Version(jax.__version__) < Version("0.8.0"):
+    def th2jax(tensor : th.Tensor, jax_device : jax.Device):
+        # apparently there are issues with non-contiguous tensors, should be fixed in 0.8.0 (https://github.com/jax-ml/jax/issues/7657)
+        # and with CPU tensors, should be fixed since Jan 2025 (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
+        return jnp.from_dlpack(tensor.contiguous().cuda(non_blocking=False)).to_device(jax_device)
+    
+    def jax2th(array : jnp.ndarray, th_device : th.device):
+        return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
+else:
+    def th2jax(tensor : th.Tensor, jax_device : jax.Device):
+        return jnp.from_dlpack(tensor).to_device(jax_device)
                                                     
-def jax2th(array : jnp.ndarray, th_device : th.device):
-    return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
+    def jax2th(array : jnp.ndarray, th_device : th.device):
+        return thdlpack.from_dlpack(array).to(th_device)
 
 jitted_scan = jax.jit(jax.lax.scan, static_argnames=("length", "reverse", "unroll"))
 

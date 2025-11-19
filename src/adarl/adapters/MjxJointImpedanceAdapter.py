@@ -15,6 +15,7 @@ import jax.numpy as jnp
 from functools import partial
 import jax.tree_util
 from dataclasses import dataclass
+import adarl.utils.dbg.ggLog as ggLog
 
 @jax.jit
 @partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0, 0)) #vectorize along the number of simulations
@@ -170,7 +171,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         safe_revolute_dof_armature = 0.01,
                         revolute_dof_armature_override = None,
                         opt_override : dict[str,Any] | None = None,
-                        reference_filter_cutoff_frequency : float = 20.0):
+                        reference_filter_cutoff_frequency : float = 20.0,
+                        reference_filter_mode :  str = "second_order"):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -207,13 +209,21 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         ref_filter_coeffs=jnp.empty((vec_size,0,5), device = jax_device),
                                         ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
         # Reference filter
-        self._use_second_order_filter = True
-        if self._use_second_order_filter:
-            self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+        if reference_filter_mode == "second_order":
+            self._use_second_order_reference_filter = True
+        elif reference_filter_mode == "exponential":
+            self._use_exponential_reference_filter = True
+        elif reference_filter_mode == "none":
+            self._use_second_order_reference_filter = False
+            self._use_exponential_reference_filter = False
         else:
+            raise RuntimeError(f"Unknown reference filter mode '{reference_filter_mode}'")
+        if self._use_second_order_reference_filter:
+            self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+        elif self._use_exponential_reference_filter:
             pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
             self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))        
-        # Controlled joint state filter (Only used for the impedance control input, not by getJointState)
+        # Controlled joint state filter (Only used for the impedance control feedback, not by getJointState)
         pve_sensing_filter_decimation_time = 0.005        
         self._pve_sensing_filter_alpha = 0.1**(1/pve_sensing_filter_decimation_time/self._sim_step_dt)
         
@@ -422,21 +432,25 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             current_pv = current_pve[:,:,:2]
         # print(f"current_pve.shape = {current_pve.shape}")
         # print(f"_ref_filter_cutoff_freqs.shape = {self._ref_filter_cutoff_freqs.shape}")
-        vec_ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
-                                                                                self._ref_filter_cutoff_freqs,
-                                                                                current_pve)
-        expected_coeff_shape = (self._vec_size, 5)
-        if vec_ref_filter_coeffs.shape != expected_coeff_shape:
-            raise RuntimeError(f"ref_filter_coeffs shape {vec_ref_filter_coeffs.shape} does not match expected shape {expected_coeff_shape}")
-        expected_state_shape = (self._vec_size, len(self._imp_controlled_joint_names), 3, 5)
-        if reset_state and ref_filter_state.shape != expected_state_shape:
-            raise RuntimeError(f"ref_filter_state shape {ref_filter_state.shape} does not match expected shape {expected_state_shape}")
-
-        state_repl = {  "filtered_pv_references" : current_pv,
-                        "filtered_pve_states" : current_pve,
-                        "ref_filter_coeffs" : vec_ref_filter_coeffs}
-        if reset_state:
-            state_repl["ref_filter_state"] = ref_filter_state
+        state_repl = {  "filtered_pve_states" : current_pve}
+        if self._use_second_order_reference_filter:
+            vec_ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state(th2jax(self.sim_step_duration(), self._jax_device),
+                                                                                    self._ref_filter_cutoff_freqs,
+                                                                                    current_pve)
+            expected_coeff_shape = (self._vec_size, 5)
+            if vec_ref_filter_coeffs.shape != expected_coeff_shape:
+                raise RuntimeError(f"ref_filter_coeffs shape {vec_ref_filter_coeffs.shape} does not match expected shape {expected_coeff_shape}")
+            expected_state_shape = (self._vec_size, len(self._imp_controlled_joint_names), 3, 5)
+            if reset_state and ref_filter_state.shape != expected_state_shape:
+                raise RuntimeError(f"ref_filter_state shape {ref_filter_state.shape} does not match expected shape {expected_state_shape}")
+            state_repl["ref_filter_coeffs"] = vec_ref_filter_coeffs
+            if reset_state:
+                state_repl["ref_filter_state"] = ref_filter_state
+        elif self._use_exponential_reference_filter:
+            if reset_state:
+                state_repl["filtered_pv_references"] = current_pv
+        # ggLog.info(f"resetted filter to coeffs {vec_ref_filter_coeffs} and state {ref_filter_state}")
+        # ggLog.info(f"resetted refs filter")
         self._sim_state = self._sim_state.replace_d(state_repl)
         
     def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
@@ -501,16 +515,18 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                                                                     sim_state.sim_time)
         new_state["cmds_queue"] = new_cmds_queue
         new_state["cmds_queue_times"] = new_cmds_queue_times
-        if self._use_second_order_filter:
+        if self._use_second_order_reference_filter:
             filtered_refs, new_ref_filter_state = _second_order_filter( current_cmd_v_j_pvesd[:,:,:3],
                                                                         sim_state.ref_filter_coeffs,
                                                                         sim_state.ref_filter_state)
             filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:3].set(filtered_refs)
             new_state["ref_filter_state"] = new_ref_filter_state
-        else:
+        elif self._use_exponential_reference_filter:
             new_filtered_pv_references = sim_state.filtered_pv_references*self._pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._pv_ref_filter_alpha)
             filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
             new_state["filtered_pv_references"] = new_filtered_pv_references
+        else:
+            filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd
         vec_jstate = self._get_vec_joint_states_raw_pveaec( self._jids_to_imp_cdm_qpadr,
                                                             self._jids_to_imp_cdm_qvadr,
                                                             sim_state.mjx_data)
@@ -524,9 +540,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             vec_impjoints_pveaecpvesde = jnp.concat([vec_jstate, filtered_cmd_v_j_pvesd, jnp.expand_dims(vec_efforts,2)], axis = 2)
             new_state["vec_impjoints_pveaecpvesde"] = vec_impjoints_pveaecpvesde
 
+        # jax.debug.print("t={t} \t eff={eff} \t cmd={current_cmd} filtered_cmd={filtered_cmd} raw_jstate={jstate} filtered_jstate={filtered_state} prev_filter_state={prev_filter_state} prevfilter_coeffs={prev_filter_coeffs}",
+        #                 t=sim_state.sim_time, eff=vec_efforts, jstate=vec_jstate,
+        #                 current_cmd=current_cmd_v_j_pvesd, filtered_cmd=filtered_cmd_v_j_pvesd,
+        #                 filtered_state=new_filtered_pve_states, prev_filter_state=sim_state.ref_filter_state, prev_filter_coeffs=sim_state.ref_filter_coeffs)
         sim_state = sim_state.replace_d(new_state)        
         # vec_efforts = jnp.zeros_like(vec_efforts)
-        # ggLog.info(f"setting efforts {vec_efforts}")
         sim_state = self._set_effort_command(sim_state, self._imp_control_jids, vec_efforts, sims_mask=sim_has_cmd)
         return sim_state
 

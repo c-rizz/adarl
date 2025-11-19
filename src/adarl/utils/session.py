@@ -520,7 +520,8 @@ def launchRun(runFunction,
             pkgs_to_save = ["adarl"],
             start_adarl : bool = True,
             debug_level = 0,
-            use_wandb : bool = True):
+            use_wandb : bool = True,
+            always_subproc :  bool = False):
     experiment_name = os.path.basename(launchFilePath)
     script_out_folder = os.getcwd()+"/lrg_exps/"+experiment_name
     done = False
@@ -589,7 +590,7 @@ def launchRun(runFunction,
 
     num_processes = min(num_processes, len(argss))
 
-    if len(argss) == 1 or num_processes==1:
+    if not always_subproc and (len(argss) == 1 or num_processes==1):
         run_results = []
         for args in argss:
             r = runFunction_wrapper(**args)
