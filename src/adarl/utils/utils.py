@@ -312,14 +312,65 @@ def pyTorch_makeDeterministic(seed):
         HARDWARE ARCHITECTURES
     """
     import torch as th
-    th.manual_seed(seed)
+    import random
+    random.seed(seed)
     np.random.seed(seed)
+    th.manual_seed(seed)
+    th.backends.cudnn.deterministic = True
+
     # print(f"Seed set to {seed}")
     # time.sleep(10)
     th.backends.cudnn.benchmark = False
     th.use_deterministic_algorithms(True)
     # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+
+
+def list_gpus():
+    import pynvml
+    pynvml.nvmlInit()
+    count = pynvml.nvmlDeviceGetCount()
+    gpus = []
+
+    for i in range(count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+
+        name = pynvml.nvmlDeviceGetName(handle)
+        uuid = pynvml.nvmlDeviceGetUUID(handle)
+
+        # CUDA support
+        try:
+            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+            cuda_supported = True
+            compute_capability = f"{major}.{minor}"
+        except pynvml.NVMLError:
+            cuda_supported = False
+            compute_capability = None
+
+        # VRAM
+        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        total_vram = mem.total          # bytes
+        free_vram = mem.free            # bytes
+        used_vram = mem.used            # bytes
+        pci_bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
+
+        gpus.append({
+            "index": i,
+            "name": name,
+            "uuid": uuid,
+            "cuda_supported": cuda_supported,
+            "compute_capability": compute_capability,
+            "total_vram": total_vram,
+            "free_vram": free_vram,
+            "used_vram": used_vram,
+            "pci_bus_id": pci_bus_id
+        })
+
+    return gpus
+
+def get_gpu_names():
+    return [gpu['name'] for gpu in list_gpus()]
 
 def getBestGpu(seed ):
     import torch as th
@@ -330,22 +381,21 @@ def getBestGpu(seed ):
         gpus_mem_info.append(th.cuda.mem_get_info()) #Returns [free, total]
         th.cuda.set_device(prevDev)
         # print(f"Got {gpus_mem_info[-1]}")
+    gpu_infos = list_gpus()
 
     bestRatio = 0
-    bestGpu = None
-    ratios = [0.0]*len(gpus_mem_info)
-    for i in range(len(gpus_mem_info)):
-        tot = gpus_mem_info[i][1]
-        free = gpus_mem_info[i][0]
+    ratios = [0.0]*len(gpu_infos)
+    for i in range(len(gpu_infos)):
+        tot = gpu_infos[i]['total_vram']
+        free = gpu_infos[i]['free_vram']
         ratio = free/tot
         ratios[i] = ratio
         if ratio > bestRatio:
             bestRatio = ratio
-            bestGpu = i
 
     # Look for the gpus that are within 10% of the best one
     candidates = []
-    for i in range(len(gpus_mem_info)):
+    for i in range(len(gpu_infos)):
         if ratios[i] - bestRatio < 0.1:
             candidates.append(i)
     

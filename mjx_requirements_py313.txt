@@ -54,10 +54,10 @@ imageio
 importlib_resources
 ipython
 itsdangerous
-jax==0.7.1
-jax-cuda12-pjrt==0.7.1
-jax-cuda12-plugin==0.7.1
-jaxlib==0.7.1
+jax==0.8.0
+jax-cuda12-pjrt==0.8.0
+jax-cuda12-plugin==0.8.0
+jaxlib==0.8.0
 jaxopt
 jedi
 Jinja2

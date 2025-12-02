@@ -272,13 +272,18 @@ class ThBoxStateHelper(StateHelper):
         return state
     
     @override
-    def update(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor | float | Sequence[float]], state : th.Tensor):
+    def update(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor | float | Sequence[float]], state : th.Tensor, inplace = True):
         if isinstance(instantaneous_state,Mapping):
             instantaneous_state = self._mapping_to_tensor(instantaneous_state)
-        for i in range(state.size()[1]-1,0,-1):
-            state[:,i] = state[:,i-1]
-        state[:,0] = instantaneous_state.view(self._vec_size,self._fields_num,*self.field_shape)
-        return state
+        # for i in range(state.size()[1]-1,0,-1):
+        #     state[:,i] = state[:,i-1]
+        rolled_state = state.roll(1, dims=1)
+        rolled_state[:,0] = instantaneous_state.view(self._vec_size,self._fields_num,*self.field_shape)
+        if inplace:
+            state.copy_(rolled_state)
+            return state
+        else:
+            return rolled_state
     
     @override
     def check_size(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor] | None = None,
@@ -582,11 +587,21 @@ class StateNoiseGenerator:
         self._resample_mu()
         return th.stack([self._generate_noise() for _ in range(self._history_length)], dim=1)
     
-    def update(self, state):
-        for i in range(1,self._history_length):
-            state[:,i] = state[:,i-1]
-        state[:,0] = self._generate_noise()
-        return state
+    def update(self, state, inplace = True):
+        # for i in range(1,self._history_length):
+        #     state[:,i] = state[:,i-1]
+        # state[:,0] = self._generate_noise()
+        # return state
+    
+        # for i in range(state.size()[1]-1,0,-1):
+        #     state[:,i] = state[:,i-1]
+        rolled_state = state.roll(1, dims=1)
+        rolled_state[:,0] = self._generate_noise()
+        if inplace:
+            state.copy_(rolled_state)
+            return state
+        else:
+            return rolled_state
 
     def normalize(self, noise):
         return noise / self._fields_scale

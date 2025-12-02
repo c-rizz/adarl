@@ -40,10 +40,10 @@ class BaseVecEnv(ABC, Generic[Observation]):
         self.single_state_space = single_state_space
         self.single_reward_space = single_reward_space
         self.info_space = info_space
-        self.vec_action_space = batch_space(single_action_space, n=num_envs)
-        self.vec_observation_space = batch_space(single_observation_space, n=num_envs)
-        self.vec_state_space = batch_space(single_state_space, n=num_envs)
-        self.vec_reward_space = batch_space(single_reward_space, n=num_envs)
+        self.vec_action_space = batch_space(single_action_space, n=num_envs) if single_action_space is not None else None
+        self.vec_observation_space = batch_space(single_observation_space, n=num_envs) if single_observation_space is not None else None
+        self.vec_state_space = batch_space(single_state_space, n=num_envs) if single_state_space is not None else None
+        self.vec_reward_space = batch_space(single_reward_space, n=num_envs) if single_reward_space is not None else None
 
         self.metadata = metadata
         if isinstance(max_episode_steps, (int, float)):
@@ -303,6 +303,9 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     def _thzeros(self, size : tuple[int,...]):
         return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+    
+    def _thones(self, size : tuple[int,...]):
+        return th.ones(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
     
     def _thfull(self, fill_value : float, size : tuple[int,...]):
         return th.full(fill_value=fill_value, size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")

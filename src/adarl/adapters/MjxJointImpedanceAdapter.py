@@ -130,7 +130,8 @@ class SimStateJimp(SimState):
              "impulse_startends_stime" : self.impulse_startends_stime,
              "impulses_xfrc" : self.impulses_xfrc,
              "ref_filter_coeffs" : self.ref_filter_coeffs,
-             "ref_filter_state" : self.ref_filter_state
+             "ref_filter_state" : self.ref_filter_state,
+             "mon_links_stats_arr_v" : self.mon_links_stats_arr_v
             }
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
@@ -207,7 +208,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         impulse_startends_stime=jnp.empty((0,), device = jax_device),
                                         impulses_xfrc=jnp.empty((0,), device = jax_device),
                                         ref_filter_coeffs=jnp.empty((vec_size,0,5), device = jax_device),
-                                        ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device))
+                                        ref_filter_state=jnp.zeros((vec_size,0,5), device = jax_device),
+                                        mon_links_stats_arr_v=jnp.empty((0,), device = jax_device))
         # Reference filter
         if reference_filter_mode == "second_order":
             self._use_second_order_reference_filter = True
@@ -219,7 +221,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         else:
             raise RuntimeError(f"Unknown reference filter mode '{reference_filter_mode}'")
         if self._use_second_order_reference_filter:
-            self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+            self._ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()).clone(), self._jax_device)
         elif self._use_exponential_reference_filter:
             pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
             self._pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))        

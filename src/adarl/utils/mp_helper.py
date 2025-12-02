@@ -11,6 +11,7 @@ def get_context(method : Literal["fork","spawn","forkserver"] = "forkserver"):
     if _context is None:
         _context = mp.get_context(method=method)
         _context_type = method
+        print(f"Created mp context with method {method}")
     if _context_type != method:
         raise RuntimeError(f"Can only use one mp method at a time")
     return _context

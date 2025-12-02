@@ -158,6 +158,19 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         """
         ...
 
+    @abstractmethod
+    def get_links_state_step_stats(self) -> th.Tensor:
+        """Returns link state statistics over the last step for the monitored links. The value of these statistics after a call to run()
+        is currently undefined.
+
+        Returns
+        -------
+        th.Tensor
+            Torch tensor of size (vec_size, 4,len(monitored_links),6) containing component-wise min,max,average,std of the linear and angular velocity
+            of each monitored link. The links are in the order specified in set_monitored_links.
+        """
+        ...
+
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
         """Returns joint state statistics over the last step for the monitored joints. The value of these statistics after a call to run()
         is currently undefined.

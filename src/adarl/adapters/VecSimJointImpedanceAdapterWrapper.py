@@ -230,8 +230,12 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
 
     @override
     def step(self) -> float:
+        r = []
         for a in self._sub_adapters:
-            a.step()
+            r.append(a.step())
+        if not all(r_i == r[0] for r_i in r):
+            raise RuntimeError("Sub-adapters returned different step durations")
+        return r[0]
     
     @override
     def control_period(self) -> th.Tensor:        

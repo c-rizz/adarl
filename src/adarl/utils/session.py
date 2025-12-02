@@ -116,10 +116,11 @@ class Session():
         setupSigintHandler()
         if using_pytorch:
             import torch as th
-            self.run_info["gpu"] = th.cuda.get_device_name()
+            self.run_info["gpu"] = adarl.utils.utils.get_gpu_names()
             th.set_printoptions(linewidth=160)
             pyTorch_makeDeterministic(seed)
             th._dynamo.config.capture_scalar_outputs = True
+            ggLog.info(f"set detemrinistic Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
             if debug_level>0:
                 if debug_level>1:
                     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
@@ -135,10 +136,11 @@ class Session():
                 import torch._inductor.config as iconfig
                 iconfig.trace.enabled = True
                 iconfig.trace.graph_diagram = True
+            ggLog.info(f"set dbg. Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
             th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
-                ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
+                ggLog.info(f"CUDA AVAILABLE: device = {adarl.utils.utils.get_gpu_names()}")
             else:
                 ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
                             "                  NO CUDA AVAILABLE!\n"+
@@ -190,17 +192,16 @@ class Session():
 
         has_torch = False
         cuda_available = False
-        cuda_device_name = None
         try:
             import torch as th
             cuda_available = th.cuda.is_available() 
             if cuda_available:
-                cuda_device_name = th.cuda.get_device_name()
+                gpu_names = adarl.utils.utils.get_gpu_names()
         except ImportError as e:
             pass
         config["has_torch"] = has_torch
         config["cuda_available"] = cuda_available
-        config["cuda_device_name"] = cuda_device_name
+        config["cuda_device_name"] = gpu_names
         config["cpu_name"] = adarl.utils.utils.cpuinfo()
         config["hostname"] = self.run_info["hostname"]
         config["start_time"] = self.run_info["start_time"]
