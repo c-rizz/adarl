@@ -465,7 +465,7 @@ def compile_xacro_string(model_definition_string, model_kwargs = None, extra_pkg
     model_definition_string = _fix_urdf_ros_paths(model_definition_string, extra_pkg_paths=extra_pkg_paths)
     return model_definition_string
 
-def isinstance_noimport(obj, class_names):
+def isinstance_noimport(obj, class_names: str | Sequence[str]):
     if isinstance(class_names, str):
         class_names = [class_names]
     # return type(obj).__name__ in class_names

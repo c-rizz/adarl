@@ -417,6 +417,134 @@ def get_data_into(
 def jax_mat_to_quat_xyzw(matrices):
     return jax.scipy.spatial.transform.Rotation.from_matrix(matrices).as_quat(scalar_first=False)
 
+
+def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : bool, uneven_ground : bool, discardvisual : bool):
+    """Build and setup the environment scenario. Should be called by the environment before startup()."""
+    ggLog.info(f"MjxAdapter building scenario")
+    if add_ground or add_sky:
+        n="\n"
+        ground_geoms = []
+        assets = []
+        uneven_ground = False
+        if add_ground:
+            ground_geoms.append('<geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
+            assets.append('<texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
+            assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
+        if uneven_ground:
+            ground_geoms.append('<geom name="uneven_ground" type="hfield" hfield="uneven_ground" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
+            assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')
+        if add_sky:
+            assets.append('<texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />')
+        models.append(ModelSpawnDef(name="ground",
+                                    definition_string=f"""
+                                    <mujoco>
+                                        <compiler angle="radian"/>
+                                        <asset>
+                                            {n.join(assets)}
+                                        </asset>
+                                        <worldbody>
+                                            <body name="ground_link">
+                                                <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
+                                                        ambient="0.2 0.2 0.2"
+                                                        diffuse="0.7 0.7 0.7"
+                                                        specular="0.5 0.5 0.5"
+                                                        castshadow="true"/>
+                                                {n.join(ground_geoms)}
+                                            </body>
+                                        </worldbody>
+                                    </mujoco>""",
+                                    format="mjcf",
+                                    pose=None,
+                                    kwargs={}))
+
+    specs = []
+    ggLog.info(f"Spawning models: {[model.name for model in models]}")
+    for model in models:
+        if model.format.strip().lower()[-6:] == ".xacro":
+            def_string = compile_xacro_string( model_definition_string=model.definition_string,
+                                                            model_kwargs=model.kwargs)
+        elif model.format.strip().lower() in ("urdf","mjcf"):
+            def_string = model.definition_string
+        else:
+            raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
+        if model.format.strip().lower() in ("urdf","urdf.xacro"):
+            def_string = add_compiler_options(def_string, discardvisual=discardvisual)
+        ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
+        mjSpec = mujoco.MjSpec.from_string(def_string)
+        # mjSpec.compiler.discardvisual = False
+        mjSpec.compiler.degree = False
+        specs.append((model.name, mjSpec))
+        if model.pose is not None:
+            raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
+    big_speck = mujoco.MjSpec()
+    
+    frame = big_speck.worldbody.add_frame()
+    big_speck.compiler.degree = False
+    # big_speck.compiler.discardvisual = False
+    for mname, spec in specs:
+        if model_element_separator in mname:
+            raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
+        # add all th bodies that are direct childern of worldbody
+        body = spec.worldbody.first_body()
+        # spec.compiler.discardvisual = False
+        if spec.compiler.degree:
+            raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
+        while body is not None:
+            frame.attach_body(body, mname+model_element_separator, "")
+            body = spec.worldbody.next_body(body)
+    # big_speck.compiler.discardvisual = False
+    big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
+    mj_model = big_speck.compile()
+    return mj_model, big_speck
+
+def apply_opt_reset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None):
+    if preset_name is None or preset_name == "mujoco_default":
+        pass
+    elif preset_name == "fastest":
+        # Copied from barkour example
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 1 # constraint solver iterations
+        mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
+        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.impratio = 10 # see comment above
+    elif preset_name == "faster":
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 3
+        mj_model.opt.ls_iterations = 3
+        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
+        mj_model.opt.impratio = 10 # see comment above
+    elif preset_name == "fast":
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 10
+        mj_model.opt.ls_iterations = 5
+        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.impratio = 10 # see comment above
+    elif preset_name == "medium":
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 20
+        mj_model.opt.ls_iterations = 5
+        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.impratio = 10 # see comment above
+    elif preset_name == "slow":
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 30
+        mj_model.opt.ls_iterations = 5
+        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.impratio = 10 # see comment above
+    elif preset_name == "slower":
+        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.iterations = 50
+        mj_model.opt.ls_iterations = 5
+        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.impratio = 10 # see comment above
+    else:
+        raise RuntimeError(f"Unknown opt preset '{preset_name}'")
+    if opt_override is not None:
+             for k,v in opt_override.items():
+                setattr(mj_model.opt,k,v)
+    return mj_model
+
 @jax.tree_util.register_dataclass
 @dataclass
 class SimState:
@@ -620,80 +748,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                        default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
         ggLog.info(f"MjxAdapter building scenario")
-        if self._add_ground or self._add_sky:
-            n="\n"
-            ground_geoms = []
-            assets = []
-            self._uneven_ground = False
-            if self._add_ground:
-                ground_geoms.append('<geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
-                assets.append('<texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
-                assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
-            if self._uneven_ground:
-                ground_geoms.append('<geom name="uneven_ground" type="hfield" hfield="uneven_ground" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
-                assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')
-            if self._add_sky:
-                assets.append('<texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />')
-            models.append(ModelSpawnDef(name="ground",
-                                        definition_string=f"""
-                                        <mujoco>
-                                            <compiler angle="radian"/>
-                                            <asset>
-                                                {n.join(assets)}
-                                            </asset>
-                                            <worldbody>
-                                                <body name="ground_link">
-                                                    <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
-                                                            ambient="0.2 0.2 0.2"
-                                                            diffuse="0.7 0.7 0.7"
-                                                            specular="0.5 0.5 0.5"
-                                                            castshadow="true"/>
-                                                    {n.join(ground_geoms)}
-                                                </body>
-                                            </worldbody>
-                                        </mujoco>""",
-                                        format="mjcf",
-                                        pose=None,
-                                        kwargs={}))
-
-        specs = []
-        ggLog.info(f"Spawning models: {[model.name for model in models]}")
-        for model in models:
-            if model.format.strip().lower()[-6:] == ".xacro":
-                def_string = compile_xacro_string( model_definition_string=model.definition_string,
-                                                                model_kwargs=model.kwargs)
-            elif model.format.strip().lower() in ("urdf","mjcf"):
-                def_string = model.definition_string
-            else:
-                raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
-            if model.format.strip().lower() in ("urdf","urdf.xacro"):
-                def_string = add_compiler_options(def_string, discardvisual=self._discardvisual)
-            ggLog.info(f"Adding model '{model.name}' : \n{def_string}")
-            mjSpec = mujoco.MjSpec.from_string(def_string)
-            # mjSpec.compiler.discardvisual = False
-            mjSpec.compiler.degree = False
-            specs.append((model.name, mjSpec))
-            if model.pose is not None:
-                raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
-        big_speck = mujoco.MjSpec()
-        
-        frame = big_speck.worldbody.add_frame()
-        big_speck.compiler.degree = False
-        # big_speck.compiler.discardvisual = False
-        for mname, spec in specs:
-            if model_element_separator in mname:
-                raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
-            # add all th bodies that are direct childern of worldbody
-            body = spec.worldbody.first_body()
-            # spec.compiler.discardvisual = False
-            if spec.compiler.degree:
-                raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
-            while body is not None:
-                frame.attach_body(body, mname+model_element_separator, "")
-                body = spec.worldbody.next_body(body)
-        # big_speck.compiler.discardvisual = False
-        big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
-        self._mj_model = big_speck.compile()
+        self._uneven_ground = False
+        self._mj_model, big_speck = aggregate_models(models,
+                                          add_ground=self._add_ground,
+                                          add_sky=self._add_sky,
+                                          uneven_ground=self._uneven_ground,
+                                          discardvisual=self._discardvisual)
         self._mj_model.opt.timestep = self._sim_step_dt
         # I prevent slipping by using a big impratio see for example:
         # - https://github.com/google-deepmind/mujoco_menagerie/blob/d98292efc73511aa7a4ca958eaaf226403d56cb7/anybotics_anymal_b/anymal_b.xml#L4 
@@ -701,51 +761,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # - https://github.com/google-deepmind/mujoco/discussions/656#discussioncomment-4416347
         # - https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
         # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
-        if self._opt_preset is None or self._opt_preset == "mujoco_default":
-            pass
-        elif self._opt_preset == "fastest":
-            # Copied from barkour example
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 1 # constraint solver iterations
-            self._mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
-            self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 10 # see comment above
-        elif self._opt_preset == "faster":
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 3
-            self._mj_model.opt.ls_iterations = 3
-            self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
-            self._mj_model.opt.impratio = 10 # see comment above
-        elif self._opt_preset == "fast":
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 10
-            self._mj_model.opt.ls_iterations = 5
-            # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 10 # see comment above
-        elif self._opt_preset == "medium":
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 20
-            self._mj_model.opt.ls_iterations = 5
-            # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 10 # see comment above
-        elif self._opt_preset == "slow":
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 30
-            self._mj_model.opt.ls_iterations = 5
-            # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 10 # see comment above
-        elif self._opt_preset == "slower":
-            self._mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
-            self._mj_model.opt.iterations = 50
-            self._mj_model.opt.ls_iterations = 5
-            # self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-            self._mj_model.opt.impratio = 10 # see comment above
-        else:
-            raise RuntimeError(f"Unknown opt preset '{self._opt_preset}'")
-        if self._opt_override is not None:
-             for k,v in self._opt_override.items():
-                setattr(self._mj_model.opt,k,v)
+        self._mj_model = apply_opt_reset(self._mj_model, self._opt_preset, self._opt_override)
+        
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         ggLog.info(f"Spawned: \n{big_speck.to_xml()}")
         ggLog.info(f"mj_model.opt = {self._mj_model.opt}")
@@ -1689,19 +1706,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 #    Fixed joints cannot be set to different positions across the vectorized simulations.
                 #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
                 #     and fixed joints are represented as fixed transforms in the model.
-
-                # #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, broadcast_in_dim
                 # if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
                 #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
                 #                        f"{link_states_pose_vel_jnp[0,i]}\n"
                 #                        f"!=\n"
                 #                        f"{link_states_pose_vel_jnp[:,i]}")
-                #TODO: the following line triggers jit recompile
                 # if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
                 #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
-                #TODO: the following line triggers jit recompile on:  dynamice_slice, squeeze, convert_element_type
                 model_body_pos = model_body_pos.at[:,lid].set(link_states_pose_vel_jnp[:,i,:3])
-                #TODO: the following line triggers jit recompile, also on add, select_n, concatenate, gather, scatter
                 model_body_quat = model_body_quat.at[:,lid].set(link_states_pose_vel_jnp[:,i,[6,3,4,5]])
                 # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
             elif parent_joints_num == 1 and parent_body_id==0:

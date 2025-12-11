@@ -616,17 +616,17 @@ class DictStateHelper(StateHelper):
     @dataclass
     class SimpleDictObsDef():
         observable_substates : list[str]
-        flattened_subobss : list[str]
+        concatenable_substates : list[str]
         noise_generators : dict[str,StateNoiseGenerator]
-        flattened_part_name : str
+        concatenated_part_name : str
     @dataclass
     class DictObsDef():
         observable_substates : list[str]
-        flattened_subfields : list[str]
+        concatenable_substates : list[str]
         vec_obs_space : spaces.gym_spaces.Dict
         single_obs_space : spaces.gym_spaces.Dict
         noise_generators : dict[str,StateNoiseGenerator]
-        flattened_part_name : str
+        concatenated_part_name : str
         name : str
 
 
@@ -671,42 +671,42 @@ class DictStateHelper(StateHelper):
                     single_state_subspaces[noise_state_name] = noise.get_single_space()
                 self._stateobs2noise_names[(sub_state_name,obs_def_name)] = noise_state_name
 
-            flattened_subobss = init_obs_def.flattened_subobss
-            flattened_name = init_obs_def.flattened_part_name
-            nonflat_obss = [k for k in init_obs_def.observable_substates if k not in init_obs_def.flattened_subobss]
+            concatenable_substates = init_obs_def.concatenable_substates
+            concatenated_name = init_obs_def.concatenated_part_name
+            nonflat_obss = [k for k in init_obs_def.observable_substates if k not in init_obs_def.concatenable_substates]
             vec_obs_subspaces    : dict[str,spaces.gym.Space] = {k:self.sub_helpers[k].get_vec_obs_space(obs_def_name)    for k in nonflat_obss}
             single_obs_subspaces : dict[str,spaces.gym.Space] = {k:self.sub_helpers[k].get_single_obs_space(obs_def_name) for k in nonflat_obss}
-            if len(flattened_subobss)>0:
-                flattened_dtype = self.sub_helpers[flattened_subobss[0]].get_single_obs_space(obs_def_name).dtype
-                for subobsname in flattened_subobss:
+            if len(concatenable_substates)>0:
+                concatenateded_dtype = self.sub_helpers[concatenable_substates[0]].get_single_obs_space(obs_def_name).dtype
+                for subobsname in concatenable_substates:
                     if subobsname not in init_obs_def.observable_substates:
                         raise RuntimeError(f"Field {subobsname} is present in flatten_in_obs but not in observable_fields")
-                    if self.sub_helpers[subobsname].get_single_obs_space(obs_def_name).dtype != flattened_dtype:
+                    if self.sub_helpers[subobsname].get_single_obs_space(obs_def_name).dtype != concatenateded_dtype:
                         raise RuntimeError(f"All sub observations that are flattened should have the same dtype, "
-                                        f"but {flattened_subobss[0]} has {flattened_dtype} and {subobsname} has {self.sub_helpers[subobsname].get_single_obs_space(obs_def_name).dtype}")
-                single_flattened_part_size = typing.cast(int, 
+                                        f"but {concatenable_substates[0]} has {concatenateded_dtype} and {subobsname} has {self.sub_helpers[subobsname].get_single_obs_space(obs_def_name).dtype}")
+                single_concatenated_part_size = typing.cast(int, 
                                                 sum([np.prod(self.sub_helpers[k].get_single_obs_space(obs_def_name).shape) 
-                                                    for k in flattened_subobss ]))
+                                                    for k in concatenable_substates ]))
                 obs_labels = self.observation_names(obs_def=DictStateHelper.DictObsDef(observable_substates=init_obs_def.observable_substates,
-                                                                                                flattened_subfields=init_obs_def.flattened_subobss,
+                                                                                                concatenable_substates=init_obs_def.concatenable_substates,
                                                                                                 noise_generators=init_obs_def.noise_generators,
-                                                                                                flattened_part_name=init_obs_def.flattened_part_name,
+                                                                                                concatenated_part_name=init_obs_def.concatenated_part_name,
                                                                                                 vec_obs_space=None,
                                                                                                 single_obs_space=None,
                                                                                                 name=obs_def_name)
-                                                                                                )[flattened_name]
-                vec_obs_subspaces[flattened_name] = spaces.ThBox(low = -1.0, high = 1.0,
-                                                                        shape=(self._vec_size, single_flattened_part_size,),
-                                                                        dtype=flattened_dtype,
+                                                                                                )[concatenated_name]
+                vec_obs_subspaces[concatenated_name] = spaces.ThBox(low = -1.0, high = 1.0,
+                                                                        shape=(self._vec_size, single_concatenated_part_size,),
+                                                                        dtype=concatenateded_dtype,
                                                                         labels=obs_labels)            
-                single_obs_subspaces[flattened_name] = spaces.ThBox(   low = -1.0, high = 1.0,
-                                                                                shape=(single_flattened_part_size,),
-                                                                                dtype=flattened_dtype,
+                single_obs_subspaces[concatenated_name] = spaces.ThBox(   low = -1.0, high = 1.0,
+                                                                                shape=(single_concatenated_part_size,),
+                                                                                dtype=concatenateded_dtype,
                                                                                 labels=obs_labels)
             obs_def = DictStateHelper.DictObsDef(observable_substates=init_obs_def.observable_substates,
-                                       flattened_subfields=init_obs_def.flattened_subobss,
+                                       concatenable_substates=init_obs_def.concatenable_substates,
                                        noise_generators=init_obs_def.noise_generators,
-                                       flattened_part_name=init_obs_def.flattened_part_name,
+                                       concatenated_part_name=init_obs_def.concatenated_part_name,
                                        vec_obs_space=spaces.ThDict(vec_obs_subspaces),
                                        single_obs_space=spaces.ThDict(single_obs_subspaces),
                                        name=obs_def_name)
@@ -733,8 +733,8 @@ class DictStateHelper(StateHelper):
             obs_def = obs_defs[obs_name]
             if obs_def["observable"]:
                 init_obs_def.observable_substates.append(state_name)
-            if obs_def["flatten"]:
-                init_obs_def.flattened_subobss.append(state_name)
+            if obs_def["concatenate"]:
+                init_obs_def.concatenable_substates.append(state_name)
             noise = obs_def["noise"]
             if noise is not None:
                 if not isinstance(noise, StateNoiseGenerator):
@@ -793,15 +793,15 @@ class DictStateHelper(StateHelper):
         obs_def = self._obs_defs[obs_def_name]
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k], obs_def=obs_def_name) for k in  obs_def.observable_substates}
         # ggLog.info(f"non_flat_obs = {nonflat_obs}")
-        flattened_parts = []
+        concatenable_parts = []
         obs = {}
         for k,subobs in nonflat_obs.items():
-            if k in obs_def.flattened_subfields:
-                flattened_parts.append(self.sub_helpers[k].flatten(subobs))
+            if k in obs_def.concatenable_substates:
+                concatenable_parts.append(self.sub_helpers[k].flatten(subobs))
             else:
                 obs[k] = subobs
-        if len(flattened_parts) > 0:
-            obs[obs_def.flattened_part_name] = th.concat(flattened_parts, dim=1)
+        if len(concatenable_parts) > 0:
+            obs[obs_def.concatenated_part_name] = th.concat(concatenable_parts, dim=1)
             # if th.any(th.abs(obs[self._flatten_part_name]) > 1.0):
             #     ggLog.warn(f"observation values exceed -1,1 normalization: nonflat_obs = {nonflat_obs},\nstate = {state}")
         return obs
@@ -827,16 +827,16 @@ class DictStateHelper(StateHelper):
 
     def _obs_names(self, obs_def : DictObsDef):
         
-        flattened_parts_names : list[str] = []
+        concatenated_parts_names : list[str] = []
         obs_names : dict[str, npt.NDArray[np.object_]] = {}
         for k in obs_def.observable_substates:
-            if k in obs_def.flattened_subfields:
-                flattened_parts_names.extend([k+"."+str(n) for n in self.sub_helpers[k].flat_obs_names(obs_def.name)])
+            if k in obs_def.concatenable_substates:
+                concatenated_parts_names.extend([k+"."+str(n) for n in self.sub_helpers[k].flat_obs_names(obs_def.name)])
             else:
                 obs_names[k] = self.sub_helpers[k].observation_names(obs_def.name)
-        if len(flattened_parts_names) > 0:
+        if len(concatenated_parts_names) > 0:
             # ggLog.info(f"flattened_parts_names = {flattened_parts_names}")
-            obs_names[obs_def.flattened_part_name] = np.array(flattened_parts_names)
+            obs_names[obs_def.concatenated_part_name] = np.array(concatenated_parts_names)
         return obs_names
 
     @override    

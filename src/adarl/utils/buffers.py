@@ -139,7 +139,6 @@ class TransitionBatch():
     terminated : th.Tensor
     rewards : th.Tensor
 
-
 # from stable_baselines3.common.buffers import DictReplayBuffer, DictReplayBufferSamples
 # class RandomHoldoutBuffer(DictReplayBuffer):
 #     def __init__(self,

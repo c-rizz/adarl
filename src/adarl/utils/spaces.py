@@ -52,10 +52,10 @@ class ThBox(gym.spaces.Box):
         RuntimeError
             _description_
         """
-        self._th_device = torch_device
+        self.th_device = torch_device
         self._seed = seed
         if generator is None:
-            generator = th.Generator(device=self._th_device)
+            generator = th.Generator(device=self.th_device)
             if seed is not None:
                 generator.manual_seed(seed)
         elif seed is not None:
@@ -77,28 +77,31 @@ class ThBox(gym.spaces.Box):
             labels = np.array([f"{i}" for i in range(np.prod(self.shape, dtype=int))], dtype=object)
         self.labels : npt.NDArray[np.object_] = labels
         del self._np_random # disable the numpy rng, we don't use it and it is annoying to pickle through numpy 2.0/1.x
-        self._high_th = th.as_tensor(self.high, device=self._th_device)
-        self._low_th = th.as_tensor(self.low, device=self._th_device)
+        self._high_th = th.as_tensor(self.high, device=self.th_device)
+        self._low_th = th.as_tensor(self.low, device=self.th_device)
         if default_value is not None:
             self.zero_action = default_value.expand_as(self._high_th)
         else:
             self.zero_action = (self._high_th+self._low_th)/2
     
+    @property
+    def torch_dtype(self) -> th.dtype:
+        return getattr(th,self.torch_dtype_str)
 
     def sample(self):
         # ggLog.info(f"Sampling ThBox, rng state = {hash_tensor(self._rng.get_state()) if self._rng is not None else None}")
         # import traceback
         # traceback.print_stack()
         # only works for uniform
-        dtype : th.dtype = getattr(th,self.torch_dtype_str)
+        dtype = self.torch_dtype
         if dtype.is_floating_point:
             r = th.rand(self._high_th.size(),
-                        device=self._th_device,
+                        device=self.th_device,
                         generator=self._th_rng,
                         dtype=dtype)
         elif self.dtype not in [th.int8, th.int16, th.int32, th.int64, th.uint8, th.uint16, th.uint32, th.uint64]:
             r = th.rand(self._high_th.size(),
-                        device=self._th_device,
+                        device=self.th_device,
                         generator=self._th_rng)
             r = (r*(self._high_th-self._low_th)+self._low_th).to(dtype)
         return r*(self._high_th-self._low_th)+self._low_th

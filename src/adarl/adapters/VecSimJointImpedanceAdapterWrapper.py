@@ -267,3 +267,8 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
     @override
     def sim_step_duration(self) -> float:
         return self._sub_adapters[0].sim_step_duration()
+    
+    @override
+    def get_links_state_step_stats(self) -> th.Tensor:
+        vstats = [a.get_joints_state_step_stats() for a in self._sub_adapters]
+        return th.stack(vstats, dim=0)

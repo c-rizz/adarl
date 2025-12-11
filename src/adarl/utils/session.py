@@ -197,8 +197,13 @@ class Session():
             cuda_available = th.cuda.is_available() 
             if cuda_available:
                 gpu_names = adarl.utils.utils.get_gpu_names()
+            else:
+                gpu_names = []
         except ImportError as e:
+            ggLog.error(f"Error loading torch: {adarl.utils.utils.exc_to_str(e)}")
             pass
+        print(f"cuda_Available = {cuda_available}")
+        print(f"gpu_names = {gpu_names} ")
         config["has_torch"] = has_torch
         config["cuda_available"] = cuda_available
         config["cuda_device_name"] = gpu_names
