@@ -91,6 +91,7 @@ class WandbWrapper():
         self._init_pid = os.getpid()
         self._wandb_run = wandb.init(**kwargs)
         self._wandb_initialized = True
+        ggLog.info(f"Wandb initialized in process {self._init_pid} with run id {self._wandb_run.id}")
         # self._worker_thread = threading.Thread(target=self._worker)
         # self._worker_thread.start()
     
@@ -207,6 +208,7 @@ class WandbWrapper():
     def __getstate__(self):
         state = self.__dict__.copy()
         del state["_worker_thread"]
+        state["_wandb_run"] = None # We don't need the wandb run in subprocesses, and it has issues in subsubprocesses (one lavel of subprocesses works, but not more)
         return state
 
     def __setstate__(self, state):

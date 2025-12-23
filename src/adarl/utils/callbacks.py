@@ -151,7 +151,8 @@ class EvalCallback(TrainingCallback):
                   f"    episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}"
                   f"    avg pred time: {results.get('avg_pred_time', 0):.5f}s"
                   f"    avg step time: {results.get('avg_step_time', 0):.5f}s"
-                  f"    fps: {results['fps']:.2f}")
+                  f"    fps: {results['fps']:.2f}"
+                  f"    deterministic: {self.deterministic}")
         
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
@@ -159,7 +160,7 @@ class EvalCallback(TrainingCallback):
         try:
             with open(output_path+".yaml", "w") as output_file:
                 try:
-                    results_readable = {k: v.tolist() if isinstance(v, np.ndarray) else v for k,v in results.items()}
+                    results_readable = {k: v.tolist() if isinstance(v, (np.ndarray,np.generic)) else v for k,v in results.items()}
                     yaml.dump(results_readable, output_file, default_style=None)
                 except TypeError as e:
                     ggLog.error(f"Failed to save eval results to {output_path}: {e}")
@@ -231,7 +232,7 @@ class CheckpointCallbackRB(TrainingCallback):
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
         fname_base = f"{exp_name}_{run_id}_{self._save_count:05d}_{self.name_prefix}_{self._episode_counter:09d}ep_{self._step_counter:09d}st_{train_iter:09d}it"
-        fname_base = fname_base.replace(".", "_")
+        fname_base = fname_base.replace(".", "_")+".zip"
         if is_best:
             fname_base = "best_"+fname_base
         path = os.path.join(self.save_path, fname_base)

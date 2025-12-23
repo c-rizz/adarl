@@ -502,6 +502,12 @@ def conditioned_assign(original : th.Tensor, do_copy : th.Tensor, newvalues : th
     """
     masked_assign(original.unsqueeze(0), do_copy.view(-1), newvalues)
 
+def expand_tensor_into_lower_dims(tensor : th.Tensor, target_size : th.Size) -> th.Tensor:
+    # Expand the tensor in the (reversed) upper dimensions
+    tensor = tensor.expand(target_size[::-1])
+    # Permute the dimensions to restore the required order
+    tensor = tensor.permute(*list(range(tensor.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
+    return tensor
 
 def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int | bool):
     """Inplace assign values to the original tensor, in locations defined by mask.
@@ -525,8 +531,7 @@ def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Ten
     if len(row_mask.size()) != 1 or row_mask.size()[0] != original.size()[0]:
         raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
     # mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
-    mask = row_mask.expand(original.size()[::-1])
-    mask = mask.permute(*list(range(mask.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
+    mask = expand_tensor_into_lower_dims(row_mask, original.size())
     th.where(mask,
              newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
              original,
@@ -606,13 +611,11 @@ def masked_to_masked_assign(dest_tensor : th.Tensor, dest_row_mask : th.Tensor, 
     """
     dbg_check_size(dest_row_mask, (dest_tensor.size()[0],), "dest_mask must be 1D and have the same size as dest_tensor first dimension")
     dbg_check_size(src_row_mask, (src_tensor.size()[0],),   "src_mask must be 1D and have the same size as src_tensor first dimension")
-    masked_src = th.empty_like(dest_tensor)
-    full_src_mask = src_row_mask.expand(src_tensor.size()[::-1]) # expand to the reversed size of source
-    full_src_mask = full_src_mask.permute(*list(range(full_src_mask.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
-    reordered_src = move_masked_to_start(masked_src, src_row_mask) # move the selected rows to the start
+    reordered_src = move_masked_to_start(src_tensor, src_row_mask) # move the selected rows to the start
     src_elements_count = th.count_nonzero(src_row_mask)
     clamped_dest_mask = th.logical_and(dest_row_mask, dest_row_mask.cumsum(0)<=src_elements_count) # clamp the dest mask to the number of available elements in src
-    dest_tensor.masked_scatter_(clamped_dest_mask, reordered_src) # Move the selected rows to the destination
+    mask = expand_tensor_into_lower_dims(clamped_dest_mask, dest_tensor.size())
+    dest_tensor.masked_scatter_(mask, reordered_src) # Move the selected rows to the destination
     return clamped_dest_mask
 
 _T = TypeVar('_T', float, th.Tensor)

@@ -306,6 +306,42 @@ def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6,
 
 model_element_separator = "#"
 
+from mujoco.mjx._src.io import types, _get_contact, support
+
+@jax.jit
+def get_renderdata_dict(jax_data : mjx.Data):
+    """ Copy the position and orientation data from a jax mjx.Data into a dict. Just to avoid copying all fields when only these are needed."""
+    return {
+        'xpos' : jax_data.xpos,
+        'xquat' : jax_data.xquat,
+        'geom_xpos' : jax_data.geom_xpos,
+        'geom_xmat' : jax_data.geom_xmat,
+        'site_xpos' : jax_data.site_xpos,
+        'site_xmat' : jax_data.site_xmat,
+        'xipos' : jax_data.xipos,
+        'ximat' : jax_data.ximat,
+        'xfrc_applied' : jax_data.xfrc_applied
+    }
+
+def get_renderdata_into(
+    cpu_data: list[mujoco.MjData],
+    jax_data
+):
+    """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco.MjData. 
+        Just to avoid copying all fields when only these are needed."""
+    poses = jax.device_get(get_renderdata_dict(jax_data))
+    for i in range(len(cpu_data)):
+        cdata = cpu_data[i]
+        cdata.xpos = poses['xpos'][i]
+        cdata.xquat = poses['xquat'][i]
+        cdata.geom_xpos = poses['geom_xpos'][i]
+        cdata.geom_xmat = poses['geom_xmat'][i].reshape((-1,9))
+        cdata.site_xpos = poses['site_xpos'][i]
+        cdata.site_xmat = poses['site_xmat'][i].reshape((-1,9))
+        cdata.xipos = poses['xipos'][i]
+        cdata.ximat = poses['ximat'][i].reshape((-1,9))
+        cdata.xfrc_applied = poses['xfrc_applied'][i]
+
 def get_data_into(
     result: mujoco.MjData | List[mujoco.MjData],
     m,
@@ -1265,6 +1301,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
         if vec_mask is None:
             vec_mask = self._all_vecs_thcpu
+        t0 = time.monotonic()
         selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu")
         nvecs = selected_vecs.shape[0]
         
@@ -1275,7 +1312,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_if_needed()
         # print(f"images.shapes = {[i.shape for i in images]}")
         # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
-        get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data,exclude=["qLD"])
+        t_precopy = time.monotonic()
+        # get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data,exclude=["qLD"])
+        get_renderdata_into(self._renderers_mj_datas, self._sim_state.mjx_data)
+        t_postcopy = time.monotonic()
+        tot_copy_time = t_postcopy - t_precopy
+        tot_render_time = 0.0
+        tot_update_time = 0.0
         for env_i,env in enumerate(selected_vecs):
             for cam_i in range(len(requestedCameras)):
                 cam = requestedCameras[cam_i]
@@ -1283,7 +1326,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 renderer = self._renderers[self._camera_sizes[cam]]
                 mjdata = self._renderers_mj_datas[env]
                 mujoco.mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
+                t_preupdate = time.monotonic()
                 renderer.update_scene(mjdata, self._cname2cid[cam], scene_option=self._render_scene_option)
+                t_postupdate = time.monotonic()
                 if self._visualize_xfrc_applied:
                     for body_id in range(0,self._mj_model.nbody):
                         if np.linalg.norm(mjdata.xfrc_applied[body_id]) != 0.0:
@@ -1299,9 +1344,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             #                         quat_xyzw=force_quat,
                             #                         rgba=np.array([0.9,0.1,0.1,1.0]))
                             add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
+                t_prerender = time.monotonic()
                 image_batches[cam_i][env_i] = renderer.render()
+                tot_render_time += time.monotonic()-t_prerender
+                tot_update_time += t_postupdate - t_preupdate
                 # renderer.render(out=images[i][env])
-        return [th.as_tensor(img_batch) for img_batch in image_batches], times
+        tf = time.monotonic()
+        # ggLog.info(f"getRenderings for {nvecs} vecs and {len(requestedCameras)} cameras took {(tf-t0)*1000:.3f}ms,"
+        #            f" rendering took {tot_render_time*1000:.3f}ms,"
+        #            f" update took {tot_update_time*1000:.3f}ms,"
+        #            f" copy took {tot_copy_time*1000:.3f}ms")
+        return [th.as_tensor(img_batch).to(device=self._out_th_device, non_blocking=True) for img_batch in image_batches], times
 
 
     @override
@@ -1525,7 +1578,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     
     @override
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device) # TODO: would make sense to return a mask here instead of indexes
+        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device, dtype=jnp.uint16) # TODO: would make sense to return a mask here instead of indexes
 
     @override
     def get_links_names(self, link_ids : jnp.ndarray):

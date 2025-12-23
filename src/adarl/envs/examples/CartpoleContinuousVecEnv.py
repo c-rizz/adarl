@@ -62,7 +62,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     sparse_reward = True,
                     terminate_on_rail_distance = False,
                     terminate_on_pole_angle = True,
-                    use_gym_inverted_pendulum_model = True
+                    use_gym_inverted_pendulum_model = False
                     ):
         """
         """
@@ -83,49 +83,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
         self._adapter : BaseVecJointImpedanceAdapter | BaseVecJointEffortAdapter
         
-        self._CART_POS = 0
-        self._CART_VEL = 1
-        self._POLE_SIN = 2
-        self._POLE_COS = 3
-        self._POLE_VEL = 4
-        self._TIMESTEP = 5
-
-        state_vec_max = th.as_tensor([  2.5, # cart position
-                                        np.finfo(np.float32).max, # cart velocity
-                                        1.0, # pole angle sin
-                                        1.0, # pole angle cos
-                                        np.finfo(np.float32).max, # pole joint velocity
-                                        float("+inf")], # timestep
-                                    device=th_device)
-        state_vec_labels = ["cart_pos","cart_vel","pole_pos_sin", "pole_pos_cos","pole_vel","timestep"]
-        single_vec_state_space = ThBox(-state_vec_max,state_vec_max,
-                                labels=to_string_tensor(state_vec_labels),
-                                torch_device=th_device)
-        single_observation_space = ThBox(-state_vec_max[:5],state_vec_max[:5],
-                                             labels=to_string_tensor(state_vec_labels[:-1]),
-                                             torch_device=th_device)
-        states_dict = {"vec" : single_vec_state_space,
-                       "jstats" : ThBox(low=float("-inf"),
-                                    high=float("+inf"),
-                                    shape=(4,2,5),
-                                    torch_device=th_device),
-                       "lstats" : ThBox(low=float("-inf"),
-                                    high=float("+inf"),
-                                    shape=(4,2,6),
-                                    torch_device=th_device),
-                       "lvels" : ThBox(low=float("-inf"),
-                                       high=float("+inf"),
-                                       shape=(2,3),
-                                       torch_device=th_device)}
-        state_space = gym_spaces.Dict(states_dict) #type: ignore : gym Dict space uses dict instead of Mapping
-
-        if self._task == "center_2r":
-            reward_space = ThBox(low=th.as_tensor([0.0, 0.0], device=th_device),
-                                 high=th.as_tensor([float("+inf"), float("+inf")], device=th_device),
-                                 shape=(2,),
-                                 torch_device=th_device)
-        else:
-            reward_space = ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device)
+        state_space, single_observation_space, reward_space = self._build_spaces(th_device)
 
         act_max = np.array([1.0])
         super().__init__(th_device=th_device,
@@ -149,6 +107,54 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         self.initialize_episodes()
         self._success = False
 
+    def _build_spaces(self, th_device):
+        self._CART_POS = 0
+        self._CART_VEL = 1
+        self._POLE_SIN = 2
+        self._POLE_COS = 3
+        self._POLE_VEL = 4
+        self._TIMESTEP = 5
+
+        state_vec_max = th.as_tensor([  2.5, # cart position
+                                        np.finfo(np.float32).max, # cart velocity
+                                        1.0, # pole angle sin
+                                        1.0, # pole angle cos
+                                        np.finfo(np.float32).max, # pole joint velocity
+                                        float("+inf")], # timestep
+                                    device=th_device)
+        state_vec_labels = ["cart_pos","cart_vel","pole_pos_sin", "pole_pos_cos","pole_vel","timestep"]
+        single_vec_state_space = ThBox(-state_vec_max,state_vec_max,
+                                labels=to_string_tensor(state_vec_labels),
+                                torch_device=th_device)
+        single_observation_space = ThBox(-state_vec_max[:5],state_vec_max[:5],
+                                             labels=single_vec_state_space.labels[:-1],
+                                             torch_device=th_device)
+        states_dict = {"vec" : single_vec_state_space,
+                       "jstats" : ThBox(low=float("-inf"),
+                                    high=float("+inf"),
+                                    shape=(4,2,5),
+                                    torch_device=th_device),
+                       "lstats" : ThBox(low=float("-inf"),
+                                    high=float("+inf"),
+                                    shape=(4,2,6),
+                                    torch_device=th_device),
+                       "lvels" : ThBox(low=float("-inf"),
+                                       high=float("+inf"),
+                                       shape=(2,3),
+                                       torch_device=th_device)}
+        state_space = gym_spaces.Dict(states_dict) #type: ignore : gym Dict space uses dict instead of Mapping
+
+
+        if self._task == "center_2r":
+            reward_space = ThBox(low=th.as_tensor([0.0, 0.0], device=th_device),
+                                 high=th.as_tensor([float("+inf"), float("+inf")], device=th_device),
+                                 shape=(2,),
+                                 torch_device=th_device)
+        else:
+            reward_space = ThBox(low=float("-inf"),high=float("+inf"), shape=tuple(), torch_device=th_device)
+
+        return state_space, single_observation_space, reward_space
+    
     @override
     def submit_actions(self, actions : th.Tensor) -> None:
         dbg_check_finite(actions, async_assert=True)
@@ -259,8 +265,9 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                                 vec_mask=vec_mask)
         else:
             raise NotImplementedError()
+        cam_dist = 3.0 if self._gym_inverted_pendulum else 3.5
         self._adapter.setLinksStateDirect([("simple_camera", "simple_camera_link")],
-                                          link_states_pose_vel=th.as_tensor([0.0,-3.0,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+                                          link_states_pose_vel=th.as_tensor([0.0,-cam_dist,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
                                           vec_mask=vec_mask)
         if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
             self._adapter.reset_joint_impedances_commands()
@@ -324,11 +331,15 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             model_format = "mjcf"
             self._rail_joint = ("cartpole_v0","slider")
             self._hinge_joint = ("cartpole_v0","hinge")
+            self._cart_link = ("cartpole_v0","cart")
+            self._pole_link = ("cartpole_v0","pole")
         else:
             cartpole_model_string = Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text()
             model_format = "urdf.xacro"
             self._rail_joint = ("cartpole_v0","foot_joint")
             self._hinge_joint = ("cartpole_v0","cartpole_joint")
+            self._cart_link = ("cartpole_v0","base_link")
+            self._pole_link = ("cartpole_v0","bar_link")
 
         camera_def = ModelSpawnDef( definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
                                     name="simple_camera",
@@ -362,8 +373,6 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         else:
             raise NotImplementedError("Adapter "+envCtrlName+" is not supported")
         
-        self._cart_link = ("cartpole_v0","cart")
-        self._pole_link = ("cartpole_v0","pole")
         
         self._adapter.set_monitored_joints([self._rail_joint, self._hinge_joint])
         self._adapter.set_monitored_links([self._cart_link, self._pole_link])
@@ -391,8 +400,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                 "lvels" : states["lvels"].reshape(self.num_envs,2*3),
                 "hinge_vel" : vstates[:,self._POLE_VEL],
                 "slider_vel" : vstates[:,self._CART_VEL]}
-        info["vecobs"] = self.get_observations(states)
+        info["obs"] = self.get_observations(states)
         if labels is not None:
-            labels["vecobs"] = self.single_observation_space.labels
+            labels["obs"] = self.single_observation_space.labels
         info.update({"reward_"+k:v for k,v in sub_rewards.items()})
         return info

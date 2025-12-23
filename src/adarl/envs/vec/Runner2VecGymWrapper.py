@@ -23,7 +23,7 @@ from adarl.envs.vec.EnvRunner import EnvRunner
 from adarl.envs.vec.EnvRunnerWrapper import EnvRunnerWrapper
 
 
-class GymVecRunnerWrapper(gym.vector.VectorEnv, Generic[ObsType]):
+class Runner2VecGymWrapper(gym.vector.VectorEnv, Generic[ObsType]):
 
     spec = None
 

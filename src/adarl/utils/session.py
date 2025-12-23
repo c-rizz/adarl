@@ -28,6 +28,7 @@ import socket
 import cpuinfo
 import warnings
 import traceback
+import pprint
 
 
 warning_printstack = False
@@ -46,6 +47,16 @@ def override_warning_func():
     global original_showwarning
     original_showwarning = warnings.showwarning
     warnings.showwarning = custom_showwarning
+
+def cleanup_config_for_json(config : dict) -> dict:
+    clean_config = {}
+    for k,v in config.items():
+        try:
+            yaml.dump({k:v}, default_flow_style=None)
+            clean_config[k] = v
+        except TypeError as e2:
+            ggLog.error(f"Could not JSON serialize config entry {k}:{v}\n{adarl.utils.utils.exc_to_str(e2)}")
+    return clean_config
 
 class Session():
     def __init__(self):
@@ -97,6 +108,7 @@ class Session():
         self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
         self.run_info["extras"] = mp_helper.get_manager().dict() # For any extra info to be shared across processes
         self.run_info["seed"] = seed
+        self.run_info["hosthostname"] = os.environ.get("HOSTHOSTNAME","") # To identify the host machine in docker
         self.run_info["hostname"] = socket.gethostname()
         self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
         self.run_info["gpu"] = ""
@@ -202,8 +214,6 @@ class Session():
         except ImportError as e:
             ggLog.error(f"Error loading torch: {adarl.utils.utils.exc_to_str(e)}")
             pass
-        print(f"cuda_Available = {cuda_available}")
-        print(f"gpu_names = {gpu_names} ")
         config["has_torch"] = has_torch
         config["cuda_available"] = cuda_available
         config["cuda_device_name"] = gpu_names
@@ -216,6 +226,8 @@ class Session():
         config["comment"] = comment
         
 
+        config = {k: dataclasses.asdict(v) if dataclasses.is_dataclass(v) else v for k,v in config.items()} # dataclasses have some issue with json serialization
+        ggLog.info(f"config = {pprint.pformat(config)}")
         # inputargs = [(i, values[i]) for i in args]
         # with open(folderName+"/input_args.txt", "w") as input_args_file:
         #     print(str(inputargs), file=input_args_file)
@@ -250,11 +262,10 @@ class Session():
             import wandb
             try:
                 ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
-                config_s = "\n".join([str(t) for t in config.items()])
-                ggLog.info(f"config = {config_s}")
-                config = {k: dataclasses.asdict(v) if dataclasses.is_dataclass(v) else v for k,v in config.items()} # dataclasses have some issue with json serialization
+                config_for_json = cleanup_config_for_json(config)
+                # config_s = "\n".join([str(t) for t in config.items()])
                 wandb_init( project=experiment_name,
-                            config = config,
+                            config = config_for_json,
                             name = f"{run_id}_{comment.strip().replace(' ','_')}",
                             monitor_gym = False, # Do not save openai gym videos
                             save_code = True, # Save run code
@@ -262,7 +273,7 @@ class Session():
                             notes = comment
                             )
             except Exception as e: # type: ignore
-                ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
+                ggLog.error(f"Wandb init failed: {exc_to_str(e)}")
 
         return folderName
 

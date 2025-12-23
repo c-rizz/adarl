@@ -182,7 +182,7 @@ class VecEpisodeStorage():
         nb = self._use_nonblocking_adds 
         needs_sync = self._storage_torch_device.type == "cpu" and not src_on_cpu and nb
 
-        frame_idx  = self._added_vframes % self._buffer_size_vframes
+        frame_idx : int = self._added_vframes % self._buffer_size_vframes
         overriding = self.full
         overriding_th = th.as_tensor(overriding, dtype=th.bool).to(device=self._storage_torch_device, non_blocking=self._storage_torch_device.type == "cuda")
 
@@ -267,7 +267,7 @@ class VecEpisodeStorage():
         stored_vframes = min(self._added_vframes, self._buffer_size_vframes)
         pos = self._added_vframes % self._buffer_size_vframes
         full = self.full
-        sampled_idxs = th.empty((batch_size,2), dtype=self._added_vframes_th.dtype, device = self._storage_torch_device)
+        sampled_idxs = th.full((batch_size,2), fill_value=-42_000_000_000, dtype=self._added_vframes_th.dtype, device = self._storage_torch_device)
         valid_sampled_idx_mask = th.zeros((batch_size,), dtype=th.bool, device = self._storage_torch_device)
         all_sampled = False
         true_th = th.as_tensor(True).to(device=valid_sampled_idx_mask.device, non_blocking=valid_sampled_idx_mask.device.type == "cuda") # avoids sync
@@ -289,7 +289,7 @@ class VecEpisodeStorage():
             else:
                 elements_set = masked_to_masked_assign(sampled_idxs, th.logical_not(valid_sampled_idx_mask), new_sampled_idxs, new_valid_samples_mask)
                 valid_sampled_idx_mask = th.logical_or(valid_sampled_idx_mask, elements_set)
-            all_sampled = sample_duration==1 or th.all(valid_sampled_idx_mask).item() # Maybe avoid using torch._higher_order_ops.while_loop?
+            all_sampled = sample_duration==1 or th.all(valid_sampled_idx_mask).item() # Maybe avoid by using torch._higher_order_ops.while_loop?
             iteration += 1
 
         # Now, in sampled_idx we have indexes referring to frames that have at least sample_duration frames before them in the same episode.
@@ -432,12 +432,9 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         storage_torch_device: th.device = th.device("cpu"),
         fallback_to_cpu_storage: bool = True,
         validation_buffer_size : int = 0,
-        validation_holdout_ratio : float = 0.0,
         min_episode_duration : int = 0,
         disable_validation_set : bool = True,
-        fill_val_buffer_to_min_at_ep : float = float("+inf"),
-        fill_val_buffer_to_min_at_step : float = float("+inf"),
-        val_buffer_min_size : int = 0,
+        validation_episodes : int = 0,
         rewards_num : int = 1
     ):
         self.obs_shape : dict[str, tuple[int, ...]]
@@ -457,20 +454,15 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._action_space = action_space
         self._storage_torch_device = storage_torch_device
         self._rewards_num = rewards_num
+        self._validation_episodes = validation_episodes if not disable_validation_set else 0
         
         self._max_episode_duration = max_episode_duration
         self._min_episode_duration = min_episode_duration
-        if validation_holdout_ratio > 0:
-            raise NotImplementedError("Validation set not implemented yet")
         # Valdation should be reorganized to be collected in two ways:
         # 1) Either by reserving one env for validation only (if n_envs>1)
         # 2) by considering one episode every k episodes for validation (but gets tricky if episodes are of variable length)
         self._validation_buffer_size = int(validation_buffer_size)
-        self._validation_holdout_ratio = validation_holdout_ratio
         self._disable_validation_set = disable_validation_set
-        self._val_buff_min_size = val_buffer_min_size
-        self._fill_val_buffer_to_min_at_ep = fill_val_buffer_to_min_at_ep
-        self._fill_val_buffer_to_min_at_step = fill_val_buffer_to_min_at_step
         if self._disable_validation_set:
             self._validation_holdout_ratio = -1
         
@@ -510,7 +502,9 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
     
     @override
     def memory_size(self):
-        return self._storage.memory_size() #+ self._validation_storage.memory_size()
+        if self._validation_episodes==0:
+            return self._storage.memory_size()
+        return self._storage.memory_size() + self._validation_storage.memory_size()
     
     @override
     def predict_memory_consumption(self):
@@ -527,16 +521,26 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         return predicted_mem_usage, mem_available
 
 
-    def _allocate_buffers(self, buffer_size, validation_buffer_size):
+    def _allocate_buffers(self, buffer_size : int, validation_buffer_size : int):
         self._storage = VecEpisodeStorage(buffer_size=buffer_size,
-                                          vec_size=self.n_envs,
+                                          vec_size=self.n_envs - self._validation_episodes,
                                           storage_torch_device=self._storage_torch_device,
                                           output_device=self.out_device,
                                           observation_space=self._observation_space,
                                           action_space=self._action_space,
                                           min_episode_length=self._min_episode_duration,
                                           rewards_num=self._rewards_num)
-        self._validation_storage : VecEpisodeStorage = None
+        if self._validation_episodes==0:
+            self._validation_storage = None
+        else:
+            self._validation_storage : VecEpisodeStorage = VecEpisodeStorage(buffer_size=validation_buffer_size,
+                                            vec_size=self._validation_episodes,
+                                            storage_torch_device=self._storage_torch_device,
+                                            output_device=self.out_device,
+                                            observation_space=self._observation_space,
+                                            action_space=self._action_space,
+                                            min_episode_length=self._min_episode_duration,
+                                            rewards_num=self._rewards_num)
 
 
     @override
@@ -560,13 +564,22 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         obs      = {k:v.view((self.n_envs,) + self.obs_shape[k]) for k,v in obs.items()} # shallow copy the observations
         next_obs = {k:v.view((self.n_envs,) + self.obs_shape[k]) for k,v in next_obs.items()} # shallow copy the observations
 
-        self._storage.add_frames(observations=obs,
-                                 actions=action,
-                                 next_observations=next_obs,
-                                 rewards=reward,
-                                 terminateds=terminated,
-                                 truncateds=truncated,
+        train_envs = self.n_envs - self._validation_episodes
+        self._storage.add_frames(observations={k:v[:train_envs] for k,v in obs.items()},
+                                 actions=action[:train_envs],
+                                 next_observations={k:v[:train_envs] for k,v in next_obs.items()},
+                                 rewards=reward[:train_envs],
+                                 terminateds=terminated[:train_envs],
+                                 truncateds=truncated[:train_envs],
                                  sync_stream = sync_stream)
+        if self._validation_episodes>0:
+            self._validation_storage.add_frames(observations={k:v[train_envs:] for k,v in obs.items()},
+                                     actions=action[train_envs:],
+                                     next_observations={k:v[train_envs:] for k,v in next_obs.items()},
+                                     rewards=reward[train_envs:],
+                                     terminateds=terminated[train_envs:],
+                                     truncateds=truncated[train_envs:],
+                                     sync_stream = sync_stream)
         self._collected_frames += self.n_envs
         self._collected_eps_th += th.logical_or(terminated, truncated).to(self._storage_torch_device).sum()
 
@@ -614,11 +627,6 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
 
     def _sample(self, batch_size: int, sample_duration = None, validation_set : bool = False) -> TransitionBatch:
         """
-        Sample elements from the replay buffer.
-        :param batch_size: Number of element to sample
-        :param env: associated gym VecEnv
-            to normalize the observations/rewards when sampling
-        :return:
         """
         if validation_set and not self._disable_validation_set:
             return self._validation_storage.sample(batch_size, sample_duration)

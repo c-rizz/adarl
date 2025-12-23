@@ -43,7 +43,7 @@ ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor
 def take_first(tensor_tree):
     return map_tensor_tree(tensor_tree, lambda t: t[0])
 
-class GymRunnerWrapper(gym.Env, Generic[ObsType]):
+class Runner2GymWrapper(gym.Env, Generic[ObsType]):
 
     spec = None
 
