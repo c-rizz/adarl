@@ -458,13 +458,12 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         
         self._max_episode_duration = max_episode_duration
         self._min_episode_duration = min_episode_duration
-        # Valdation should be reorganized to be collected in two ways:
-        # 1) Either by reserving one env for validation only (if n_envs>1)
-        # 2) by considering one episode every k episodes for validation (but gets tricky if episodes are of variable length)
+        
         self._validation_buffer_size = int(validation_buffer_size)
         self._disable_validation_set = disable_validation_set
         if self._disable_validation_set:
             self._validation_holdout_ratio = -1
+        self._validation_buffer_freeze_threshold = float("+inf") #10_000 # Just a hack to check the performance on early-training data
         
         example_obs = self._observation_space.sample()
         obs_size = sum([th.as_tensor(o).nelement()*th.as_tensor(o).element_size() for o in flatten_tensor_tree(example_obs).values()])
@@ -572,7 +571,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
                                  terminateds=terminated[:train_envs],
                                  truncateds=truncated[:train_envs],
                                  sync_stream = sync_stream)
-        if self._validation_episodes>0:
+        if self._validation_episodes>0 and self._validation_storage.stored_frames() < self._validation_buffer_freeze_threshold:
             self._validation_storage.add_frames(observations={k:v[train_envs:] for k,v in obs.items()},
                                      actions=action[train_envs:],
                                      next_observations={k:v[train_envs:] for k,v in next_obs.items()},
@@ -596,7 +595,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         elif training_set:
             return self._storage.stored_episodes()
         elif validation_set:
-            return self._validation_storage.stored_episodes()
+            return self._validation_storage.stored_episodes() if not self._disable_validation_set else 0
     
     @override
     def stored_frames(self, validation_set = False, training_set = True):
@@ -605,13 +604,13 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         elif training_set:
             return self._storage.stored_frames()
         elif validation_set:
-            return self._validation_storage.stored_frames()
+            return self._validation_storage.stored_frames() if not self._disable_validation_set else 0
         else:
             raise RuntimeError("Invalid combination of validation_set and training_set")
     
     @override
     def stored_validation_frames(self) -> int:
-        return self.stored_frames(validation_set=True)
+        return self.stored_frames(validation_set=True, training_set=False)
 
     @override
     def size(self, validation_set = False, training_set = True):

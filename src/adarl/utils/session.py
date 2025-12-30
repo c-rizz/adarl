@@ -224,6 +224,7 @@ class Session():
         config["experiment_name"] = experiment_name
         config["run_id"] = run_id
         config["comment"] = comment
+        config["hosthostname"] = self.run_info["hosthostname"]
         
 
         config = {k: dataclasses.asdict(v) if dataclasses.is_dataclass(v) else v for k,v in config.items()} # dataclasses have some issue with json serialization

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import numpy as np
-from typing import Tuple, Dict, Any
+from typing import Any
 import adarl.utils.dbg.ggLog as ggLog
 
 from adarl.envs.vec.ControlledVecEnv import ControlledVecEnv
 import adarl
-from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor
+from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor, quat_xyzw_between_vecs_py, quat_mul_xyzw
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter, ModelSpawnDef
 # from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
@@ -62,28 +62,30 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                     sparse_reward = True,
                     terminate_on_rail_distance = False,
                     terminate_on_pole_angle = True,
-                    use_gym_inverted_pendulum_model = False
-                    ):
-        """
-        """
-
+                    use_gym_inverted_pendulum_model = False,
+                    camera_offset_xyz = (.0,.0,.0)):
+        print(f"Creating CartpoleContinuousVecEnv with camera_offset_xyz {camera_offset_xyz}")
         self._spawned = False
         self._wall_sim_speed = wall_sim_speed
         self._renderingEnabled = render
-        self._ui_camera_name = "simple_camera"
+        self._gym_inverted_pendulum = use_gym_inverted_pendulum_model
         self._task = task
         self._sparse_reward = sparse_reward
         self._terminate_on_rail_distance = th.as_tensor(terminate_on_rail_distance, device=th_device)
         self._terminate_on_pole_angle = th.as_tensor(terminate_on_pole_angle, device=th_device)
-        self._gym_inverted_pendulum = use_gym_inverted_pendulum_model
+
+        self._ui_camera_name = "simple_camera"
+        self._camera_link_name= ("simple_camera", "simple_camera_link")
+        cam_dist = 3.0 if self._gym_inverted_pendulum else 3.5
+        self._camera_pose = [0.,-cam_dist,0.3,0.,0.,0.707,0.707]
+        self._apply_camera_offset(camera_offset_xyz)
         self._upright_hinge_threshold = 0.2 # like gym's InvertedPendulum
         self._max_cart_dist = 2
         self._init_noise_scale = 0.01
         self._force_range = 3.0 * 100 if use_gym_inverted_pendulum_model else 50.0
-
         self._adapter : BaseVecJointImpedanceAdapter | BaseVecJointEffortAdapter
         
-        state_space, single_observation_space, reward_space = self._build_spaces(th_device)
+        single_state_space, single_observation_space, single_reward_space = self._build_spaces(th_device)
 
         act_max = np.array([1.0])
         super().__init__(th_device=th_device,
@@ -91,14 +93,14 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                          obs_dtype=th.float32,
                          single_action_space = ThBox(-act_max,act_max, torch_device=th_device),
                          single_observation_space = single_observation_space,
-                         single_state_space=state_space,
-                         single_reward_space=reward_space,
+                         single_state_space=single_state_space,
+                         single_reward_space=single_reward_space,
                          info_space=None, #type: ignore : Will be set later
                          step_duration_sec=step_duration_sec,
                          adapter=adapter,
                          max_episode_steps=max_episode_steps)
         example_labels : dict[str,th.Tensor] = {}
-        example_state = {k:th.as_tensor((s.low+s.high)/2).to(device=th_device).unsqueeze(0).repeat(self.num_envs, *([1]*len(s.shape)) ) for k,s in states_dict.items()}
+        example_state = {k:th.as_tensor((s.low+s.high)/2).to(device=th_device).unsqueeze(0).repeat(self.num_envs, *([1]*len(s.shape)) ) for k,s in single_state_space.spaces.items()}
         example_infos = self.get_infos(example_state, example_labels)
         self.info_space = space_from_tree(example_infos, example_labels) # needs to be done afer super()__init__
 
@@ -155,6 +157,19 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
         return state_space, single_observation_space, reward_space
     
+    def _apply_camera_offset(self, offset_xyz : tuple[float,float,float]):
+        if offset_xyz == (0.0, 0.0, 0.0):
+            return # avoid unnecessary numerical differences
+        original_cam_pose = th.as_tensor(self._camera_pose)
+        self._camera_pose[0] += offset_xyz[0]
+        self._camera_pose[1] += offset_xyz[1]
+        self._camera_pose[2] += offset_xyz[2]
+
+        # We do as if we rotated around the origin
+        correction_quat = quat_xyzw_between_vecs_py(original_cam_pose[0:3], th.as_tensor(self._camera_pose[0:3]))
+        new_cam_quat = quat_mul_xyzw(correction_quat, original_cam_pose[3:7])
+        self._camera_pose[3:7] = new_cam_quat.tolist()
+
     @override
     def submit_actions(self, actions : th.Tensor) -> None:
         dbg_check_finite(actions, async_assert=True)
@@ -265,9 +280,8 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                                 vec_mask=vec_mask)
         else:
             raise NotImplementedError()
-        cam_dist = 3.0 if self._gym_inverted_pendulum else 3.5
-        self._adapter.setLinksStateDirect([("simple_camera", "simple_camera_link")],
-                                          link_states_pose_vel=th.as_tensor([0.0,-cam_dist,0.3,0.0,0.0,0.707,0.707,0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+        self._adapter.setLinksStateDirect([self._camera_link_name],
+                                          link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
                                           vec_mask=vec_mask)
         if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
             self._adapter.reset_joint_impedances_commands()
