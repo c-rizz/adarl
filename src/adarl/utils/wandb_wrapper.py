@@ -16,7 +16,7 @@ from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_te
 import numpy as np
 from typing import Callable
 from adarl.utils.async_cuda2cpu_queue import Async_cuda2cpu_queue
-
+import pprint
 
 
 
@@ -29,8 +29,15 @@ def _fix_histogram_range(value):
         if not isinstance(value, th.Tensor):
             value = th.as_tensor(value)
         if value.ndim>0 and len(value) > 1:
-            # finite_values = value[th.isfinite(value)]
-            value = th.histogram(value) #, range=(finite_values.min(), finite_values.max()))
+            # minval = th.min(th.where(th.isfinite(value), value, th.tensor(th.inf, device=value.device)))
+            # maxval = th.max(th.where(th.isfinite(value), value, th.tensor(-th.inf, device=value.device)))
+            hist, bin_edges = th.histogram(value) #, range=(minval.item(),maxval.item()))
+            value =  wandb.Histogram(np_histogram=(
+                            hist.detach().cpu().numpy(),
+                            bin_edges.detach().cpu().numpy(),
+                        )
+                    )
+            return value
         else:
             return value
     else:
@@ -56,7 +63,7 @@ class WandbWrapper():
         self._mp_queue = mp_helper.get_context().Queue()
         self._wandb_initialized = False
         self._worker_thread : Optional[threading.Thread] = None
-        self._async_c2c_queue = Async_cuda2cpu_queue()
+        self._async_cuda2cpu_queue = Async_cuda2cpu_queue()
         atexit.register(self.close)
 
     def _start(self):
@@ -65,7 +72,7 @@ class WandbWrapper():
             object itself. When you call wandb_log from the child process it will recognize
             he is a child process and send the logs to the queue.
         """
-        self._async_c2c_queue.start_worker()
+        self._async_cuda2cpu_queue.start_worker()
         self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
         self._worker_thread.start()
 
@@ -97,6 +104,7 @@ class WandbWrapper():
     
     @staticmethod
     def _safe_wandb_log(log_dict : dict[str,th.Tensor]):
+        import pprint
         log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
         try:
             wandb.log(log_dict)
@@ -106,13 +114,13 @@ class WandbWrapper():
 
     def _async_thread_wandb_log(self, log_dict : dict[str, th.Tensor]):
         log_dict = map_tensor_tree(log_dict, lambda l: th.as_tensor(l))
-        self._async_c2c_queue.send(log_dict, self._safe_wandb_log)
+        self._async_cuda2cpu_queue.send(log_dict, self._safe_wandb_log)
 
     def _async_log_tensor_stats(self, tensors : dict[str, th.Tensor]):
         def _log_tensors_stats(cpu_tensors_dict : dict[str, th.Tensor]):
             for prefix, cpu_tensor in cpu_tensors_dict.items():
                 self._wandb_run._torch.log_tensor_stats(cpu_tensor, prefix)
-        self._async_c2c_queue.send(tensors, _log_tensors_stats)
+        self._async_cuda2cpu_queue.send(tensors, _log_tensors_stats)
 
     def _throttle_check(self, keys : tuple[str, ...], throttle_period : float, silent_throttling : bool) -> bool:
         t = time.monotonic()
@@ -203,7 +211,7 @@ class WandbWrapper():
         self._running = False
         if self._worker_thread is not None:
             self._worker_thread.join()
-        self._async_c2c_queue.close()
+        self._async_cuda2cpu_queue.close()
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -234,7 +242,7 @@ def wandb_log_tensors_stats(log_dict, throttle_period = 0, silent_throttling : b
 def wandb_log_hists(d, throttle_period):
     default_wrapper.wandb_log_hists( d, throttle_period)
 
-def compute_means_stds(tensors_dict):
+def compute_means_stds(tensors_dict : dict[str, th.Tensor]) -> dict[str, th.Tensor]:
     dms = {}
     for k,v in tensors_dict.items():
         dms[k+"_mean"] = v.mean()

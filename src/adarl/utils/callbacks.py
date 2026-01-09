@@ -70,7 +70,8 @@ class EvalCallback(TrainingCallback):
         verbose: int = 1,
         eval_name : str = "eval",
         random_eval_at_start: bool = True,
-        output_folder : str | None = None
+        output_folder : str | None = None,
+        skip_first_eval : bool = False,
     ):
         if not isinstance(eval_env, gym.vector.VectorEnv):
             raise NotImplementedError(f"eval_env can only be a gym.vector.VectorEnv for now, it's a {type(eval_env)}")
@@ -82,6 +83,7 @@ class EvalCallback(TrainingCallback):
         self.eval_env = eval_env
         self.best_model_save_path = best_model_save_path
         self._random_eval_at_start = random_eval_at_start
+        self._skip_first_eval = skip_first_eval
 
         self._episode_counter = 0
         self._last_evaluation_episode = float("-inf")
@@ -105,10 +107,13 @@ class EvalCallback(TrainingCallback):
             cuda_sync_debug_state = th.cuda.get_sync_debug_mode()
             th.cuda.set_sync_debug_mode("default")
             try:
-                if self._last_evaluation_episode == float("-inf") and self._random_eval_at_start:
-                    ggLog.info(f"Random policy evaluation")
-                    self._evaluate(predict_func=lambda obs, deterministic: (th.as_tensor(self.eval_env.unwrapped.action_space.sample()), None))
-                self._evaluate(model=self._model)
+                if not (self._skip_first_eval and self._last_evaluation_episode == float("-inf")):
+                    if self._last_evaluation_episode == float("-inf") and self._random_eval_at_start:
+                        ggLog.info(f"Random policy evaluation")
+                        self._evaluate(predict_func=lambda obs, deterministic: (th.as_tensor(self.eval_env.unwrapped.action_space.sample()), None))
+                    self._evaluate(model=self._model)
+                else:
+                    self._last_evaluation_episode = self._episode_counter
             finally:
                 th.cuda.set_sync_debug_mode(cuda_sync_debug_state)
 
