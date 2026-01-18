@@ -57,11 +57,33 @@ class VectorEnvLogger(
         self._overhead_max = float("-inf")
         self._overhead_min = float("+inf")
         self._completed_final_infos_since_log : dict[str,th.Tensor] ={}
-        self._completed_eps_since_log = 0
 
 
     def reset(self, *, seed: int | session.List[int] | None = None, options: Dict | None = None):
+        reset_stats = options.get("vec_env_logger_reset_stats", True) if options is not None else True
+        if reset_stats:
+            self._reset_stats()
         return super().reset(seed=seed, options=options)
+
+    def _reset_stats(self):
+        self._ep_rewards.fill_(0.0)
+        self._ep_durations.fill_(0)
+        self._completed_ep_rewards_sum_sl.fill_(0.0)
+        self._completed_ep_rewards_min_sl.fill_(float("+inf"))
+        self._completed_ep_rewards_max_sl.fill_(float("-inf"))
+        self._completed_ep_durations_sum_sl.fill_(0.0)
+        self._completed_ep_durations_min_sl.fill_(float("+inf"))
+        self._completed_ep_durations_max_sl.fill_(float("-inf"))
+        self._completed_ep_count_sl = 0
+        self._overhead_count = 0
+        self._overhead_sum = 0
+        self._overhead_max = float("-inf")
+        self._overhead_min = float("+inf")
+        self._time_last_log = time.monotonic()
+        self._step_count_last_log = self.__vstep_count
+        for k in self._completed_final_infos_since_log:            
+            t = self._completed_final_infos_since_log[k]
+            self._completed_final_infos_since_log[k] = th.full_like(t, fill_value = float("nan"))
 
     def step(
         self, action
@@ -89,108 +111,23 @@ class VectorEnvLogger(
         self._ep_rewards += reward.view(-1, self._ep_rewards.shape[1])
         self._ep_durations += 1
         completed_eps = th.logical_or(th_terminateds, th_truncateds)
-        completed_eps_count = completed_eps.count_nonzero()
-        if completed_eps_count>0:
+        newly_completed_eps_count = completed_eps.count_nonzero()
+        if newly_completed_eps_count>0:
             # ggLog.info(f"self._ep_rewards = {self._ep_rewards}")
             tot_rewards = self._ep_rewards.sum(dim=1)
             completed_tot_rewards = th.masked.masked_tensor(tot_rewards, completed_eps)
             completed_durs = th.masked.masked_tensor(self._ep_durations, completed_eps)
+            # ggLog.info(f"{self._logs_id}VecEnvLogger: completed_durs = {self._ep_durations[completed_eps]}")
             self._completed_ep_rewards_sum_sl += completed_tot_rewards.sum(dim=0).to_tensor(0)
             self._completed_ep_rewards_min_sl = th.minimum(th.amin(completed_tot_rewards, dim=0).to_tensor(0), self._completed_ep_rewards_min_sl)
             self._completed_ep_rewards_max_sl = th.maximum(th.amax(completed_tot_rewards, dim=0).to_tensor(0), self._completed_ep_rewards_max_sl)
             self._completed_ep_durations_sum_sl += th.sum(completed_durs).to_tensor(0)
             self._completed_ep_durations_min_sl = th.minimum(th.amin(completed_durs).to_tensor(0), self._completed_ep_durations_min_sl)
             self._completed_ep_durations_max_sl = th.maximum(th.amax(completed_durs).to_tensor(0), self._completed_ep_durations_max_sl)
-            self._completed_ep_count_sl += completed_eps_count
-            self._tot_completed_ep_count += completed_eps_count
-            if self._completed_ep_count_sl >= self._num_envs:
-                # ggLog.info(f"Completed {self._completed_ep_count_sl} episodes since last log")
-                # ggLog.info(f"self._completed_ep_rewards_sum_sl = {self._completed_ep_rewards_sum_sl}")
-                # ggLog.info(f"self.ep_rewards = {self._ep_rewards}")
-                # ggLog.info(f"self._completed_ep_durations_sum_sl = {self._completed_ep_durations_sum_sl}")
-                # ggLog.info(f"self.ep_durations = {self._ep_durations}")
-                ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
-                davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
-                ggLog.info(f"{self._logs_id}VecEnvLogger: ep={self._tot_completed_ep_count} reward avg={ravg}, min={self._completed_ep_rewards_min_sl}, max={self._completed_ep_rewards_max_sl}, length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
-                self._completed_ep_rewards_sum_sl.fill_(0.0)
-                self._completed_ep_rewards_min_sl.fill_(float("+inf"))
-                self._completed_ep_rewards_max_sl.fill_(float("-inf"))
-                self._completed_ep_durations_sum_sl.fill_(0.0)
-                self._completed_ep_durations_min_sl.fill_(float("+inf"))
-                self._completed_ep_durations_max_sl.fill_(float("-inf"))
-                self._completed_ep_count_sl = 0
             masked_assign(self._ep_rewards, completed_eps, 0.0)
             masked_assign(self._ep_durations, completed_eps, 0)
             
-
             if self._log_infos:
-                # ggLog.info(f"infos = {infos}")
-                # ggLog.info(f"terminated,truncated = {terminated,truncated}")
-                # vec_infos = filter_tensor_tree(infos,    keep = lambda t:     (isinstance(t, th.Tensor) and t.dim()>0 and t.size()[0] == self._num_envs))
-                # nonvec_infos = filter_tensor_tree(infos, keep = lambda t: not (isinstance(t, th.Tensor) and t.dim()>0 and t.size()[0] == self._num_envs))
-                # ggLog.info(f"vec_infos = {vec_infos}")
-                # ggLog.info(f"nonvec_infos = {nonvec_infos}")
-                # infos.pop("final_infos")
-                # info_list = unstack_tensor_tree(infos)
-
-                # if th.any(th.logical_or(th_terminateds, th_truncateds)):
-                #     final_infos = infos["final_info"]
-                #     final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
-                #     final_info_list = unstack_tensor_tree(final_infos)
-                #     for i in range(self._num_envs):
-                #         if terminated[i] or truncated[i]: # we only log the info of the last step
-                #             info = final_info_list[i]
-                #             logs = {}
-                #             for k,v in info.items():
-                #                 k = "VecEnvLogger/lastinfo."+k
-                #                 if isinstance(v,dict):
-                #                     # ggLog.info(f"flattening {k}:{v}")
-                #                     for k1,v1 in v.items():
-                #                         logs[k+"."+k1] = v1
-                #                 else:
-                #                     if type(v) is bool:
-                #                         v = int(v)
-                #                     logs[k] = v
-                #             logs["VecEnvLogger/vec_ep_count"] = self._tot_completed_ep_count
-                #             logs = copy.deepcopy(logs) # avoid issues with references (yes, it does happen)
-                #             for k in logs.keys():
-                #                 if k not in self._logs_batch:
-                #                     self._logs_batch[k] = []
-                #                 self._logs_batch[k].append(logs[k])
-                #             self._logs_batch_size +=1
-                # if self._logs_batch_size >= self._num_envs:
-                #     # ggLog.info(f"logging veclogger, wandb={self._use_wandb}")
-                #     wall_single_fps = (self.__vstep_count - self._step_count_last_log)/(time.monotonic()-self._time_last_log)
-                #     new_elems = {}
-                #     for k,v in self._logs_batch.items():
-                #         if len(v)>0 and isinstance(v[0],(int, float, bool, np.integer, np.floating, th.Tensor)):
-                #             self._logs_batch[k] = sum(v)/len(v)
-                #             if isinstance(v[0],(int, float, bool, np.integer, np.floating)) or v[0].numel()==1:  # only if v has just on element
-                #                 new_elems[k.replace("VecEnvLogger/","VecEnvLogger/max.")] = max(v)
-                #                 new_elems[k.replace("VecEnvLogger/","VecEnvLogger/min.")] = min(v)
-                #     self._logs_batch.update(new_elems)
-                #     self._logs_batch["VecEnvLogger/wall_fps_vec"] = wall_single_fps*self.num_envs
-                #     self._logs_batch["VecEnvLogger/wall_fps_single"] = wall_single_fps
-                #     self._logs_batch["VecEnvLogger/vec_ep_count"] = self._tot_completed_ep_count
-                #     ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_completed_ep_count} veceps={int(self._tot_completed_ep_count/self._num_envs)} succ={self._logs_batch.get('VecEnvLogger/success',0):.2f}"+
-                #             f" r= \033[1m{self._logs_batch.get('VecEnvLogger/lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+
-                #             f" min_r={self._logs_batch.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"
-                #             f" max_r={self._logs_batch.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}"
-                #             f" fps={self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
-                #     if self._use_wandb:
-                #         from adarl.utils.wandb_wrapper import wandb_log
-                #         # ggLog.info(f"vecenvlogger logging: {list(self._logs_batch.keys())}")
-                #         wdblog = {f"{self._logs_id}{k}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in self._logs_batch.items()}
-                #         wandb_log(wdblog)
-                #     ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
-                #     self._logs_batch = {}
-                #     self._logs_batch_size = 0
-                #     self._step_count_last_log = self.__vstep_count
-                #     self._time_last_log = time.monotonic()
-                #     self._overhead_count = 0
-                #     self._overhead_sum = 0
-                #     self._overhead_max = float("-inf")
-                #     self._overhead_min = float("+inf")
 
                 final_infos = infos["final_info"]
                 final_infos = {k:v for k,v in final_infos.items() if k != "final_info"} # make a shallow copy without the final_info cycle
@@ -214,12 +151,27 @@ class VectorEnvLogger(
                 completed_final_infos = {k:v[completed_eps] for k,v in final_infos.items()}
                 for k in final_infos:
                     # ggLog.info(f"[{k}][{self._completed_eps_since_log}:{self._completed_eps_since_log+completed_eps_count}]={completed_final_infos[k].size()}")
-                    self._completed_final_infos_since_log[k][self._completed_eps_since_log:self._completed_eps_since_log+completed_eps_count] = completed_final_infos[k]
-                self._completed_eps_since_log += completed_eps_count
+                    self._completed_final_infos_since_log[k][self._completed_ep_count_sl:self._completed_ep_count_sl+newly_completed_eps_count] = completed_final_infos[k]
+            
+            self._completed_ep_count_sl += newly_completed_eps_count
+            self._tot_completed_ep_count += newly_completed_eps_count
+            # ggLog.info(f"{self._logs_id}VecEnvLogger: {newly_completed_eps_count} episodes newly completed, total completed={self._tot_completed_ep_count}, since last log={self._completed_ep_count_sl}")
+            
+            if self._completed_ep_count_sl >= self._num_envs:
+                ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
+                davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
+                ggLog.info(f"{self._logs_id}VecEnvLogger:"
+                           f" ep={self._tot_completed_ep_count}"
+                           f" reward avg={ravg},"
+                           f" min={self._completed_ep_rewards_min_sl},"
+                           f" max={self._completed_ep_rewards_max_sl},"
+                           f" length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
                 
-                if self._completed_eps_since_log >= self._num_envs:
+                if self._log_infos:
                     logs = {}
-                    logged_infos = {k:v[:self._completed_eps_since_log] for k,v in self._completed_final_infos_since_log.items()}
+                    logged_infos = {k:v[:self._completed_ep_count_sl] for k,v in self._completed_final_infos_since_log.items()}
+                    # ggLog.info(f"{self._logs_id}VecEnvLogger: logged_infos keys: {list(logged_infos.keys())}")
+                    # ggLog.info(f"{self._logs_id}VecEnvLogger: logged_infos[ep_Reward]: {logged_infos['lastinfo.ep_reward']}")
                     logs.update({"VecEnvLogger/avg."+k:v.mean() for k,v in logged_infos.items()})
                     logs.update({"VecEnvLogger/min."+k:v.min()  for k,v in logged_infos.items()})
                     logs.update({"VecEnvLogger/max."+k:v.max()  for k,v in logged_infos.items()})
@@ -231,11 +183,16 @@ class VectorEnvLogger(
                     logs["VecEnvLogger/wall_fps_single"] = wall_single_fps
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_completed_ep_count
                     # ggLog.info(f"{logs}")
+                    avgrew = logs.get('VecEnvLogger/avg.lastinfo.ep_reward',float("nan"))
+                    minrew = logs.get('VecEnvLogger/min.lastinfo.ep_reward',float("nan"))
+                    maxrew = logs.get('VecEnvLogger/max.lastinfo.ep_reward',float("nan"))
+                    medrew = logs.get('VecEnvLogger/med.lastinfo.ep_reward',float("nan"))
+
                     ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_completed_ep_count} veceps={int(self._tot_completed_ep_count/self._num_envs)} succ={logs.get('VecEnvLogger/success',0):.2f}"+
-                            f" r= \033[1m{logs.get('VecEnvLogger/avg.lastinfo.ep_reward',float('nan')):08.8g}\033[0m "+
-                            f" min_r={logs.get('VecEnvLogger/min.lastinfo.ep_reward',float('nan')):08.8g}"
-                            f" max_r={logs.get('VecEnvLogger/max.lastinfo.ep_reward',float('nan')):08.8g}"
-                            f" med_r={logs.get('VecEnvLogger/med.lastinfo.ep_reward',float('nan')):08.8g}"
+                            f" r= \033[1m{avgrew:{'08.8g' if avgrew != float('nan') else ''}}\033[0m "+
+                            f" min_r={minrew:{'08.8g' if minrew != float('nan') else ''}}"
+                            f" max_r={maxrew:{'08.8g' if maxrew != float('nan') else ''}}"
+                            f" med_r={medrew:{'08.8g' if medrew != float('nan') else ''}}"
                             f" fps={self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
                     if self._use_wandb:
                         from adarl.utils.wandb_wrapper import wandb_log
@@ -243,15 +200,6 @@ class VectorEnvLogger(
                         wdblog = {f"{k.replace('VecEnvLogger/','VecEnvLogger/'+self._logs_id)}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()}
                         wandb_log(wdblog)
                     # ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
-                    self._step_count_last_log = self.__vstep_count
-                    self._time_last_log = time.monotonic()
-                    self._overhead_count = 0
-                    self._overhead_sum = 0
-                    self._overhead_max = float("-inf")
-                    self._overhead_min = float("+inf")
-                    self._completed_eps_since_log = 0
-                    for k in self._completed_final_infos_since_log:
-                        self._completed_final_infos_since_log[k].fill_(float("nan")) # Fill with nans, so that we see if something goes wrong
                     # final_info_list = unstack_tensor_tree(final_infos)
                     # for i in range(self._num_envs):
                     #     if terminated[i] or truncated[i]: # we only log the info of the last step
@@ -265,7 +213,9 @@ class VectorEnvLogger(
                     #             if k not in self._logs_batch:
                     #                 self._logs_batch[k] = []
                     #             self._logs_batch[k].append(logs[k])
-                    #         self._logs_batch_size +=1
+                    #         self._logs_batch_size +=1                
+                self._reset_stats()
+
         tf = time.monotonic()
         overhead = (tf-t1)/(t1-t0)
         self._overhead_count += 1
