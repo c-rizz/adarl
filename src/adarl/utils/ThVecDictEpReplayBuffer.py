@@ -250,7 +250,7 @@ class VecEpisodeStorage():
         
         # for pos = self._added_vframes%self._buffer_size_vframes
         # If not full we can take data from in [0, pos] (left included, right excluded)
-        # If full we can take data from [pos+1, buffer_size] U [0,pos] (the frame at pos is invalid as it's start_obs
+        # If full we can take data from [pos+1, buffer_size] U [0,pos] (the frame at pos is invalid as its start_obs
         # has been overwritten).
         # For capacity = min(self._added_vframes, buffer_size_vframes), these ranges can be combined as:
         # arange(pos+1*full, pos+capacity))%capacity (the pos frame gets excluded only if the buffer is full)

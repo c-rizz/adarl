@@ -1,6 +1,6 @@
 from __future__ import annotations
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import exc_to_str, get_caller_info
+from adarl.utils.base_utils import exc_to_str, get_caller_info
 import time
 import torch as th
 import os
@@ -165,6 +165,7 @@ class WandbWrapper():
                     log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
                     log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
                     log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
+                    log_dict["session_time_from_start_sec"] = time.monotonic() - session.default_session.run_info["start_time_monotonic"]
                     self._async_thread_wandb_log(log_dict)
                 else:
                     args = (log_dict, throttle_period, silent_throttling, copy)
@@ -172,6 +173,14 @@ class WandbWrapper():
             except Exception as e:
                 ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
         
+    def log_model_gradients(self, model, model_name : str):
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                self.wandb_log({
+                    f"{model_name}/{name}.norm": param.grad.norm().item(),
+                    f"{model_name}/{name}.mean": param.grad.mean().item()
+                })
+
 
     def wandb_log_tensors_stats(self, log_dict : dict[str, th.Tensor], throttle_period = 0, silent_throttling : bool = False, copy : bool = False):
         with th.no_grad():

@@ -301,14 +301,34 @@ class BaseVecEnv(ABC, Generic[Observation]):
     def _thtens(self, data):
         return th.as_tensor(data, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
 
-    def _thzeros(self, size : tuple[int,...]):
-        return th.zeros(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+    def _thzeros(self, size : tuple[int,...], th_device : th.device | None = None, dtype : th.dtype | None = None):
+        if th_device is None:
+            th_device = self._th_device
+        if dtype is None:
+            dtype = self._obs_dtype
+        return th.zeros(size, dtype=dtype).to(device=th_device, non_blocking=th_device.type=="cuda")
     
-    def _thones(self, size : tuple[int,...]):
-        return th.ones(size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+    def _thempty(self, size : tuple[int,...], th_device : th.device | None = None, dtype : th.dtype | None = None):
+        if th_device is None:
+            th_device = self._th_device
+        if dtype is None:
+            dtype = self._obs_dtype
+        
+        return th.empty(size, dtype=dtype).to(device=th_device, non_blocking=th_device.type=="cuda")
     
-    def _thfull(self, fill_value : float, size : tuple[int,...]):
-        return th.full(fill_value=fill_value, size=size, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+    def _thones(self, size : tuple[int,...], th_device : th.device | None = None, dtype : th.dtype | None = None):
+        if th_device is None:
+            th_device = self._th_device
+        if dtype is None:
+            dtype = self._obs_dtype
+        return th.ones(size, dtype=dtype).to(device=th_device, non_blocking=th_device.type=="cuda")
+    
+    def _thfull(self, fill_value : float, size : tuple[int,...], th_device : th.device | None = None, dtype : th.dtype | None = None):
+        if th_device is None:
+            th_device = self._th_device
+        if dtype is None:
+            dtype = self._obs_dtype
+        return th.full(fill_value=fill_value, size=size, dtype=dtype).to(device=th_device, non_blocking=th_device.type=="cuda")
 
     def _thrand(self, size : tuple[int,...]):
         if th.compiler.is_compiling():

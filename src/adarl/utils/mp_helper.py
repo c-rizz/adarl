@@ -9,6 +9,7 @@ def get_context(method : Literal["fork","spawn","forkserver"] = "forkserver"):
     global _context
     global _context_type
     if _context is None:
+        # mp.set_sharing_strategy('file_system')
         _context = mp.get_context(method=method)
         _context_type = method
         print(f"Created mp context with method {method}")

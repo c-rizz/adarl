@@ -1,7 +1,7 @@
 from typing import Optional, List, Union, Tuple
 import adarl.utils.dbg.ggLog as ggLog
 import numpy as np
-from adarl.utils.utils import pyTorch_makeDeterministic, createSymlink, exc_to_str
+from adarl.utils.base_utils import createSymlink, exc_to_str, cpu_info, pkgutil_get_path
 
 import datetime
 import threading
@@ -13,7 +13,6 @@ from pathlib import Path
 import yaml
 import subprocess
 import faulthandler
-import adarl.utils.utils
 import multiprocessing
 import multiprocessing.pool
 import random
@@ -55,7 +54,7 @@ def cleanup_config_for_json(config : dict) -> dict:
             yaml.dump({k:v}, default_flow_style=None)
             clean_config[k] = v
         except TypeError as e2:
-            ggLog.error(f"Could not JSON serialize config entry {k}:{v}\n{adarl.utils.utils.exc_to_str(e2)}")
+            ggLog.error(f"Could not JSON serialize config entry {k}:{v}\n{exc_to_str(e2)}")
     return clean_config
 
 class Session():
@@ -128,8 +127,10 @@ class Session():
         setupSigintHandler()
         if using_pytorch:
             import torch as th
-            self.run_info["gpu"] = adarl.utils.utils.get_gpu_names()
+            from adarl.utils.utils import get_gpu_names
+            self.run_info["gpu"] = get_gpu_names()
             th.set_printoptions(linewidth=160)
+            from adarl.utils.utils import pyTorch_makeDeterministic
             pyTorch_makeDeterministic(seed)
             th._dynamo.config.capture_scalar_outputs = True
             ggLog.info(f"set detemrinistic Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
@@ -152,7 +153,7 @@ class Session():
             th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
             th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
-                ggLog.info(f"CUDA AVAILABLE: device = {adarl.utils.utils.get_gpu_names()}")
+                ggLog.info(f"CUDA AVAILABLE: device = {get_gpu_names()}")
             else:
                 ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
                             "                  NO CUDA AVAILABLE!\n"+
@@ -206,18 +207,19 @@ class Session():
         cuda_available = False
         try:
             import torch as th
+            from adarl.utils.utils import get_gpu_names
             cuda_available = th.cuda.is_available() 
             if cuda_available:
-                gpu_names = adarl.utils.utils.get_gpu_names()
+                gpu_names = get_gpu_names()
             else:
                 gpu_names = []
         except ImportError as e:
-            ggLog.error(f"Error loading torch: {adarl.utils.utils.exc_to_str(e)}")
+            ggLog.error(f"Error loading torch: {exc_to_str(e)}")
             pass
         config["has_torch"] = has_torch
         config["cuda_available"] = cuda_available
         config["cuda_device_name"] = gpu_names
-        config["cpu_name"] = adarl.utils.utils.cpuinfo()
+        config["cpu_name"] = cpu_info()
         config["hostname"] = self.run_info["hostname"]
         config["start_time"] = self.run_info["start_time"]
         config["seed"] = self.run_info["seed"]
@@ -237,7 +239,7 @@ class Session():
             try:
                 yaml.dump(config,input_args_yamlfile, default_flow_style=None)
             except TypeError as e:
-                ggLog.error(f"Failed to save input args to yaml file {args_yaml_file}: {adarl.utils.utils.exc_to_str(e)}")
+                ggLog.error(f"Failed to save input args to yaml file {args_yaml_file}: {exc_to_str(e)}")
                 # Remove non-serializable entries
                 clean_config = {}
                 for k,v in config.items():
@@ -245,7 +247,7 @@ class Session():
                         yaml.dump({k:v}, default_flow_style=None)
                         clean_config[k] = v
                     except TypeError as e2:
-                        ggLog.error(f"Could not serialize config entry {k}:{v}\n{adarl.utils.utils.exc_to_str(e2)}")
+                        ggLog.error(f"Could not serialize config entry {k}:{v}\n{exc_to_str(e2)}")
                 yaml.dump(clean_config,input_args_yamlfile, default_flow_style=None)
         # ggLog.info(f"values = {values}")
 
@@ -467,7 +469,7 @@ def runFunction_wrapper(seed,
         #     os.makedirs(seedFolder,exist_ok=True)            
         return runFunction(seed=seed, folderName=seedFolder, resumeModelFile=resumeModelFile, run_id=run_id, args = run_args)
     except Exception as e:
-        ggLog.error(f"Run failed with exception: {adarl.utils.utils.exc_to_str(e)}")
+        ggLog.error(f"Run failed with exception: {exc_to_str(e)}")
         return None
 
 def runFunction_wrapper_arg_kwargs(args, kwargs):
@@ -560,7 +562,7 @@ def launchRun(runFunction,
             if tries > 10:
                 raise e
     for pkg in pkgs_to_save:
-        pkg_path = adarl.utils.utils.pkgutil_get_path(pkg,"")
+        pkg_path = pkgutil_get_path(pkg,"")
         if pkg_path is None:
             raise RuntimeError(f"Failed to get path for package {pkg}")
         shutil.copytree(pkg_path, folderName+"/"+pkg)

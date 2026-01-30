@@ -39,7 +39,13 @@ logger = logging.getLogger('GGLog')
 logger.setLevel(logging.DEBUG)
 # create console handler with a higher log level
 ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+levels = {"DEBUG":logging.DEBUG,
+          "INFO":logging.INFO,
+          "WARNING":logging.WARNING,
+          "ERROR":logging.ERROR,
+          "CRITICAL":logging.CRITICAL}
+level = levels.get(os.environ.get("GGLOG_LEVEL","INFO").upper(), logging.INFO)
+ch.setLevel(level)
 # create formatter and add it to the handlers
 formatter = ColoredLevelsFormatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%Y%m%d%H:%M:%S')
 # formatter = logging.Formatter('[%(asctime)s.%(msecs)03d][%(levelname)s] %(message)s', datefmt='%s')

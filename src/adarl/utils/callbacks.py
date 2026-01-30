@@ -84,6 +84,10 @@ class EvalCallback(TrainingCallback):
         self.best_model_save_path = best_model_save_path
         self._random_eval_at_start = random_eval_at_start
         self._skip_first_eval = skip_first_eval
+        if eval_env.num_envs > n_eval_episodes:
+            # This would lead to a bias toward shorter episodes, as the evaluation would stop as soon as n_eval_episodes is reached
+            # meaning it would take the n_eval_episodes quickest envs
+            raise ValueError(f"eval_env.num_envs ({eval_env.num_envs}) > n_eval_episodes ({n_eval_episodes}), this could lead to biased statistics, especially if using VectorEnvLogger and terminations.")
 
         self._episode_counter = 0
         self._last_evaluation_episode = float("-inf")

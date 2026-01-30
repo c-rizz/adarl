@@ -1,7 +1,8 @@
 from __future__ import annotations
 import functools
+import math
 
-from adarl.utils.dbg.dbg_checks import dbg_check, dbg_check_size
+from adarl.utils.dbg.dbg_checks import dbg_check_size
 import numpy as np
 import time
 from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, TypeVar, Sequence
@@ -14,6 +15,7 @@ import torch as th
 from dataclasses import dataclass
 from adarl.utils.base_utils import *
 import functools
+import gymnasium as gym
 
 numpy_to_torch_dtype_dict = {
     bool          : th.bool,
@@ -240,6 +242,9 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         successes = np.zeros((buffsizes,), dtype = np.int32)
         collected_eps = 0
         collected_steps = 0
+        used_num_envs = math.gcd(episodes, num_envs)
+        if used_num_envs < num_envs:
+            ggLog.warn(f"evaluatePolicyVec: Using only {used_num_envs} envs out of {num_envs} to avoid bias in episode statistics (eval episodes={episodes})")
         #frames = []
         #do an average over a bunch of episodes
         if not progress_bar:
@@ -247,10 +252,10 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         else:
             maybe_tqdm = tqdm.tqdm
 
-        running_rews = [0] * num_envs
-        running_durations = [0] * num_envs
+        running_rews = [0] * used_num_envs
+        running_durations = [0] * used_num_envs
         if obs_return is not None:
-            running_obss = [[] for i in range(num_envs)]
+            running_obss = [[] for i in range(used_num_envs)]
         t0 = time.monotonic()
         tot_step_time = 0.0
         tot_pred_time = 0.0
@@ -261,8 +266,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
             ts1 = time.monotonic()
             obss, rews, terms, truncs, infos = vec_env.step(acts)
             ts2 = time.monotonic()
-            collected_steps += num_envs
-            for i in range(num_envs):
+            collected_steps += used_num_envs
+            for i in range(used_num_envs):
                 running_rews[i] += rews[i]
                 running_durations[i] += 1
                 if obs_return is not None:
@@ -297,8 +302,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "fps" : collected_steps/(tf-t0),
                         "collected_steps" : collected_steps,
                         "collected_episodes" : collected_eps,
-                        "avg_pred_time" : tot_pred_time/(collected_steps/num_envs),
-                        "avg_step_time" : tot_step_time/(collected_steps/num_envs)}
+                        "avg_pred_time" : tot_pred_time/(collected_steps/used_num_envs),
+                        "avg_step_time" : tot_step_time/(collected_steps/used_num_envs)}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
         if model is not None:

@@ -278,11 +278,11 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
             self._adapter.setJointsStateDirect( joint_names=(self._rail_joint, self._hinge_joint),
                                                 joint_states_pve=joint_states_pve,
                                                 vec_mask=vec_mask)
+            self._adapter.setLinksStateDirect([self._camera_link_name],
+                                            link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+                                            vec_mask=vec_mask)
         else:
             raise NotImplementedError()
-        self._adapter.setLinksStateDirect([self._camera_link_name],
-                                          link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
-                                          vec_mask=vec_mask)
         if isinstance(self._adapter, BaseVecJointImpedanceAdapter):
             self._adapter.reset_joint_impedances_commands()
             start_command = self._thzeros((self.num_envs,1,5))

@@ -22,7 +22,7 @@ class VectorEnvLogger(
         use_wandb : bool = True,
         logs_id : str | None = None,
         log_infos : bool =  True,
-        env_th_device : th.device = th.device("cuda")
+        env_th_device : th.device | str = th.device("cuda")
     ):
         gym.Wrapper.__init__(self, env)
         self._current_infos = []
@@ -35,7 +35,7 @@ class VectorEnvLogger(
         self._time_last_log = time.monotonic()
         self._log_infos = log_infos
         self._num_envs = env.unwrapped.num_envs
-        self._env_th_device = env_th_device
+        self._env_th_device = env_th_device if isinstance(env_th_device, th.device) else th.device(env_th_device)
         if hasattr(env.unwrapped, "single_reward_space"):
             reward_space = env.unwrapped.single_reward_space
         else:

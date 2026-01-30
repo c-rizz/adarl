@@ -23,6 +23,7 @@ import adarl.utils.utils
 from torchvision.transforms.functional import rgb_to_grayscale, resize
 import time
 from adarl.envs.examples.CartpoleContinuousVecEnv import CartpoleContinuousVecEnv
+from adarl.utils.dbg.dbg_checks import dbg_check_size
 
 class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
     def __init__(   self,
@@ -46,6 +47,8 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         self._img_obs = img_obs
         self._img_obs_resolution = img_obs_resolution
         self._img_obs_frame_stacking_size = img_obs_frame_stacking_size
+        self._lowres_camera_name = "lowres_camera"
+        self._lowres_camera_link_name = (self._lowres_camera_name, "simple_camera_link")
 
         super().__init__(   adapter=adapter,
                             render=render,
@@ -77,16 +80,45 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         return single_state_space, single_observation_space, base_reward_space
 
     @override
+    def _get_spawn_defs(self):
+        r = super()._get_spawn_defs()
+        if adarl.utils.utils.isinstance_noimport(self._adapter, "MjxAdapter"):
+            cam_file = "models/simple_camera.mjcf.xacro"
+        else:            
+            cam_file = "models/simple_camera.sdf.xacro"
+        # We make the camera the smallest resolution that can fit the final cropped and resized image without losing quality
+        self._camera_crop_tblr = [74/360, 320/360, 0.0, 1.0]  # top, bottom, left, right crop ratios
+        aspect = 426/240 # more or less 16/9
+        cam_height = self._img_obs_resolution #*1/(self._camera_crop_tblr[1]-self._camera_crop_tblr[0])
+        self._lowres_cam_resolution_hw = (cam_height, int(cam_height*aspect))
+        lowres_cam_def = ModelSpawnDef( definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
+                                    name=self._lowres_camera_name,
+                                    pose=None,
+                                    format="sdf.xacro",
+                                    kwargs={"camera_width":self._lowres_cam_resolution_hw[1],
+                                            "camera_height":self._lowres_cam_resolution_hw[0],
+                                            "frame_rate":1/self._intendedStepLength_sec,
+                                            "camera_name": self._lowres_camera_name})
+        r.append(lowres_cam_def)
+        return r
+
+    @override
     def _initialize_episodes(self, vec_mask : th.Tensor | None = None, options = {}) -> None:
         super()._initialize_episodes(vec_mask=vec_mask, options=options)
         if self._img_obs:
             sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None]  #type: ignore
             for i in range(self._img_obs_frame_stacking_size):
-                imgs_vec_chw, times = self._adapter.getRenderings([self._ui_camera_name])
+                imgs_vec_chw, times = self._adapter.getRenderings([self._lowres_camera_name])
                 # ggLog.info(f"imgs_vec_chw[0].shape = {imgs_vec_chw[0].shape}")
                 imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_chw[0].permute(0,3,1,2))
                 sub_step_imgs_vec_hw[i] = imgs_vec_hw
-            self._stacked_img = th.stack(sub_step_imgs_vec_hw,dim=1)
+            self._stacked_img = th.cat(sub_step_imgs_vec_hw,dim=1).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+        if isinstance(self._adapter, BaseVecSimulationAdapter):
+            self._adapter.setLinksStateDirect([self._lowres_camera_link_name],
+                                            link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+                                            vec_mask=vec_mask)
+        else:
+            raise NotImplementedError()
 
     @override
     def get_observations(self, state) -> dict[Any, th.Tensor]:
@@ -102,16 +134,20 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             state["img"] = self._stacked_img
         return state
 
+    @th.compile(mode="max-autotune-no-cudagraphs", fullgraph=True)
     def reshape_imgs(self, imgs_vec_chw : th.Tensor) -> th.Tensor:
-        top    = int( 74/360*imgs_vec_chw.shape[2])
-        bottom = int(320/360*imgs_vec_chw.shape[2])
-        left   = int(0*imgs_vec_chw.shape[3])
-        right  = int(1*imgs_vec_chw.shape[3])
+        top    = int(self._camera_crop_tblr[0]*imgs_vec_chw.shape[2])
+        bottom = int(self._camera_crop_tblr[1]*imgs_vec_chw.shape[2])
+        left   = int(self._camera_crop_tblr[2]*imgs_vec_chw.shape[3])
+        right  = int(self._camera_crop_tblr[3]*imgs_vec_chw.shape[3])
         imgs_vec_chw  = imgs_vec_chw[:,:,top:bottom,left:right]
         imgs_grey_vec_hw = rgb_to_grayscale(imgs_vec_chw)
         imgs_grey_vec_hw = resize(imgs_grey_vec_hw, [self._img_obs_resolution, self._img_obs_resolution])
-        return imgs_grey_vec_hw.view(self.num_envs, self._img_obs_resolution, self._img_obs_resolution)
+        # imgs_grey_vec_hw = imgs_vec_chw[:,0]
+        dbg_check_size(imgs_grey_vec_hw, (self.num_envs, 1, self._img_obs_resolution, self._img_obs_resolution))
+        return imgs_grey_vec_hw
 
+    @override
     def step(self):
         if not self._img_obs:
             r =  super().step()
@@ -122,14 +158,30 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         estimated_step_duration_sec = 0.0
         t0 = time.monotonic()
         self._adapter.initialize_for_step()
-        sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None] #type: ignore
-        substep_len = self._intendedStepLength_sec/self._img_obs_frame_stacking_size
-        for i in range(self._img_obs_frame_stacking_size):
+        cam_h, cam_w = self._lowres_cam_resolution_hw
+        obs_h = obs_w = self._img_obs_resolution
+        frames = self._img_obs_frame_stacking_size
+        substep_len = self._intendedStepLength_sec/frames
+        tot_run_time = 0.0
+        tot_render_time = 0.0
+        tot_reshape_time = 0.0
+
+        all_renderings_fvhwc = th.empty((frames, self.num_envs, cam_h, cam_w, 3),
+                                  dtype=th.uint8,
+                                  device=th.device("cpu"))
+        for i in range(frames):
+            t0_sub = time.monotonic()
             estimated_step_duration_sec += self._adapter.run(substep_len)
-            imgs_vec_hw, times = self._adapter.getRenderings([self._ui_camera_name])
-            imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_hw[0].permute(0,3,1,2).to(device=self._th_device, non_blocking=self._th_device.type=="cuda"))
-            sub_step_imgs_vec_hw[i] = imgs_vec_hw
-        self._stacked_img = th.stack(sub_step_imgs_vec_hw,dim=1)
+            t1_sub = time.monotonic()
+            self._adapter.getRenderings([   self._lowres_camera_name],
+                                        out=[all_renderings_fvhwc[i]])
+            t2_sub = time.monotonic()
+            tot_run_time += (t1_sub - t0_sub)
+            tot_render_time += (t2_sub - t1_sub)
+        t_pre_reshape = time.monotonic()
+        frames = self.reshape_imgs(imgs_vec_chw=all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,3,cam_h,cam_w)).view((frames, self.num_envs, obs_h, obs_w))
+        tot_reshape_time = time.monotonic() - t_pre_reshape
+        self._stacked_img = frames.permute(1,0,2,3).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
         t1 = time.monotonic()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
@@ -138,4 +190,5 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
         self.post_step()
         tf = time.monotonic()
+        # ggLog.info(f"Step timing: total={tf - t0:.4f}s, tpost={tf-t1:.4f}s, run={tot_run_time:.4f}s, render={tot_render_time:.4f}s, reshape={tot_reshape_time:.4f}s, stime={estimated_step_duration_sec:.6f}s, rt_single={estimated_step_duration_sec/(tf - t0):.2f}x")
 

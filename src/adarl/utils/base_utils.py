@@ -475,7 +475,7 @@ def isinstance_noimport(obj, class_names: str | Sequence[str]):
     return False
 
 
-def cpuinfo():
+def cpu_info():
     command = "cat /proc/cpuinfo"
     all_info = subprocess.check_output(command, shell=True).decode().strip()
     for line in all_info.split("\n"):

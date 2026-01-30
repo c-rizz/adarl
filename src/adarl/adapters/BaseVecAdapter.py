@@ -51,15 +51,24 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         return self._out_th_device
     
     @abstractmethod
-    def getRenderings(self, requestedCameras : List[str], vec_mask : th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
+    def getRenderings(self, requestedCameras : List[str],
+                            vec_mask : th.Tensor | None = None,
+                            out_th_device : th.device | None = None,
+                            out : list[th.Tensor] | None = None) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
 
         Parameters
         ----------
         requestedCameras : List[str]
             List containing the names of the cameras to get the images of
-        vec_mask: th.Tensor
+        vec_mask: th.Tensor | None
             Which envirnoments to render, if None, renders all
+        out_th_device : th.device | None
+            The device on which to place the output tensors. If None, uses the default output device.
+        out : list[th.Tensor] | None
+            If provided, the list must contain len(requestedCameras) tensors of appropriate shape and dtype, 
+            which will be used to store the output images. This can be used to avoid allocations. If None, 
+            new tensors will be allocated.
 
         Returns
         -------
@@ -68,6 +77,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             in the second. The order is that of the requestedCameras argument.
             The first element contains a list of length len(requestedCameras) containing tensors of shape
             (th.count_nonzero(vec_mask), image_shape) and the second has shape(th.count_nonzero(vec_mask), len(requestedCameras))
+            Images are in HWC channel order.
 
         """
         raise NotImplementedError()
