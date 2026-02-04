@@ -794,8 +794,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
         self._mjx_ray_vec = jax.jit(jax.vmap(
                                 fun=jax.vmap(mjx.ray,
-                                             in_axes=(None, None, 0, 0, None, None, None)), # map over number of rays
-                                in_axes=((self._mjx_model_in_axes, 0, 0, 0, None, None, None)) # map over sims and per-env rays positions/directions
+                                             in_axes=(None, None, 0, 0, None)), # map over number of rays
+                                in_axes=((self._mjx_model_in_axes, 0, 0, 0, None)) # map over sims and per-env rays positions/directions
                             ))
 
     @override
@@ -927,7 +927,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
             self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
 
-        self._camera_sizes_hw :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
+        self._camera_sizes_hw_by_id : dict[int,tuple[int,int]] = {cid:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
+        self._camera_sizes_hw :dict[str,tuple[int,int]] = {self._cid2cname[cid]:hw for cid, hw in self._camera_sizes_hw_by_id.items()}
         if self._enable_rendering:
             def make_renderer(h,w):
                 ggLog.info(f"Making renderer for size {h}x{w}")
@@ -942,6 +943,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             self._renderers = {}
         self._visualize_xfrc_applied = True
+
+        self._precompute_depth_cam_params()
 
         self._lid2geoms : dict[int,jnp.ndarray] = {}
         all_links = list(self._lname2lid.keys())
@@ -1314,19 +1317,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         leaves, treedef = jax.tree.flatten(tree)
         return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
-    @override
-    def getRenderings(self,
-                      requestedCameras : list[str],
-                      vec_mask : th.Tensor | None = None,
-                      out_th_device : th.device | None = None,
-                      out : list[th.Tensor] | None = None) -> tuple[list[th.Tensor], th.Tensor]:
-        if out_th_device is None:
-            out_th_device = self._out_th_device
-        if len(self._renderers)==0:
-            raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
-        if vec_mask is None:
-            vec_mask = self._all_vecs_thcpu
-        t0 = time.monotonic()
+    def _render_rgb(self,   requestedCameras : list[str],
+                            vec_mask : th.Tensor,
+                            out_th_device : th.device,
+                            out : list[th.Tensor] | None = None):
         selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu")
         nvecs = selected_vecs.shape[0]
         
@@ -1400,6 +1394,33 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f" update took {tot_update_time*1000:.3f}ms,"
         #            f" copy took {tot_copy_time*1000:.3f}ms")
         return [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in image_batches_hwc], times
+
+
+    @override
+    def getRenderings(self,
+                      requestedCameras : list[str],
+                      vec_mask : th.Tensor | None = None,
+                      out_th_device : th.device | None = None,
+                      out : list[th.Tensor] | None = None) -> tuple[list[th.Tensor], th.Tensor]:
+        if out_th_device is None:
+            out_th_device = self._out_th_device
+        if len(self._renderers)==0:
+            raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
+        if vec_mask is None:
+            vec_mask = self._all_vecs_thcpu
+
+        depth = False
+        if not depth:
+            return self._render_rgb(requestedCameras, vec_mask, out_th_device, out)
+        else:
+            nvecs : int = th.count_nonzero(vec_mask).item() #type: ignore
+            times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
+            all_imgs = []
+            for cam in requestedCameras:
+                imgs = self._get_depth_image(cam, sim_state=self._sim_state)
+                all_imgs.append(imgs)
+            imgs_th = [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in all_imgs]
+            return imgs_th, times
 
 
     @override
@@ -2388,11 +2409,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        jnp.full_like(coords_grid[...,0], fill_value=ray_height)[..., None]], axis=-1) # add z coord
         ray_origins_flat = ray_origins.reshape(vsize, -1, 3)
         ray_dirs_flat = jnp.broadcast_to(jnp.array([0.0, 0.0, -1.0], dtype=jnp.float32), ray_origins_flat.shape)
-        dists_vec_xy = self._mjx_ray_vec(  sim_state.mjx_model, sim_state.mjx_data, 
-                            pnt = ray_origins_flat,
-                            vec = ray_dirs_flat,
-                            geom_group = ground_linkgroups_ids # mask that is true at each group_id to be included
-                            ).reshape(vsize, resolution_xy[0], resolution_xy[1])
+        dists_vec_xy = self._mjx_ray_vec(   sim_state.mjx_model, 
+                                            sim_state.mjx_data, 
+                                            ray_origins_flat,
+                                            ray_dirs_flat,
+                                            ground_linkgroups_ids # mask that is true at each group_id to be included
+                                            ).reshape(vsize, resolution_xy[0], resolution_xy[1])
         return dists_vec_xy - ray_height
 
     def get_height_map(self, positions_vec_xy : th.Tensor, range_xyxy : th.Tensor, resolution_xy : tuple[int,int],
@@ -2408,10 +2430,71 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 sim_state = self._sim_state)        
         return jax2th(heights_vec_xy, th_device=self._out_th_device)
 
+    def _get_depth_cam_params(self, cam_id : int):
+        cam_height, cam_width = self._camera_sizes_hw_by_id[cam_id]
+        cam_pos_local = jnp.array(self._mj_model.cam_pos[cam_id], dtype=jnp.float32, device=self._jax_device)
+        cam_rot_local = quat_wxyz_to_rotmat(jnp.array(self._mj_model.cam_quat[cam_id], dtype=jnp.float32, device=self._jax_device))
+        fovy_rad = jnp.deg2rad(self._mj_model.cam_fovy[cam_id])
+        return cam_height, cam_width, cam_pos_local, cam_rot_local, fovy_rad
+
+    def _build_camera_rays(self, cam_width, cam_height, fovy_rad):
+        xs = jnp.arange(cam_width, dtype=jnp.float32)
+        ys = jnp.arange(cam_height, dtype=jnp.float32)
+        grid_x, grid_y = jnp.meshgrid(xs, ys, indexing="xy")
+        x_norm = (grid_x + 0.5 - cam_width / 2.0) / (cam_width / 2.0)
+        y_norm = (grid_y + 0.5 - cam_height / 2.0) / (cam_height / 2.0)
+        raydirs_camframe = jnp.stack([  x_norm * jnp.tan(fovy_rad / 2.0)* (cam_width / cam_height),
+                                    -y_norm * jnp.tan(fovy_rad / 2.0),
+                                    -jnp.ones_like(x_norm)], axis=-1)
+        raydirs_camframe = raydirs_camframe / jnp.linalg.norm(raydirs_camframe, axis=-1, keepdims=True)
+        raydirs_camframe = raydirs_camframe.reshape(-1, 3)
+        return raydirs_camframe
+    
+    def _precompute_depth_cam_params(self):
+        self._depth_cam_params_by_id = {}
+        for cam_id in self._camera_sizes_hw_by_id.keys():
+            cam_height, cam_width, cam_pos_local, cam_rot_local, fovy_rad = self._get_depth_cam_params(cam_id)
+            raydirs_camframe = self._build_camera_rays(cam_width, cam_height, fovy_rad)
+            self._depth_cam_params_by_id[cam_id] = {
+                "cam_height": cam_height,
+                "cam_width": cam_width,
+                "cam_pos_local": cam_pos_local,
+                "cam_rot_local": cam_rot_local,
+                "fovy_rad": fovy_rad,
+                "raydirs_camframe": raydirs_camframe
+            }
+
+    @partial(jax.jit, static_argnums=(0,1))
+    def _get_depth_image_jax(self, cam_id : int, sim_state : SimState, geom_group : jnp.ndarray | None = None) -> jnp.ndarray:
+        body_id = self._mj_model.cam_bodyid[cam_id]
+        depth_cam_params = self._depth_cam_params_by_id[cam_id]
+        cam_height = depth_cam_params["cam_height"]
+        cam_width = depth_cam_params["cam_width"]
+        cam_pos_local = depth_cam_params["cam_pos_local"]
+        cam_rot_local = depth_cam_params["cam_rot_local"]
+        raydirs_camframe = depth_cam_params["raydirs_camframe"]
+
+        cambody_rot = sim_state.mjx_data.xmat[:, body_id]
+        cambody_pos = sim_state.mjx_data.xpos[:, body_id]
+
+        cambody_rot_world = jnp.matmul(cambody_rot, cam_rot_local)
+        cambody_pos_world = cambody_pos + jnp.matmul(cambody_rot, cam_pos_local)
+
+        raydirs_world = jnp.matmul(cambody_rot_world, raydirs_camframe.T)
+        rayorigins_world = jnp.broadcast_to(cambody_pos_world[:, None, :],
+                                            (cambody_pos_world.shape[0], raydirs_camframe.shape[0], 3))
+
+        dists = self._mjx_ray_vec(sim_state.mjx_model,
+                                  sim_state.mjx_data,
+                                  rayorigins_world,
+                                  raydirs_world,
+                                  geom_group)
+        return dists.reshape(cambody_pos_world.shape[0], cam_height, cam_width)
+
     def _get_depth_image(self,
                          camera_name : str,
                          sim_state : SimState | None = None,
-                         geom_group : jnp.ndarray | None = None) -> jnp.ndarray:
+                         visible_linkgroups : list[tuple[tuple[str,str],...]] | None = None) -> th.Tensor:
         """
         Cast per-pixel rays from the specified camera and return depth maps for all vector environments.
 
@@ -2421,52 +2504,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             Name of the camera as returned by get_detected_cameras().
         sim_state : SimState | None
             Simulation state to use; defaults to the adapter's internal state.
-        geom_group : jnp.ndarray | None
-            Optional geom group mask to pass to mjx.ray (see Mujoco doc). If None, all geoms are considered.
+        visible_linkgroups : list[tuple[tuple[str,str],...]] | None
+            List of linkgroups that should be visible to the camera. If None, all linkgroups are visible.
 
         Returns
         -------
-        jnp.ndarray
+        th.Tensor
             Depth image tensor with shape (vec_size, height, width) in meters.
         """
         if sim_state is None:
             sim_state = self._sim_state
         if sim_state is self._sim_state:
             self._forward_if_needed()
+        if visible_linkgroups is not None:
+            raise NotImplementedError("visible_linkgroups is not implemented yet")
+        else:
+            geom_group = None
 
         cam_id = self._cname2cid[camera_name]
-        height, width = self._camera_sizes_hw[camera_name]
-
-        fovy_rad = jnp.deg2rad(self._mj_model.cam_fovy[cam_id])
-
-        xs = jnp.arange(width, dtype=jnp.float32)
-        ys = jnp.arange(height, dtype=jnp.float32)
-        grid_x, grid_y = jnp.meshgrid(xs, ys, indexing="xy")
-        x_norm = (grid_x + 0.5 - width / 2.0) / (width / 2.0)
-        y_norm = (grid_y + 0.5 - height / 2.0) / (height / 2.0)
-
-        dir_cam = jnp.stack([x_norm * jnp.tan(fovy_rad / 2.0)* (width / height),
-                             -y_norm * jnp.tan(fovy_rad / 2.0),
-                             -jnp.ones_like(x_norm)], axis=-1)
-        dir_cam = dir_cam / jnp.linalg.norm(dir_cam, axis=-1, keepdims=True)
-        dir_cam_flat = dir_cam.reshape(-1, 3)
-
-        cam_pos_local = jnp.array(self._mj_model.cam_pos[cam_id], dtype=jnp.float32, device=self._jax_device)
-        cam_rot_local = quat_wxyz_to_rotmat(jnp.array(self._mj_model.cam_quat[cam_id], dtype=jnp.float32, device=self._jax_device))
-        body_id = self._mj_model.cam_bodyid[cam_id]
-        body_rot = sim_state.mjx_data.xmat[:, body_id]
-        body_pos = sim_state.mjx_data.xpos[:, body_id]
-
-        cam_rot_world = jnp.einsum("bij,jk->bik", body_rot, cam_rot_local)
-        cam_pos_world = body_pos + jnp.einsum("bij,j->bi", body_rot, cam_pos_local)
-
-        dirs_world = jnp.einsum("bij,rj->bir", cam_rot_world, dir_cam_flat)
-        origins_world = jnp.broadcast_to(cam_pos_world[:, None, :],
-                                         (cam_pos_world.shape[0], dir_cam_flat.shape[0], 3))
-
-        dists = self._mjx_ray_vec(sim_state.mjx_model,
-                                  sim_state.mjx_data,
-                                  pnt=origins_world,
-                                  vec=dirs_world,
-                                  geom_group=geom_group)
-        return dists.reshape(cam_pos_world.shape[0], height, width)
+        img = self._get_depth_image_jax(cam_id, sim_state, geom_group)
+        
+        return jax2th(img, th_device=self._out_th_device)

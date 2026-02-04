@@ -51,8 +51,8 @@ class VectorEnvChecker(
     
     def _check(self, observation, reward):
         if observation is not None:
-            dbg_check_finite(observation, async_assert=True)
-            dbg_check_bounded(observation, min=self._obs_min, max=self._obs_max, async_assert=False, just_warn=self._just_warn, assert_msg="Observation out of bounds")
+            dbg_check_finite(observation, async_assert=True, assert_msg="VectorEnvChecker: Non finite values in observation")
+            dbg_check_bounded(observation, min=self._obs_min, max=self._obs_max, async_assert=not self._just_warn, just_warn=self._just_warn, assert_msg="Observation out of bounds")
         if reward is not None:
-            dbg_check_finite(reward, async_assert=True)
-            dbg_check_bounded(reward, min = self._rew_min, max = self._rew_max, async_assert=False, just_warn=self._just_warn, assert_msg="Reward out of bounds")
+            dbg_check_finite(reward, async_assert=True, assert_msg="VectorEnvChecker: Non finite values in reward")
+            dbg_check_bounded(reward, min = self._rew_min, max = self._rew_max, async_assert=not self._just_warn, just_warn=self._just_warn, assert_msg="Reward out of bounds")

@@ -89,7 +89,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         # We make the camera the smallest resolution that can fit the final cropped and resized image without losing quality
         self._camera_crop_tblr = [74/360, 320/360, 0.0, 1.0]  # top, bottom, left, right crop ratios
         aspect = 426/240 # more or less 16/9
-        cam_height = self._img_obs_resolution #*1/(self._camera_crop_tblr[1]-self._camera_crop_tblr[0])
+        cam_height = self._img_obs_resolution*2 #*1/(self._camera_crop_tblr[1]-self._camera_crop_tblr[0])
         self._lowres_cam_resolution_hw = (cam_height, int(cam_height*aspect))
         lowres_cam_def = ModelSpawnDef( definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl",cam_file)).read_text(),
                                     name=self._lowres_camera_name,
