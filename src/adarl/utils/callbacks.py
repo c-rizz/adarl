@@ -245,7 +245,9 @@ class CheckpointCallbackRB(TrainingCallback):
         if is_best:
             fname_base = "best_"+fname_base
         path = os.path.join(self.save_path, fname_base)
+        ggLog.info(f"Saving model checkpoint to {path}...")
         self._model.save(path)
+        ggLog.info(f"Model checkpoint saved to {path}")
         if not is_best:
             if count_ep:
                 self._ep_last_model_checkpoint = self._episode_counter

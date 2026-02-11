@@ -36,9 +36,32 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                  verbose : bool = False,
                  quiet : bool = False,
                  episodeInfoLogFile : Optional[str] = None,
-                 render_envs : list[int] = [],
+                 ui_render_envs : list[int] = [],
                  autoreset : bool = True,
                  log_freq : int = -1):
+        """Initialize the Env Runner
+
+        Parameters
+        ----------
+        env : BaseVecEnv[ObsType]
+            The underlying adarl base environment.
+        verbose : bool, optional
+            Whether to enable verbose logging, by default False
+        quiet : bool, optional
+            Whether to suppress logging, by default False
+        episodeInfoLogFile : Optional[str], optional
+            The file to log episode information, by default None
+        render_envs : list[int], optional
+            The indexes of the environments to render as UI, by default []
+        autoreset : bool, optional
+            Whether to automatically reset environments within step() at the end of an episode, by default True
+        log_freq : int, optional
+            The frequency of logging, by default -1 (no logging)
+        Raises
+        ------
+        RuntimeError
+            If the sub-environments have different max_episode_steps.
+        """
         
         super().__init__(num_envs=env.num_envs,
                          vec_observation_space=env.vec_observation_space,
@@ -49,7 +72,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          info_space=env.info_space,
                          single_reward_space=env.single_reward_space,
                          autoreset=autoreset,
-                         ui_render_envs_indexes=th.as_tensor(render_envs),
+                         ui_render_envs_indexes=th.as_tensor(ui_render_envs),
                          th_device=env._th_device)
         self._adarl_env = env
         self._all_vecs = th.ones((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
@@ -443,7 +466,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._vec_ep_info["ep_sub_rewards_labels"] = to_string_tensor(self._sub_rewards_names).expand(self._adarl_env.num_envs,len(self._sub_rewards_names),-1)
         self._vec_ep_info.update({"ep_sub_reward_"+k : v for k,v in self._ep_sub_rewards.items()})
 
-    def _build_info(self, states):
+    def _build_info(self, states) -> TensorTree[th.Tensor]:
         info = {}
         timed_out = self._adarl_env.are_states_timedout(states)
         terminated = self._adarl_env.are_states_terminal(states)

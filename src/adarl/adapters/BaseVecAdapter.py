@@ -54,7 +54,8 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     def getRenderings(self, requestedCameras : List[str],
                             vec_mask : th.Tensor | None = None,
                             out_th_device : th.device | None = None,
-                            out : list[th.Tensor] | None = None) -> tuple[list[th.Tensor], th.Tensor]:
+                            out : list[th.Tensor] | None = None,
+                            depth : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
 
         Parameters
@@ -69,6 +70,9 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             If provided, the list must contain len(requestedCameras) tensors of appropriate shape and dtype, 
             which will be used to store the output images. This can be used to avoid allocations. If None, 
             new tensors will be allocated.
+        depth : bool
+            Whether to return depth images instead of RGB images. In this case the format will be (vec_size, height, width, 1),
+            with float dtype and values in meters.
 
         Returns
         -------

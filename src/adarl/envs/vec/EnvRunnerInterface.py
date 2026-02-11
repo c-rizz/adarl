@@ -38,6 +38,33 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
                  autoreset : bool,
                  ui_render_envs_indexes : th.Tensor,
                  th_device : th.device):
+        """Initialize the Env Runner
+
+        Parameters
+        ----------
+        num_envs : int
+            The number of parallel environments.
+        vec_observation_space : ThDict
+            The batched observation space for all environments.
+        vec_action_space : ThBox
+            The batched action space for all environments.
+        vec_reward_space : ThBox
+            The batched reward space for all environments.
+        info_space : gym_spaces.Dict
+            The info space for all environments.
+        single_observation_space : ThDict
+            The observation space for a single environment.
+        single_action_space : ThBox
+            The action space for a single environment.
+        single_reward_space : ThBox
+            The reward space for a single environment.
+        autoreset : bool
+            Whether to automatically reset environments within step() at the end of an episode.
+        ui_render_envs_indexes : th.Tensor
+            The indexes of the environments to render as UI.
+        th_device : th.device
+            The device to use for PyTorch tensors.
+        """
         self.num_envs = num_envs
         self.autoreset = autoreset
         self.th_device = th_device
@@ -55,7 +82,7 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
         self.ui_render_envs_mask[self.ui_render_envs_indexes] = True
 
     @abstractmethod
-    def step(self, actions, autoreset : bool | None = None) -> Tuple[ ObsType,
+    def step(self, actions : th.Tensor, autoreset : bool | None = None) -> Tuple[ ObsType,
                                                         ObsType,
                                                         th.Tensor,
                                                         th.Tensor,
@@ -63,6 +90,28 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
                                                         TensorTree[th.Tensor],
                                                         TensorTree[th.Tensor],
                                                         th.Tensor]:
+        """Step the environment, and auto-reset it if necessary
+
+        Parameters
+        ----------
+        actions : th.Tensor
+            The actions to take in the environment.
+        autoreset : bool | None, optional
+            Whether to automatically reset environments within step() at the end of an episode, by default None
+
+        Returns
+        -------
+        Tuple[ ObsType, ObsType, th.Tensor, th.Tensor, th.Tensor, TensorTree[th.Tensor], TensorTree[th.Tensor], th.Tensor]
+            A tuple containing:
+            - consequent_observations: The observations that are consequence of the actions taken.
+            - next_start_observations: The next observations at the start of the next step (differs from consequent_observations if the environment was reset).
+            - rewards: The rewards received after taking the actions.
+            - terminateds: A boolean tensor indicating which environments have terminated.
+            - truncateds: A boolean tensor indicating which environments have been truncated.
+            - consequent_infos: A tensor tree containing the info dictionaries that are consequence of the actions taken.
+            - next_start_infos: A tensor tree containing the info dictionaries for each environment at the start of the next step (differs from consequent_infos if the environment was reset).
+            - envs_ended_mask: A boolean tensor indicating which environments have ended (terminated or truncated).
+        """
         ...
 
     @abstractmethod

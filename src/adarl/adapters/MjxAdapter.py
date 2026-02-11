@@ -1396,12 +1396,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in image_batches_hwc], times
 
 
+    def _render_depth(self, requestedCameras : list[str],
+                            vec_mask : th.Tensor,
+                            out_th_device : th.device):
+        nvecs : int = th.count_nonzero(vec_mask).item() #type: ignore
+        times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
+        all_imgs = []
+        for cam in requestedCameras:
+            imgs = self._get_depth_image(cam, sim_state=self._sim_state).to(device=out_th_device, non_blocking=out_th_device.type=="cuda")
+            imgs = imgs.unsqueeze(-1) # add channel dimension
+            all_imgs.append(imgs)
+        return all_imgs, times
+    
+    def _depth_img_to_rgb(self, depth_img, maxdist=3.0):
+        img_batch = (depth_img/maxdist).to(dtype=th.uint8)
+        img_batch = img_batch.unsqueeze(-1).repeat((1,1,1,3))
+        return img_batch
+    
     @override
     def getRenderings(self,
                       requestedCameras : list[str],
                       vec_mask : th.Tensor | None = None,
                       out_th_device : th.device | None = None,
-                      out : list[th.Tensor] | None = None) -> tuple[list[th.Tensor], th.Tensor]:
+                      out : list[th.Tensor] | None = None,
+                      depth : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
         if out_th_device is None:
             out_th_device = self._out_th_device
         if len(self._renderers)==0:
@@ -1409,18 +1427,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if vec_mask is None:
             vec_mask = self._all_vecs_thcpu
 
-        depth = False
         if not depth:
             return self._render_rgb(requestedCameras, vec_mask, out_th_device, out)
         else:
-            nvecs : int = th.count_nonzero(vec_mask).item() #type: ignore
-            times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
-            all_imgs = []
-            for cam in requestedCameras:
-                imgs = self._get_depth_image(cam, sim_state=self._sim_state)
-                all_imgs.append(imgs)
-            imgs_th = [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in all_imgs]
-            return imgs_th, times
+            all_imgs, times = self._render_depth(requestedCameras, vec_mask, out_th_device)
+            # ggLog.info(f"Got depth images of size {[img.shape for img in all_imgs]}")
+            # all_imgs = [self._depth_img_to_rgb(img, maxdist=3.0) for img in all_imgs]
+            if out is not None:
+                for i in range(len(requestedCameras)):
+                    out[i].copy_(all_imgs[i])
+            return all_imgs, times
 
 
     @override
@@ -2447,13 +2463,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                     -y_norm * jnp.tan(fovy_rad / 2.0),
                                     -jnp.ones_like(x_norm)], axis=-1)
         raydirs_camframe = raydirs_camframe / jnp.linalg.norm(raydirs_camframe, axis=-1, keepdims=True)
-        raydirs_camframe = raydirs_camframe.reshape(-1, 3)
+        raydirs_camframe = raydirs_camframe.reshape(cam_width*cam_height, 3)
         return raydirs_camframe
     
     def _precompute_depth_cam_params(self):
         self._depth_cam_params_by_id = {}
         for cam_id in self._camera_sizes_hw_by_id.keys():
             cam_height, cam_width, cam_pos_local, cam_rot_local, fovy_rad = self._get_depth_cam_params(cam_id)
+            ggLog.info(f"MjxAdapter depth cam: cam_id {cam_id} cam_height {cam_height} cam_width {cam_width} cam_pos_local {cam_pos_local} cam_rot_local {cam_rot_local} fovy_rad {fovy_rad}")
             raydirs_camframe = self._build_camera_rays(cam_width, cam_height, fovy_rad)
             self._depth_cam_params_by_id[cam_id] = {
                 "cam_height": cam_height,
@@ -2477,14 +2494,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         cambody_rot = sim_state.mjx_data.xmat[:, body_id]
         cambody_pos = sim_state.mjx_data.xpos[:, body_id]
 
+        nrays = raydirs_camframe.shape[0]
+        nsims = cambody_pos.shape[0]
+
         cambody_rot_world = jnp.matmul(cambody_rot, cam_rot_local)
         cambody_pos_world = cambody_pos + jnp.matmul(cambody_rot, cam_pos_local)
 
-        raydirs_world = jnp.matmul(cambody_rot_world, raydirs_camframe.T)
-        rayorigins_world = jnp.broadcast_to(cambody_pos_world[:, None, :],
-                                            (cambody_pos_world.shape[0], raydirs_camframe.shape[0], 3))
+        raydirs_world = jnp.matmul(cambody_rot_world, raydirs_camframe.T).transpose((0,2,1)) # (vec_size, nrays, 3)
 
-        dists = self._mjx_ray_vec(sim_state.mjx_model,
+        rayorigins_world = jnp.broadcast_to(cambody_pos_world[:, None, :],  (nsims, nrays, 3)) # (vec_size, nrays, 3)
+
+        dists, geoms_ids = self._mjx_ray_vec(sim_state.mjx_model,
                                   sim_state.mjx_data,
                                   rayorigins_world,
                                   raydirs_world,
@@ -2520,8 +2540,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise NotImplementedError("visible_linkgroups is not implemented yet")
         else:
             geom_group = None
-
+        
         cam_id = self._cname2cid[camera_name]
         img = self._get_depth_image_jax(cam_id, sim_state, geom_group)
+        # ggLog.info(f"Depth image from camera '{camera_name}' (id {cam_id}): shape {img.shape}, min {img.min()}, max {img.max()}")
         
         return jax2th(img, th_device=self._out_th_device)

@@ -42,13 +42,15 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
                     terminate_on_rail_distance = False,
                     terminate_on_pole_angle = True,
                     use_gym_inverted_pendulum_model = False,
-                    camera_offset_xyz = (.0,.0,.0)):
+                    camera_offset_xyz = (.0,.0,.0),
+                    use_depth_camera = False):
 
         self._img_obs = img_obs
         self._img_obs_resolution = img_obs_resolution
         self._img_obs_frame_stacking_size = img_obs_frame_stacking_size
         self._lowres_camera_name = "lowres_camera"
         self._lowres_camera_link_name = (self._lowres_camera_name, "simple_camera_link")
+        self._use_depth_camera = use_depth_camera
 
         super().__init__(   adapter=adapter,
                             render=render,
@@ -108,9 +110,9 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         if self._img_obs:
             sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None]  #type: ignore
             for i in range(self._img_obs_frame_stacking_size):
-                imgs_vec_chw, times = self._adapter.getRenderings([self._lowres_camera_name])
+                imgs_vec_hwc, times = self._adapter.getRenderings([self._lowres_camera_name], depth=self._use_depth_camera)
                 # ggLog.info(f"imgs_vec_chw[0].shape = {imgs_vec_chw[0].shape}")
-                imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_chw[0].permute(0,3,1,2))
+                imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_hwc[0].permute(0,3,1,2))
                 sub_step_imgs_vec_hw[i] = imgs_vec_hw
             self._stacked_img = th.cat(sub_step_imgs_vec_hw,dim=1).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
         if isinstance(self._adapter, BaseVecSimulationAdapter):
@@ -141,11 +143,14 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         left   = int(self._camera_crop_tblr[2]*imgs_vec_chw.shape[3])
         right  = int(self._camera_crop_tblr[3]*imgs_vec_chw.shape[3])
         imgs_vec_chw  = imgs_vec_chw[:,:,top:bottom,left:right]
-        imgs_grey_vec_hw = rgb_to_grayscale(imgs_vec_chw)
-        imgs_grey_vec_hw = resize(imgs_grey_vec_hw, [self._img_obs_resolution, self._img_obs_resolution])
+        if not self._use_depth_camera:
+            imgs_vec_chw = rgb_to_grayscale(imgs_vec_chw).view(imgs_vec_chw.shape[0], 1, imgs_vec_chw.shape[2], imgs_vec_chw.shape[3])
+        else:
+            imgs_vec_chw = (imgs_vec_chw/3.0*255.0).to(dtype=th.uint8)
+        imgs_vec_chw = resize(imgs_vec_chw, [self._img_obs_resolution, self._img_obs_resolution])
         # imgs_grey_vec_hw = imgs_vec_chw[:,0]
-        dbg_check_size(imgs_grey_vec_hw, (self.num_envs, 1, self._img_obs_resolution, self._img_obs_resolution))
-        return imgs_grey_vec_hw
+        dbg_check_size(imgs_vec_chw, (self.num_envs, 1, self._img_obs_resolution, self._img_obs_resolution))
+        return imgs_vec_chw
 
     @override
     def step(self):
@@ -159,6 +164,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         t0 = time.monotonic()
         self._adapter.initialize_for_step()
         cam_h, cam_w = self._lowres_cam_resolution_hw
+        # ggLog.info(f"camera resolution is {cam_w}x{cam_h}")
         obs_h = obs_w = self._img_obs_resolution
         frames = self._img_obs_frame_stacking_size
         substep_len = self._intendedStepLength_sec/frames
@@ -166,20 +172,30 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         tot_render_time = 0.0
         tot_reshape_time = 0.0
 
-        all_renderings_fvhwc = th.empty((frames, self.num_envs, cam_h, cam_w, 3),
-                                  dtype=th.uint8,
-                                  device=th.device("cpu"))
+        if self._use_depth_camera:
+            all_renderings_fvhwc = th.empty((frames, self.num_envs, cam_h, cam_w, 1),
+                                    dtype=th.float32,
+                                    device=th.device("cuda"))
+        else:
+            all_renderings_fvhwc = th.empty((frames, self.num_envs, cam_h, cam_w, 3),
+                                    dtype=th.uint8,
+                                    device=th.device("cpu"))
         for i in range(frames):
             t0_sub = time.monotonic()
             estimated_step_duration_sec += self._adapter.run(substep_len)
             t1_sub = time.monotonic()
             self._adapter.getRenderings([   self._lowres_camera_name],
-                                        out=[all_renderings_fvhwc[i]])
+                                        out=[all_renderings_fvhwc[i]],
+                                        depth=self._use_depth_camera)
             t2_sub = time.monotonic()
             tot_run_time += (t1_sub - t0_sub)
             tot_render_time += (t2_sub - t1_sub)
         t_pre_reshape = time.monotonic()
-        frames = self.reshape_imgs(imgs_vec_chw=all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,3,cam_h,cam_w)).view((frames, self.num_envs, obs_h, obs_w))
+        if self._use_depth_camera:
+            all_renderings = all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,1,cam_h,cam_w)
+        else:
+            all_renderings = all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,3,cam_h,cam_w)
+        frames = self.reshape_imgs(imgs_vec_chw=all_renderings).view((frames, self.num_envs, obs_h, obs_w))
         tot_reshape_time = time.monotonic() - t_pre_reshape
         self._stacked_img = frames.permute(1,0,2,3).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
         t1 = time.monotonic()

@@ -301,6 +301,7 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
         #     raise RuntimeError(f"Can only render env #0 (because the camera can only be at one position across all sims)")
         try:
             imgs, times = self._adapter.getRenderings([self._ui_camera_name], vec_mask=vec_mask)
+            # ggLog.info(f"got renderings with shapes {[img.shape for img in imgs]} and times {times}")
             return imgs, times
         except Exception as e:
             ggLog.warn(f"Exception getting ui image: {adarl.utils.utils.exc_to_str(e)}")
