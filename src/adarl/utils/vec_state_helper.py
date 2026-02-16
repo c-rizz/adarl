@@ -460,9 +460,9 @@ class ThBoxStateHelper(StateHelper):
             if isinstance(field_names, Sequence):
                 if not isinstance(field_names, tuple):
                     field_names = tuple(field_names)
-                idx = th.as_tensor([self._field_idxs[n] for n in field_names], device=self._th_device)
+                idx = th.as_tensor([self._field_idxs[n] for n in field_names], device=self._th_device, dtype=th.int64)
             else:
-                idx = th.as_tensor(field_names, device=self._th_device)
+                idx = th.as_tensor(field_names, device=self._th_device, dtype=th.int64)
             self._field_idx_cache[field_names] = idx
             return idx
         return idx

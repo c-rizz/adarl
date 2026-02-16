@@ -497,7 +497,9 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                                         </asset>
                                         <worldbody>
                                             <body name="ground_link">
-                                                <light pos="0 0 10" dir="-0.3 -0.3 -1" directional="true" 
+                                                <light  pos="0 0 1"
+                                                        dir="0.3 0.3 -1" 
+                                                        type="directional"
                                                         ambient="0.2 0.2 0.2"
                                                         diffuse="0.7 0.7 0.7"
                                                         specular="0.5 0.5 0.5"
@@ -1321,8 +1323,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             vec_mask : th.Tensor,
                             out_th_device : th.device,
                             out : list[th.Tensor] | None = None):
-        selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu")
-        nvecs = selected_vecs.shape[0]
+        selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu").tolist()
+        nvecs = len(selected_vecs)
+        t0 = time.monotonic()
         
         # mj_data_batch = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         # print(f"mj_data_batch = {mj_data_batch}")
@@ -1350,6 +1353,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         tot_copy_time = t_postcopy - t_precopy
         tot_render_time = 0.0
         tot_update_time = 0.0
+        # ggLog.info(f"Rendering {nvecs} vecs and {len(requestedCameras)} cameras with resolutions {[self._camera_sizes_hw[cam] for cam in requestedCameras]}...")
         for env_i,env in enumerate(selected_vecs):
             for cam_i in range(len(requestedCameras)):
                 cam = requestedCameras[cam_i]

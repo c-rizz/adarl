@@ -74,8 +74,6 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
     def __init__(
         self,
         env: gym.vector.VectorEnv | gym.Env,
-        *,
-        autoreset: bool = True,
         device: th.device | str | None = None,
         ui_render_envs: Sequence[int] | None = None,
         action_device: Literal["numpy"] | th.device = "numpy",
@@ -87,13 +85,13 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
         if isinstance(action_device, str):
             if action_device != "numpy":
                 raise ValueError("action_device string must be 'numpy'")
-        elif not isinstance(action_device, th.dtype):
-            raise TypeError("action_device must be 'numpy' or a torch.dtype instance")
+        elif not isinstance(action_device, th.device):
+            raise TypeError("action_device must be 'numpy' or a torch.device instance")
         self._action_device = action_device
-
         self._gym_env = env
-        if isinstance(env, gym.vector.VectorEnv):
-            self._gymenv_autoreset_mode = env.metadata.get("autoreset_mode", None)
+        
+        if isinstance(self._gym_env, gym.vector.VectorEnv):
+            self._gymenv_autoreset_mode = self._gym_env.metadata.get("autoreset_mode", None)
             if self._gymenv_autoreset_mode is None:
                 ggLog.warn("Gym environment does not specify 'autoreset_mode' in metadata.")
             if gym.__version__ >= "1.1.0":
@@ -104,19 +102,19 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
             self._gymenv_autoreset_mode = "consequent_in_info"
             self._consequent_obs_info_key = "final_obs"
             self._consequent_info_info_key = "final_info" # This actually generally isn't there
-            raw_single_observation_space = env.single_observation_space
-            raw_single_action_space = env.single_action_space
-            num_envs = env.num_envs
-        elif isinstance(env, gym.Env):
-            raw_single_observation_space = env.observation_space
-            raw_single_action_space = env.action_space
+            raw_single_observation_space = self._gym_env.single_observation_space
+            raw_single_action_space = self._gym_env.single_action_space
+            num_envs = self._gym_env.num_envs
+        elif isinstance(self._gym_env, gym.Env):
+            raw_single_observation_space = self._gym_env.observation_space
+            raw_single_action_space = self._gym_env.action_space
             self._gymenv_autoreset_mode = "only_next_start" # We will only be able to get the first observation of the next episode, not the final observation of the previous episode, since the environment will have already reset by the time we get access to the observation.
-            if isinstance_noimport(env, ("isaaclab.envs.DirectRLEnv", "isaaclab.envs.ManagerBasedRLEnv")):
-                num_envs = env.num_envs
+            if isinstance_noimport(self._gym_env, ("isaaclab.envs.DirectRLEnv", "isaaclab.envs.ManagerBasedRLEnv")):
+                num_envs = self._gym_env.num_envs
             else:
                 raise RuntimeError("Cannot determine number of environments from a non-vector gym.Env")
         else:
-            raise TypeError("env must be an instance of gym.vector.VectorEnv or gym.Env")
+            raise TypeError(f"env must be an instance of gym.vector.VectorEnv or gym.Env, got {type(self._gym_env)}")
 
         if self._gymenv_autoreset_mode != "consequent_in_info" and autoreset:
             ggLog.warn( "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
@@ -135,17 +133,17 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
         if not isinstance(single_observation_space, ThDict):
             raise RuntimeError(f"The base observation space must be a Dict space wrap it to be one if it isn't, right now it's {base_observation_space}")
 
-        vec_observation_space : ThDict = batch_space(single_observation_space, env.num_envs) #type: ignore[assignment]
+        vec_observation_space : ThDict = batch_space(single_observation_space, self._gym_env.num_envs) #type: ignore[assignment]
 
         single_action_space = _make_th_box(raw_single_action_space, device)
-        vec_action_space : ThBox = batch_space(single_action_space, env.num_envs) #type: ignore[assignment]
+        vec_action_space : ThBox = batch_space(single_action_space, self._gym_env.num_envs) #type: ignore[assignment]
 
-        single_reward_space = ThBox(low=np.array([env.reward_range[0]], dtype=np.float32),
-                                    high=np.array([env.reward_range[1]], dtype=np.float32),
+        single_reward_space = ThBox(low=np.array([self._gym_env.reward_range[0]], dtype=np.float32),
+                                    high=np.array([self._gym_env.reward_range[1]], dtype=np.float32),
                                     shape=(1,),
                                     dtype=np.float32,
                                     torch_device=device)
-        vec_reward_space : ThBox = batch_space(single_reward_space, env.num_envs) #type: ignore[assignment]
+        vec_reward_space : ThBox = batch_space(single_reward_space, self._gym_env.num_envs) #type: ignore[assignment]
 
         info_space = gym_spaces.Dict({})
         ui_indexes = th.as_tensor(ui_render_envs, dtype=th.long, device=device)
@@ -159,13 +157,13 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
             single_observation_space=single_observation_space,
             single_action_space=single_action_space,
             single_reward_space=single_reward_space,
-            autoreset=autoreset,
+            autoreset=True,
             ui_render_envs_indexes=ui_indexes,
             th_device=device,
         )
 
-        self.spec = getattr(env, "spec", None)
-        self._max_episode_steps = th.full((self.num_envs,), _resolve_max_episode_steps(env), dtype=th.long, device=self.th_device)
+        self.spec = getattr(self._gym_env, "spec", None)
+        self._max_episode_steps = th.full((self.num_envs,), _resolve_max_episode_steps(self._gym_env), dtype=th.long, device=self.th_device)
         self._reward_shape = single_reward_space.shape
         self._reward_dtype = single_reward_space.torch_dtype
         self._empty_mask = th.zeros((self.num_envs,), dtype=th.bool, device=self.th_device)
@@ -182,6 +180,8 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
                                                                                 th.Tensor]:
         if autoreset is None:
             autoreset = self.autoreset
+        if not autoreset:
+            raise RuntimeError("Only autoreset=True is supported, as underlying gym environments only support autoreset")
 
         action_tensor = actions if isinstance(actions, th.Tensor) else th.as_tensor(actions, device=self.th_device)
         self._last_actions = action_tensor.detach().clone()
@@ -347,5 +347,5 @@ class GymEnvRunner(EnvRunnerInterface[ObsType]):
         return self._gym_env
 
     def _to_tensor_tree(self, value: TensorTree) -> TensorTree[th.Tensor]:
-        return map_tensor_tree(value, lambda v: th.as_tensor(v, device=self.th_device))
+        return map_tensor_tree(value, lambda v: th.as_tensor(v, device=self.th_device))("")
 

@@ -9,7 +9,9 @@ from typing_extensions import override, final
 from abc import ABC, abstractmethod
 from adarl.utils.spaces import gym_spaces, ThBox, ThDict
 
-ObsType = TypeVar("ObsType", bound=Mapping[Union[str, Tuple[str,...]], th.Tensor])
+ObsType = TypeVar("ObsType", bound=Union[   Mapping[Tuple[str,...], th.Tensor],
+                                            Mapping[str, th.Tensor],
+                                            Mapping[Union[str, Tuple[str,...]], th.Tensor]])
 
 
 class EnvRunnerInterface(ABC, Generic[ObsType]):
