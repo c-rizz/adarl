@@ -66,8 +66,8 @@ class VectorEnvLogger(
         return super().reset(seed=seed, options=options)
 
     def _reset_stats(self):
-        self._ep_rewards.fill_(0.0)
-        self._ep_durations.fill_(0)
+        # self._ep_rewards.fill_(0.0)
+        # self._ep_durations.fill_(0)
         self._completed_ep_rewards_sum_sl.fill_(0.0)
         self._completed_ep_rewards_min_sl.fill_(float("+inf"))
         self._completed_ep_rewards_max_sl.fill_(float("-inf"))
@@ -156,7 +156,9 @@ class VectorEnvLogger(
             self._completed_ep_count_sl += newly_completed_eps_count
             self._tot_completed_ep_count += newly_completed_eps_count
             # ggLog.info(f"{self._logs_id}VecEnvLogger: {newly_completed_eps_count} episodes newly completed, total completed={self._tot_completed_ep_count}, since last log={self._completed_ep_count_sl}")
-            
+            # ggLog.info(f" completed ep durations = {completed_durs}, sum={self._completed_ep_durations_sum_sl}, min={self._completed_ep_durations_min_sl}, max={self._completed_ep_durations_max_sl}")
+            # ggLog.info(f" terminated = {th_terminateds}, truncated={th_truncateds}, completed_eps={completed_eps}")
+            # ggLog.info(f" ep durations = {self._ep_durations}, ep rewards = {self._ep_rewards}")
             if self._completed_ep_count_sl >= self._num_envs:
                 ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
                 davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
@@ -166,7 +168,12 @@ class VectorEnvLogger(
                            f" min={self._completed_ep_rewards_min_sl},"
                            f" max={self._completed_ep_rewards_max_sl},"
                            f" length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
-                
+                wdblog = {'VecEnvLogger/'+self._logs_id+"/reward_avg": ravg,
+                          'VecEnvLogger/'+self._logs_id+"/reward_min": self._completed_ep_rewards_min_sl,
+                          'VecEnvLogger/'+self._logs_id+"/reward_max": self._completed_ep_rewards_max_sl,
+                          'VecEnvLogger/'+self._logs_id+"/length_avg": davg,
+                          'VecEnvLogger/'+self._logs_id+"/length_min": self._completed_ep_durations_min_sl,
+                          'VecEnvLogger/'+self._logs_id+"/length_max": self._completed_ep_durations_max_sl}
                 if self._log_infos:
                     logs = {}
                     logged_infos = {k:v[:self._completed_ep_count_sl] for k,v in self._completed_final_infos_since_log.items()}
@@ -195,10 +202,7 @@ class VectorEnvLogger(
                             f" med_r={medrew:{'08.8g' if medrew != float('nan') else ''}}"
                             f" fps={self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
                     if self._use_wandb:
-                        from adarl.utils.wandb_wrapper import wandb_log
-                        # ggLog.info(f"vecenvlogger logging: {list(logs.keys())}")
-                        wdblog = {f"{k.replace('VecEnvLogger/','VecEnvLogger/'+self._logs_id)}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()}
-                        wandb_log(wdblog)
+                        wdblog.update({f"{k.replace('VecEnvLogger/','VecEnvLogger/'+self._logs_id)}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()})
                     # ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    
                     # final_info_list = unstack_tensor_tree(final_infos)
                     # for i in range(self._num_envs):
@@ -214,6 +218,9 @@ class VectorEnvLogger(
                     #                 self._logs_batch[k] = []
                     #             self._logs_batch[k].append(logs[k])
                     #         self._logs_batch_size +=1                
+                if self._use_wandb:
+                    from adarl.utils.wandb_wrapper import wandb_log
+                    wandb_log(wdblog)
                 self._reset_stats()
 
         tf = time.monotonic()

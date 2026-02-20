@@ -899,10 +899,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         # _ = self._mjx_step(mjx_model, copy.deepcopy(mjx_data)) # trigger jit compile
         self._rebuild_lower_funcs()
-        # self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
-        # self._mjx_integrate_and_forward = jax.jit(jax.vmap(mjx_integrate_and_forward, in_axes=(self._mjx_model_in_axes, 0))) #, donate_argnames=["d"]) donating args make it crash
-        # ggLog.info(f"Compiling mjx.step....")
-        # self._mjx_step = jax.jit(jax.vmap(mjx.step, in_axes=(None, 0))) #, donate_argnames=["d"]) donating args make it crash
         
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
         sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
@@ -934,6 +930,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._enable_rendering:
             def make_renderer(h,w):
                 ggLog.info(f"Making renderer for size {h}x{w}")
+                # If you are having issues with the renderer trying to use a card that it cannot access 
+                # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
+                # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
+                # To be sure what exact device path to use you can navigate the folders
+                # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
+                # You can see the egl devices with eglinfo -B
                 return mujoco.Renderer(self._mj_model,height=h,width=w)
             self._render_scene_option = mujoco.MjvOption()
             self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
@@ -1312,12 +1314,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def get_debug_info(self) -> dict[str,th.Tensor]:
         return {k:th.as_tensor(v) for k,v in dataclasses.asdict(self._dbg_info).items()}
 
-    
-    @staticmethod
-    # @jax.jit
-    def _tree_unstack(tree):
-        leaves, treedef = jax.tree.flatten(tree)
-        return [treedef.unflatten(leaf) for leaf in zip(*leaves, strict=True)]
 
     def _render_rgb(self,   requestedCameras : list[str],
                             vec_mask : th.Tensor,
@@ -1475,14 +1471,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jax2th(t, th_device=self._out_th_device)
     
     @staticmethod
-    # @jax.jit
     def _get_vec_joint_states_pveae(mjx_model, mjx_data, jids : jnp.ndarray):
         return MjxAdapter._get_vec_joint_states_raw_pveae(mjx_model.jnt_qposadr[jids],
                                                         mjx_model.jnt_dofadr[jids],
                                                         mjx_data)
     
     @staticmethod
-    # @jax.jit
     def _get_vec_joint_states_pve(mjx_model, mjx_data, jids : jnp.ndarray):
         return MjxAdapter._get_vec_joint_states_raw_pve(mjx_model.jnt_qposadr[jids],
                                                         mjx_model.jnt_dofadr[jids],

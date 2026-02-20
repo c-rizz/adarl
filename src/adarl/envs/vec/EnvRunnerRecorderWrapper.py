@@ -134,7 +134,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             action = action.cpu()
         action = np.array(action)
         self._update_buffers(img, vecobs, action, reward, terminated, truncated, info)
-        # ggLog.info(f"recorded step: action = {action}, stored_steps = {self._stored_steps}")
+        # ggLog.info(f"recorded step: action = {action}, stored_steps = {self._stored_frames}")
 
     def add_to_extra_info(self, info : dict):
         """Add info to the extra info dict of the last step"""
@@ -171,6 +171,13 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def reset(self, seed = None, options = {}) -> tuple[ObsType, TensorTree[th.Tensor]]:
         # ggLog.info(f"rec.reset()")
         obss, infos = super().reset(seed=seed, options=options)
+        self._on_ep_end(envs_ended_mask=th.ones((self.num_envs,), dtype=th.bool, device=self._runner.th_device), # we consider that all envs ended, so that the episode buffers are flushed and the episode is saved if needed
+                        last_observations = None,
+                        last_actions = None,
+                        last_infos = None,
+                        last_rewards = None,
+                        last_terminateds = None, 
+                        last_truncateds = None)
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         if self._may_episode_be_saved(ep_count):
             self._record_step(obs = obss, action = None, info = infos, reward=None, terminated=None, truncated=None)
@@ -276,7 +283,6 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 for k,v in vecbuffer.items():
                     if k == "vecobs" and not self._has_vec_obs:
                         continue
-                    # ggLog.info(f"{self._vec_obs_key} writing subbuffer {k}:{v}")
                     try:
                         # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
                         v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
@@ -311,7 +317,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         
 
     def _preproc_frame(self, img_hwc):
-        # ggLog.info(f"raw frame shape = {img_whc.shape}")
+        # ggLog.info(f"raw frame shape = {img_hwc.shape}")
         if img_hwc.dtype == np.float32:
             img_hwc = (img_hwc*255).astype(dtype=np.uint8, copy=False)
         if img_hwc.dtype == np.int32 or img_hwc.dtype == np.int64:

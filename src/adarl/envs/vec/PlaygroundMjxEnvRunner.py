@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+os.environ["MUJOCO_GL"] = "egl"
+
 from collections import OrderedDict
-from typing import Any, Mapping, Sequence, Tuple, Literal
+from typing import Any, Mapping, Optional, Sequence, Tuple, Literal, Callable
 
 import gymnasium as gym
 import jax
@@ -15,10 +19,14 @@ from adarl.utils.spaces import ThBox, ThDict, gym_spaces
 from adarl.utils.tensor_trees import TensorTree, clone_tensor_tree, map_tensor_tree
 import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.utils import isinstance_noimport
-import mujoco_playground._src.mjx_env
+from mujoco_playground._src import mjx_env
 import mujoco_playground._src.wrapper
 import brax.envs.wrappers.training
-
+import brax.envs.base
+from jax import numpy as jp
+from mujoco import mjx
+from mujoco_playground._src.wrapper import Wrapper, MadronaWrapper, BraxDomainRandomizationVmapWrapper
+from brax.envs.wrappers import training as brax_training
 
 def _jax_to_torch(tensor):
   import torch.utils.dlpack as tpack  # pytype: disable=import-error # pylint: disable=import-outside-toplevel
@@ -27,10 +35,10 @@ def _jax_to_torch(tensor):
   return tensor
 
 
-def _torch_to_jax(tensor):
+def _torch_to_jax(tensor, device: jax.Device | None = None):
   from jax.dlpack import from_dlpack  # pylint: disable=import-outside-toplevel
 
-  tensor = from_dlpack(tensor)
+  tensor = from_dlpack(tensor, device=device)
   return tensor
 
 def _make_th_box(shape: tuple[int,...], device: th.device, low : float, high: float) -> ThBox:
@@ -56,61 +64,50 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
 
     def __init__(
         self,
-        env: mujoco_playground._src.mjx_env.MjxEnv,
+        env: mjx_env.MjxEnv,
         num_envs: int,
         seed : int ,
         device: th.device | str | None = None,
         ui_render_envs: Sequence[int] | None = None,
-        render_camera_name : str = ""
+        render_camera_name : str = "",
+        action_device: th.device | str = "cuda",
+        randomize_step_timeout_counters: bool = False
     ) -> None:
         if device is None:
             device = th.device("cpu")
         else:
             device = th.device(device)
-        # if isinstance(action_device, str):
-        #     if action_device != "numpy":
-        #         raise ValueError("action_device string must be 'numpy'")
-        # elif not isinstance(action_device, th.device):
-        #     raise TypeError("action_device must be 'numpy' or a torch.device instance")
-        # self._action_device = action_device
+        self._action_device_th = th.device(action_device)
+        if self._action_device_th.index is None:
+            self._action_device_th = th.device(self._action_device_th.type, index=0)
+        self._action_device_jax = jax.devices("gpu")[self._action_device_th.index] if self._action_device_th.type == "cuda" else jax.devices("cpu")[0]
         self._seed = seed
         self._mjp_env = env
         self._jax_rng_key = jax.device_put(jax.random.PRNGKey(self._seed), jax.devices("gpu")[device.index])
         self._rng_reset_key, self._rng_randomization_key = jax.random.split(self._jax_rng_key)
+        self._rng_reset_key = jax.random.split(self._rng_reset_key, num_envs)
+        self._rng_randomization_key = jax.random.split(self._rng_randomization_key, num_envs)
         self._render_camera_name = render_camera_name
+        self._randomize_stpes_timeout_counters = randomize_step_timeout_counters
 
-        if not isinstance(self._mjp_env, mujoco_playground._src.mjx_env.MjxEnv):
+        if not isinstance(self._mjp_env, mjx_env.MjxEnv):
             raise TypeError(f"env must be an instance of mujoco_playground._src.mjx_env.MjxEnv, got {type(self._mjp_env)}")
         
         wrappers = []
+        wrapper_types = []
         if isinstance(self._mjp_env, mujoco_playground._src.wrapper.Wrapper):
             current_env = self._mjp_env
-            while isinstance(current_env, mujoco_playground._src.wrapper.Wrapper):
+            while isinstance(current_env, (mujoco_playground._src.wrapper.Wrapper, brax.envs.base.Wrapper)):
                 wrappers.append(current_env)
                 current_env = current_env.env
-            wrapper_types = [type(w) for w in wrappers]        
-        if mujoco_playground._src.wrapper.BraxAutoResetWrapper not in wrapper_types:
-            raise RuntimeError("The provided env must be wrapped in a BraxAutoResetWrapper for GymEnvRunner to work, but that wrapper was not found in the env's wrapper stack.")
+            wrapper_types = [type(w) for w in wrappers]
+        if BraxAutoResetWrapper_finalobs not in wrapper_types:
+            raise RuntimeError("The provided env must be wrapped in a BraxAutoResetWrapper_finalobs for PlaygroundMjxEnvRunner to work, but that wrapper was not found in the env's wrapper stack.")
+        if brax.envs.wrappers.training.EpisodeWrapper not in wrapper_types:
+            raise RuntimeError("The provided env must be wrapped in a EpisodeWrapper for PlaygroundMjxEnvRunner to work, but that wrapper was not found in the env's wrapper stack.")
         for w in wrappers:
             if isinstance(w, brax.envs.wrappers.training.EpisodeWrapper):
                 max_episode_steps = w.episode_length
-        
-        
-        self._mjpenv_autoreset_mode = "only_next_start" # need to implement a better BraxAutoResetWrapper to get the "consequent_in_info" mode working
-        if self._mjpenv_autoreset_mode == "consequent_in_info":
-            self._consequent_obs_info_key = "final_obs"
-            self._consequent_info_info_key = "final_info" # This actually generally isn't there
-
-        if self._mjpenv_autoreset_mode != "consequent_in_info":
-            ggLog.warn( "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                        "The mujoco playground environment does not support providing the consequent observation \n"
-                        "and info at reset within the step(), but autoreset is enabled.\n"
-                        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\n"
-                        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                        )
 
         ui_render_envs = list(ui_render_envs) if ui_render_envs is not None else []
 
@@ -118,12 +115,15 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
         self.num_envs = num_envs
         action_dim = self._mjp_env.action_size
         obs_size = self._mjp_env.observation_size
-        self._max_episode_steps = th.full((self.num_envs,), max_episode_steps, dtype=th.long, device=self.th_device)
+        if isinstance(obs_size, int):
+            self._wrap_obs_space = True
+            self._obs_dict_wrapping_key = "obs"
+            obs_size = {self._obs_dict_wrapping_key: (obs_size,)}
+        self._max_episode_steps = max_episode_steps
+        self._max_episode_steps_th = th.full((self.num_envs,), max_episode_steps, dtype=th.long, device=device)
         
         single_observation_space = _build_observation_space(obs_size, device)
-        if not isinstance(single_observation_space, ThDict):
-            raise RuntimeError(f"The base observation space must be a Dict space wrap it to be one if it isn't, right now it's {single_observation_space}")
-
+        
         vec_observation_space : ThDict = batch_space(single_observation_space, self.num_envs) #type: ignore[assignment]
 
         single_action_space =  ThBox(low=-1.0, high=1.0, shape=(action_dim,), dtype=np.float32, torch_device=device)
@@ -136,8 +136,8 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
                                     torch_device=device)
         vec_reward_space : ThBox = batch_space(single_reward_space, self.num_envs) #type: ignore[assignment]
 
-        info_space = gym_spaces.Dict({})
-        ui_indexes = th.as_tensor(ui_render_envs, dtype=th.long, device=device)
+        info_space = gym_spaces.Dict({"steps" : ThBox(low=0, high=max_episode_steps, shape=(), dtype=np.int32, torch_device=device)})
+        ui_indexes = th.as_tensor(ui_render_envs, dtype=th.int32, device=device)
 
         super().__init__(
             num_envs=self.num_envs,
@@ -176,30 +176,34 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
             raise RuntimeError("Only autoreset=True is supported, as underlying environments only support autoreset")
 
 
-        actions_jax = _torch_to_jax(actions)
-        self.env_state = self._step_fn(self.env_state, actions_jax)
-        obs_th  : MjpObsType = map_tensor_tree(self.env_state.obs, _jax_to_torch)
+        actions_jax = _torch_to_jax(actions, device=self._action_device_jax)
+        self.env_state, consequent_obs = self._step_fn(self.env_state, actions_jax)
+        obs = self.env_state.obs
+        if not isinstance(obs, Mapping):
+            obs = {self._obs_dict_wrapping_key: obs}
+        if not isinstance(consequent_obs, Mapping):
+            consequent_obs = {self._obs_dict_wrapping_key: consequent_obs}
+        next_start_obss_th  : MjpObsType = map_tensor_tree(obs, _jax_to_torch)
+        consequent_obss_th : MjpObsType = map_tensor_tree(consequent_obs, _jax_to_torch)
         
         info = self.env_state.info
-        done = _jax_to_torch(self.env_state.done).to(self.th_device, non_blocking=self.th_device == "cuda")
+        done = _jax_to_torch(self.env_state.done).to(self.th_device, non_blocking=self.th_device == "cuda", dtype=th.bool)
 
         rewards_tensor =     _jax_to_torch(self.env_state.reward).to(self.th_device, non_blocking=self.th_device == "cuda")
-        truncateds_tensor =  _jax_to_torch(info["truncation"]).to(self.th_device, non_blocking=self.th_device == "cuda")
+        truncateds_tensor =  _jax_to_torch(info["truncation"]).to(self.th_device, non_blocking=self.th_device == "cuda", dtype=th.bool)
         terminateds_tensor = done & ~truncateds_tensor
-
-        if self._mjpenv_autoreset_mode == "only_next_start":
-            consequent_obss = obs_th
-            consequent_infos = info
-            next_start_obs = obs_th
-            next_start_infos = info
-        else:
-            raise NotImplementedError()
 
         reinit_done = terminateds_tensor | truncateds_tensor
 
+        # For now skip the infos, as they aren't really provided in a consistent way
+        consequent_infos = {"steps" : _jax_to_torch(info["steps"])}
+        next_start_infos = consequent_infos
+
+        # print(f"steps tensor: {consequent_infos['steps']}")
+
         self._on_episode_end(
             envs_ended_mask=reinit_done,
-            last_observations=consequent_obss,
+            last_observations=consequent_obss_th,
             last_actions=actions,
             last_infos=consequent_infos,
             last_rewards=rewards_tensor,
@@ -207,8 +211,19 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
             last_truncateds=truncateds_tensor,
         )
 
-        return (consequent_obss,
-                next_start_obs,
+        # ggLog.info(f"step() returning:\n"
+        #            f"consequent_obss: {consequent_obss}\n"
+        #            f"next_start_obs: {next_start_obs}\n"
+        #            f"rewards_tensor: {rewards_tensor}\n"
+        #            f"terminateds_tensor: {terminateds_tensor}\n"
+        #            f"truncateds_tensor: {truncateds_tensor}\n"
+        #            f"consequent_infos: {consequent_infos}\n"
+        #            f"next_start_infos: {next_start_infos}\n"
+        #            f"reinit_done: {reinit_done}\n"
+        #            )
+
+        return (consequent_obss_th,
+                next_start_obss_th,
                 rewards_tensor,
                 terminateds_tensor,
                 truncateds_tensor,
@@ -303,26 +318,36 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
     def reset(self, seed: int | Sequence[int] | None = None, options: dict | None = None) -> tuple[MjpObsType, TensorTree[th.Tensor]]:
         if isinstance(seed, Sequence):
             seed = list(seed)
-        self._reset_fn(self._rng_reset_key)
-        obs_th  : MjpObsType = map_tensor_tree(self.env_state.obs, _jax_to_torch)
+        self.env_state = self._reset_fn(self._rng_reset_key)
+        if self._randomize_stpes_timeout_counters:
+            ggLog.info("Randomizing steps to timeout for envs that were reset")
+            self._jax_rng_key, subkey = jax.random.split(self._jax_rng_key)
+            self.env_state.info['steps'] = jax.random.randint(subkey, shape=(self.num_envs,), minval=0, maxval=self._max_episode_steps)
+            self.env_state.info['truncation'] = jp.zeros((self.num_envs,), dtype=jp.bool_)
+        obs = self.env_state.obs
+        if not isinstance(obs, Mapping):
+            obs = {self._obs_dict_wrapping_key: obs}
+        obs_th  : MjpObsType = map_tensor_tree(obs, _jax_to_torch)
         infos_th = {}
         return obs_th, infos_th
 
     @override
     def get_ui_renderings(self) -> list[th.Tensor]:
-        frame = self._mjp_env.render([self.env_state],
-                                    camera=self._render_camera_name,
-                                    height=480,
-                                    width=640,
-                                    # scene_option=scene_option,
-                                    )
-        if isinstance(frame, np.ndarray):
-            return [th.as_tensor(frame, device=self.th_device)]
-        if isinstance(frame, th.Tensor):
-            return [frame.to(self.th_device)]
-        if frame is None:
-            return [th.empty(0, device=self.th_device)]
-        raise RuntimeError(f"Unsupported frame type {type(frame)} returned by gym environment render() method")
+        # frame = np.zeros((len(self.ui_render_envs_indexes), 16, 16, 3), dtype=np.uint8)
+        frames = []
+        for env_idx in self.ui_render_envs_indexes:
+            single_env_state = jax.tree_util.tree_map(lambda x: x[env_idx.item()], self.env_state)
+            # ggLog.info(f"Rendering UI for env {env_idx}, single_env_state done, now rendering...")
+            frame_hwc = self._mjp_env.render(single_env_state,
+                                        camera=self._render_camera_name,
+                                        height=480,
+                                        width=640,
+                                        # scene_option=scene_option,
+                                        )
+            # ggLog.info(f"Got UI rendering for env {env_idx} with shape {frame_hwc.shape} and dtype {frame_hwc.dtype}")
+            frames.append(th.as_tensor(frame_hwc, device=self.th_device))
+        frames = th.stack(frames, dim=0) # stack envs
+        return [frames] # return as list to be compatible with VecEnvRunner which supports multiple renderings per env, here we just return one
 
     @override
     def close(self) -> None:
@@ -330,7 +355,7 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
 
     @override
     def get_max_episode_steps(self) -> th.Tensor:
-        return self._max_episode_steps
+        return self._max_episode_steps_th
 
     @override
     def get_base_env(self) -> gym.Env:
@@ -338,3 +363,99 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
 
 
 
+class BraxAutoResetWrapper_finalobs(mujoco_playground._src.wrapper.BraxAutoResetWrapper):
+    """A custom version of BraxAutoResetWrapper that provides the final observation the step() return when an episode ends."""
+    @override
+    def step(self, state: mjx_env.State, action: jax.Array) -> tuple[mjx_env.State, mjx_env.Observation]:
+        # grab the reset state.
+        reset_state = None
+        rng_key = jax.vmap(jax.random.split)(state.info[f'{self._info_key}_rng'])
+        reset_rng, reset_key = rng_key[..., 0], rng_key[..., 1]
+        if self._full_reset:
+            reset_state = self.reset(reset_key)
+            reset_data = reset_state.data
+            reset_obs = reset_state.obs
+        else:
+            reset_data = state.info[f'{self._info_key}_first_data']
+            reset_obs = state.info[f'{self._info_key}_first_obs']
+
+        if 'steps' in state.info:
+            # reset steps to 0 if done.
+            steps = state.info['steps']
+            steps = jp.where(state.done, jp.zeros_like(steps), steps)
+            state.info.update(steps=steps)
+
+        state = state.replace(done=jp.zeros_like(state.done))
+        state = self.env.step(state, action)
+
+        def where_done(x, y):
+            done = state.done
+            if done.shape and done.shape[0] != x.shape[0]:
+                return y
+            if done.shape:
+                done = jp.reshape(done, [x.shape[0]] + [1] * (len(x.shape) - 1))
+            return jp.where(done, x, y)
+
+        consequent_obs = state.obs
+        data = jax.tree.map(where_done, reset_data, state.data)
+        obs = jax.tree.map(where_done, reset_obs, state.obs)
+
+        next_info = state.info
+        done_count_key = f'{self._info_key}_done_count'
+        if self._full_reset and reset_state:
+            next_info = jax.tree.map(where_done, reset_state.info, state.info)
+            next_info[done_count_key] = state.info[done_count_key]
+
+            if 'steps' in next_info:
+                next_info['steps'] = state.info['steps']
+            preserve_info_key = f'{self._info_key}_preserve_info'
+            if preserve_info_key in next_info:
+                next_info[preserve_info_key] = state.info[preserve_info_key]
+
+        next_info[done_count_key] += state.done.astype(int)
+        next_info[f'{self._info_key}_rng'] = reset_rng
+
+        return state.replace(data=data, obs=obs, info=next_info), consequent_obs
+    
+
+
+
+def wrap_for_adarl_training(
+    env: mjx_env.MjxEnv,
+    vision: bool = False,
+    num_vision_envs: int = 1,
+    episode_length: int = 1000,
+    action_repeat: int = 1,
+    randomization_fn: Optional[
+        Callable[[mjx.Model], Tuple[mjx.Model, mjx.Model]]
+    ] = None,
+    full_reset: bool = False,
+) -> Wrapper:
+  """
+  Args:
+    env: environment to be wrapped
+    vision: whether the environment will be vision based
+    num_vision_envs: number of environments the renderer should generate, should
+      equal the number of batched envs
+    episode_length: length of episode
+    action_repeat: how many repeated actions to take per step
+    randomization_fn: randomization function that produces a vectorized model
+      and in_axes to vmap over
+    full_reset: whether to call `env.reset` during `env.step` on done rather
+      than resetting to a cached first state. Setting full_reset=True may
+      increase wallclock time because it forces full resets to random states.
+
+  Returns:
+    An environment that is wrapped with Episode and AutoReset wrappers.  If the
+    environment did not already have batch dimensions, it is additional Vmap
+    wrapped.
+  """
+  if vision:
+    env = MadronaWrapper(env, num_vision_envs, randomization_fn)
+  elif randomization_fn is None:
+    env = brax_training.VmapWrapper(env)  # pytype: disable=wrong-arg-types
+  else:
+    env = BraxDomainRandomizationVmapWrapper(env, randomization_fn)
+  env = brax_training.EpisodeWrapper(env, episode_length, action_repeat)
+  env = BraxAutoResetWrapper_finalobs(env, full_reset=full_reset)
+  return env
