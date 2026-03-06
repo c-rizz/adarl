@@ -936,6 +936,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 # To be sure what exact device path to use you can navigate the folders
                 # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
                 # You can see the egl devices with eglinfo -B
+                # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
                 return mujoco.Renderer(self._mj_model,height=h,width=w)
             self._render_scene_option = mujoco.MjvOption()
             self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
@@ -1999,7 +2000,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
                               joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
-                              joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None):
+                              joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              vec_mask : th.Tensor | None = None):
         """_summary_
 
         Parameters
@@ -2014,38 +2016,48 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #    joint coulomb friction (dof_frictionloss, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
         #    joint rotational inertia (dof_armature, see https://mujoco.readthedocs.io/en/stable/XMLreference.html#body-joint)
         #    some world parameters? e.g. gravity
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
         replacements = {}
         mjx_model = self._sim_state.mjx_model
         if link_masses is not None:            
             masses_body_ids = link_masses[0]
             body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
-            body_mass = mjx_model.body_mass.at[:,masses_body_ids].mul(body_masses_ratio_change+1)
-            replacements["body_mass"] = jnp.clip(body_mass, min = 0.0001)
+            new_body_mass = mjx_model.body_mass.at[:,masses_body_ids].mul(body_masses_ratio_change+1)
+            new_body_mass = jnp.where(vec_mask_jnp[:,None], new_body_mass, mjx_model.body_mass)
+            replacements["body_mass"] = jnp.clip(new_body_mass, min = 0.0001)
         if link_frictions is not None:
             frictions_body_ids = link_frictions[0]
             body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
             frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
             frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
-            frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax]
+            frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax] # mask of the geoms to be changed
             full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
             full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:,frictions_body_ids].set(body_frictions_ratio_change)
             geom_friction_ratios = full_body_frictions_ratio_change[:,self._geom_bodyid_jax]
-            replacements["geom_friction"] = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
-                                                      mjx_model.geom_friction+mjx_model.geom_friction*geom_friction_ratios,
+            new_allsim_allgeom_frictions = mjx_model.geom_friction+mjx_model.geom_friction*geom_friction_ratios # new randomization for all geoms on all sims
+            new_allsim_allgeom_frictions = jnp.clip(new_allsim_allgeom_frictions, min = 0.0)
+            new_allsim_geom_frictions = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
+                                                      new_allsim_allgeom_frictions,
                                                       mjx_model.geom_friction)
-            replacements["geom_friction"] = jnp.clip(replacements["geom_friction"],
-                                                     min = 0.0)
+            new_geom_frictions = jnp.where(vec_mask_jnp[:,None,None], new_allsim_geom_frictions, mjx_model.geom_friction)
+            replacements["geom_friction"] = new_geom_frictions
         if joint_armature_ratios is not None:
             armatures_jids = joint_armature_ratios[0]
             armatures_dof_ids = self._jnt_dofadr_jax[armatures_jids] # This would need some additional logic for multi-dimensional joints
             dof_armatures_ratio_change = th2jax(joint_armature_ratios[1],jax_device=self._jax_device)
             new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].mul(dof_armatures_ratio_change+1)
-            replacements["dof_armature"] = jnp.clip(new_armatures, min = 0.0001)
+            new_armatures = jnp.clip(new_armatures, min = 0.0001)
+            new_armatures = jnp.where(vec_mask_jnp[:,None], new_armatures, mjx_model.dof_armature)
+            replacements["dof_armature"] = new_armatures
         if joint_frictionloss_ratios is not None:
             frictionloss_jids = joint_frictionloss_ratios[0]
             frictionloss_dof_ids = self._jnt_dofadr_jax[frictionloss_jids]
             dof_frictionloss_ratio_change = th2jax(joint_frictionloss_ratios[1],jax_device=self._jax_device)
             new_frictionloss = mjx_model.dof_frictionloss.at[:,frictionloss_dof_ids].mul(dof_frictionloss_ratio_change+1)
+            new_frictionloss = jnp.where(vec_mask_jnp[:,None], new_frictionloss, mjx_model.dof_frictionloss)
             replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min = 0.0001)
         mjx_model = mjx_model.replace(**replacements)
         self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
@@ -2053,18 +2065,27 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
 
     def alter_model_sum(self, com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None,
-                              com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor]):
+                              com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor],
+                              vec_mask : th.Tensor | None = None):
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
         replacements = {}
         mjx_model = self._sim_state.mjx_model
         if com_position_diffs is not None:
             com_position_diff_xyz = th2jax(com_position_diffs[1],jax_device=self._jax_device)
             com_body_ids = com_position_diffs[0]
-            replacements["body_ipos"] = mjx_model.body_ipos.at[:,com_body_ids].add(com_position_diff_xyz)
+            new_body_ipos = mjx_model.body_ipos.at[:,com_body_ids].add(com_position_diff_xyz)
+            new_body_ipos = jnp.where(vec_mask_jnp[:,None,None], new_body_ipos, mjx_model.body_ipos)
+            replacements["body_ipos"] = new_body_ipos
         if com_quatxyzw_diffs is not None:
             com_quat_diff_xyzw = th2jax(com_quatxyzw_diffs[1],jax_device=self._jax_device)
             com_body_ids = com_quatxyzw_diffs[0]
             altered_quat = mjx._src.math.quat_mul(com_quat_diff_xyzw[:,[3,0,1,2]],mjx_model.body_iquat)
-            replacements["body_ipos"] = mjx_model.body_iquat.at[:,com_body_ids].set(altered_quat)
+            new_body_iquat = mjx_model.body_iquat.at[:,com_body_ids].set(altered_quat)
+            new_body_iquat = jnp.where(vec_mask_jnp[:,None,None], new_body_iquat, mjx_model.body_iquat)
+            replacements["body_iquat"] = new_body_iquat
         mjx_model = mjx_model.replace(**replacements)
         self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
 

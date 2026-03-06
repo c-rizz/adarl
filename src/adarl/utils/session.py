@@ -118,6 +118,7 @@ class Session():
                                                    run_id=run_id,
                                                    comment=run_comment,
                                                    use_wandb=use_wandb)
+        self.run_info["log_folder"] = self._logFolder
         ggLog.addLogFile(self._logFolder+"/gglog.log")
         if seed is None:
             raise AttributeError("You must specify the run seed")

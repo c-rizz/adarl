@@ -267,6 +267,7 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
             obss, rews, terms, truncs, infos = vec_env.step(acts)
             ts2 = time.monotonic()
             collected_steps += used_num_envs
+            # ggLog.info(f"Eval: collected steps = {collected_steps}, collected eps = {collected_eps}")
             for i in range(used_num_envs):
                 running_rews[i] += rews[i]
                 running_durations[i] += 1

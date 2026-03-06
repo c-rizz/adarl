@@ -130,7 +130,7 @@ def run_async_job(tensors : dict[str,th.Tensor], callback : Callable[[dict[str,t
     get_async_cuda2cpu_queue().send(tensors, callback)
 
 
-def log_async(string : str, tensors : dict[str,th.Tensor], loglevel = "info"):
+def log_async(string : str, tensors : dict[str,th.Tensor | None], loglevel = "info"):
     def callback(tensors : dict[str,th.Tensor]):
         nonlocal string
         try:
@@ -138,7 +138,7 @@ def log_async(string : str, tensors : dict[str,th.Tensor], loglevel = "info"):
         except Exception as e:
             ggLog.warn(f"log_async: string formatting failed with {exc_to_str(e)}, tensors = {tensors}")
         getattr(ggLog,loglevel)(string)
-    get_async_cuda2cpu_queue().send(tensors, callback)
+    get_async_cuda2cpu_queue().send({k:v for k,v in tensors.items() if v is not None}, callback)
     # ql = get_async_cuda2cpu_queue().current_queue_len()
     # if(ql > 10):
     #     ggLog.warn(f"log_async queue len = {ql}")

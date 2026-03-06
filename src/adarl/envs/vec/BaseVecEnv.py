@@ -24,6 +24,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
                         single_reward_space = spaces.gym_spaces.Box(low=np.array([float("-inf")]), high=np.array([float("+inf")]), dtype=np.float32),
                         metadata = {},
                         max_episode_steps : int | th.Tensor = 1000,
+                        max_possible_episode_steps : int = 1000,
                         seed : int = 0,
                         obs_dtype : th.dtype = th.float32,
                         build_and_initialize_ep : bool = False):
@@ -49,6 +50,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
         if isinstance(max_episode_steps, (int, float)):
             max_episode_steps = th.full(fill_value=max_episode_steps, size=(num_envs,),dtype=th.long, device=th_device)
         self._max_ep_steps = max_episode_steps
+        self._max_possible_episode_steps = max_possible_episode_steps
         self._tot_step_counter = 0
         self._th_tot_step_counter = th.as_tensor(0, dtype=th.long, device=th_device)
         self._ep_step_counter = th.zeros(size=(num_envs,), device=th_device, dtype=th.long)
@@ -271,6 +273,16 @@ class BaseVecEnv(ABC, Generic[Observation]):
             Tensor of size (num_envs,) and type th.long.
         """
         return self._max_ep_steps
+    
+    def get_max_possible_episode_steps(self) -> int:
+        """Gets the maximum possible episode duration for each single environment, which is an upper bound of get_max_episode_steps().
+
+        Returns
+        -------
+        int
+            The maximum possible episode steps.
+        """
+        return self._max_possible_episode_steps
     
 
     def set_max_episode_steps(self, max_episode_steps : th.Tensor):

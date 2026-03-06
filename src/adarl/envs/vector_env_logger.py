@@ -11,6 +11,8 @@ import time
 from adarl.utils.utils import masked_assign
 from adarl.utils.spaces import get_1d_space_size
 import pprint
+from adarl.utils.async_cuda2cpu_queue import log_async
+
 class VectorEnvLogger(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
 ):
@@ -44,12 +46,12 @@ class VectorEnvLogger(
 
         self._ep_rewards = th.zeros(size=(self._num_envs,rewards_num)).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._ep_durations = th.zeros(size=(self._num_envs,), dtype=th.long).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_sum_sl =   th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_min_sl =   th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_rewards_max_sl =   th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_durations_sum_sl = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_durations_min_sl = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
-        self._completed_ep_durations_max_sl = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_sum_sl : th.Tensor =   th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_min_sl : th.Tensor =   th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_rewards_max_sl : th.Tensor =   th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_sum_sl : th.Tensor = th.as_tensor(0.0).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_min_sl : th.Tensor = th.as_tensor(float("+inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
+        self._completed_ep_durations_max_sl : th.Tensor = th.as_tensor(float("-inf")).to(device=self._env_th_device, non_blocking=self._env_th_device.type=="cuda")
         self._completed_ep_count_sl = 0
         self._tot_completed_ep_count = 0
         self._overhead_count = 0
@@ -161,13 +163,20 @@ class VectorEnvLogger(
             # ggLog.info(f" ep durations = {self._ep_durations}, ep rewards = {self._ep_rewards}")
             if self._completed_ep_count_sl >= self._num_envs:
                 ravg = self._completed_ep_rewards_sum_sl/self._completed_ep_count_sl
-                davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl
-                ggLog.info(f"{self._logs_id}VecEnvLogger:"
-                           f" ep={self._tot_completed_ep_count}"
-                           f" reward avg={ravg},"
-                           f" min={self._completed_ep_rewards_min_sl},"
-                           f" max={self._completed_ep_rewards_max_sl},"
-                           f" length={davg}[{self._completed_ep_durations_min_sl},{self._completed_ep_durations_max_sl}]")
+                davg = self._completed_ep_durations_sum_sl/self._completed_ep_count_sl            
+                log_async(f"{self._logs_id}VecEnvLogger:"
+                           " ep={tot_completed_ep_count}"
+                           " reward avg={ravg},"
+                           " min={completed_ep_rewards_min_sl},"
+                           " max={completed_ep_rewards_max_sl},"
+                           " length={davg}[{completed_ep_durations_min_sl},{completed_ep_durations_max_sl}]",
+                           tensors=dict(ravg=ravg,
+                                        tot_completed_ep_count=self._tot_completed_ep_count,
+                                        completed_ep_rewards_min_sl=self._completed_ep_rewards_min_sl,
+                                        completed_ep_rewards_max_sl=self._completed_ep_rewards_max_sl,
+                                        davg=davg,
+                                        completed_ep_durations_min_sl=self._completed_ep_durations_min_sl,
+                                        completed_ep_durations_max_sl=self._completed_ep_durations_max_sl))
                 wdblog = {'VecEnvLogger/'+self._logs_id+"/reward_avg": ravg,
                           'VecEnvLogger/'+self._logs_id+"/reward_min": self._completed_ep_rewards_min_sl,
                           'VecEnvLogger/'+self._logs_id+"/reward_max": self._completed_ep_rewards_max_sl,
@@ -190,17 +199,25 @@ class VectorEnvLogger(
                     logs["VecEnvLogger/wall_fps_single"] = wall_single_fps
                     logs["VecEnvLogger/vec_ep_count"] = self._tot_completed_ep_count
                     # ggLog.info(f"{logs}")
-                    avgrew = logs.get('VecEnvLogger/avg.lastinfo.ep_reward',float("nan"))
-                    minrew = logs.get('VecEnvLogger/min.lastinfo.ep_reward',float("nan"))
-                    maxrew = logs.get('VecEnvLogger/max.lastinfo.ep_reward',float("nan"))
-                    medrew = logs.get('VecEnvLogger/med.lastinfo.ep_reward',float("nan"))
+                    avgrew = logs.get('VecEnvLogger/avg.lastinfo.ep_reward',None)
+                    minrew = logs.get('VecEnvLogger/min.lastinfo.ep_reward',None)
+                    maxrew = logs.get('VecEnvLogger/max.lastinfo.ep_reward',None)
+                    medrew = logs.get('VecEnvLogger/med.lastinfo.ep_reward',None)
 
-                    ggLog.info(f"{self._logs_id}VecEnvLogger: tot_ep_count={self._tot_completed_ep_count} veceps={int(self._tot_completed_ep_count/self._num_envs)} succ={logs.get('VecEnvLogger/success',0):.2f}"+
-                            f" r= \033[1m{avgrew:{'08.8g' if avgrew != float('nan') else ''}}\033[0m "+
-                            f" min_r={minrew:{'08.8g' if minrew != float('nan') else ''}}"
-                            f" max_r={maxrew:{'08.8g' if maxrew != float('nan') else ''}}"
-                            f" med_r={medrew:{'08.8g' if medrew != float('nan') else ''}}"
-                            f" fps={self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log):.2f}")
+                    fps=self._num_envs*(self.__vstep_count-self._step_count_last_log)/(time.monotonic() - self._time_last_log)
+                    log_async( f"{self._logs_id}VecEnvLogger:"+
+                                f" tot_ep_count={self._tot_completed_ep_count}"+
+                                f" veceps={int(self._tot_completed_ep_count/self._num_envs)}"+
+                                f" succ={logs.get('VecEnvLogger/success',0):.2f}"+
+                                f" r=\033[1m"+  ("{avgrew:08.8g}" if avgrew is not None else "???") +"\033[0m "+
+                                f" min_r="+     ("{minrew:08.8g}" if minrew is not None else "???")+
+                                f" max_r="+     ("{maxrew:08.8g}" if maxrew is not None else "???")+
+                                f" med_r="+     ("{medrew:08.8g}" if medrew is not None else "???")+
+                                f" fps={fps:.2f}",
+                                tensors=dict(avgrew=avgrew,
+                                             minrew=minrew,
+                                             maxrew=maxrew,
+                                             medrew=medrew))
                     if self._use_wandb:
                         wdblog.update({f"{k.replace('VecEnvLogger/','VecEnvLogger/'+self._logs_id)}": v.cpu().item() if isinstance(v,th.Tensor) and v.numel()==1 else v for k,v in logs.items()})
                     # ggLog.info(f"Logger overhead: {self._overhead_sum/self._overhead_count:.9f}[{self._overhead_min},{self._overhead_max}]")                    

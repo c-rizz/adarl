@@ -80,12 +80,13 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._envs_needing_reinit = self._no_vecs.detach().clone()
         self._last_actions = None
         
-        if th.any(self._adarl_env.get_max_episode_steps()!=self._adarl_env.get_max_episode_steps()[0]):
-            raise RuntimeError(f"All sub environments must have the same max_episode_steps, instead"
-                               f" they have: {self._adarl_env.get_max_episode_steps()}")
+        # if th.any(self._adarl_env.get_max_episode_steps()!=self._adarl_env.get_max_episode_steps()[0]):
+        #     raise RuntimeError(f"All sub environments must have the same max_episode_steps, instead"
+        #                        f" they have: {self._adarl_env.get_max_episode_steps()}")
+        self._max_possible_episode_steps = self._adarl_env.get_max_possible_episode_steps()
         self.spec = EnvSpec(id=f"GymEnvWrapper-env-v0_{id(env)}_{int(time.monotonic()*1000)}",
                             entry_point=None,
-                            max_episode_steps=int(self._adarl_env.get_max_episode_steps()[0].item()))
+                            max_episode_steps=self._max_possible_episode_steps)
         self._max_episode_steps = self.spec.max_episode_steps # For compatibility, some libraries read this instead of spec
 
         self._verbose = verbose
@@ -211,9 +212,10 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
             with self._reinitDurationAverage:
                 self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
-                if autoreset and th.any(self._envs_needing_reinit): # cuda sync, see comment below
+                # reinit_ratio = th.mean(self._envs_needing_reinit.float()).item()
+                # # ggLog.info(f"Step {self._total_vsteps-1}: {reinit_ratio*100:.2f}% (num_env={self.num_envs}) of envs need reinit")
+                if autoreset:
                     t_prereinit_real = time.monotonic()
-                    # To remove this if we need to make the reset work correctly with masks, So in the end also to have mjxadapter's command submission method properly support mask (should be fairly feasible)
                     next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
                                                                                 terminateds=terminateds,
                                                                                 truncateds=truncateds,
@@ -483,3 +485,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
     @override
     def get_max_episode_steps(self):
         return self._adarl_env.get_max_episode_steps()
+    
+    @override
+    def get_max_possible_episode_steps(self):
+        return self._max_possible_episode_steps

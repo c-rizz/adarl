@@ -35,7 +35,8 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                         max_episode_steps : int | th.Tensor = 1000,
                         allow_multiple_steps : bool = False,
                         step_precision_tolerance : float = 0.0,
-                        build_and_initialize_ep : bool = False):
+                        build_and_initialize_ep : bool = False,
+                        max_possible_episode_steps : int = 1000):
         """
         """
 
@@ -57,7 +58,8 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
                             max_episode_steps = max_episode_steps,
                             obs_dtype=obs_dtype,
                             seed=seed,
-                            build_and_initialize_ep=build_and_initialize_ep)
+                            build_and_initialize_ep=build_and_initialize_ep,
+                            max_possible_episode_steps=max_possible_episode_steps)
 
 
     def step(self) -> None:

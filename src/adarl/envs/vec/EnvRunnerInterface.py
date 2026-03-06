@@ -167,6 +167,10 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
     def get_max_episode_steps(self) -> th.Tensor:
         ...
 
+    @abstractmethod
+    def get_max_possible_episode_steps(self) -> int:
+        ...
+
     def add_on_ep_end_callback(self, on_ep_end_callback : OnEpEndCallbackProtocol):
         self.on_ep_end_callbacks.append(on_ep_end_callback)
 
@@ -188,7 +192,6 @@ class EnvRunnerInterface(ABC, Generic[ObsType]):
                         last_truncateds = last_truncateds)
             
     @abstractmethod
-
     def get_base_env(self) -> BaseVecEnv[ObsType]:
         """Get the underlying adarl base environment
 

@@ -54,12 +54,9 @@ class Runner2VecGymWrapper(gym.vector.VectorEnv, Generic[ObsType]):
         self._reinit_needed = False
         self._render_cam_index = render_cam_index
         
-        if th.any(self.vec_runner.get_max_episode_steps()!=self.vec_runner.get_max_episode_steps()[0]):
-            raise RuntimeError(f"All sub environments must have the same max_episode_steps, instead"
-                               f" they have: {self.vec_runner.get_max_episode_steps()}")
         self.spec = EnvSpec(id=f"GymEnvWrapper-env-v0_{id(runner)}_{int(time.monotonic()*1000)}",
                             entry_point=None,
-                            max_episode_steps=int(self.vec_runner.get_max_episode_steps()[0].item()))
+                            max_episode_steps=self.vec_runner.get_max_possible_episode_steps())
         self._max_episode_steps = self.spec.max_episode_steps # For compatibility, some libraries read this instead of spec
 
         self._verbose = verbose

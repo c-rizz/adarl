@@ -69,7 +69,6 @@ class EnvRunnerWrapper(EnvRunnerInterface[ObsType], Generic[ObsType]):
         return self._runner.step(actions = actions, autoreset=autoreset)
 
     @override
-
     def reinit_envs(self,   reinit_envs : th.Tensor,
                             terminateds : th.Tensor,
                             truncateds : th.Tensor,
@@ -101,6 +100,10 @@ class EnvRunnerWrapper(EnvRunnerInterface[ObsType], Generic[ObsType]):
     def get_max_episode_steps(self) -> th.Tensor:
         return self._runner.get_max_episode_steps()
     
+    @override
+    def get_max_possible_episode_steps(self) -> int:
+        return self._runner.get_max_possible_episode_steps()
+
     def get_base_runner(self):
         runner = self._runner
         while isinstance(runner, EnvRunnerWrapper):

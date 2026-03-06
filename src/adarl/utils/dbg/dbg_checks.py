@@ -71,8 +71,8 @@ def dbg_check_bounded(tensor_tree, min = float("-inf"), max = float("+inf"), asy
                                     f"out of bounds values in tensor tree: {tensor_tree}\n"
                                     f"    bounds  = {min}, {max}\n"
                                     f"    minmax  = "+str([f"{k}:{l.min(), l.max()}"                          for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
-                                    f"    indexes = "+str([f"{k}:{th.logical_not(is_leaf_bounded(l,min,max)).nonzero()}"    for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
-                                    f"    values  = "+str([f"{k}:{l[th.logical_not(is_leaf_bounded(l,min,max)).nonzero()]}" for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
+                                    f"    indexes = "+str([f"{k}:{th.logical_or(l<min,l>max).nonzero()}"    for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
+                                    f"    values  = "+str([f"{k}:{l[th.logical_or(l<min,l>max)]}" for k,l in flatten_tensor_tree(tensor_tree).items()])+"\n"
                                     f"    isbounded = {map_tensor_tree(flatten_tensor_tree(tensor_tree), lambda t: is_leaf_bounded(t,min=min,max=max))}",
                 just_warn=just_warn)
     

@@ -100,6 +100,7 @@ class ThBoxStateHelper(StateHelper):
         obs_shape : tuple[int,...]
         unflattened_obs_shape : tuple[int,...]
         full_observation_mask : th.Tensor
+        full_observation_indexes : Sequence[th.Tensor]
         observed_field_size : tuple[int,...]
         observable_indexes : th.Tensor
         observable_fields : list[FieldName]
@@ -117,14 +118,18 @@ class ThBoxStateHelper(StateHelper):
         obs_history_length : int = 1
         """Defines how many history steps are observable. Must be less than or equal to the state history_length."""
 
-    def __init__(self,  field_names : Sequence[FieldName], dtype : th.dtype,
-                        th_device : th.device, fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
+    def __init__(self,  fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
+                        dtype : th.dtype,
+                        th_device : th.device,
                         field_size : list[int] | tuple[int,...],
                         vec_size : int, 
+                        field_names : Sequence[FieldName] | None = None,
                         history_length : int = 1,
                         subfield_names : list[str] | np.ndarray | None = None,
                         flatten_observation = False,
                         observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None = None):
+        if field_names is None:
+            field_names = list(fields_minmax.keys())
         self.field_names = field_names
         self.field_shape = tuple(field_size)
         self.subfield_names = self._fix_subfield_names(subfield_names)
@@ -193,6 +198,7 @@ class ThBoxStateHelper(StateHelper):
         obs_hist_count = int(th.count_nonzero(observable_hist_mask).item())
         obs_fields_count = int(th.count_nonzero(observable_fields_mask).item())
         unflattened_obs_shape = ( self._vec_size, obs_hist_count, obs_fields_count)+observed_field_shape
+        dbg_check_size(full_observation_mask, (self._history_length, self._fields_num)+self.field_shape)
         # print(f"obs_history_length = {obs_history_length}")
         # print(f"observable_fields = {observable_fields}")
         # print(f"observable_subfields = {observable_subfields}")
@@ -208,9 +214,19 @@ class ThBoxStateHelper(StateHelper):
         hlmin = self._limits_minmax[0].expand(self._state_shape)
         hlmax = self._limits_minmax[1].expand(self._state_shape)
         fully_observable = observable_fields is None and obs_history_length==self._history_length and observable_subfields is None
-        full_obs_def = self.ObservationDef(obs_names, obs_shape, unflattened_obs_shape, full_observation_mask, observed_field_shape, 
-                                      observable_indexes, observable_fields, observable_subfields_mask, obs_history_length, 
-                                      None,None, fully_observable)
+        full_obs_def = self.ObservationDef( obs_names=obs_names,
+                                            obs_shape=obs_shape,
+                                            unflattened_obs_shape=unflattened_obs_shape,
+                                            full_observation_mask=full_observation_mask,
+                                            full_observation_indexes=th.nonzero(full_observation_mask, as_tuple=True),
+                                            observed_field_size=observed_field_shape, 
+                                            observable_indexes=observable_indexes,
+                                            observable_fields=observable_fields,
+                                            observable_subfields_mask=observable_subfields_mask,
+                                            obs_history_length=obs_history_length, 
+                                            obs_space=None,
+                                            single_obs_space=None,
+                                            fully_observable=fully_observable)
         full_obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, full_obs_def), high=self.observe(hlmax, full_obs_def), shape=full_obs_def.obs_shape,
                                     dtype=self._dtype, labels=obs_names)
         full_obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, full_obs_def)[0], high=self.observe(hlmax, full_obs_def)[0], shape=full_obs_def.obs_shape[1:],
@@ -341,7 +357,8 @@ class ThBoxStateHelper(StateHelper):
             if obs_def.observed_field_size == self.field_shape:
                 obs = state[:,:obs_def.obs_history_length,obs_def.observable_indexes]
             else:
-                obs = th.masked_select(state, obs_def.full_observation_mask).view(obs_def.unflattened_obs_shape)
+                obs = state[:,*obs_def.full_observation_indexes].view(obs_def.unflattened_obs_shape)
+                # obs = th.masked_select(state, obs_def.full_observation_mask).view(obs_def.unflattened_obs_shape)
                 # obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
