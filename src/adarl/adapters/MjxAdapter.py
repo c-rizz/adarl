@@ -512,7 +512,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                                     pose=None,
                                     kwargs={}))
 
-    specs = []
+    specs : list[tuple[str, mujoco.MjSpec, tuple[str,str] | None]] = []
     ggLog.info(f"Spawning models: {[model.name for model in models]}")
     for model in models:
         if model.format.strip().lower()[-6:] == ".xacro":
@@ -528,15 +528,15 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
         mjSpec = mujoco.MjSpec.from_string(def_string)
         # mjSpec.compiler.discardvisual = False
         mjSpec.compiler.degree = False
-        specs.append((model.name, mjSpec))
+        specs.append((model.name, mjSpec, model.attachment_link))
         if model.pose is not None:
             raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
     big_speck = mujoco.MjSpec()
     
-    frame = big_speck.worldbody.add_frame()
+    world_frame = big_speck.worldbody.add_frame()
     big_speck.compiler.degree = False
     # big_speck.compiler.discardvisual = False
-    for mname, spec in specs:
+    for mname, spec, attachment_link in specs:
         if model_element_separator in mname:
             raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
         # add all th bodies that are direct childern of worldbody
@@ -545,7 +545,13 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
         if spec.compiler.degree:
             raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
         while body is not None:
-            frame.attach_body(body, mname+model_element_separator, "")
+            if attachment_link is None:
+                world_frame.attach_body(body, mname+model_element_separator, "")
+            else:
+                parentbody : mujoco.MjsBody = big_speck.body(model_element_separator.join(attachment_link))
+                f = parentbody.add_frame()
+                f.attach_body(body, mname+model_element_separator, "")
+                # ggLog.info(f"Attaching body '{mname}';'{body.name}' to '{attachment_link}'")
             body = spec.worldbody.next_body(body)
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
@@ -961,6 +967,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         ggLog.info(f"MJXAdapter: links  lname2lid = {self._lname2lid}")
         ggLog.info(f"MJXAdapter: joints jname2jid = {self._jname2jid}")
+        ggLog.info(f"MJXAdapter: {self._mj_model.ncam} cameras cname2cid = {self._cname2cid}")
 
         ggLog.info(f"MJXAdapter: Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
         ggLog.info(f"MJXAdapter: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
@@ -968,6 +975,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         ggLog.info(f"MJXAdapter: Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
         ggLog.info(f"MJXAdapter: Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
+        
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
         # ggLog.info(f"self._sim_state.mj_model.nconmax = {self._mj_model.nconmax}")
@@ -986,17 +994,46 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
                                         explicit_groups : list[tuple[tuple[str,str],...]] = []) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """_summary_
+
+        Parameters
+        ----------
+        link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]
+            List of pairs (link, colliding_links) specifying what links each single links collides with
+        explicit_groups : list[tuple[tuple[str,str],...]], optional
+            List of explicitly defined collision groups
+
+        Returns
+        -------
+        tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]
+            _description_
+
+        Raises
+        ------
+        RuntimeError
+            _description_
+        """
         input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
+        ggLog.info(f"input link_group_collisions = {link_group_collisions}")
         ggLog.info(f"input_collision_groups = {input_collision_groups}")
 
+        # Reorganize the links in a small set of groups of links that always collide together
         best_collision_groups : list[set[tuple[str,str]]] = []
         while len(input_collision_groups)>0:
             biggest_common_subgroup = set(input_collision_groups[0])
             for g in input_collision_groups:
-                biggest_common_subgroup.intersection_update(g)
+                prev_biggest_common_subgroup = biggest_common_subgroup
+                biggest_common_subgroup = biggest_common_subgroup.intersection(g)
+                if len(biggest_common_subgroup)==0:
+                    # Then there is not common subgroup, use the one that was common up to now
+                    biggest_common_subgroup = prev_biggest_common_subgroup
             best_collision_groups.append(biggest_common_subgroup)
-            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups]
-            input_collision_groups = [g for g in input_collision_groups if len(g)>0]
+            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups] # remove subgroup
+            input_collision_groups = [g for g in input_collision_groups if len(g)>0] # remove empty groups
+            # print(f"biggest_common_subgroup = {biggest_common_subgroup}")
+            # print(f"input_collision_group = {input_collision_groups}")
+            # time.sleep(1)
+
 
         best_collision_groups_set = {tuple(g) for g in best_collision_groups}
         best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
@@ -1013,18 +1050,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     link_to_group_ids[l] = []
                 link_to_group_ids[l].append(i)
                 group_to_links[g_t].append(l)
-        ggLog.info(f"link_to_groups = {link_to_group_ids}")
-        ggLog.info(f"group_to_links = {group_to_links}")
+        ggLog.info(f"link_to_groups = \n{pprint.pformat(link_to_group_ids)}")
+        ggLog.info(f"group_to_links = \n{pprint.pformat(group_to_links)}")
 
         link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
         for link,colliding_links in link_group_collisions:
             colliding_links = set(colliding_links)
-            for g in best_collision_groups:
+            for i,g in enumerate(best_collision_groups):
                 if g.issubset(colliding_links):
+                    # then link collides with the group g
                     if link not in link_colliding_groups:
                         link_colliding_groups[link] = []
                     link_colliding_groups[link].append(i)
-        ggLog.info(f"link_colliding_groups = {link_colliding_groups}")
+        ggLog.info(f"link_colliding_groups = \n{ pprint.pformat(link_colliding_groups)}")
 
         if len(best_collision_groups) > 32:
             raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")

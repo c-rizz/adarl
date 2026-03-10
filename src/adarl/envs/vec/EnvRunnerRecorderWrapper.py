@@ -9,7 +9,7 @@ import numpy as np
 from vidgear.gears import WriteGear
 import math
 import adarl.utils.session
-from adarl.utils.utils import puttext_cv, masked_assign
+from adarl.utils.utils import puttext_cv, masked_assign, to_string_tensor
 from typing import Callable, Optional, Any
 import h5py
 import lzma
@@ -97,6 +97,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 if isinstance(t, th.Tensor):
                     return t.detach().cpu().numpy()
                 elif isinstance(t, np.ndarray):
+                    if t.dtype == np.dtypes.ObjectDType:
+                        return None
+                        types = np.vectorize(type)(t) # for debugging
+                        if not np.all(types == str):
+                            ggLog.warn(f"Failed to interpret info label of type object ndarray: {t}")
+                            return None
                     return t
                 else:
                     raise RuntimeError(f"Unsupported type for info labels: {type(t)}")

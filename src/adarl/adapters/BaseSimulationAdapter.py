@@ -12,6 +12,7 @@ class ModelSpawnDef:
     format : str
     pose : Pose | None
     kwargs : dict[Any,Any]
+    attachment_link : tuple[str,str] | None = None # (model_name, link_name)
 
 
 class BaseSimulationAdapter(BaseAdapter):

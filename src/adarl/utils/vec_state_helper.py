@@ -24,11 +24,15 @@ def normalize(value : _T, min : _T, max : _T):
     return (value + (-min))/(max-min)*2-1
 
 def _build_full_mask(dims_masks : Sequence[th.Tensor]):
+    print(f"dims_masks shapes = {[_m.shape for _m in dims_masks]}")
     dims = len(dims_masks)
     reshaped_masks = [m.view((-1,)+(1,)*(dims-i-1)) for i,m in enumerate(dims_masks)]
+    print(f"reshaped_masks shapes = {[_m.shape for _m in reshaped_masks]}")
     m = reshaped_masks[0]
     for i in range(1,dims):
+        print(f"Multiplying mask {i} with shape {reshaped_masks[i].shape} to current mask with shape {m.shape}")
         m = m*reshaped_masks[i]
+    print(f"Resulting full mask shape = {m.shape}")
     return m
     
 FieldName = Union[str, int, Tuple[str,str]]
@@ -99,12 +103,10 @@ class ThBoxStateHelper(StateHelper):
         obs_names : np.ndarray
         obs_shape : tuple[int,...]
         unflattened_obs_shape : tuple[int,...]
-        full_observation_mask : th.Tensor
         full_observation_indexes : Sequence[th.Tensor]
         observed_field_size : tuple[int,...]
         observable_indexes : th.Tensor
         observable_fields : list[FieldName]
-        observable_subfields_mask : th.Tensor
         obs_history_length : int
         obs_space : spaces.ThBox
         single_obs_space : spaces.ThBox
@@ -165,7 +167,7 @@ class ThBoxStateHelper(StateHelper):
         if obs_history_length>self._history_length:
             raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than state history_length ({self._history_length})")
         if observable_subfields is None:
-            observable_subfields_mask = th.ones(self.field_shape,dtype=th.bool)
+            observable_subfields_masks = tuple()
             observed_field_shape = self.field_shape
         else:
             if len(self.field_shape)!=1:
@@ -182,9 +184,10 @@ class ThBoxStateHelper(StateHelper):
                         observable_subfields_mask[s] = True
                     else:
                         raise NotImplementedError()
+                observable_subfields_masks = (observable_subfields_mask,)
+                observed_field_shape : tuple[int,...] = (th.count_nonzero(observable_subfields_mask).item(),)
             elif isinstance(observable_subfields, (np.ndarray)):
                 raise NotImplementedError()
-            observed_field_shape : tuple[int,...] = (th.count_nonzero(observable_subfields_mask).item(),)
         observable_fields = self.field_names if observable_fields is None else observable_fields
         observable_fields = [f for f in self.field_names if f in observable_fields] # to ensure they are ordered
         observable_indexes = th.as_tensor([self.field_names.index(n) for n in observable_fields], dtype=th.int32).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
@@ -192,13 +195,17 @@ class ThBoxStateHelper(StateHelper):
         observable_fields_mask[observable_indexes] = True
         observable_hist_mask = th.zeros((self._history_length,), dtype=th.bool)
         observable_hist_mask[:obs_history_length] = True
-        full_observation_mask = _build_full_mask([  observable_hist_mask, 
-                                                    observable_fields_mask, 
-                                                    observable_subfields_mask]).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+        obs_idx_np = np.ix_(observable_hist_mask.cpu().numpy(),
+                            observable_fields_mask.cpu().numpy(),
+                            *[m.cpu().numpy() for m in observable_subfields_masks])
+        full_observation_indexes=[th.as_tensor(i) for i in obs_idx_np]
+
+
+
+        
         obs_hist_count = int(th.count_nonzero(observable_hist_mask).item())
         obs_fields_count = int(th.count_nonzero(observable_fields_mask).item())
         unflattened_obs_shape = ( self._vec_size, obs_hist_count, obs_fields_count)+observed_field_shape
-        dbg_check_size(full_observation_mask, (self._history_length, self._fields_num)+self.field_shape)
         # print(f"obs_history_length = {obs_history_length}")
         # print(f"observable_fields = {observable_fields}")
         # print(f"observable_subfields = {observable_subfields}")
@@ -209,7 +216,7 @@ class ThBoxStateHelper(StateHelper):
         obs_names = self._build_obs_names(  obs_history_length,
                                             observable_fields,
                                             observed_field_shape,
-                                            observable_subfields_mask)
+                                            observable_subfields_masks)
         # ggLog.info(f"obsnames.shape = {obs_names.shape}, obsnames = {obs_names}")
         hlmin = self._limits_minmax[0].expand(self._state_shape)
         hlmax = self._limits_minmax[1].expand(self._state_shape)
@@ -217,12 +224,10 @@ class ThBoxStateHelper(StateHelper):
         full_obs_def = self.ObservationDef( obs_names=obs_names,
                                             obs_shape=obs_shape,
                                             unflattened_obs_shape=unflattened_obs_shape,
-                                            full_observation_mask=full_observation_mask,
-                                            full_observation_indexes=th.nonzero(full_observation_mask, as_tuple=True),
+                                            full_observation_indexes=full_observation_indexes,
                                             observed_field_size=observed_field_shape, 
                                             observable_indexes=observable_indexes,
                                             observable_fields=observable_fields,
-                                            observable_subfields_mask=observable_subfields_mask,
                                             obs_history_length=obs_history_length, 
                                             obs_space=None,
                                             single_obs_space=None,
@@ -364,7 +369,7 @@ class ThBoxStateHelper(StateHelper):
             obs = th.flatten(obs, start_dim=1)
         return obs
 
-    def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_mask):
+    def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_masks):
         obs_names = np.empty(shape=(obs_history_length,len(observable_fields))+observed_field_size, dtype=object)
         # print(f"observed_field_size = {observed_field_size}")
         for h in range(obs_history_length):
@@ -378,15 +383,12 @@ class ThBoxStateHelper(StateHelper):
                 # print(f"indexes = {indexes}")
                 for s in indexes:
                     # print(f"observable_subfields_mask[{s}] = {observable_subfields_mask[s]}")
-                    if len(observable_subfields_mask.shape)>1:
-                        first_element_observable = observable_subfields_mask[s].flatten()[0]
-                        # print(f"first_element_observable = {first_element_observable}")
-                        # print(f"observable_subfields_mask[{s}] = {observable_subfields_mask[s]}")
-                        if th.any(observable_subfields_mask[s] != first_element_observable):
-                            raise RuntimeError(f"subfield not fully observable or fully not observable, not supported yet")
-                        observable = first_element_observable
+                    if observable_subfields_masks is None or len(observable_subfields_masks)==0:
+                        observable = True
+                    elif len(observable_subfields_masks)==1:
+                        observable = observable_subfields_masks[0][s]
                     else:
-                        observable = observable_subfields_mask[s]
+                        raise NotImplementedError(f"Multiple observable_subfields_masks not supported")
                     # print(f"observable = {observable}")
                     if not observable:
                         continue
@@ -1174,8 +1176,18 @@ class JointImpedanceActionHelper:
             center_position = th.as_tensor([center_position[k] for k in self._joints],
                                            device=self._th_device,
                                            dtype=self._dtype)
-        else:
-            center_position = center_position
+        if th.any(center_position < self._minmax_joints_pvesd[0,:,0]) or th.any(center_position > self._minmax_joints_pvesd[1,:,0]):
+            bad_min = center_position < self._minmax_joints_pvesd[0,:,0]
+            bad_max = center_position > self._minmax_joints_pvesd[1,:,0]
+            raise RuntimeError(f"Center position is out of bounds of the defined min and max position limits \n"
+                                f" center positions:\n"
+                                f"     {center_position}\n"
+                                f" minmax positions:\n"
+                                f"     {self._minmax_joints_pvesd[0,:,0]}\n"
+                                f"     {self._minmax_joints_pvesd[1,:,0]}\n"
+                                f" Joints {[self._joints[i] for i in th.nonzero(bad_min).cpu().numpy().flatten().tolist()]} exceed minimum\n"
+                                f" Joints {[self._joints[i] for i in th.nonzero(bad_max).cpu().numpy().flatten().tolist()]} exceed maximum\n"
+                                f" All joints = {self._joints}")
         zero_cmd = th.zeros(size=(1, self._joints_num, 5), dtype=self._dtype, device=self._th_device)
         zero_cmd[:,:,0] = center_position
         zero_action = self.pvesd_to_action(zero_cmd).view(self.single_action_len())

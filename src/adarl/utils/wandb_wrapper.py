@@ -80,7 +80,7 @@ class WandbWrapper():
     def _worker(self):
         import adarl.utils.session as session
         ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
-        while not session.default_session.is_shutting_down() or not self._running:
+        while self._running and not session.default_session.is_shutting_down():
             try:
                 args, funcname = self._mp_queue.get(block=True, timeout=1)
                 if funcname == "log":
