@@ -606,6 +606,67 @@ def apply_opt_reset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ove
                 setattr(mj_model.opt,k,v)
     return mj_model
 
+def get_biggest_jax_allocations():
+    # This returns a list of all live, allocated device buffers
+    live_buffers = jax.xla_bridge.get_backend().live_arrays()
+
+    # Sort by size to find the biggest
+    sorted_buffers = sorted(live_buffers, key=lambda x: x.nbytes, reverse=True)
+
+    # Print the top 5 largest arrays
+    for buf in sorted_buffers[:5]:
+        ggLog.info(f"Shape: {buf.shape}, Dtype: {buf.dtype}, Size: {buf.nbytes / 1e6:.2f} MB")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @jax.tree_util.register_dataclass
 @dataclass
 class SimState:
@@ -875,21 +936,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
         # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
+        import operator
+        model_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_model)
+        single_mjmodel_nbytes = jax.tree.reduce(operator.add, model_nbytes)
         self._recompute_mjxmodel_inaxes(mjx_model)
         mjx_model = jax.vmap(lambda: mjx_model, in_axes=None, axis_size=self._vec_size, out_axes=self._mjx_model_in_axes)()
         # mjx_model = jax.vmap(lambda: mjx_model, axis_size=self._vec_size, in_axes=None)()
+        model_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_model)
+        vec_mjmodel_nbytes = jax.tree.reduce(operator.add, model_nbytes)
         
         self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
         self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
-        data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data) # reset all data to 0
-        # ggLog.info(f"mjx_data nbytes = {pprint.pformat(data_nbytes)}")
-        import operator
-        ggLog.info(f"mjx_data size = {jax.tree.reduce(operator.add, data_nbytes)} bytes")
-        ggLog.info(f"estimated vectorized size = {jax.tree.reduce(operator.add, data_nbytes)*self._vec_size/1024**2} MB") # more or less
-        
+        data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data)
+        single_mjdata_nbytes = jax.tree.reduce(operator.add, data_nbytes)
         mjx_data = jax.vmap(lambda: mjx_data, axis_size=self._vec_size)()
+        data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data)
+        vec_mjdata_nbytes = jax.tree.reduce(operator.add, data_nbytes)
+
+        ggLog.info(f"mjx_data size = {single_mjdata_nbytes} bytes")
+        ggLog.info(f"vectorized ({self._vec_size}) mjx_data size = {vec_mjdata_nbytes/1024**2} MB")
+        ggLog.info(f"mjx_model size = {single_mjmodel_nbytes} bytes")
+        ggLog.info(f"vectorized ({self._vec_size}) mjx_model size = {vec_mjmodel_nbytes/1024**2} MB")
+
         # mjx_data = jax.vmap(lambda _, x: x, in_axes=(0, None))(jnp.arange(self._vec_size), mjx_data)
         # ggLog.info(f"mjx_data.qpos.shape = {mjx_data.qpos.shape}")
         # ggLog.info(f"mjx_data.qLD.shape = {mjx_data.qLD.shape}")

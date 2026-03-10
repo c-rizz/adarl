@@ -90,6 +90,7 @@ class WandbWrapper():
                     raise NotImplementedError(f"Unknown wandb wrapper funcname {funcname}")
             except queue.Empty as e:
                 pass
+        ggLog.info(f"{type(self)} worker terminated.")
 
     def wandb_init(self, **kwargs):
         self._start()

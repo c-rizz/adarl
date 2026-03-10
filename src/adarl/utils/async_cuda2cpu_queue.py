@@ -68,14 +68,14 @@ class Async_cuda2cpu_queue():
         # ggLog.info(f"Starting Async_cuda2cpu_queue worker")
         # traceback.print_stack()
         self._queue = BlockingPeekQueue()
-        self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
+        self._worker_thread = threading.Thread(target=self._worker, name="Async_cuda2cpu_queue")
         self._worker_thread.start()
 
 
     def _worker(self):
         import adarl.utils.session as session
         ggLog.info(f"Starting Async_cuda2cpu_queue worker in process {os.getpid()}")
-        while not session.default_session.is_shutting_down() or not self._running:
+        while self._running and not session.default_session.is_shutting_down():
             try:
                 event, cuda_tensors, cpu_tensors, callback = self._queue.peek(timeout=1.0)
                 if event.query():
@@ -85,6 +85,8 @@ class Async_cuda2cpu_queue():
                     time.sleep(0.01) # I believe using event.wait would block the entire python process (actually it would be nice if the wholw wandbwrapper was in a separate process from the rest)
             except queue.Empty as e:
                 pass
+        ggLog.info(f"{type(self)} worker terminated.")
+
         
     def send(self, cuda_tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
         cpu_tensors = {k:t.to(device="cpu", non_blocking=True) for k,t in cuda_tensors.items()}
