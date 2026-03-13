@@ -65,6 +65,7 @@ class Session():
         self._wandb_wrapper = wandb_wrapper.default_wrapper
         self._id = f"{int(time.monotonic()*1000000)}_{int(random.random()*1000000000)}"
         self._initialized = False
+        self.run_info = {}
         # ggLog.info(f"Created session {self._id}")
 
     def reapply_globals(self):

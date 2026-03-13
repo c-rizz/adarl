@@ -52,9 +52,12 @@ class BlockingPeekQueue:
         return len(self.queue)
         
 class Async_cuda2cpu_queue():
+    _shutdown_sentinel = object()
+
     def __init__(self):
 
         self._running = True
+        self._closed = False
         self._worker_thread : Optional[threading.Thread] = None
         self._queue : BlockingPeekQueue | None = None
         atexit.register(self.close)
@@ -77,7 +80,11 @@ class Async_cuda2cpu_queue():
         ggLog.info(f"Starting Async_cuda2cpu_queue worker in process {os.getpid()}")
         while self._running and not session.default_session.is_shutting_down():
             try:
-                event, cuda_tensors, cpu_tensors, callback = self._queue.peek(timeout=1.0)
+                queued_item = self._queue.peek(timeout=1.0)
+                if queued_item is self._shutdown_sentinel:
+                    self._queue.get(timeout=0)
+                    continue
+                event, cuda_tensors, cpu_tensors, callback = queued_item
                 if event.query():
                     self._queue.get(timeout=0)
                     callback(cpu_tensors)
@@ -98,9 +105,16 @@ class Async_cuda2cpu_queue():
         return len(self._queue)
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         self._running = False
+        if self._queue is not None:
+            self._queue.put(self._shutdown_sentinel)
         if self._worker_thread is not None:
-            self._worker_thread.join()
+            if self._worker_thread is not threading.current_thread():
+                self._worker_thread.join()
+            self._worker_thread = None
         if self._queue is not None and len(self._queue)>0:
             ggLog.warn(f"Async_tensor_cuda2cpu_queue closing with {len(self._queue)} tensors in queue")
 
@@ -118,15 +132,29 @@ class Async_cuda2cpu_queue():
 
 __singleton_queue_pid = None
 __singleton_queue = None
+def _close_async_queue_instance(queue : Async_cuda2cpu_queue | None):
+    if queue is not None:
+        queue.close()
+
+
 def get_async_cuda2cpu_queue():
     global __singleton_queue
     global __singleton_queue_pid
     if __singleton_queue is None or __singleton_queue_pid != os.getpid():
         __singleton_queue = Async_cuda2cpu_queue()
         __singleton_queue.start_worker()
-        atexit.register(lambda: __singleton_queue.close())
+        atexit.register(_close_async_queue_instance, __singleton_queue)
         __singleton_queue_pid = os.getpid()
     return __singleton_queue
+
+
+def close_async_cuda2cpu_queue():
+    global __singleton_queue
+    global __singleton_queue_pid
+    if __singleton_queue is not None and __singleton_queue_pid == os.getpid():
+        __singleton_queue.close()
+        __singleton_queue = None
+        __singleton_queue_pid = None
     
 def run_async_job(tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
     get_async_cuda2cpu_queue().send(tensors, callback)

@@ -23,10 +23,11 @@ import copy
 from adarl.utils.tensor_trees import TensorTree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
-from adarl.utils.utils import to_string_tensor
+from adarl.utils.utils import to_string_tensor, masked_assign
 from adarl.utils.tensor_trees import clone_tensor_tree
 from adarl.utils.base_utils import record_time
-
+import os
+from adarl.utils.session import default_session
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
     spec = None
@@ -211,11 +212,12 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             record_time("EnvRunner got obs and rewards")
 
             with self._reinitDurationAverage:
-                self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
                 # reinit_ratio = th.mean(self._envs_needing_reinit.float()).item()
                 # # ggLog.info(f"Step {self._total_vsteps-1}: {reinit_ratio*100:.2f}% (num_env={self.num_envs}) of envs need reinit")
                 if autoreset:
                     t_prereinit_real = time.monotonic()
+                    self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
+                    reinit_done = self._envs_needing_reinit
                     next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
                                                                                 terminateds=terminateds,
                                                                                 truncateds=truncateds,
@@ -223,7 +225,6 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                                                                 last_actions=actions,
                                                                                 last_infos=consequent_infos,
                                                                                 last_rewards=rewards)
-                    reinit_done = th.logical_or(terminateds, truncateds)
                     self._wtime_spent_really_reinit_tot += time.monotonic() - t_prereinit_real
                 else:
                     next_start_observations = consequent_observations
@@ -257,6 +258,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                             last_infos : TensorTree[th.Tensor],
                             last_rewards : th.Tensor,
                             options = {}):
+        # import cProfile
+        # with cProfile.Profile() as pr:
         self._on_episode_end(   envs_ended_mask = reinit_envs_mask,
                                 last_observations = last_observations,
                                 last_actions = last_actions,
@@ -272,10 +275,13 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._tot_ep_sub_rewards[reinit_envs_mask] = 0
         for k,v in self._ep_sub_rewards.items():
                 v[reinit_envs_mask] = 0
-        self._envs_needing_reinit = th.logical_and(self._envs_needing_reinit, th.logical_not(reinit_envs_mask))
+        masked_assign(self._envs_needing_reinit, reinit_envs_mask, th.zeros_like(self._envs_needing_reinit))
         next_start_states = self._get_states_caching()
         next_start_observations = self._adarl_env.get_observations(next_start_states)
         next_start_infos = self._build_info(next_start_states)
+            # pr.print_stats()
+            # os.makedirs("profiles", exist_ok=True)
+            # pr.dump_stats(f"profiles/envrunner_reinit_profile_{int(time.monotonic()*1000)}_{th.count_nonzero(reinit_envs_mask.cpu()).item()}.prof")
         return next_start_observations, next_start_infos
 
     def print_dbg_info(self):
@@ -470,14 +476,14 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
     def _build_info(self, states) -> TensorTree[th.Tensor]:
         info = {}
-        timed_out = self._adarl_env.are_states_timedout(states)
-        terminated = self._adarl_env.are_states_terminal(states)
-        only_truncated = th.logical_and(timed_out, th.logical_not(terminated))
-        info["TimeLimit.truncated"] = only_truncated
-        info["timed_out"] = timed_out
+        # timed_out = self._adarl_env.are_states_timedout(states)
+        # terminated = self._adarl_env.are_states_terminal(states)
+        # only_truncated = th.logical_and(timed_out, th.logical_not(terminated))
+        # info["TimeLimit.truncated"] = only_truncated
+        # info["timed_out"] = timed_out
         adarl_env_info = self._adarl_env.get_infos(states)
-        adarl_env_info["is_success"] = adarl_env_info.get("success",
-                                            th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
+        # adarl_env_info["is_success"] = adarl_env_info.get("success",
+        #                                     th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
         return clone_tensor_tree(info, detach=True)
