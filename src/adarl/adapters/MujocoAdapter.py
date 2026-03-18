@@ -400,7 +400,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         if np.any(lin_vel!=0.0) or np.any(ang_vel!=0.0):
             mask = (lin_vel!=0.0) | (ang_vel!=0.0)
-            raise NotImplementedError(f"Setting velocities for fixed bodies is not supported in MujocoAdapter, but links {self.get_links_names(lids[mask])} have non-zero velocities")
+            raise NotImplementedError(f"Setting velocities for fixed bodies is not supported in MujocoAdapter, but links {self.get_monitored_links_ids_names(lids[mask])} have non-zero velocities")
 
         mocap_ids = self._mj_model.body_mocapid[lids]
         mocap_mask = mocap_ids != -1
@@ -438,7 +438,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         root_body_ids = self._mj_model.body_rootid[lids]
         if not np.all(root_body_ids == lids):
             nonroot_lids = lids[root_body_ids != lids]
-            raise NotImplementedError(f"Only root bodies can have their state set directly; links {self.get_links_names(nonroot_lids)} are not root bodies")
+            raise NotImplementedError(f"Only root bodies can have their state set directly; links {self.get_monitored_links_ids_names(nonroot_lids)} are not root bodies")
 
 
         jnt_nums = self._mj_model.body_jntnum[lids]
@@ -450,7 +450,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         floating_bodies = lids[floating_bodies_mask]
         unsupported_bodies = lids[(jnt_nums > 1) | (parent_body_ids != 0)]
         if len(unsupported_bodies) > 0:
-            raise NotImplementedError(f"Only bodies attached directly to the world with floating or fixed joints can have their state set directly; links {self.get_links_names(unsupported_bodies)} do not meet this requirement")
+            raise NotImplementedError(f"Only bodies attached directly to the world with floating or fixed joints can have their state set directly; links {self.get_monitored_links_ids_names(unsupported_bodies)} do not meet this requirement")
 
         # the links in fixed_bodies are "attached with fixed joints" we alter the model to move them
 
@@ -555,13 +555,13 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return ran_time
 
     @override
-    def get_links_ids(self, link_names: Sequence[tuple[str, str]]):
+    def get_monitored_links_ids(self, link_names: Sequence[tuple[str, str]]):
         return np.array([self._lname2lid[ln] for ln in link_names], dtype=int)
 
     @override
-    def get_links_names(self, link_ids: Sequence[int] | np.ndarray):
+    def get_monitored_links_ids_names(self, link_ids: Sequence[int] | np.ndarray):
         return [self._lid2lname[lid] for lid in link_ids]
 
     @override
-    def get_joints_ids(self, joint_names: Sequence[tuple[str, str]]):
+    def get_monitored_joints_ids(self, joint_names: Sequence[tuple[str, str]]):
         return np.array([self._jname2jid[jn] for jn in joint_names], dtype=int)

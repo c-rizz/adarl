@@ -605,7 +605,8 @@ def launchRun(runFunction,
                   "run_args" : args,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
-                  "debug_level" : debug_level}
+                  "debug_level" : debug_level,
+                  "use_wandb" : use_wandb}
                     for seed in detected_args]
 
     ggLog.info(f"Will launch {argss} using {num_processes} processes") 

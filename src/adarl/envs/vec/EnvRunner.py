@@ -25,7 +25,7 @@ from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.utils.utils import to_string_tensor, masked_assign
 from adarl.utils.tensor_trees import clone_tensor_tree
-from adarl.utils.base_utils import record_time
+from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end
 import os
 from adarl.utils.session import default_session
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
@@ -39,7 +39,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                  episodeInfoLogFile : Optional[str] = None,
                  ui_render_envs : list[int] = [],
                  autoreset : bool = True,
-                 log_freq : int = -1):
+                 log_freq : int = -1,
+                 sync_on_reinit : bool = True):
         """Initialize the Env Runner
 
         Parameters
@@ -80,7 +81,10 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._no_vecs = th.zeros((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)
         self._envs_needing_reinit = self._no_vecs.detach().clone()
         self._last_actions = None
-        
+        import cProfile
+        self._profiler = cProfile.Profile()
+        self._profid = str(int(time.monotonic()*1000))
+        self._reinit_count = 0
         # if th.any(self._adarl_env.get_max_episode_steps()!=self._adarl_env.get_max_episode_steps()[0]):
         #     raise RuntimeError(f"All sub environments must have the same max_episode_steps, instead"
         #                        f" they have: {self._adarl_env.get_max_episode_steps()}")
@@ -130,6 +134,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
+        self._sync_on_reinit = sync_on_reinit
         self._cache_dirty = True
 
     @override
@@ -146,6 +151,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         if self._total_vsteps == 0:
             self._wtime_first_step = time.monotonic()
 
+        record_region_start("EnvRunner loop ----------------------------")
         with self._runnerStepDurationAverage:
             self._total_vsteps += 1
             # if th.any(self._envs_needing_reinit):
@@ -158,6 +164,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                     actions = th.as_tensor(actions)
                 self._last_actions = actions.detach().clone()
                 self._adarl_env.submit_actions(actions)
+            record_time("EnvRunner sent action")
 
             # Step the environment
             with self._envStepWallDurationAverage:
@@ -179,18 +186,18 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 terminateds = self._adarl_env.are_states_terminal(consequent_states)
                 # ts.append(time.monotonic())
                 truncateds = self._adarl_env.are_states_timedout(consequent_states)
-                record_time("EnvRunner computed termination/truncation")
+                # record_time("EnvRunner computed termination/truncation")
                 # ts.append(time.monotonic())
                 sub_rewardss : Dict[str,th.Tensor] = {}
                 rewards = self._adarl_env.compute_rewards(consequent_states, sub_rewards_return = sub_rewardss)
-                record_time("EnvRunner computed rewards")
+                # record_time("EnvRunner computed rewards")
 
                 # ts.append(time.monotonic())
                 consequent_observations = self._adarl_env.get_observations(consequent_states)
-                record_time("EnvRunner got observations")
+                # record_time("EnvRunner got observations")
                 # ts.append(time.monotonic())
                 consequent_infos = self._build_info(consequent_states)
-                record_time("EnvRunner built infos")
+                # record_time("EnvRunner built infos")
                 # ts.append(time.monotonic())
                 
                 self._last_terminated = terminateds
@@ -217,21 +224,27 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                 if autoreset:
                     t_prereinit_real = time.monotonic()
                     self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
-                    reinit_done = self._envs_needing_reinit
-                    next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
-                                                                                terminateds=terminateds,
-                                                                                truncateds=truncateds,
-                                                                                last_observations=consequent_observations,
-                                                                                last_actions=actions,
-                                                                                last_infos=consequent_infos,
-                                                                                last_rewards=rewards)
+                    if not self._sync_on_reinit or th.any(self._envs_needing_reinit):
+                        reinit_done = self._envs_needing_reinit
+                        next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
+                                                                                    terminateds=terminateds,
+                                                                                    truncateds=truncateds,
+                                                                                    last_observations=consequent_observations,
+                                                                                    last_actions=actions,
+                                                                                    last_infos=consequent_infos,
+                                                                                    last_rewards=rewards)
+                    else:
+                        reinit_done = self._no_vecs
+                        next_start_observations = consequent_observations
+                        next_start_infos = consequent_infos
                     self._wtime_spent_really_reinit_tot += time.monotonic() - t_prereinit_real
                 else:
                     next_start_observations = consequent_observations
                     next_start_infos = consequent_infos
                     reinit_done = self._no_vecs
 
-        record_time("EnvRunner reinit end")
+        record_region_end("EnvRunner loop ----------------------------")
+        print_recorded_times()
 
         tf = time.monotonic()
         self._last_step_end_etime = self._adarl_env.get_times_since_build()
@@ -258,8 +271,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                             last_infos : TensorTree[th.Tensor],
                             last_rewards : th.Tensor,
                             options = {}):
-        # import cProfile
-        # with cProfile.Profile() as pr:
+        # if self._reinit_count > 10:
+        #     self._profiler.enable()
+        record_region_start("EnvRunner reinit")
         self._on_episode_end(   envs_ended_mask = reinit_envs_mask,
                                 last_observations = last_observations,
                                 last_actions = last_actions,
@@ -267,7 +281,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                                 last_rewards = last_rewards,
                                 last_terminateds = terminateds,
                                 last_truncateds = truncateds)
+        record_time("EnvRunner: done _on_episode_end")
         self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
+        record_time("EnvRunner: done env.initialize_episodes")
         self._cache_dirty = True
         self._ep_step_counts[reinit_envs_mask] = 0
         self._ep_counts += 1*reinit_envs_mask
@@ -276,12 +292,20 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         for k,v in self._ep_sub_rewards.items():
                 v[reinit_envs_mask] = 0
         masked_assign(self._envs_needing_reinit, reinit_envs_mask, th.zeros_like(self._envs_needing_reinit))
+        record_time("EnvRunner: updated counts")
         next_start_states = self._get_states_caching()
+        record_time("EnvRunner: got states")
         next_start_observations = self._adarl_env.get_observations(next_start_states)
+        record_time("EnvRunner: got obs")
         next_start_infos = self._build_info(next_start_states)
-            # pr.print_stats()
-            # os.makedirs("profiles", exist_ok=True)
-            # pr.dump_stats(f"profiles/envrunner_reinit_profile_{int(time.monotonic()*1000)}_{th.count_nonzero(reinit_envs_mask.cpu()).item()}.prof")
+        record_region_end("EnvRunner reinit")
+
+        # if self._reinit_count > 10:
+        #     self._profiler.disable()
+        #     os.makedirs("profiles", exist_ok=True)
+        #     if self._reinit_count % 10 == 0:
+        #         self._profiler.dump_stats(f"profiles/profiler_{self._profid}_save_{self._reinit_count}.prof")
+        self._reinit_count+=1
         return next_start_observations, next_start_infos
 
     def print_dbg_info(self):

@@ -35,6 +35,8 @@ from adarl.utils.tensor_trees import map_tensor_tree
 from packaging.version import Version
 import faulthandler
 import pathlib
+from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end
+
 faulthandler.enable()
 
 jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
@@ -236,14 +238,60 @@ def set_rows_cols_masks(array : jnp.ndarray,
     jnp.ndarray
         The edited array
     """
-    # ggLog.info(f"set_rows_cols(\n"
-    #            f"{array}\n"
-    #            f"{index_arrs}\n"
-    #            f"{vals}\n"
-    #            f")")
-    # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
-    index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), mask.shape[0]+1) for mask in masks]
+    # # ggLog.info(f"set_rows_cols(\n"
+    # #            f"{array}\n"
+    # #            f"{index_arrs}\n"
+    # #            f"{vals}\n"
+    # #            f")")
+    # # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
+    # index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), mask.shape[0]+1) for mask in masks]
+    # print(f"index_arrs = {index_arrs}")
+    # print(f"array.at[jnp.ix_(*index_arrs)] = {array[jnp.ix_(*index_arrs)]}")
+    # return array.at[jnp.ix_(*index_arrs)].set(vals)
+    def to_indices(mask, expected_size):
+        if mask.dtype == bool:
+            # Fixed-size nonzero for JIT compatibility
+            return jnp.nonzero(mask, size=expected_size)[0]
+        return mask
+    
+    index_arrs = [to_indices(m, vals.shape[i]) for i, m in enumerate(masks)]
     return array.at[jnp.ix_(*index_arrs)].set(vals)
+
+# def set_masks(  array : jnp.ndarray,
+#                 masks : Sequence[jnp.ndarray],
+#                 vals : jnp.ndarray):
+#     """Sets values in the specified subarray. index_arrs indicates which indexes of each dimension to set
+#        the values in. For example you can write in a 2D array at the rows [2,3] and columns [0,2,3] 
+#        (which identify a 2x3 array) by setting index_arrs=(jnp.array([False, False, True, True]), jnp.array([True, False, True, True])) and
+#        passing a 2x3 array in vals.
+
+#     Parameters
+#     ----------
+#     array : jnp.ndarray
+#         The array to be modified (Will not be written to)
+#     index_arrs : Sequence[jnp.ndarray]
+#         The indexes in each dimension.
+#     vals : jnp.ndarray
+#         The values to write
+
+#     Returns
+#     -------
+#     jnp.ndarray
+#         The edited array
+#     """
+#     if len(masks) == 1:
+#         return array.at[masks[0]].set(vals)
+#     # ggLog.info(f"set_rows_cols(\n"
+#     #            f"{array}\n"
+#     #            f"{index_arrs}\n"
+#     #            f"{vals}\n"
+#     #            f")")
+#     # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
+#     index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), mask.shape[0]+1) for mask in masks]
+#     print(f"index_arrs = {index_arrs}")
+#     return array.at[jnp.ix_(*index_arrs)].set(vals)
+
+
 
 def get_rows_cols(array : jnp.ndarray,
                   index_arrs : Sequence[jnp.ndarray | Sequence[int] | int]):
@@ -679,6 +727,10 @@ class SimState:
     stats_step_count : jnp.ndarray
     mon_joint_stats_arr_pvaee : jnp.ndarray
     mon_links_stats_arr_v : jnp.ndarray
+    mon_joint_state_pveae : jnp.ndarray  # precomputed joint states for monitored joints
+    mon_link_state : jnp.ndarray  # precomputed link states for monitored links
+    mon_link_acceleration : jnp.ndarray  # precomputed local linear acceleration for monitored links
+    mon_collision_mask : jnp.ndarray  # precomputed collision mask for monitored pairs (vec_size, num_pairs)
     impulse_startends_stime : jnp.ndarray
     impulses_xfrc : jnp.ndarray
 
@@ -700,7 +752,11 @@ class SimState:
              "impulse_startends_stime" : self.impulse_startends_stime,
              "impulses_xfrc" : self.impulses_xfrc,
              "mon_joint_stats_arr_pvaee" : self.mon_joint_stats_arr_pvaee,
-             "mon_links_stats_arr_v" : self.mon_links_stats_arr_v}
+             "mon_links_stats_arr_v" : self.mon_links_stats_arr_v,
+             "mon_joint_state_pveae" : self.mon_joint_state_pveae,
+             "mon_link_state" : self.mon_link_state,
+             "mon_link_acceleration" : self.mon_link_acceleration,
+             "mon_collision_mask" : self.mon_collision_mask}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
         d.update(name_values)
         # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
@@ -721,8 +777,45 @@ mj_jnt_type_to_adarl = {
 
 
 
+@jax.tree_util.register_dataclass
+@dataclass
+class SimConf:
+    monitored_qpadr : jnp.ndarray
+    monitored_qvadr : jnp.ndarray
+    monitored_lids : jnp.ndarray
+    monitored_jids : jnp.ndarray
+    body_rootid : jnp.ndarray  # maps all bodies to their root body (for acceleration computation)
+    monitored_collision_pairs : jnp.ndarray  # (num_pairs, 2) body id pairs to check for collision
+    geom_bodyid : jnp.ndarray  # maps geom ids to body ids
+    vec_size : int
+    sim_dt : jnp.ndarray
+    jnt_qposadr : jnp.ndarray
+    jnt_dofadr : jnp.ndarray
 
 
+
+    def replace_d(self, name_values : dict[str,Any], non_strict : bool = False):
+        # ggLog.info(f"rd0 type(self.mjx_data) = {type(self.mjx_data)}")
+        # d = dataclasses.asdict(self) # Recurses into dataclesses and deepcopies
+        d = {"monitored_qpadr" : self.monitored_qpadr,
+            "monitored_qvadr" : self.monitored_qvadr,
+            "monitored_lids" : self.monitored_lids,
+            "monitored_jids" : self.monitored_jids,
+            "body_rootid" : self.body_rootid,
+            "monitored_collision_pairs" : self.monitored_collision_pairs,
+            "geom_bodyid" : self.geom_bodyid,
+            "vec_size" : self.vec_size,
+            "sim_dt" : self.sim_dt,
+            "jnt_qposadr" : self.jnt_qposadr,
+            "jnt_dofadr" : self.jnt_dofadr}
+        if non_strict:
+            name_values = {k:v for k,v in name_values.items() if k in d}
+        # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
+        d.update(name_values)
+        # ggLog.info(f"d1 = "+str({k:type(v) for k,v in d.items()}))
+        ret = SimConf(**d)
+        # ggLog.info(f"type(self.mjx_data) = {type(self.mjx_data)}")
+        return ret
 
 
 
@@ -791,21 +884,34 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
         self._discardvisual = False
         self._opt_override = opt_override
-        self._mjx_impl = "warp"
+        self._mjx_impl = "jax"
+        self._jax_float_dtype = jnp.float32
 
         self._realtime_factor = realtime_factor
-        self._wxyz2xyzw = jnp.array([1,2,3,0], device = jax_device)
         self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device),
                                     mjx_model=jnp.empty((0,), device = jax_device),
                                     requested_qfrc_applied=jnp.empty((0,), device = jax_device),
                                     sim_time=jnp.empty((0,), device = jax_device),
                                     stats_step_count=jnp.zeros((1,), device = jax_device),
-                                    mon_joint_stats_arr_pvaee=jnp.empty((0,), device = jax_device),
-                                    mon_links_stats_arr_v=jnp.empty((0,), device = jax_device),
+                                    mon_joint_stats_arr_pvaee=jnp.empty((self._vec_size,0,5), device = jax_device),
+                                    mon_links_stats_arr_v=jnp.empty((self._vec_size,0,6), device = jax_device),
+                                    mon_joint_state_pveae=jnp.empty((self._vec_size,0,5), device = jax_device),
+                                    mon_link_state=jnp.empty((self._vec_size,0,13), device = jax_device),
+                                    mon_link_acceleration=jnp.empty((self._vec_size,0,3), device = jax_device),
+                                    mon_collision_mask=jnp.empty((self._vec_size,0), device = jax_device, dtype=jnp.bool_),
                                     impulse_startends_stime=jnp.empty((0,), device = jax_device),
                                     impulses_xfrc=jnp.empty((0,), device = jax_device))
-        self._monitored_lids = jnp.array([], device=self._jax_device, dtype=jnp.int32)
-        self._monitored_jids = jnp.array([], device=self._jax_device, dtype=jnp.int32)
+        self._sim_conf = SimConf(   monitored_qpadr=jnp.empty((0,), device = jax_device),
+                                    monitored_qvadr=jnp.empty((0,), device = jax_device),
+                                    monitored_jids=jnp.empty((0,),  device = jax_device, dtype=jnp.int32),
+                                    monitored_lids=jnp.empty((0,),  device = jax_device, dtype=jnp.int32),
+                                    body_rootid=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
+                                    monitored_collision_pairs=jnp.empty((0,2), device = jax_device, dtype=jnp.int32),
+                                    geom_bodyid=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
+                                    vec_size=vec_size,
+                                    sim_dt=jnp.array(sim_step_dt, device = self._jax_device),
+                                    jnt_qposadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
+                                    jnt_dofadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32))
         self._renderer : mujoco.Renderer | None = None
         self._check_sizes = True
         self._show_gui = show_gui
@@ -954,6 +1060,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
+        self._sim_conf.body_rootid = self._body_rootid
         # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
         import operator
         model_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_model)
@@ -964,8 +1071,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         model_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_model)
         vec_mjmodel_nbytes = jax.tree.reduce(operator.add, model_nbytes)
         
-        self._jnt_dofadr_jax = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
         self._geom_bodyid_jax = jnp.array(mjx_model.geom_bodyid, device = self._jax_device) # for some reason it's a numpy array, so I cannot use it properly in jit
+        self._sim_conf.geom_bodyid = self._geom_bodyid_jax
+        self._sim_conf.jnt_qposadr = jnp.array(mjx_model.jnt_qposadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
+        self._sim_conf.jnt_dofadr = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         if self._mjx_impl == "warp":
             mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
@@ -1016,7 +1125,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         self.set_monitored_joints([])
         self.set_monitored_links([])
-        self._sim_state = self._reset_step_stats(self._sim_state)
+        self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
 
 
 
@@ -1270,24 +1379,93 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_joints(jointsToObserve)
-        self._monitored_jids = jnp.array([self._jname2jid[jn] for jn in self._monitored_joints], device=self._jax_device)
-        self._monitored_qpadr = self._sim_state.mjx_model.jnt_qposadr[self._monitored_jids]
-        self._monitored_qvadr = self._sim_state.mjx_model.jnt_dofadr[self._monitored_jids]
-        self._sim_state = self._reset_step_stats(self._sim_state)
+        # Cache Python versions to avoid JAX->numpy sync in getters
+        monitored_jids_list = [self._jname2jid[jn] for jn in self._monitored_joints]
+        self._monitored_jid_to_idx = {jid: idx for idx, jid in enumerate(monitored_jids_list)}
+        self._sim_conf.monitored_jids = jnp.array(monitored_jids_list, device=self._jax_device, dtype=jnp.int32)
+        self._sim_conf.monitored_qpadr = self._sim_conf.jnt_qposadr[self._sim_conf.monitored_jids]
+        self._sim_conf.monitored_qvadr = self._sim_conf.jnt_dofadr[self._sim_conf.monitored_jids]
+        self._rebuild_step_stats_arrs()
+        self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
         if self._record_joint_hist:
             self._full_history_labels = to_string_tensor(sum([[f"{jn[1]}.{v}" for v in ["pos","vel","cmd_eff","acc","eff","constr_eff"]] 
                                                               for jn in self._monitored_joints],[])).unsqueeze(0)
 
-
-
     @override
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_links(linksToObserve)
-        self._monitored_lids = jnp.array([self._lname2lid[ln] for ln in self._monitored_links], device=self._jax_device, dtype=jnp.int32)
+        # Cache Python versions to avoid JAX->numpy sync in getters
+        monitored_lids_list = [self._lname2lid[ln] for ln in self._monitored_links]
+        self._monitored_lid_to_idx = {lid: idx for idx, lid in enumerate(monitored_lids_list)}
+        self._sim_conf.monitored_lids = jnp.array(monitored_lids_list, device=self._jax_device, dtype=jnp.int32)
+        self._rebuild_step_stats_arrs()
+
+    def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
+        """Set collision pairs to monitor. Collision masks will be precomputed during step().
+        
+        Parameters
+        ----------
+        collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
+            List of link name pairs to monitor for collisions.
+            Each pair is ((model_a, link_a), (model_b, link_b)).
+        """
+        self._monitored_collision_pairs = list(collision_pairs)
+        # Cache for quick lookup: (body_id_a, body_id_b) -> index in monitored array
+        self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
+        if len(collision_pairs) == 0:
+            self._sim_conf.monitored_collision_pairs = jnp.empty((0,2), device=self._jax_device, dtype=jnp.int32)
+        else:
+            body_ids_a = [self._lname2lid[p[0]] for p in collision_pairs]
+            body_ids_b = [self._lname2lid[p[1]] for p in collision_pairs]
+            for idx, (a, b) in enumerate(zip(body_ids_a, body_ids_b)):
+                self._monitored_collision_pair_to_idx[(a, b)] = idx
+                self._monitored_collision_pair_to_idx[(b, a)] = idx  # Store both directions
+            self._sim_conf.monitored_collision_pairs = jnp.array(
+                list(zip(body_ids_a, body_ids_b)), device=self._jax_device, dtype=jnp.int32)
+        self._rebuild_step_stats_arrs()
+
+    def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]) -> th.Tensor:
+        """Get indices into monitored collision pairs array.
+        
+        Parameters
+        ----------
+        collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
+            List of link name pairs to look up.
+            
+        Returns
+        -------
+        th.Tensor
+            Long tensor of indices into the monitored collision pairs array.
+        """
+        indices = []
+        for pair in collision_pairs:
+            body_a = self._lname2lid[pair[0]]
+            body_b = self._lname2lid[pair[1]]
+            # Try both directions
+            idx = self._monitored_collision_pair_to_idx.get((body_a, body_b))
+            if idx is None:
+                raise KeyError(f"Collision pair {pair} is not in monitored collision pairs")
+            indices.append(idx)
+        return th.as_tensor(indices, device=self._out_th_device, dtype=th.long)
+
+    def get_collision_pair_names(self, pair_ids: th.Tensor) -> list[tuple[tuple[str,str], tuple[str,str]]]:
+        """Get collision pair names from indices.
+        
+        Parameters
+        ----------
+        pair_ids : th.Tensor
+            Indices into monitored collision pairs array.
+            
+        Returns
+        -------
+        list[tuple[tuple[str,str], tuple[str,str]]]
+            List of link name pairs.
+        """
+        return [self._monitored_collision_pairs[idx] for idx in pair_ids.tolist()]
 
     @override
     def initialize_for_step(self):
-        self._sim_state = self._clear_step_stats(self._sim_state)
+        self._sim_state = MjxAdapter._clear_step_stats(self._sim_state)
 
     @override
     def step(self) -> float:
@@ -1322,13 +1500,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
-    def _sim_step_fast(self, iteration, sim_state : SimState) -> SimState:
+    def _sim_step_fast(self, iteration, sim_state : SimState, sim_conf : SimConf) -> SimState:
         sim_state = self._apply_commands(sim_state)
         sim_state = self._apply_impulses(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model,sim_state.mjx_data)
         sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
-        sim_state = self._update_step_stats(sim_state)
+        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         return sim_state 
     
 
@@ -1349,19 +1528,20 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     #                                                 init_val=(sim_state, joint_stats_arr))
     #     return sim_state
     
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
-    def _sim_step_fast_for_scan_full_pveae(self, sim_state : SimState, _) -> tuple[SimState, jnp.ndarray | None]:
-        sim_state = self._sim_step_fast(0, sim_state)
+    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
+    def _sim_step_fast_for_scan_full_pveae(self, sim_state_conf : tuple[SimState,SimConf], _) -> tuple[tuple[SimState,SimConf], jnp.ndarray | None]:
+        sim_state, sim_conf = sim_state_conf
+        sim_state = self._sim_step_fast(0, sim_state, sim_conf)
         if self._record_joint_hist:
             joint_state = self._get_joint_state_for_history(sim_state=sim_state)
         else:
             joint_state = None
-        return sim_state, joint_state
+        return (sim_state, sim_conf), joint_state
     
     @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state"))
-    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int) -> tuple[SimState, jnp.ndarray]:
-        sim_state, joints_state_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
-                                                  init = sim_state,
+    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf) -> tuple[SimState, jnp.ndarray | None]:
+        (sim_state, sim_conf), joints_state_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
+                                                  init = (sim_state, sim_conf),
                                                   xs = (), 
                                                   length = iterations)
         # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
@@ -1369,9 +1549,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #                                                 init_val=(sim_state, joint_stats_arr))
         return sim_state, joints_state_history
 
-    def _get_joint_state_for_history(self, sim_state):
-        return MjxAdapter._get_vec_joint_states_raw_pveaec(  self._monitored_qpadr,
-                                                            self._monitored_qvadr,
+    def _get_joint_state_for_history(self, sim_state : SimState) -> jnp.ndarray:
+        return MjxAdapter._get_vec_joint_states_raw_pveaec( self._sim_conf.monitored_qpadr,
+                                                            self._sim_conf.monitored_qvadr,
                                                             sim_state.mjx_data)
     
     def _log_joints_pveae_history(self):
@@ -1399,7 +1579,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._sent_motor_torque_commands_by_bid_jid = {}
         # ggLog.info(f"Starting run")
         iterations = int(duration_sec/self._sim_step_dt)
-        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations)
+        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf)
         if self._record_joint_hist:
             self._joints_pveae_history.append(joints_state_history)
             # ggLog.info(f"int({self._total_iterations} / {self._log_freq_joints_trajcetories}) = {int(self._total_iterations / self._log_freq_joints_trajcetories)} != {int((self._total_iterations+iterations) / self._log_freq_joints_trajcetories)} = {int(self._total_iterations / self._log_freq_joints_trajcetories) != int((self._total_iterations+iterations) / self._log_freq_joints_trajcetories)}")
@@ -1575,47 +1755,32 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
     @override
-    def getJointsState(self, requestedJoints : Sequence[tuple[str,str]] | jnp.ndarray | None = None) -> th.Tensor:
-        if requestedJoints is None:
-            jids = self._monitored_jids
-        elif isinstance(requestedJoints, jnp.ndarray):
-            jids = requestedJoints
-        else:
-            jids = self.get_joints_ids(requestedJoints)
-        if len(jids) == 0:
-            return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
-        else:
-            self._forward_if_needed()           
-            t = self._get_vec_joint_states_pve(self._sim_state.mjx_model, self._sim_state.mjx_data, jids)
-            # ggLog.info(f"getJointsState: t = {t}")
-        return jax2th(t, th_device=self._out_th_device)
+    def getJointsState(self, requestedJoints : Sequence[tuple[str,str]] | th.Tensor | None = None) -> th.Tensor:
+        return self.getExtendedJointsState(requestedJoints)[:,:,:3] # only return pos, vel, cmd_eff, without acc and constr_eff
+
     
     @override
-    def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | None = None) -> th.Tensor:
+    def getExtendedJointsState(self, requestedJoints : Sequence[tuple[str,str]] | th.Tensor | None = None) -> th.Tensor:
+        if requestedJoints is not None and len(requestedJoints) == 0:
+            return th.empty(size=(self._vec_size, 0, 5), dtype=th.float32, device=self._out_th_device)
+        
+        self._forward_if_needed()
+        # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
+        full_state = jax2th(self._sim_state.mon_joint_state_pveae, th_device=self._out_th_device)
         if requestedJoints is None:
-            jids = self._monitored_jids
-        elif isinstance(requestedJoints, jnp.ndarray):
-            jids = requestedJoints
+            return full_state
+        # KeyError will propagate if joint doesn't exist or isn't monitored
+        if isinstance(requestedJoints, th.Tensor):
+            reorder_indices = requestedJoints
         else:
-            jids = self.get_joints_ids(requestedJoints)
-        if len(jids) == 0:
-            return th.empty(size=(self._vec_size,self._sim_state.mjx_data.qpos.shape[1],0,3), dtype=th.float32)
-        else:
-            self._forward_if_needed()
-            t = self._get_vec_joint_states_pveae(self._sim_state.mjx_model, self._sim_state.mjx_data, jids)
-        return jax2th(t, th_device=self._out_th_device)
+            reorder_indices = self.get_monitored_joints_ids(requestedJoints)
+        return full_state[:, reorder_indices, :]
     
     @staticmethod
-    def _get_vec_joint_states_pveae(mjx_model, mjx_data, jids : jnp.ndarray):
-        return MjxAdapter._get_vec_joint_states_raw_pveae(mjx_model.jnt_qposadr[jids],
-                                                        mjx_model.jnt_dofadr[jids],
-                                                        mjx_data)
-    
-    @staticmethod
-    def _get_vec_joint_states_pve(mjx_model, mjx_data, jids : jnp.ndarray):
-        return MjxAdapter._get_vec_joint_states_raw_pve(mjx_model.jnt_qposadr[jids],
-                                                        mjx_model.jnt_dofadr[jids],
-                                                        mjx_data)
+    def _get_vec_joint_states_pveae(sim_conf : SimConf, mjx_data, jids : jnp.ndarray):
+        return MjxAdapter._get_vec_joint_states_raw_pveae(  sim_conf.jnt_qposadr[jids],
+                                                            sim_conf.jnt_dofadr[jids],
+                                                            mjx_data)
     
     @staticmethod
     @jax.jit
@@ -1655,22 +1820,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
                             mjx_data.qfrc_constraint[:,qvadr]],
                             axis = 2)
-    @staticmethod
-    @jax.jit
-    def _get_vec_joint_states_raw_pve(qpadr, qvadr, mjx_data):
-        # What should we use as torque readings?
-        # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
-        #     that qfrc_unc (now renamed to qfrc_smmooth) + qfrc_constraint shoudl give what a torque sensor would measure
-        # - We also could use qfrc_applied, which is the torque we are applying, I think in most cases this should be correct
-        # ggLog.info(f"qfrc_applied={mjx_data.qfrc_applied[:,qvadr]}\n"
-        #            f"qfrc_smooth={mjx_data.qfrc_smooth[:,qvadr]}\n"
-        #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
-        #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
-        #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
-        return jnp.stack([  mjx_data.qpos[:,qpadr],
-                            mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr]], 
-                            axis = 2)
     
     @staticmethod
     @jax.jit
@@ -1681,10 +1830,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             mjx_data.qfrc_applied[:,qvadr]], 
                             axis = 2)
 
-
-    def _clear_step_stats(self, sim_state : SimState):
-        sim_state = self._init_stats(sim_state)
-        return sim_state
+    @staticmethod
+    def _clear_step_stats(sim_state : SimState):
+        return MjxAdapter._init_stats(sim_state)
 
     @staticmethod
     @partial(jax.jit, donate_argnames=["sim_state"])
@@ -1739,30 +1887,123 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # jax.debug.print("updated stats: count={c}, arr={arr}", c=step_count, arr=stats_array)
         return sim_state
 
-    @partial(jax.jit, static_argnames=["self"], donate_argnames=["sim_state"])
-    def _update_step_stats(self, sim_state : SimState) -> SimState:
-        jstate_pveae = self._get_vec_joint_states_raw_pveae(self._monitored_qpadr, self._monitored_qvadr, sim_state.mjx_data)
-        jstate_pvaee = jstate_pveae[:,:,[0,1,3,2,4]]
-        lstate_v = self._get_links_state_jax(self._monitored_lids, sim_state.mjx_data)[:,:,7:13] # only linear velocity
-        sim_state = self._update_step_stats_arrs(   jstate_pvaee, 
-                                                    lstate_v,
-                                                    sim_state)
+
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["sim_state"])
+    def _update_monitored_data_cache(sim_state : SimState, sim_conf : SimConf) -> SimState:
+        jstate_pveae = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
+                                                                  sim_conf.monitored_qvadr,
+                                                                  sim_state.mjx_data)
+        lstate = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
+        # Compute local link linear acceleration
+        link_acc = MjxAdapter._get_links_acceleration_static(
+            sim_conf.monitored_lids, sim_conf.body_rootid, sim_state.mjx_data)
+        # Compute collision mask for monitored pairs
+        collision_mask = MjxAdapter._check_collision_pairs_static(
+            sim_conf.monitored_collision_pairs, sim_conf.geom_bodyid, sim_state.mjx_data)
+        # Store precomputed states
+        sim_state = sim_state.replace_d({"mon_joint_state_pveae" : jstate_pveae,
+                                         "mon_link_state" : lstate,
+                                         "mon_link_acceleration" : link_acc,
+                                         "mon_collision_mask" : collision_mask})
         return sim_state
 
-    @partial(jax.jit, static_argnames=["self"], donate_argnames=["sim_state"])
-    def _reset_step_stats(self, sim_state : SimState):
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["sim_state"])
+    def _update_step_stats(sim_state : SimState, sim_conf : SimConf) -> SimState:        
+        jstate_pvaee = sim_state.mon_joint_state_pveae[:,:,[0,1,3,2,4]]
+        lstate_v = sim_state.mon_link_state[:,:,7:13] # only linear velocity for stats
+        sim_state = MjxAdapter._update_step_stats_arrs( jstate_pvaee, 
+                                                        lstate_v,
+                                                        sim_state)
+        return sim_state
+
+    @staticmethod
+    @jax.jit
+    def _check_collision_pairs_static(queried_body_pairs : jnp.ndarray, geom_bodyid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        """Static version of collision pair checking for use in _update_step_stats.
+        
+        Parameters
+        ----------
+        queried_body_pairs : jnp.ndarray
+            Shape (num_pairs, 2) with body id pairs to check
+        geom_bodyid : jnp.ndarray
+            Maps geom ids to body ids
+        mjx_data : mjx.Data
+            Current simulation data
+            
+        Returns
+        -------
+        jnp.ndarray
+            Boolean array of shape (vec_size, num_pairs)
+        """
+        # Get active contacts
+        active_contacts = mjx_data.contact.dist < mjx_data.contact.includemargin  # (vec_size, ncon)
+        geom_pairs = mjx_data.contact.geom  # (vec_size, ncon, 2)
+        geom_pairs = jnp.where(jnp.expand_dims(active_contacts, -1), geom_pairs, -1)
+        colliding_body_pairs = geom_bodyid[geom_pairs]  # (vec_size, ncon, 2)
+        
+        # Check if any contact matches queried pairs (in either direction)
+        # colliding_body_pairs: (vec_size, ncon, 2)
+        # queried_body_pairs: (num_pairs, 2)
+        colliding_expanded = jnp.expand_dims(colliding_body_pairs, 2)  # (vec_size, ncon, 1, 2)
+        a_to_b = jnp.any(jnp.all(colliding_expanded == queried_body_pairs, axis=-1), axis=1)  # (vec_size, num_pairs)
+        b_to_a = jnp.any(jnp.all(colliding_expanded == queried_body_pairs[:, [1, 0]], axis=-1), axis=1)
+        return jnp.logical_or(a_to_b, b_to_a)
+
+    @staticmethod
+    @jax.jit
+    def _get_links_acceleration_static(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        """Static version of local link linear acceleration computation for use in _update_step_stats."""
+        @jax.vmap
+        @jax.vmap
+        def _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat):
+            local_angvel = body_rotmat.T @ com_angvel
+            local_linvel = body_rotmat.T @ (com_linvel - jnp.cross(com_offset_xyz, com_angvel))
+            acc = body_rotmat.T @ (com_linacc - jnp.cross(com_offset_xyz, com_angacc))
+            correction = jnp.cross(local_angvel, local_linvel)
+            return acc + correction
+        
+        com_linacc = mjx_data.cacc[:,body_ids,3:6]
+        com_angacc = mjx_data.cacc[:,body_ids,:3]
+        body_rotmat = mjx_data.xmat[:,body_ids]
+        body_pos_xyz = mjx_data.xpos[:,body_ids]
+        root_body_ids = body_rootid[body_ids]
+        body_com_pos_xyz = mjx_data.subtree_com[:, root_body_ids]
+        com_linvel = mjx_data.cvel[:,body_ids,3:6]
+        com_angvel = mjx_data.cvel[:,body_ids,0:3]
+        com_offset_xyz = body_pos_xyz - body_com_pos_xyz
+        
+        return _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
+
+    def _rebuild_step_stats_arrs(self):
+        self._sim_state.mon_joint_stats_arr_pvaee = jnp.zeros(shape=(self._sim_conf.vec_size, 6, self._sim_conf.monitored_jids.shape[0],5),
+                                                        dtype=self._jax_float_dtype,
+                                                        device=self._jax_device)
+        self._sim_state.mon_links_stats_arr_v = jnp.zeros(shape=(self._sim_conf.vec_size, 6, self._sim_conf.monitored_lids.shape[0],6),
+                                                        dtype=self._jax_float_dtype,
+                                                        device=self._jax_device)
+        # Initialize precomputed state arrays
+        self._sim_state.mon_joint_state_pveae = jnp.zeros(shape=(self._sim_conf.vec_size, self._sim_conf.monitored_jids.shape[0], 5),
+                                                        dtype=self._jax_float_dtype,
+                                                        device=self._jax_device)
+        self._sim_state.mon_link_state = jnp.zeros(shape=(self._sim_conf.vec_size, self._sim_conf.monitored_lids.shape[0], 13),
+                                                        dtype=self._jax_float_dtype,
+                                                        device=self._jax_device)
+        self._sim_state.mon_link_acceleration = jnp.zeros(shape=(self._sim_conf.vec_size, self._sim_conf.monitored_lids.shape[0], 3),
+                                                        dtype=self._jax_float_dtype,
+                                                        device=self._jax_device)
+        self._sim_state.mon_collision_mask = jnp.zeros(shape=(self._sim_conf.vec_size, self._sim_conf.monitored_collision_pairs.shape[0]),
+                                                        dtype=jnp.bool_,
+                                                        device=self._jax_device)
+
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["sim_state"])
+    def _reset_monitored_data_and_stats(sim_state : SimState, sim_conf : SimConf) -> SimState:
         # ggLog.info(f"resetting stats")
-        sim_state = sim_state.replace_v("mon_joint_stats_arr_pvaee",
-                                        jnp.zeros(shape=(self._vec_size, 6, len(self._monitored_joints),5),
-                                                    dtype=jnp.float32,
-                                                    device=self._jax_device))
-        sim_state = sim_state.replace_v("mon_links_stats_arr_v",
-                                        jnp.zeros(shape=(self._vec_size, 6, len(self._monitored_links),6),
-                                                    dtype=jnp.float32,
-                                                    device=self._jax_device))
-        sim_state = self._clear_step_stats(sim_state)
-        sim_state = self._update_step_stats(sim_state) # populate with current state, so that there are safe-ish values here
-        try making most methods static to avoid marking self static, as it is maybe causing calls to hashlib
+        sim_state = MjxAdapter._clear_step_stats(sim_state)
+        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf) # populate with current state, so that there are safe-ish values here
         return sim_state
 
     def get_joints_state_step_stats(self) -> th.Tensor:
@@ -1774,10 +2015,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def get_links_state_step_stats(self) -> th.Tensor:
         return jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _get_links_state_jax(self, body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
+    @staticmethod
+    @partial(jax.jit)
+    def _get_links_state_jax(body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
         return jnp.concatenate([mjx_data.xpos[:,body_ids], # frame position
-                                mjx_data.xquat[:,body_ids][:,:,self._wxyz2xyzw], # frame orientation
+                                mjx_data.xquat[:,body_ids][:,:,[1,2,3,0]], # frame orientation
                                 mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # com linear and angular velocity
     
     @staticmethod
@@ -1794,78 +2036,96 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     
     @override
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device, dtype=jnp.uint16) # TODO: would make sense to return a mask here instead of indexes
-
-    @override
-    def get_links_names(self, link_ids : jnp.ndarray):
-        link_names = np.vectorize(lambda lid: self._lid2lname[lid])(np.asarray(link_ids))
-        return link_names
-
-    @override
-    def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
-        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device, dtype=jnp.uint16) # TODO: would make sense to return a mask here instead of indexes
-
-    @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | jnp.ndarray | None = None, use_com_pose : bool = False) -> th.Tensor:
-        # th.cuda.synchronize()
-        # t0 = time.monotonic()
-        if requestedLinks is None:
-            body_ids = self._monitored_lids
-        elif isinstance(requestedLinks, jnp.ndarray):
-            body_ids = requestedLinks
-        else:
-            body_ids = self.get_links_ids(requestedLinks)
-        # th.cuda.synchronize()
-        # t1 = time.monotonic()
-        self._forward_if_needed()
-        if use_com_pose:
-            t = self._get_links_com_state_jax(body_ids, self._sim_state.mjx_data)
-        else:
-            t = self._get_links_state_jax(body_ids, self._sim_state.mjx_data)
-        # th.cuda.synchronize()
-        # t2 = time.monotonic()
-        r=jax2th(t, th_device=self._out_th_device)
-        # th.cuda.synchronize()
-        # t3 = time.monotonic()
-        # ggLog.info(f"getLinksState: getids={t1-t0} getvals={t2-t1} convert={t3-t2}")
-        return r
-
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _get_local_links_linear_acceleration_jax(self, body_ids : jnp.ndarray, mjx_data, mjx_model) -> jnp.ndarray:
-        #Inspired by mujoco/mjx/_src/sensor.py:513
-        @jax.vmap
-        @jax.vmap
-        def _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat):
-            local_angvel = body_rotmat.T @ com_angvel
-            local_linvel = body_rotmat.T @ (com_linvel - jnp.cross(com_offset_xyz, com_angvel))
-            acc = body_rotmat.T @ (com_linacc - jnp.cross(com_offset_xyz, com_angacc))
-            correction = jnp.cross(local_angvel, local_linvel)
-            return acc + correction
-        com_linacc = mjx_data.cacc[:,body_ids,3:6] # com linear acceleration
-        com_angacc = mjx_data.cacc[:,body_ids,:3] # com angular acceleration
-        body_rotmat = mjx_data.xmat[:,body_ids]
-        body_pos_xyz = mjx_data.xpos[:,body_ids] # body position
-        root_body_ids = self._body_rootid[body_ids] # root body ids for each body
-        body_com_pos_xyz = mjx_data.subtree_com[:, root_body_ids]
-        com_linvel = mjx_data.cvel[:,body_ids,3:6]
-        com_angvel = mjx_data.cvel[:,body_ids,0:3]
-        com_offset_xyz = body_pos_xyz - body_com_pos_xyz
-
-        frame_acc = _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
-        return frame_acc
+        # Return the index among all links
+        return jnp.array([self._lname2lid[ln] for ln in link_names], device=self._jax_device, dtype=jnp.uint16)
     
     @override
-    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
-        if requestedLinks is None:
-            body_ids = self._monitored_lids
-        elif isinstance(requestedLinks, jnp.ndarray):
-            body_ids = requestedLinks
-        else:
-            body_ids = self.get_links_ids(requestedLinks)
+    def get_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
+        return jnp.array([self._jname2jid[jn] for jn in joint_names], device=self._jax_device)
+
+    @override
+    def get_monitored_links_ids(self, link_names : Sequence[tuple[str,str]]):
+        # Return the index among the monitored links
+        return th.as_tensor([self._monitored_lid_to_idx[self._lname2lid[ln]] for ln in link_names], device=self._out_th_device, dtype=th.long)
+
+    @override
+    def get_monitored_links_ids_names(self, link_ids : th.Tensor):
+        # link_ids are indices into monitored links, return the corresponding names
+        return [self._monitored_links[idx] for idx in link_ids.tolist()]
+
+    @override
+    def get_monitored_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
+        # Return the index among the monitored joints
+        return th.as_tensor([self._monitored_jid_to_idx[self._jname2jid[jn]] for jn in joint_names], device=self._out_th_device, dtype=th.long)
+
+    @override
+    def get_monitored_joints_ids_names(self, joint_ids : th.Tensor):
+        # joint_ids are indices into monitored joints, return the corresponding names
+        return [self._monitored_joints[idx] for idx in joint_ids.tolist()]
+
+    @override
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | th.Tensor | None = None, use_com_pose : bool = False) -> th.Tensor:
+        if use_com_pose:
+            raise ValueError(f"getLinksState: use_com_pose=True is not supported.")
+        
+        if requestedLinks is not None and len(requestedLinks) == 0:
+            return th.empty(size=(self._vec_size, 0, 13), dtype=th.float32, device=self._out_th_device)
+        
         self._forward_if_needed()
-        t = self._get_local_links_linear_acceleration_jax(body_ids, self._sim_state.mjx_data, self._sim_state.mjx_model)
-        return jax2th(t, th_device=self._out_th_device)
+        # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
+        full_state = jax2th(self._sim_state.mon_link_state, th_device=self._out_th_device)
+        if requestedLinks is None:
+            return full_state
+        # Duck type: if element is tuple it's a name, otherwise assume lid
+        # KeyError will propagate if link doesn't exist or isn't monitored
+        if isinstance(requestedLinks, th.Tensor):
+            reorder_indices = requestedLinks
+        else:
+            reorder_indices = self.get_monitored_links_ids(requestedLinks)
+        ret = full_state[:, reorder_indices, :]
+        return ret
+
+
+    # @partial(jax.jit, static_argnums=(0,))
+    # def _get_local_links_linear_acceleration_jax(self, body_ids : jnp.ndarray, mjx_data, mjx_model) -> jnp.ndarray:
+    #     #Inspired by mujoco/mjx/_src/sensor.py:513
+    #     @jax.vmap
+    #     @jax.vmap
+    #     def _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat):
+    #         local_angvel = body_rotmat.T @ com_angvel
+    #         local_linvel = body_rotmat.T @ (com_linvel - jnp.cross(com_offset_xyz, com_angvel))
+    #         acc = body_rotmat.T @ (com_linacc - jnp.cross(com_offset_xyz, com_angacc))
+    #         correction = jnp.cross(local_angvel, local_linvel)
+    #         return acc + correction
+    #     com_linacc = mjx_data.cacc[:,body_ids,3:6] # com linear acceleration
+    #     com_angacc = mjx_data.cacc[:,body_ids,:3] # com angular acceleration
+    #     body_rotmat = mjx_data.xmat[:,body_ids]
+    #     body_pos_xyz = mjx_data.xpos[:,body_ids] # body position
+    #     root_body_ids = self._body_rootid[body_ids] # root body ids for each body
+    #     body_com_pos_xyz = mjx_data.subtree_com[:, root_body_ids]
+    #     com_linvel = mjx_data.cvel[:,body_ids,3:6]
+    #     com_angvel = mjx_data.cvel[:,body_ids,0:3]
+    #     com_offset_xyz = body_pos_xyz - body_com_pos_xyz
+
+    #     frame_acc = _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
+    #     return frame_acc
+    
+    @override
+    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[tuple[str,str]] | th.Tensor | None = None) -> th.Tensor:
+        if requestedLinks is not None and len(requestedLinks) == 0:
+            return th.empty(size=(self._vec_size, 0, 3), dtype=th.float32, device=self._out_th_device)
+        
+        self._forward_if_needed()
+        # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
+        full_acc = jax2th(self._sim_state.mon_link_acceleration, th_device=self._out_th_device)
+        if requestedLinks is None:
+            return full_acc
+        # KeyError will propagate if link doesn't exist or isn't monitored
+        if isinstance(requestedLinks, th.Tensor):
+            reorder_indices = requestedLinks
+        else:
+            reorder_indices = self.get_monitored_links_ids(requestedLinks)
+        return full_acc[:, reorder_indices, :]
 
     @override
     def resetWorld(self):
@@ -1884,7 +2144,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         "mjx_model": copy.deepcopy(self._original_mjx_model)})
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
-        self._sim_state = self._reset_step_stats(self._sim_state)
+        self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
         # self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         
 
@@ -1894,42 +2154,61 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """Get the current time within the simulation."""
         return self._simTime
 
+    @staticmethod
+    @partial(jax.jit, donate_argnames=("sim_state",))
+    def _set_joint_state_set_data(sim_state : SimState, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
+        qpadr = qpadr_qvadr[0]
+        qvadr = qpadr_qvadr[1]
+        new_qpos = sim_state.mjx_data.qpos.at[:, qpadr].set(
+            jnp.where(vec_mask_jnp[:, None], js_pve[:, :, 0], sim_state.mjx_data.qpos[:, qpadr])
+        )
+        new_qvel = sim_state.mjx_data.qvel.at[:, qvadr].set(
+            jnp.where(vec_mask_jnp[:, None], js_pve[:, :, 1], sim_state.mjx_data.qvel[:, qvadr])
+        )
+        new_qfrc_applied = sim_state.mjx_data.qfrc_applied.at[:, qvadr].set(
+            jnp.where(vec_mask_jnp[:, None], js_pve[:, :, 2], sim_state.mjx_data.qfrc_applied[:, qvadr])
+        )
+        
+        mjx_data = sim_state.mjx_data.replace(qpos=new_qpos, qvel=new_qvel, qfrc_applied=new_qfrc_applied)
+        sim_state = sim_state.replace_v("mjx_data", mjx_data)
+        # sim_state = MjxAdapter._reset_monitored_data_and_stats(sim_state, self._sim_conf)
+        return sim_state
 
     @override    
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):
         # ggLog.info(f"setJointsStateDirect(\n{joint_names}, \n{joint_states_pve}, \n{vec_mask})")
 
+        record_region_start("MjxAdapter.setJointsStateDirect")
         if self._check_sizes and joint_states_pve.size() != (self._vec_size,len(joint_names),3):
             raise RuntimeError(f"joint_states_pve should have size {(self._vec_size,len(joint_names),3)}, but it's {joint_states_pve.size()}")
-        jids = jnp.array([self._jname2jid[jn] for jn in joint_names])
-        # contiguous_js = joint_states_pve.contiguous()
-        # ggLog.info(f"joint_states_pve.size() = {joint_states_pve.size()}")
-        # ggLog.info(f"joint_states_pve.dim_order() = {joint_states_pve.dim_order()}")
-        # ggLog.info(f"joint_states_pve.stride() = {joint_states_pve.stride()}")
-        # ggLog.info(f"contiguous_js.size() = {contiguous_js.size()}")
-        # ggLog.info(f"contiguous_js.dim_order() = {contiguous_js.dim_order()}")
-        # ggLog.info(f"contiguous_js.stride() = {contiguous_js.stride()}")
+        
+        jids = np.array([self._jname2jid[jn] for jn in joint_names])
         js_pve = th2jax(joint_states_pve, jax_device=self._jax_device)
         if vec_mask is not None:
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
-        # ggLog.info(f"js_pve.shape = {js_pve.shape}")
+        record_time("MjxAdapter.setJointsStateDirect: got js_pve and vec_mask_jnp")
+
 
         jtypes = self._mj_model.jnt_type[jids]
-        if not jnp.all(jnp.logical_or(jtypes == mujoco.mjtJoint.mjJNT_HINGE, jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all(np.logical_or(jtypes == mujoco.mjtJoint.mjJNT_HINGE, jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
             raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names,jtypes))}")
-        qpadr = self._mj_model.jnt_qposadr[jids]
-        qvadr = self._mj_model.jnt_dofadr[jids]
-        # ggLog.info(f"self._sim_state.mjx_data.qpos[{vec_mask_jnp},{qpadr}].shape = {get_rows_cols(self._sim_state.mjx_data.qpos, [vec_mask_jnp,qpadr]).shape}")
-        # ggLog.info(f"js_pve[vec_mask_jnp,:,0].shape = {js_pve[vec_mask_jnp,:,0].shape}")
-        qpos = set_rows_cols(self._sim_state.mjx_data.qpos,           (vec_mask_jnp,qpadr), js_pve[vec_mask_jnp,:,0])
-        qvel = set_rows_cols(self._sim_state.mjx_data.qvel,           (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,1])
-        qeff = set_rows_cols(self._sim_state.mjx_data.qfrc_applied,   (vec_mask_jnp,qvadr), js_pve[vec_mask_jnp,:,2])
-        mjx_data = self._sim_state.mjx_data.replace(qpos=qpos, qvel=qvel, qfrc_applied=qeff)
-        self._sim_state = self._sim_state.replace_v( "mjx_data", mjx_data)
-        self._sim_state = self._reset_step_stats(self._sim_state)
+        qpadr_np = self._mj_model.jnt_qposadr[jids]
+        qvadr_np = self._mj_model.jnt_dofadr[jids]
+        record_time("MjxAdapter.setJointsStateDirect: got adrs")
+
+        
+        record_time("MjxAdapter.setJointsStateDirect: def func")
+        qpadr_qvadr = jnp.array(np.stack([qpadr_np, qvadr_np]), device=self._jax_device)
+        record_time("MjxAdapter.setJointsStateDirect: converted np->jax")
+        self._sim_state = MjxAdapter._set_joint_state_set_data(self._sim_state, vec_mask_jnp, qpadr_qvadr, js_pve)
+        record_time("MjxAdapter.setJointsStateDirect: setted data")
+
+        # self._sim_state = MjxAdapter._reset_step_stats(self._sim_state, self._sim_conf)
         self._mark_forward_needed()
+        record_region_end("MjxAdapter.setJointsStateDirect")
+
         # self._update_gui(force=True)
         # ggLog.info(f"setted_jstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
 
@@ -2021,12 +2300,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _mark_forward_needed(self):
         self._forward_needed = True
 
+    @staticmethod
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _forward_all(forward_func, sim_state : SimState, sim_conf: SimConf) -> SimState:
+        data = forward_func(sim_state.mjx_model, sim_state.mjx_data)
+        sim_state = sim_state.replace_v("mjx_data", data)
+        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        return sim_state
+
     def _forward_if_needed(self):
         if self._forward_needed:
-            self._check_model_inaxes()
-
-            data = self._mjx_forward(self._sim_state.mjx_model,self._sim_state.mjx_data)
-            self._sim_state = self._sim_state.replace_v( "mjx_data", data)
+            # self._check_model_inaxes()
+            self._sim_state = MjxAdapter._forward_all(self._mjx_forward, self._sim_state, self._sim_conf)
             self._forward_needed = False
 
     def _check_model_inaxes(self):
@@ -2086,7 +2371,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         efforts : th.Tensor
             Tensor of shape (vec_size, len(jids)) containing the effort for each joint in each environment.
         """
-        qvadr = self._jnt_dofadr_jax[jids]
+        qvadr = self._sim_conf.jnt_dofadr[jids]
         if sims_mask is None:
             sim_state = sim_state.replace_v( "requested_qfrc_applied",
                                   sim_state.requested_qfrc_applied.at[:,qvadr].set(qefforts[:,:]))
@@ -2181,7 +2466,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             replacements["geom_friction"] = new_geom_frictions
         if joint_armature_ratios is not None:
             armatures_jids = joint_armature_ratios[0]
-            armatures_dof_ids = self._jnt_dofadr_jax[armatures_jids] # This would need some additional logic for multi-dimensional joints
+            armatures_dof_ids = self._sim_conf.jnt_dofadr[armatures_jids] # This would need some additional logic for multi-dimensional joints
             dof_armatures_ratio_change = th2jax(joint_armature_ratios[1],jax_device=self._jax_device)
             new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].mul(dof_armatures_ratio_change+1)
             new_armatures = jnp.clip(new_armatures, min = 0.0001)
@@ -2189,7 +2474,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             replacements["dof_armature"] = new_armatures
         if joint_frictionloss_ratios is not None:
             frictionloss_jids = joint_frictionloss_ratios[0]
-            frictionloss_dof_ids = self._jnt_dofadr_jax[frictionloss_jids]
+            frictionloss_dof_ids = self._sim_conf.jnt_dofadr[frictionloss_jids]
             dof_frictionloss_ratio_change = th2jax(joint_frictionloss_ratios[1],jax_device=self._jax_device)
             new_frictionloss = mjx_model.dof_frictionloss.at[:,frictionloss_dof_ids].mul(dof_frictionloss_ratio_change+1)
             new_frictionloss = jnp.where(vec_mask_jnp[:,None], new_frictionloss, mjx_model.dof_frictionloss)
@@ -2287,30 +2572,35 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         b_to_a = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs[:,[1,0]], axis = -1), axis=1)
         return jnp.logical_or(a_to_b,b_to_a)
 
-    def check_colliding_links(self, queried_link_id_pairs_a : jnp.ndarray, queried_link_id_pairs_b : jnp.ndarray) -> th.Tensor:
-        """_summary_
-
+    def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
+        """Check if link pairs are colliding.
+        
         Parameters
         ----------
-        queried_link_id_pairs_a : jnp.ndarray
-            Obtained using get_links_ids()
-        queried_link_id_pairs_b : jnp.ndarray
-            Obtained using get_links_ids()
-
+        requested_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None
+            If None, returns mask for all monitored pairs.
+            If th.Tensor, indices into monitored pairs array.
+            If Sequence, link name pairs to look up (must be monitored).
+        
         Returns
         -------
         th.Tensor
-            Boolean mask tensor of shape (vec_size, queried_body_pairs.shape[0])
+            Boolean tensor of shape (vec_size, num_pairs) indicating collision status.
         """
-        if queried_link_id_pairs_a.size == 1 and queried_link_id_pairs_b.size != 1:
-            queried_link_id_pairs_a = jnp.broadcast_to(queried_link_id_pairs_a, queried_link_id_pairs_b.shape)
-        if queried_link_id_pairs_b.size == 1 and queried_link_id_pairs_a.size != 1:
-            queried_link_id_pairs_b = jnp.broadcast_to(queried_link_id_pairs_b, queried_link_id_pairs_a.shape)
-        queried_link_id_pairs = jnp.stack([queried_link_id_pairs_a, queried_link_id_pairs_b], axis=1)
-        # print(f"queried_link_id_pairs = {queried_link_id_pairs}")
-        colliding_pairs_mask_vec = self._check_links_colliding(self._sim_state, queried_link_id_pairs)
-        # print(f"colliding_pairs_mask_vec = {colliding_pairs_mask_vec}")
-        return jax2th(colliding_pairs_mask_vec, th_device=self._out_th_device)
+        if requested_pairs is not None and len(requested_pairs) == 0:
+            return th.empty(size=(self._vec_size, 0), dtype=th.bool, device=self._out_th_device)
+        
+        self._forward_if_needed()
+        full_mask = jax2th(self._sim_state.mon_collision_mask, th_device=self._out_th_device)
+        
+        if requested_pairs is None:
+            return full_mask
+        
+        if isinstance(requested_pairs, th.Tensor):
+            reorder_indices = requested_pairs
+        else:
+            reorder_indices = self.get_collision_pair_ids(requested_pairs)
+        return full_mask[:, reorder_indices]
 
     def _get_contacts_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
         """Get a mask that indicates which of the current contacts are between the queried pairs.

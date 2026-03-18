@@ -276,9 +276,25 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         """
         return link_names
     
+    def get_monitored_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:
+        """Convert a sequence of link names to an identifier for a set of monitored links.
+           By default this is an identity operation, but some adapter may return their internal
+           ids (or whatever other representation), mostly to speedup further computations.
+
+        Parameters
+        ----------
+        link_names : Sequence[tuple[str,str]]
+            A sequence of link names
+
+        Returns
+        -------
+        LinkIdSequence
+            An identifier for the link group, to be used in methods such as getLinksState
+        """
+        return link_names    
 
     
-    def get_links_names(self, link_ids : LinkIdSequence) -> Sequence[tuple[str,str]]:
+    def get_monitored_links_ids_names(self, link_ids : LinkIdSequence) -> Sequence[tuple[str,str]]:
         """Convert an identifier for a set of links to a sequence of link names.
            By default this is an identity operation, but some adapter may use their internal
            ids (or whatever other representation), mostly to speedup further computations.
@@ -311,6 +327,41 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             An identifier for the joint group, to be used in methods such as getJointsState
         """
         return joint_names
+    
+
+    def get_monitored_joints_ids(self, joint_names : Sequence[tuple[str,str]]) -> JointIdSequence:
+        """Convert a sequence of joint names to an identifier for a set of monitored joints.
+           By default this is an identity operation, but some adapter may return their internal
+           ids  (or whatever other representation), so to speedup further computations.
+
+        Parameters
+        ----------
+        link_names : Sequence[tuple[str,str]]
+            A sequence of joint names
+
+        Returns
+        -------
+        _type_
+            An identifier for the joint group, to be used in methods such as getJointsState
+        """
+        return joint_names
+    
+    def get_monitored_joints_ids_names(self, joint_ids : JointIdSequence) -> Sequence[tuple[str,str]]:
+        """Convert an identifier for a set of joints to a sequence of joint names.
+           By default this is an identity operation, but some adapter may use their internal
+           ids (or whatever other representation), mostly to speedup further computations.
+
+        Parameters
+        ----------
+        joint_ids : JointIdSequence
+            An identifier for a set of joints, returned by get_joints_ids
+
+        Returns
+        -------
+        Sequence[tuple[str,str]]
+            A sequence of joint names
+        """
+        return joint_ids
     
 
     def get_detected_joints(self) -> Sequence[tuple[str,str]]:

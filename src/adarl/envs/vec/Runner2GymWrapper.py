@@ -95,7 +95,7 @@ class Runner2GymWrapper(gym.Env, Generic[ObsType]):
                 terminated[0],
                 truncated[0],
                 take_first(next_start_infos))
-        record_time("GymRunnerWrapper step end")
+        # record_time("GymRunnerWrapper step end")
         return ret
     
 
