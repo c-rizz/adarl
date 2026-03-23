@@ -81,7 +81,7 @@ if True: #Version(jax.__version__) < Version("0.8.0"):
         return jnp.from_dlpack(tensor.contiguous().cuda(non_blocking=False)).to_device(jax_device)
     
     def jax2th(array : jnp.ndarray, th_device : th.device):
-        return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device) #.detach().clone()
+        return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device, non_blocking=th_device.type=="cuda")
 else:
     def th2jax(tensor : th.Tensor, jax_device : jax.Device):
         return jnp.from_dlpack(tensor.contiguous()).to_device(jax_device)
@@ -886,6 +886,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._opt_override = opt_override
         self._mjx_impl = "jax"
         self._jax_float_dtype = jnp.float32
+        self._out_cuda = self._out_th_device.type == "cuda"
 
         self._realtime_factor = realtime_factor
         self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device),
@@ -1446,7 +1447,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if idx is None:
                 raise KeyError(f"Collision pair {pair} is not in monitored collision pairs")
             indices.append(idx)
-        return th.as_tensor(indices, device=self._out_th_device, dtype=th.long)
+        return th.as_tensor(indices, dtype=th.long).to(self._out_th_device, non_blocking=self._out_cuda)
 
     def get_collision_pair_names(self, pair_ids: th.Tensor) -> list[tuple[tuple[str,str], tuple[str,str]]]:
         """Get collision pair names from indices.
@@ -1465,7 +1466,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def initialize_for_step(self):
-        self._sim_state = MjxAdapter._clear_step_stats(self._sim_state)
+        self._must_init_step = True
 
     @override
     def step(self) -> float:
@@ -1476,11 +1477,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         float
             Duration of the step in simulation time (in seconds)"""
         t0 = time.monotonic()
+        record_region_start("MjxAdapter.step")
         self.initialize_for_step()
+        record_time("MjxAdapter.step: initialized for step")
         t1 = time.monotonic()
         stepLength = self.run(self._step_length_sec)
         tf = time.monotonic()
         # ggLog.info(f"Mjx.step duration = {tf-t0}s, run = {tf-t1}s")
+        record_region_end("MjxAdapter.step")
         return stepLength
     
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
@@ -1538,8 +1542,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             joint_state = None
         return (sim_state, sim_conf), joint_state
     
-    @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state"))
-    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf) -> tuple[SimState, jnp.ndarray | None]:
+    @partial(jax.jit, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
+    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool) -> tuple[SimState, jnp.ndarray | None]:
+        if must_init_step:
+            self._sim_state = MjxAdapter._clear_step_stats(self._sim_state)
         (sim_state, sim_conf), joints_state_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
                                                   init = (sim_state, sim_conf),
                                                   xs = (), 
@@ -1579,7 +1585,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._sent_motor_torque_commands_by_bid_jid = {}
         # ggLog.info(f"Starting run")
         iterations = int(duration_sec/self._sim_step_dt)
-        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf)
+        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf, self._must_init_step)
+        self._must_init_step = False
+        self._forward_needed = False
         if self._record_joint_hist:
             self._joints_pveae_history.append(joints_state_history)
             # ggLog.info(f"int({self._total_iterations} / {self._log_freq_joints_trajcetories}) = {int(self._total_iterations / self._log_freq_joints_trajcetories)} != {int((self._total_iterations+iterations) / self._log_freq_joints_trajcetories)} = {int(self._total_iterations / self._log_freq_joints_trajcetories) != int((self._total_iterations+iterations) / self._log_freq_joints_trajcetories)}")
@@ -2046,7 +2054,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def get_monitored_links_ids(self, link_names : Sequence[tuple[str,str]]):
         # Return the index among the monitored links
-        return th.as_tensor([self._monitored_lid_to_idx[self._lname2lid[ln]] for ln in link_names], device=self._out_th_device, dtype=th.long)
+        return th.as_tensor([self._monitored_lid_to_idx[self._lname2lid[ln]] for ln in link_names], dtype=th.long).to(self._out_th_device, non_blocking=self._out_cuda)
 
     @override
     def get_monitored_links_ids_names(self, link_ids : th.Tensor):
@@ -2056,7 +2064,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def get_monitored_joints_ids(self, joint_names : Sequence[tuple[str,str]]):
         # Return the index among the monitored joints
-        return th.as_tensor([self._monitored_jid_to_idx[self._jname2jid[jn]] for jn in joint_names], device=self._out_th_device, dtype=th.long)
+        return th.as_tensor([self._monitored_jid_to_idx[self._jname2jid[jn]] for jn in joint_names], dtype=th.long).to(self._out_th_device, non_blocking=self._out_cuda)
 
     @override
     def get_monitored_joints_ids_names(self, joint_ids : th.Tensor):
@@ -2074,6 +2082,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_if_needed()
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
         full_state = jax2th(self._sim_state.mon_link_state, th_device=self._out_th_device)
+        record_time("getLinksState: got full state")
         if requestedLinks is None:
             return full_state
         # Duck type: if element is tuple it's a name, otherwise assume lid
@@ -2083,6 +2092,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             reorder_indices = self.get_monitored_links_ids(requestedLinks)
         ret = full_state[:, reorder_indices, :]
+        record_time("getLinksState: reordered")
+
         return ret
 
 
@@ -2220,76 +2231,193 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._last_gui_update_wtime = time.monotonic()
             self._viewer.sync()
 
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["sim_state"], static_argnames=["vec_size"])
+    def _set_link_poses(sim_state : SimState,
+                        vec_size : int,
+                        mjmodel_lids : jnp.ndarray,
+                        mjmodel_pose_xyz_xyzw : jnp.ndarray,
+                        mjdata_qpadrs_qvadrs : jnp.ndarray,
+                        mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray,
+                        vec_mask_jnp : jnp.ndarray):
+        """ Set the state of links by changing both mjmodel (for bodies with no parent joint) and mjdata (for bodies with a parent joint), using the same vec_mask_jnp to decide which envs to update in either case.
+            Referenced MjData joints are assumed to be free joints.
+
+        Parameters
+        ----------
+        sim_state : SimState
+            The current simulation state to update
+        mjmodel_lids : jnp.ndarray
+            The link ids corresponding to the bodies to update, used for updating the mjmodel
+        mjmodel_body_pos : jnp.ndarray
+            The new body positions to set in the mjmodel, for bodies with no parent joint
+        mjmodel_body_quat_xyzw : jnp.ndarray
+            The new body quaternions to set in the mjmodel, for bodies with no parent joint
+        mjdata_qpadrs : jnp.ndarray
+            The joint position ids to set in the mjdata, for bodies with a parent joint
+        mjdata_qvadrs : jnp.ndarray
+            The joint velocities ids to set in the mjdata, for bodies with a parent joint
+        mjdata_poses_xyz_xyzw : jnp.ndarray
+            The new joint poses to set in the mjdata, for bodies with a parent joint, in xyz+xyzw format (will be converted to qpos format within the function)
+        mjdata_vels : jnp.ndarray
+            The new joint velocities to set in the mjdata, for bodies with a parent joint, in xyz+rpy format (will be converted to qvel format within the function)
+        vec_mask_jnp : jnp.ndarray
+            Mask of shape (vec_size,) indicating which environments to update
+
+        """
+        new_model_body_pos = sim_state.mjx_model.body_pos.at[:,mjmodel_lids].set(
+            jnp.where(vec_mask_jnp[:, None, None], mjmodel_pose_xyz_xyzw[:,:,:3], sim_state.mjx_model.body_pos[:, mjmodel_lids])
+        )
+        new_model_body_quat = sim_state.mjx_model.body_quat.at[:,mjmodel_lids].set(
+            jnp.where(vec_mask_jnp[:, None, None], mjmodel_pose_xyz_xyzw[:,:,[6,3,4,5]], sim_state.mjx_model.body_quat[:, mjmodel_lids])
+        )
+        
+        qpadrs = mjdata_qpadrs_qvadrs[0]
+        qvadrs = mjdata_qpadrs_qvadrs[1]
+
+        njoints = qpadrs.shape[0]
+        all_qpadrs = (qpadrs[:,None] + jnp.arange(7)).flatten() # free joints have 7 dof, flatten for all dof ids
+        mjdata_poses_xyz_wxyz = mjdata_poses_xyzxyzw_vel_xyzxyz[:,:,[0,1,2,6,3,4,5]] # convert to wxyz for free joints
+        all_poses = mjdata_poses_xyz_wxyz.reshape(vec_size, njoints*7) # flatten within each env
+        new_qpos = sim_state.mjx_data.qpos.at[:, all_qpadrs].set(
+            jnp.where(vec_mask_jnp[:, None], all_poses, sim_state.mjx_data.qpos[:, all_qpadrs])
+        )
+        
+        all_qvadrs = (qvadrs[:,None] + jnp.arange(6)).flatten() # free joints have 6 dof, flatten for all dof ids
+        mjdata_vels_xyzxyz = mjdata_poses_xyzxyzw_vel_xyzxyz[:,:,7:]
+        all_vels = mjdata_vels_xyzxyz.reshape(vec_size, njoints*6) # flatten within each env
+        new_qvel = sim_state.mjx_data.qvel.at[:, all_qvadrs].set(
+            jnp.where(vec_mask_jnp[:, None], all_vels, sim_state.mjx_data.qvel[:, all_qvadrs])
+        )
+
+        mjx_data = sim_state.mjx_data.replace(qpos=new_qpos, qvel=new_qvel)
+        mjx_model = sim_state.mjx_model.replace(body_pos=new_model_body_pos, body_quat=new_model_body_quat)
+        sim_state = sim_state.replace_d({"mjx_data": mjx_data, "mjx_model": mjx_model})
+        return sim_state
+        
+
     @override
     def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
-        # ggLog.info(f"setJointsStateDirect(\n{link_names}, \n{link_states_pose_vel}, \n{vec_mask})")
 
-        link_states_pose_vel_jnp = th2jax(link_states_pose_vel, jax_device=self._jax_device)
+        record_region_start("mjxAdapter.setLinksStateDirect")
         if vec_mask is not None:
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
-        model_body_pos = self._sim_state.mjx_model.body_pos
-        model_body_quat = self._sim_state.mjx_model.body_quat
-        data_joint_pos = self._sim_state.mjx_data.qpos
-        data_joint_vel = self._sim_state.mjx_data.qvel
-        for i, link_name in enumerate(link_names):
-            # ggLog.info(f"setting link state for {link_name}")
-            lid = self._lname2lid[link_name]
-            root_body_id = self._mj_model.body_rootid[lid]
-            if lid != root_body_id:
-                raise RuntimeError(f"Can only set link state for root links, but {link_name} is not one.")
-            if lid == 0:
-                raise RuntimeError(f"Cannot set link state for world link")
-            
-            # Contrary to what you might expect mujoco associates each body to multiple possible parent joints
-            # so:
-            # - mj_model.body_jntnum[link_id] is the number of parent joints of a body
-            # - mj_model.body_jntadr[link_id] is the id of the first of these parent joints
-            # - mj_model.jnt_qposadr[joint_id] is the qpos addredd of a specific joint id
-            parent_joints_num = self._mj_model.body_jntnum[lid]
-            parent_body_id = self._mj_model.body_parentid[lid]
-            if parent_joints_num == 0 and parent_body_id==0: # if it has no parent joints
-                # ggLog.info(f"changing 'fixed joint'")
-                #    Fixed joints cannot be set to different positions across the vectorized simulations.
-                #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
-                #     and fixed joints are represented as fixed transforms in the model.
-                # if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
-                #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
-                #                        f"{link_states_pose_vel_jnp[0,i]}\n"
-                #                        f"!=\n"
-                #                        f"{link_states_pose_vel_jnp[:,i]}")
-                # if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
-                #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
-                model_body_pos = model_body_pos.at[:,lid].set(link_states_pose_vel_jnp[:,i,:3])
-                model_body_quat = model_body_quat.at[:,lid].set(link_states_pose_vel_jnp[:,i,[6,3,4,5]])
-                # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
-            elif parent_joints_num == 1 and parent_body_id==0:
-                jid = self._mj_model.body_jntadr[lid]
-                jtype = self._mj_model.jnt_type[jid]
-                if jtype == mujoco.mjtJoint.mjJNT_FREE:
-                    # ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
-                    qadr = self._mj_model.jnt_qposadr[jid]
-                    dadr = self._mj_model.jnt_dofadr[jid]
-                    data_joint_pos = set_rows_cols(data_joint_pos,
-                                                   (vec_mask_jnp, jnp.arange(qadr, qadr+7)),
-                                                   get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,[0,1,2,6,3,4,5])))
-                    data_joint_vel = set_rows_cols(data_joint_vel,
-                                                   (vec_mask_jnp, jnp.arange(dadr, dadr+6)),
-                                                   link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]) #get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,jnp.arange(7,13))))
-                    # data_joint_pos = (data_joint_pos.at[vec_mask_jnp,qadr:qadr+7]
-                    #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,[0,1,2,6,3,4,5]]))
-                    # data_joint_vel = (data_joint_vel.at[vec_mask_jnp,dadr:dadr+6]
-                    #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]))
-                    # raise NotImplementedError()
-                else:
-                    raise NotImplementedError(f"Cannot set link state for link {link_name} with parent joint of type {jtype} (see mjtJoint enum)")
-            else:
-                raise NotImplementedError(f"Cannot set link state for link {link_name} with {self._mj_model.body_jntnum} parent joints and parent body {parent_body_id}")
-        mjx_model = self._sim_state.mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
-        mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
-        self._sim_state = self._sim_state.replace_d({"mjx_data"  : mjx_data,
-                                                     "mjx_model" : mjx_model})
+
+        lids = np.array([self._lname2lid[ln] for ln in link_names])
+        root_body_ids = self._mj_model.body_rootid[lids]
+        body_jnt_nums = self._mj_model.body_jntnum[lids]
+        body_parent_ids = self._mj_model.body_parentid[lids]
+
+        are_all_lids_root_bodies = np.all(root_body_ids == lids)
+        if not are_all_lids_root_bodies:
+            nonroot_lids = np.array(link_names)[root_body_ids != lids]
+            raise RuntimeError(f"All links in setLinksStateDirect must be root bodies, but links {nonroot_lids} are not.")
+        are_links_world = lids == 0
+        if np.any(are_links_world):
+            world_lids = np.array(link_names)[are_links_world]
+            raise RuntimeError(f"Cannot set state for world link, but links {world_lids} are among the requested ones.")
+        
+        # - bodies with no parents must be moved changing the mjmodel, 
+        #   these can be set directly by knowing the lid
+        # - bodies attached with one joint to the world must be moved changing mjdata,
+        #   these can be set by knowing the lid and the parent joint id
+        
+        link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
+
+        links_without_parents_mask = np.logical_and(body_jnt_nums == 0, body_parent_ids == 0)
+        idx_without_parents = th.as_tensor(np.nonzero(links_without_parents_mask)[0]).to(self._out_th_device, non_blocking=self._out_cuda)
+        lids_without_parents = lids[links_without_parents_mask]
+        lids_without_parents_jax = jnp.array(lids_without_parents, device=self._jax_device)
+        new_mjmodel_poses_xyz_xyzw = th2jax(link_states_pose_vel[:,idx_without_parents], jax_device=self._jax_device)
+
+        links_conected_to_world_mask = np.logical_and(body_jnt_nums == 1, body_parent_ids == 0)
+        idx_connected_to_world = np.nonzero(links_conected_to_world_mask)[0]
+        idx_connected_to_world_th = th.as_tensor(idx_connected_to_world).to(self._out_th_device, non_blocking=self._out_cuda)
+        lids_connected_to_world = lids[links_conected_to_world_mask]
+
+        jids = self._mj_model.body_jntadr[lids_connected_to_world]
+        jtypes = self._mj_model.jnt_type[jids]
+        all_free_joints_mask = jtypes == mujoco.mjtJoint.mjJNT_FREE
+        if not np.all(all_free_joints_mask):
+            non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
+            raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
+        qpadrs_qvadrs = np.stack([self._mj_model.jnt_qposadr[jids], self._mj_model.jnt_dofadr[jids]], axis = 0)
+        qpadrs_qvadrs = jnp.array(qpadrs_qvadrs, device=self._jax_device)
+        new_mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:,idx_connected_to_world_th], jax_device=self._jax_device)
+
+        uncategorized_mask = ~(links_without_parents_mask | links_conected_to_world_mask)
+        if np.any(uncategorized_mask):
+            uncategorized_names = np.array(link_names)[uncategorized_mask]
+            raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
+        record_time("prepared data")
+        self._sim_state = self._set_link_poses( self._sim_state,
+                                                self._sim_conf.vec_size,
+                                                mjmodel_lids = lids_without_parents_jax,
+                                                mjmodel_pose_xyz_xyzw = new_mjmodel_poses_xyz_xyzw,
+                                                mjdata_qpadrs_qvadrs = qpadrs_qvadrs,
+                                                mjdata_poses_xyzxyzw_vel_xyzxyz = new_mjdata_poses_xyzxyzw_vel_xyzxyz,
+                                                vec_mask_jnp = vec_mask_jnp)
+        record_region_end("mjxAdapter.setLinksStateDirect")
+
+
+        # model_body_pos = self._sim_state.mjx_model.body_pos
+        # model_body_quat = self._sim_state.mjx_model.body_quat
+        # data_joint_pos = self._sim_state.mjx_data.qpos
+        # data_joint_vel = self._sim_state.mjx_data.qvel
+        # link_states_pose_vel_jnp = th2jax(link_states_pose_vel, jax_device=self._jax_device)
+        # for i, link_name in enumerate(link_names):
+        #     # ggLog.info(f"setting link state for {link_name}")
+        #     lid = lids[i]            
+        #     # Contrary to what you might expect mujoco associates each body to multiple possible parent joints
+        #     # so:
+        #     # - mj_model.body_jntnum[link_id] is the number of parent joints of a body
+        #     # - mj_model.body_jntadr[link_id] is the id of the first of these parent joints
+        #     # - mj_model.jnt_qposadr[joint_id] is the qpos addredd of a specific joint id
+        #     parent_joints_num = self._mj_model.body_jntnum[lid]
+        #     parent_body_id = self._mj_model.body_parentid[lid]
+        #     if parent_joints_num == 0 and parent_body_id==0: # if it has no parent joints
+        #         # ggLog.info(f"changing 'fixed joint'")
+        #         #    Fixed joints cannot be set to different positions across the vectorized simulations.
+        #         #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
+        #         #     and fixed joints are represented as fixed transforms in the model.
+        #         # if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
+        #         #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
+        #         #                        f"{link_states_pose_vel_jnp[0,i]}\n"
+        #         #                        f"!=\n"
+        #         #                        f"{link_states_pose_vel_jnp[:,i]}")
+        #         # if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
+        #         #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
+        #         model_body_pos = model_body_pos.at[:,lid].set(link_states_pose_vel_jnp[:,i,:3])
+        #         model_body_quat = model_body_quat.at[:,lid].set(link_states_pose_vel_jnp[:,i,[6,3,4,5]])
+        #         # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
+        #     elif parent_joints_num == 1 and parent_body_id==0:
+        #         jid = self._mj_model.body_jntadr[lid]
+        #         jtype = self._mj_model.jnt_type[jid]
+        #         if jtype == mujoco.mjtJoint.mjJNT_FREE:
+        #             # ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
+        #             qadr = self._mj_model.jnt_qposadr[jid]
+        #             dadr = self._mj_model.jnt_dofadr[jid]
+        #             data_joint_pos = set_rows_cols(data_joint_pos,
+        #                                            (vec_mask_jnp, jnp.arange(qadr, qadr+7)),
+        #                                            get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,[0,1,2,6,3,4,5])))
+        #             data_joint_vel = set_rows_cols(data_joint_vel,
+        #                                            (vec_mask_jnp, jnp.arange(dadr, dadr+6)),
+        #                                            link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]) #get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,jnp.arange(7,13))))
+        #             # data_joint_pos = (data_joint_pos.at[vec_mask_jnp,qadr:qadr+7]
+        #             #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,[0,1,2,6,3,4,5]]))
+        #             # data_joint_vel = (data_joint_vel.at[vec_mask_jnp,dadr:dadr+6]
+        #             #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]))
+        #             # raise NotImplementedError()
+        #         else:
+        #             raise NotImplementedError(f"Cannot set link state for link {link_name} with parent joint of type {jtype} (see mjtJoint enum)")
+        #     else:
+        #         raise NotImplementedError(f"Cannot set link state for link {link_name} with {self._mj_model.body_jntnum} parent joints and parent body {parent_body_id}")
+        # mjx_model = self._sim_state.mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
+        # mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
+        # self._sim_state = self._sim_state.replace_d({"mjx_data"  : mjx_data,
+        #                                              "mjx_model" : mjx_model})
         # self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         self._mark_forward_needed()
         # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")        
@@ -2309,10 +2437,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     def _forward_if_needed(self):
+        record_region_start("MjxAdapter._forward_if_needed")
         if self._forward_needed:
             # self._check_model_inaxes()
             self._sim_state = MjxAdapter._forward_all(self._mjx_forward, self._sim_state, self._sim_conf)
+            record_time("MjxAdapter._forward_if_needed: forward done")
             self._forward_needed = False
+        record_region_end("MjxAdapter._forward_if_needed")
 
     def _check_model_inaxes(self):
         # from jax._src.tree_util import prefix_errors

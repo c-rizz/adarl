@@ -161,7 +161,11 @@ class EvalCallback(TrainingCallback):
                   f"    avg pred time: {results.get('avg_pred_time', 0):.5f}s"
                   f"    avg step time: {results.get('avg_step_time', 0):.5f}s"
                   f"    fps: {results['fps']:.2f}"
-                  f"    deterministic: {self.deterministic}")
+                  f"    deterministic: {self.deterministic}"
+                  f"    terminal count: {results.get('terminal_count', "N/A")}"
+                  f"    truncation count: {results.get('truncation_count', "N/A")}"
+                  )
+
         
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value

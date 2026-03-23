@@ -5,7 +5,7 @@ os.environ["MUJOCO_GL"] = "egl"
 
 from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState, SimConf
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
-from adarl.utils.utils import to_string_tensor
+from adarl.utils.utils import to_string_tensor, masked_assign
 from typing import Any, Literal
 import jax
 from typing_extensions import override
@@ -264,6 +264,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             self._use_exponential_reference_filter = False
         else:
             raise RuntimeError(f"Unknown reference filter mode '{reference_filter_mode}'")
+        self._ref_filter_cutoff_freqs_th = th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()).clone()
         pv_ref_filter_decimation_time = 0.05 # 90% of the filtered value comes from this duration
         pv_ref_filter_alpha = 0.1**(1/(pv_ref_filter_decimation_time/self._sim_step_dt))
         self._sim_conf = SimConfJimp(   monitored_qpadr=self._sim_conf.monitored_qpadr,
@@ -280,7 +281,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         imp_control_jids=jnp.empty((0,), dtype=jnp.int32, device=self._jax_device),
                                         use_second_order_reference_filter=self._use_second_order_reference_filter,
                                         use_exponential_reference_filter=self._use_exponential_reference_filter,
-                                        ref_filter_cutoff_freqs=th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()).clone(), self._jax_device),
+                                        ref_filter_cutoff_freqs=th2jax(self._ref_filter_cutoff_freqs_th, self._jax_device),
                                         pv_ref_filter_alpha = pv_ref_filter_alpha
                                         )
         # Controlled joint state filter (Only used for the impedance control feedback, not by getJointState)
@@ -358,23 +359,22 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         delay_sec : th.Tensor | float = 0.0) -> None:
         # No support for having commands that don't contain all joints
         joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
-        delay_sec_j = th2jax(th.as_tensor(delay_sec), self._jax_device)
-        jids = self._sim_conf.imp_control_jids
+        cmd_time_jax = th2jax(th.as_tensor(delay_sec).expand(self._vec_size)+self._simTime, self._jax_device)
+        # jids = self._sim_conf.imp_control_jids
 
-        # Create a command, commands are always of the size of _imp_control_jids
-        cmd = jnp.zeros(shape=(self._vec_size, len(jids), 5), dtype=jnp.float32, device=self._jax_device)
-        # The joints that are actually being commanded are indicated this boolean tensor
-        cmd_idxs = self._jids_to_imp_cmd_idx[jids]
-        if jnp.any(cmd_idxs < 0):
-            raise RuntimeError(f"Tried to set impedance command for joint that has not been set with set_impedance_controlled_joints")
+        # # Create a command, commands are always of the size of _imp_control_jids
+        # cmd = jnp.zeros(shape=(self._vec_size, len(jids), 5), dtype=jnp.float32, device=self._jax_device)
+        # # The joints that are actually being commanded are indicated this boolean tensor
+        # cmd_idxs = self._jids_to_imp_cmd_idx_np[jids]
+        # if np.any(cmd_idxs < 0):
+        #     raise RuntimeError(f"Tried to set impedance command for joint that has not been set with set_impedance_controlled_joints")
 
-        cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
-        cmd_time = jnp.resize(delay_sec_j, (self._vec_size,)) + self._simTime
+        # cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
         # ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
         # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
-        new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd,
-                                                                                        cmd_time=cmd_time,
+        new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=joint_impedances_pvesd_jax,
+                                                                                        cmd_time=cmd_time_jax,
                                                                                         cmds_queue=self._sim_state.cmds_queue,
                                                                                         cmds_queue_times=self._sim_state.cmds_queue_times)
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
@@ -459,13 +459,13 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         if len(imp_control_jids) != 0:
             self._jids_to_imp_cmd_qpadr = self._sim_conf.jnt_qposadr[imp_control_jids_np]
             self._jids_to_imp_cmd_qvadr = self._sim_conf.jnt_dofadr[imp_control_jids_np]
-            self._jids_to_imp_cmd_idx = jnp.array([imp_control_jids.index(i) if i in imp_control_jids else -1 
+            self._jids_to_imp_cmd_idx_np = np.array([imp_control_jids.index(i) if i in imp_control_jids else -1 
                                                    for i in range(max(imp_control_jids)+1)])
             # self._jids_to_imp_cmd_idx[i] tells at which index to put the command for joint i when forming an impedance command
         else:
             self._jids_to_imp_cmd_qpadr = jnp.empty_like(imp_control_jids_jax)
             self._jids_to_imp_cmd_qvadr = jnp.empty_like(imp_control_jids_jax)
-            self._jids_to_imp_cmd_idx   = jnp.empty_like(imp_control_jids_jax)
+            self._jids_to_imp_cmd_idx_np   = np.empty_like(imp_control_jids_np)
         self._reset_cmd_queue()
         self._reset_filters()
         if self._record_joint_hist:
@@ -539,7 +539,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         # # ggLog.info(f"resetted refs filter")
         # self._sim_state = sim_state.replace_d(state_repl)
         
-    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
+    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor, vec_mask : th.Tensor | None = None):
         """Set the parameters of the filter applied to the command references
 
         Parameters
@@ -548,7 +548,11 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             Cutoff frequency of the filter in Hz
 
         """
-        ref_filter_cutoff_freqs = th2jax(th.as_tensor(reference_filter_cutoff_frequency).expand(self.vec_size()), self._jax_device)
+        if vec_mask is not None:
+            th.where(vec_mask, self._ref_filter_cutoff_freqs_th, reference_filter_cutoff_frequency, out=self._ref_filter_cutoff_freqs_th)
+        else:
+            self._ref_filter_cutoff_freqs_th = reference_filter_cutoff_frequency.expand(self.vec_size())
+        ref_filter_cutoff_freqs = th2jax(self._ref_filter_cutoff_freqs_th, self._jax_device)
         self._sim_conf = self._sim_conf.replace_d({"ref_filter_cutoff_freqs" : ref_filter_cutoff_freqs})
         self._reset_filters_jax(reset_state=False)
         
@@ -659,11 +663,11 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     
     @override
     def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
-        record_time(f"MjxJointImpedanceAdapter.setJointsStateDirect")
+        record_time("MjxJointImpedanceAdapter.setJointsStateDirect")
         super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
-        record_time(f"MjxJointImpedanceAdapter.setJointsStateDirect: called super")
+        record_time("MjxJointImpedanceAdapter.setJointsStateDirect: called super")
         self._reset_filters()
-        record_time(f"MjxJointImpedanceAdapter.setJointsStateDirect: resetted filters")
+        record_time("MjxJointImpedanceAdapter.setJointsStateDirect: resetted filters")
 
     @override
     def control_period(self):

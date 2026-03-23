@@ -14,7 +14,7 @@ import torch as th
 import numpy as np
 from typing_extensions import override
 import time
-from adarl.utils.base_utils import record_time
+from adarl.utils.base_utils import record_time, record_region_start, record_region_end
 import traceback
 
 EnvAdapterType = TypeVar("EnvAdapterType", bound=BaseVecAdapter)
@@ -63,14 +63,17 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
 
 
     def step(self) -> None:
+        record_region_start("ControlledVecEnv.step()")  
         t0 = time.monotonic()
         th.compiler.cudagraph_mark_step_begin()
         self.pre_step()
+        record_time("ControlledVecEnv: pre_step done")
         estimated_step_duration_sec = 0.0
         adapter_step_count = 0
         t1 = time.monotonic()
         while True: # Do at least one step, then check if we need more
             estimated_step_duration_sec += self._adapter.step()
+            record_time("ControlledVecEnv: adapter step done")
             adapter_step_count+=1
             residual_step_length = self._intendedStepLength_sec - estimated_step_duration_sec
             if abs(residual_step_length) <= self._step_precision_tolerance:
@@ -92,7 +95,9 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
         if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
             ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
         self.post_step()
+        record_time("ControlledVecEnv: post_step done")
         tf = time.monotonic()
+        record_region_end("ControlledVecEnv.step()")  
         # record_time("ControlledVecEnv step end")
         # if self._tot_step_counter%500==0:
         # ggLog.info(f"controlledvecenv step: tot={tf-t0:.6f}s pre={t1-t0:.6f}={(t1-t0)/(tf-t0)*100:.0f}% step={t2-t1:.6f}={(t2-t1)/(tf-t0)*100:.0f}%  post={tf-t2:.6f}={(tf-t2)/(tf-t0)*100:.0f}%")

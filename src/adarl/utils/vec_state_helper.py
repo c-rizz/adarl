@@ -362,7 +362,8 @@ class ThBoxStateHelper(StateHelper):
             if obs_def.observed_field_size == self.field_shape:
                 obs = state[:,:obs_def.obs_history_length,obs_def.observable_indexes]
             else:
-                obs = state[:,*obs_def.full_observation_indexes].view(obs_def.unflattened_obs_shape)
+                obs = state[:,*obs_def.full_observation_indexes]
+                obs = obs.view(obs_def.unflattened_obs_shape)
                 # obs = th.masked_select(state, obs_def.full_observation_mask).view(obs_def.unflattened_obs_shape)
                 # obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
         if self._flatten_observation:

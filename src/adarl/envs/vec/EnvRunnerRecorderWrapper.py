@@ -26,7 +26,7 @@ from adarl.utils.spaces import get_space_labels
 from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 import hdf5plot.save
 import adarl.utils.spaces as spaces
-from adarl.utils.base_utils import record_time
+from adarl.utils.base_utils import record_time, record_region_end, record_region_start
 
 class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def __init__(self,  runner : EnvRunnerInterface[ObsType],
@@ -124,10 +124,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         os.makedirs(self._outFolder+"/best", exist_ok=True)
 
     def _record_step(self, obs, action, info, reward, terminated, truncated):
+        record_region_start("EnvRunnerRecorderWrapper _record_step")
         if self._record_video:
             imgs = self._runner.get_ui_renderings()[0]
         else:
             imgs = None
+        record_time("EnvRunnerRecorderWrapper got renderings")
         obs, action, info, reward, terminated, truncated, img = map_tensor_tree((obs, action, info, reward, terminated, truncated, imgs),
                                                                            lambda tensor: tensor[self._env_idx] if tensor is not None else None)
         if self._record_video and self._publish_imgs:
@@ -140,6 +142,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             action = action.cpu()
         action = np.array(action)
         self._update_buffers(img, vecobs, action, reward, terminated, truncated, info)
+        record_region_end("EnvRunnerRecorderWrapper _record_step")
         # ggLog.info(f"recorded step: action = {action}, stored_steps = {self._stored_frames}")
 
     def add_to_extra_info(self, info : dict):
@@ -148,10 +151,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
     @override
     def step(self, actions):
+        record_region_start("EnvRunnerRecorderWrapper.step")
         # ggLog.info(f"rec.step()")
         self._ep_step_counts += 1
         self._tot_vstep_counter += 1
         vstep_ret_tuple =  self._runner.step(actions)
+        record_time("EnvRunnerRecorderWrapper subenv stepped")
         # record_time("EnvRunnerRecorderWrapper stepped subenv")
         self._ep_rewards += vstep_ret_tuple[2].view(-1, self._ep_rewards.shape[1])
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
@@ -171,6 +176,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             # So we can simply always save next_start
             self._record_step(next_start_observations, actions, next_start_infos, rewards, terminateds, truncateds)
         # record_time("EnvRunnerRecorderWrapper step end")
+        record_region_end("EnvRunnerRecorderWrapper.step")
         return vstep_ret_tuple
 
     @override
@@ -208,7 +214,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
     def _writeVideo(self, outFilename : str, imgs : list[th.Tensor | None], vecs, infos, extra_infos):
         if len(imgs)>0:
-            # ggLog.info(f"RecorderGymWrapper: {len(imgs)} frames: "+outFilename)
+            ggLog.info(f"RecorderGymWrapper: saving video #{self._saved_eps_count} of {len(imgs)} frames to "+outFilename)
             #outFile = self._outVideoFile+str(self._episodeCounter).zfill(9)
             npimgs = [t.cpu().numpy() if t is not None else None for t in imgs]
             if not outFilename.endswith(".mp4"):
@@ -366,11 +372,14 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             # ggLog.info(f"maybe Saving episode {ep_count} with reward {tot_ep_reward}")
             # Episode with at least a full step finishing
             if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
+                ggLog.info(f"EnvRunnerRecorderWrapper._on_ep_end: terminating due to auto reset, term={last_terminateds[self._env_idx]}, trunc={last_truncateds[self._env_idx]}, stored_frames={self._stored_frames}, ep_step_count={self._ep_step_counts[self._env_idx]}")
                 # The if is needed to distinguish between an autoreset and a normal reset
                 # If the two counters are different we are in the middle of a step, we are in an autoreset
                 # If they are the same we are in a reset triggered from the outside
                 # In this case do not save the last obs/action/etcetera, they have already been saved in the last step
                 self._record_step(last_observations, last_actions, last_infos, last_rewards, last_terminateds, last_truncateds)
+            else:
+                ggLog.info(f"EnvRunnerRecorderWrapper._on_ep_end: terminating due to external reset")
             step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
             fname = f"ep_{run_id}_{self._saved_eps_count}_{ep_count:09d}_{step_count:010d}_{tot_ep_reward:09.9g}"
             if self._saveBestEpisodes and tot_ep_reward > self._bestReward:

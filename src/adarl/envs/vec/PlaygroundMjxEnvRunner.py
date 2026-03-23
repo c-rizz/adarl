@@ -25,7 +25,7 @@ import brax.envs.wrappers.training
 import brax.envs.base
 from jax import numpy as jp
 from mujoco import mjx
-from mujoco_playground._src.wrapper import Wrapper, MadronaWrapper, BraxDomainRandomizationVmapWrapper
+from mujoco_playground._src.wrapper import Wrapper, BraxDomainRandomizationVmapWrapper
 from brax.envs.wrappers import training as brax_training
 
 def _jax_to_torch(tensor):
@@ -356,6 +356,10 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
     @override
     def get_max_episode_steps(self) -> th.Tensor:
         return self._max_episode_steps_th
+    
+    @override
+    def get_max_possible_episode_steps(self) -> int:
+        return self._max_episode_steps
 
     @override
     def get_base_env(self) -> gym.Env:

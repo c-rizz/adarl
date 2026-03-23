@@ -259,6 +259,8 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         t0 = time.monotonic()
         tot_step_time = 0.0
         tot_pred_time = 0.0
+        term_count = 0
+        trunc_count = 0
         obss, infos = vec_env.reset()
         while collected_eps < episodes:
             ts0 = time.monotonic()
@@ -274,6 +276,10 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                 if obs_return is not None:
                     running_obss[i].append(obss[i])
                 if terms[i] or truncs[i]:
+                    if terms[i]:
+                        term_count+=1
+                    if truncs[i]:
+                        trunc_count+=1
                     tot_reward = running_rews[i].sum()
                     rewards[collected_eps] = tot_reward
                     durations_steps[collected_eps] = running_durations[i]
@@ -304,7 +310,9 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                         "collected_steps" : collected_steps,
                         "collected_episodes" : collected_eps,
                         "avg_pred_time" : tot_pred_time/(collected_steps/used_num_envs),
-                        "avg_step_time" : tot_step_time/(collected_steps/used_num_envs)}
+                        "avg_step_time" : tot_step_time/(collected_steps/used_num_envs),
+                        "terminal_count" : term_count,
+                        "truncation_count" : trunc_count}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
         if model is not None:

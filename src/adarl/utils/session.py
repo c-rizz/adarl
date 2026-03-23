@@ -264,7 +264,6 @@ class Session():
                     ggLog.info("modelFile is not a file")
 
         if use_wandb:
-            import wandb
             try:
                 ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
                 config_for_json = cleanup_config_for_json(config)

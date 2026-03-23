@@ -15,12 +15,14 @@ class VectorEnvChecker(
     gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
 ):
     def __init__(self,  env: VectorEnv,
-                        just_warn : bool = False):
+                        just_warn : bool = False,
+                        max_obs_value : float = 255.0,
+                        max_rew_value : float = 100.0):
         self._just_warn = just_warn
-        self._obs_min = -255.0
-        self._obs_max =  255.0
-        self._rew_min = -100.0
-        self._rew_max =  100.0
+        self._obs_min = -max_obs_value
+        self._obs_max =  max_obs_value
+        self._rew_min = -max_rew_value
+        self._rew_max =  max_rew_value
         super().__init__(env)
 
     def step(

@@ -587,7 +587,7 @@ def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ct
 
     return trajectory_tpva
 
-
+_disable_record_times = False
 _t0 = time.monotonic()
 _rec_times = []
 _stats : dict[tuple[str,str], tuple[np.ndarray, int]]= {}
@@ -596,6 +596,8 @@ _region_stack = [("root", _t0)]
 def _record_time(name : str, t : float = None, is_region_end = False):
     """ Record the current time, associating it with a name.
         Tiem recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
+    if _disable_record_times:
+        return
     if t is None:
         t = time.monotonic()
     time_from_region_start = t-_region_stack[-1][1] if len(_region_stack)>0 else 0
@@ -607,11 +609,15 @@ def record_time(name : str):
     _record_time(name)
 
 def record_region_start(name : str):
+    if _disable_record_times:
+        return
     region_start_time = time.monotonic()
     _region_stack.append((name, region_start_time))
     _record_time("begin:"+name, region_start_time)
 
 def record_region_end(name : str):
+    if _disable_record_times:
+        return
     current_region = _region_stack[-1][0]
     if name != current_region:
         raise RuntimeError(f"record_region_end(): trying to end region '{name}' but current region is '{current_region}'")
@@ -634,11 +640,14 @@ def set_recorded_times_stats_len(statslen : int):
     global _statslen
     _statslen = statslen
 
-def print_recorded_times(clear : bool = True):
-    ggLog.info(f" Time (ns)  :      dt     :    avg dt   : sinceregion : Name")
+def print_recorded_times(title : str | None = None, clear : bool = True):
+    msg = "\n"
+    if title is not None:
+        msg += f"Timing for {title}:\n"
+    msg+=f" Time (ns)  :      dt     :    avg dt   : sinceregion : Name\n"
     tot_dt = 0.0
     tot_avg_dt = 0.0
-    strwidth = 11
+    strwidth = 12
     for i in range(0, len(_rec_times)):
         t = _rec_times[i][1]
         pt = _rec_times[i-1][1] if i>0 else t
@@ -656,21 +665,22 @@ def print_recorded_times(clear : bool = True):
                 count += 1
             _stats[k] = (hist, count)
             avg_dt = _stats[k][0][:min(_statslen,count)].mean()
-            avg_dt_str = f"{int(avg_dt*1e9): {strwidth}d}"
-            dt_str = f"{int(dt*1e9): {strwidth}d}"
+            avg_dt_str = f"{int(avg_dt*1e9): {strwidth}_d}"
+            dt_str = f"{int(dt*1e9): {strwidth}_d}"
             tot_dt += dt
             tot_avg_dt += float(avg_dt)
         else:
-            dt_str =     "        nan"
-            avg_dt_str = "        nan"
+            dt_str =     " "*(strwidth-3)+"nan"
+            avg_dt_str = " "*(strwidth-3)+"nan"
         region_depth = _rec_times[i][3]-1
-        time_from_region_start_str = f"{int(_rec_times[i][4]*1e9): {strwidth}d}"
-        tfromstart_str = f"{int(_rec_times[i][1]*1e9): {strwidth}d}"
+        time_from_region_start_str = f"{int(_rec_times[i][4]*1e9): {strwidth}_d}"
+        tfromstart_str = f"{int(_rec_times[i][1]*1e9): {strwidth}_d}"
         is_region_end = _rec_times[i][5]
         if is_region_end:
             time_from_region_start_str = f"\033[1m{time_from_region_start_str}\033[0m" # Bold text
-        ggLog.info(f"{tfromstart_str} : {dt_str} : {avg_dt_str} : {time_from_region_start_str} : {"·"*region_depth+n}")
-    ggLog.info(f"            : {tot_dt:.9f} : {tot_avg_dt:.9f} : Total")
+        msg+=f"{tfromstart_str} : {dt_str} : {avg_dt_str} : {time_from_region_start_str} : {"· "*region_depth+n}\n"
+    msg+=f"       Total : {int(tot_dt*1e9): {strwidth}_d} : {int(tot_avg_dt*1e9): {strwidth}_d} : \n"
+    ggLog.info(msg)
     if clear:
         clear_recorded_times()
         
