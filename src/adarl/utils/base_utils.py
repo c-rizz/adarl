@@ -606,6 +606,7 @@ def _record_time(name : str, t : float = None, is_region_end = False):
 def record_time(name : str):
     """ Record the current time, associating it with a name.
         Tiem recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
+    print(f"Recording time for '{name}'")
     _record_time(name)
 
 def record_region_start(name : str):

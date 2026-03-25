@@ -135,7 +135,6 @@ class Session():
             from adarl.utils.utils import pyTorch_makeDeterministic
             pyTorch_makeDeterministic(seed)
             th._dynamo.config.capture_scalar_outputs = True
-            ggLog.info(f"set detemrinistic Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
             if debug_level>0:
                 if debug_level>1:
                     os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
@@ -162,6 +161,8 @@ class Session():
                             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
                             "Will continue in 10 sec...")
                 time.sleep(10)
+            import rreal.utils.torch_patcher as torch_patcher
+            torch_patcher.torch_monkey_patch()
 
 
     def _setupLoggingForRun(self,   file : str,
@@ -562,11 +563,12 @@ def launchRun(runFunction,
             tries += 1
             if tries > 10:
                 raise e
+    os.makedirs(folderName+"/pkgs", exist_ok=True)
     for pkg in pkgs_to_save:
         pkg_path = pkgutil_get_path(pkg,"")
         if pkg_path is None:
             raise RuntimeError(f"Failed to get path for package {pkg}")
-        shutil.copytree(pkg_path, folderName+"/"+pkg)
+        shutil.copytree(pkg_path, folderName+"/pkgs/"+pkg)
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 

@@ -10,6 +10,39 @@ import torch as th
 
 class BaseVecSimulationAdapter(BaseVecAdapter):
 
+    def setJointsAndLinksStateDirect(self,
+                                     joint_names : Sequence[tuple[str,str]] | None = None,
+                                     joint_states_pve : th.Tensor | None = None,
+                                     link_names : Sequence[tuple[str,str]] | None = None,
+                                     link_states_pose_vel : th.Tensor | None = None,
+                                     vec_mask : th.Tensor | None = None):
+        """Set joint and link state together, using a shared vec mask.
+
+        The default implementation preserves existing behavior by delegating to
+        `setLinksStateDirect()` first and `setJointsStateDirect()` second.
+        Adapters can override this to fuse preprocessing or device-side updates.
+        """
+        if joint_names is None:
+            if joint_states_pve is not None:
+                raise ValueError("joint_states_pve was provided without joint_names")
+        elif joint_states_pve is None:
+            raise ValueError("joint_names was provided without joint_states_pve")
+
+        if link_names is None:
+            if link_states_pose_vel is not None:
+                raise ValueError("link_states_pose_vel was provided without link_names")
+        elif link_states_pose_vel is None:
+            raise ValueError("link_names was provided without link_states_pose_vel")
+
+        if link_names is not None:
+            self.setLinksStateDirect(link_names=link_names,
+                                     link_states_pose_vel=link_states_pose_vel,
+                                     vec_mask=vec_mask)
+        if joint_names is not None:
+            self.setJointsStateDirect(joint_names=joint_names,
+                                      joint_states_pve=joint_states_pve,
+                                      vec_mask=vec_mask)
+
     @abstractmethod
     def setJointsStateDirect(self, joint_names : Sequence[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):        
         """Set the state for a set of joints

@@ -43,7 +43,8 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 jax.config.update("jax_enable_compilation_cache", True)
-# jax.config.update("jax_log_compiles", True)
+jax.config.update("jax_log_compiles", True)
+jax.config.update("jax_transfer_guard_device_to_host", "log") # Should log implicit device-to-host transfers
 jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_disable_jit", True)  # 
@@ -824,12 +825,29 @@ class SimConf:
 
 
 
+@dataclass
+class SimElementsState:
+    """Aggregated state of monitored sim elements, returned by MjxAdapter.get_sim_elements_state().
+
+    All tensors are on the adapter's output torch device.
+    Shapes use: V = vec_size, J = num_requested_joints, L = num_requested_links, P = num_monitored_collision_pairs.
+    """
+    joint_state_pveae  : th.Tensor | None  # (V, J, 5)  pos, vel, cmd_effort, acc, actual_effort
+    link_state         : th.Tensor | None  # (V, L, 13) pos_xyz, ori_xyzw, linvel_xyz, angvel_xyz
+    link_acceleration  : th.Tensor | None  # (V, L, 3)  local linear acceleration
+    collision_mask     : th.Tensor | None  # (V, P)     bool, True if pair is in contact
+    joint_stats_pvaee  : th.Tensor | None  # (V, 4, J, 5) step stats [min,max,avg,std] of joint quantities (reordered to p,v,a,e,e)
+    link_stats_v       : th.Tensor | None  # (V, 4, L, 6) step stats [min,max,avg,std] of link linear+angular velocity
+
+
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @dataclass
     class DebugInfo():
         wtime_running : float = 0.0
+        wtime_running_since_build : float = 0.0
         wtime_simulating : float = 0.0
+        wtime_simulating_since_build : float = 0.0
         wtime_controlling : float = 0.0
         rt_factor_vec : float = 0.0
         rt_factor_single : float = 0.0
@@ -872,8 +890,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._simTime = 0.0
         self._total_iterations = 0
         self._sim_step_count_since_build = 0
-        self._sim_stepping_wtime_since_build = 0
-        self._run_wtime_since_build = 0
         self._add_ground = add_ground
         self._add_sky = add_sky
         self._log_freq = log_freq
@@ -1613,8 +1629,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._update_gui()
         # self._last_sent_torques_by_name = {self._bodyAndJointIdToJointName[bid_jid]:torque 
         #                                     for bid_jid,torque in self._sent_motor_torque_commands_by_bid_jid.items()}
-        self._dbg_info.wtime_running =     time.monotonic()-wt0
+        tf = time.monotonic()
+        self._dbg_info.wtime_running =     tf-wt0
+        self._dbg_info.wtime_running_since_build +=     tf-wt0
         self._dbg_info.wtime_simulating =   wtime_simulating
+        self._dbg_info.wtime_simulating_since_build +=   wtime_simulating
         self._dbg_info.wtime_controlling =  0
         self._dbg_info.iterations = iterations
         self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/wtime_simulating
@@ -1627,9 +1646,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._log_freq > 0 and self._sim_step_count_since_build - self._last_log_iters >= self._log_freq:
             self._last_log_iters = self._sim_step_count_since_build
             ggLog.info( "MjxAdapter:\n"+"\n".join(["    "+str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
-        self._sim_stepping_wtime_since_build += wtime_simulating
         self._sim_step_count_since_build += iterations
-        self._run_wtime_since_build += time.monotonic()-wt0
 
         return self._simTime-st0
     
@@ -1783,6 +1800,72 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             reorder_indices = self.get_monitored_joints_ids(requestedJoints)
         return full_state[:, reorder_indices, :]
+
+    def get_sim_elements_state(self,
+                               joint_ids : Sequence[tuple[str,str]] | th.Tensor | None = None,
+                               link_ids  : Sequence[tuple[str,str]] | th.Tensor | None = None,
+                               return_jstates : bool = True,
+                               return_lstates : bool = True,
+                               return_accelerations : bool = True,
+                               return_collisions : bool = True,
+                               return_jstats : bool = True,
+                               return_lstats : bool = True
+                               ) -> SimElementsState:
+        """Return the state of all monitored sim elements in a single call.
+
+        Performs a single _forward_if_needed() and four zero-copy DLPack transfers,
+        avoiding the repeated Python overhead of calling the individual getters.
+        Reordering (if joint_ids / link_ids are provided) is done in torch after the transfer.
+
+        Parameters
+        ----------
+        joint_ids : sequence of (model, joint) name tuples, pre-resolved th.Tensor of indices, or None.
+            Subset and/or reordering of monitored joints to return.  None returns all monitored joints.
+        link_ids : sequence of (model, link) name tuples, pre-resolved th.Tensor of indices, or None.
+            Subset and/or reordering of monitored links to return.  None returns all monitored links.
+
+        Returns
+        -------
+        SimElementsState
+            joint_state_pveae  : (vec_size, J, 5)      pos, vel, cmd_effort, acc, actual_effort
+            link_state         : (vec_size, L, 13)     pos_xyz, ori_xyzw, linvel_xyz, angvel_xyz
+            link_acceleration  : (vec_size, L, 3)      local linear acceleration
+            collision_mask     : (vec_size, P)          bool contact flags for all monitored pairs
+            joint_stats_pvaee  : (vec_size, 4, J, 5)   [min,max,avg,std] of joint state over the step substeps (quantities ordered p,v,a,e,e)
+            link_stats_v       : (vec_size, 4, L, 6)   [min,max,avg,std] of link linear+angular velocity over the step substeps
+        """
+        self._forward_if_needed()
+        # Zero-copy DLPack transfers for all cached arrays in one shot
+        jstate  = jax2th(self._sim_state.mon_joint_state_pveae,          th_device=self._out_th_device) if return_jstates else None
+        lstate  = jax2th(self._sim_state.mon_link_state,                  th_device=self._out_th_device) if return_lstates else None
+        lacc    = jax2th(self._sim_state.mon_link_acceleration,            th_device=self._out_th_device) if return_accelerations else None
+        cmask   = jax2th(self._sim_state.mon_collision_mask,               th_device=self._out_th_device) if return_collisions else None
+        jstats  = jax2th(self._sim_state.mon_joint_stats_arr_pvaee[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,5)
+        lstats  = jax2th(self._sim_state.mon_links_stats_arr_v[:, :4],     th_device=self._out_th_device) if return_lstats else None  # (V,4,L,6)
+        # Reorder joints in torch (avoids JAX retrace on dynamic indices)
+        if joint_ids is not None:
+            if not isinstance(joint_ids, th.Tensor):
+                joint_ids = self.get_monitored_joints_ids(joint_ids)
+            if return_jstates:
+                jstate  = jstate[:,  joint_ids, :]
+            if return_jstats:
+                jstats  = jstats[:, :, joint_ids, :]
+        # Reorder links in torch
+        if link_ids is not None:
+            if not isinstance(link_ids, th.Tensor):
+                link_ids = self.get_monitored_links_ids(link_ids)
+            if return_lstates:
+                lstate  = lstate[:,  link_ids, :]
+            if return_accelerations:
+                lacc    = lacc[:,    link_ids, :]
+            if return_lstats:
+                lstats  = lstats[:, :, link_ids, :]
+        return SimElementsState(joint_state_pveae=jstate,
+                                link_state=lstate,
+                                link_acceleration=lacc,
+                                collision_mask=cmask,
+                                joint_stats_pvaee=jstats,
+                                link_stats_v=lstats)
     
     @staticmethod
     def _get_vec_joint_states_pveae(sim_conf : SimConf, mjx_data, jids : jnp.ndarray):
@@ -2015,10 +2098,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     def get_joints_state_step_stats(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee[:,:4,:,:4], self._out_th_device)
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee, self._out_th_device)[:,:4,:,:4]
 
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee[:,:4], self._out_th_device)
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee, self._out_th_device)[:,:4]
     
     def get_links_state_step_stats(self) -> th.Tensor:
         return jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)
@@ -2123,6 +2206,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     
     @override
     def get_local_link_linear_acceleration(self, requestedLinks : Sequence[tuple[str,str]] | th.Tensor | None = None) -> th.Tensor:
+        record_region_start("MjxAdapter.get_local_link_linear_acceleration")
         if requestedLinks is not None and len(requestedLinks) == 0:
             return th.empty(size=(self._vec_size, 0, 3), dtype=th.float32, device=self._out_th_device)
         
@@ -2136,6 +2220,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             reorder_indices = requestedLinks
         else:
             reorder_indices = self.get_monitored_links_ids(requestedLinks)
+        record_region_end("MjxAdapter.get_local_link_linear_acceleration")
         return full_acc[:, reorder_indices, :]
 
     @override
@@ -2183,6 +2268,35 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mjx_data = sim_state.mjx_data.replace(qpos=new_qpos, qvel=new_qvel, qfrc_applied=new_qfrc_applied)
         sim_state = sim_state.replace_v("mjx_data", mjx_data)
         # sim_state = MjxAdapter._reset_monitored_data_and_stats(sim_state, self._sim_conf)
+        return sim_state
+
+    # @staticmethod
+    @partial(jax.jit, donate_argnames=["self","sim_state"], static_argnames=["vec_size","run_forward"])
+    def _set_joints_and_links_state_set_data(self,
+                                             sim_state : SimState,
+                                             sim_conf : SimConf,
+                                             vec_size : int,
+                                             run_forward : bool,
+                                             vec_mask_jnp : jnp.ndarray,
+                                             joint_qpadr_qvadr : jnp.ndarray,
+                                             joint_states_pve : jnp.ndarray,
+                                             mjmodel_lids : jnp.ndarray,
+                                             mjmodel_pose_xyz_xyzw : jnp.ndarray,
+                                             mjdata_qpadrs_qvadrs : jnp.ndarray,
+                                             mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray):
+        sim_state = MjxAdapter._set_joint_state_set_data(sim_state,
+                                                         vec_mask_jnp,
+                                                         joint_qpadr_qvadr,
+                                                         joint_states_pve)
+        sim_state = MjxAdapter._set_link_poses(sim_state,
+                                              vec_size,
+                                              mjmodel_lids,
+                                              mjmodel_pose_xyz_xyzw,
+                                              mjdata_qpadrs_qvadrs,
+                                              mjdata_poses_xyzxyzw_vel_xyzxyz,
+                                              vec_mask_jnp)
+        if run_forward:
+            MjxAdapter._forward_all(self._mjx_forward, sim_state, sim_conf)
         return sim_state
 
     @override    
@@ -2521,25 +2635,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = self._all_vecs
         # print(f"r0 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
         # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
-        self._sim_state = self._reset_model_alterations(vec_mask_jnp, self._sim_state)
+        self._sim_state = self._reset_model_alterations(vec_mask_jnp, self._sim_state, self._original_mjx_model)
         # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 
-    @partial(jax.jit, static_argnames=["self"])
-    def _reset_model_alterations(self, vec_mask : jnp.ndarray, sim_state : SimState):
-        orig_mjx_mod = self._original_mjx_model
+    @staticmethod
+    @partial(jax.jit, donate_argnames=["sim_state"])
+    def _reset_model_alterations(vec_mask : jnp.ndarray, sim_state : SimState, original_mjx_model : mjx.Model) -> SimState:
         resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
-                                       orig_mjx_mod.body_mass, sim_state.mjx_model.body_mass)
+                                       original_mjx_model.body_mass, sim_state.mjx_model.body_mass)
         resetted_geom_friction = jnp.where(jnp.expand_dims(vec_mask,(1,2)),
-                                          orig_mjx_mod.geom_friction, sim_state.mjx_model.geom_friction)
-        resetted_body_ipos = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_ipos.shape[::-1]).T,
-                                       orig_mjx_mod.body_ipos, sim_state.mjx_model.body_ipos)
+                                          original_mjx_model.geom_friction, sim_state.mjx_model.geom_friction)
+        resetted_body_ipos = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_ipos.shape[::-1]).T,
+                                       original_mjx_model.body_ipos, sim_state.mjx_model.body_ipos)
         resetted_dof_armature = jnp.where(jnp.expand_dims(vec_mask, 1),
-                                       orig_mjx_mod.dof_armature, sim_state.mjx_model.dof_armature)
+                                       original_mjx_model.dof_armature, sim_state.mjx_model.dof_armature)
         resetted_dof_frictionloss = jnp.where(jnp.expand_dims(vec_mask, 1),
-                                       orig_mjx_mod.dof_frictionloss, sim_state.mjx_model.dof_frictionloss)
-        resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, orig_mjx_mod.body_iquat.shape[::-1]).T,
-                                        orig_mjx_mod.body_iquat, sim_state.mjx_model.body_iquat)
+                                       original_mjx_model.dof_frictionloss, sim_state.mjx_model.dof_frictionloss)
+        resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_iquat.shape[::-1]).T,
+                                        original_mjx_model.body_iquat, sim_state.mjx_model.body_iquat)
         resetted_model = sim_state.mjx_model.replace(body_mass = resetted_body_mass,
                                                      body_ipos = resetted_body_ipos,
                                                      body_iquat = resetted_body_iquat,
@@ -2548,19 +2662,131 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                      dof_frictionloss = resetted_dof_frictionloss)
         return sim_state.replace_v("mjx_model", resetted_model)
 
-    def alter_model_rel(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
+    @staticmethod
+    @partial(jax.jit, static_argnames=[ "vec_size",
+                                        "apply_link_masses", "apply_link_frictions",
+                                       "apply_joint_armature_ratios", "apply_joint_frictionloss_ratios",
+                                       "apply_com_position_diffs", "apply_com_quatxyzw_diffs",
+                                       "reset_first"],
+                        donate_argnames=["sim_state"])
+    def _alter_model_jax(sim_state : SimState,
+                         vec_size : int,
+                         geom_bodyid : jnp.ndarray,
+                         vec_mask : jnp.ndarray,
+                         apply_link_masses : bool,
+                         link_masses_body_ids : jnp.ndarray | None,
+                         body_masses_ratio_change : jnp.ndarray | None,
+                         apply_link_frictions : bool,
+                         frictions_body_ids : jnp.ndarray | None,
+                         body_frictions_ratio_change : jnp.ndarray | None,
+                         apply_joint_armature_ratios : bool,
+                         armatures_dof_ids : jnp.ndarray | None,
+                         dof_armatures_ratio_change : jnp.ndarray | None,
+                         apply_joint_frictionloss_ratios : bool,
+                         frictionloss_dof_ids : jnp.ndarray | None,
+                         dof_frictionloss_ratio_change : jnp.ndarray | None,
+                         apply_com_position_diffs : bool,
+                         com_body_pos_ids : jnp.ndarray | None,
+                         com_position_diff_xyz : jnp.ndarray | None,
+                         apply_com_quatxyzw_diffs : bool,
+                         com_body_quat_ids : jnp.ndarray | None,
+                         com_quat_diff_xyzw : jnp.ndarray | None,
+                         reset_first : bool = True, 
+                         original_mjx_model : mjx.Model | None = None) -> SimState:
+        if reset_first:
+            sim_state = MjxAdapter._reset_model_alterations(vec_mask, sim_state, original_mjx_model)
+        replacements = {}
+        mjx_model = sim_state.mjx_model
+        if apply_link_masses:
+            new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change + 1)
+            new_body_mass = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
+            replacements["body_mass"] = jnp.clip(new_body_mass, min=0.0001)
+
+        if apply_link_frictions:
+            frictions_body_ids_mask = jnp.zeros_like(mjx_model.geom_bodyid, shape=(mjx_model.nbody,), dtype=jnp.bool)
+            frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
+            frictions_geoms_ids_mask = frictions_body_ids_mask[geom_bodyid]
+            full_body_frictions_ratio_change = jnp.ones_like(mjx_model.body_mass, shape=(vec_size, mjx_model.nbody, 3), dtype=jnp.float32)
+            full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:, frictions_body_ids].set(
+                body_frictions_ratio_change
+            )
+            geom_friction_ratios = full_body_frictions_ratio_change[:, geom_bodyid]
+            new_allsim_allgeom_frictions = mjx_model.geom_friction + mjx_model.geom_friction * geom_friction_ratios
+            new_allsim_allgeom_frictions = jnp.clip(new_allsim_allgeom_frictions, min=0.0)
+            new_allsim_geom_frictions = jnp.where(
+                jnp.expand_dims(frictions_geoms_ids_mask, 1).repeat(repeats=3, axis=1),
+                new_allsim_allgeom_frictions,
+                mjx_model.geom_friction,
+            )
+            replacements["geom_friction"] = jnp.where(
+                vec_mask[:, None, None], new_allsim_geom_frictions, mjx_model.geom_friction
+            )
+
+        if apply_joint_armature_ratios:
+            new_armatures = mjx_model.dof_armature.at[:, armatures_dof_ids].mul(dof_armatures_ratio_change + 1)
+            new_armatures = jnp.clip(new_armatures, min=0.0001)
+            replacements["dof_armature"] = jnp.where(vec_mask[:, None], new_armatures, mjx_model.dof_armature)
+
+        if apply_joint_frictionloss_ratios:
+            new_frictionloss = mjx_model.dof_frictionloss.at[:, frictionloss_dof_ids].mul(
+                dof_frictionloss_ratio_change + 1
+            )
+            new_frictionloss = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
+            replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min=0.0001)
+
+        if apply_com_position_diffs:
+            new_body_ipos = mjx_model.body_ipos.at[:, com_body_pos_ids].add(com_position_diff_xyz)
+            replacements["body_ipos"] = jnp.where(vec_mask[:, None, None], new_body_ipos, mjx_model.body_ipos)
+
+        if apply_com_quatxyzw_diffs:
+            altered_quat = mjx._src.math.quat_mul(
+                com_quat_diff_xyzw[:, :, [3, 0, 1, 2]],
+                mjx_model.body_iquat[:, com_body_quat_ids],
+            )
+            new_body_iquat = mjx_model.body_iquat.at[:, com_body_quat_ids].set(altered_quat)
+            replacements["body_iquat"] = jnp.where(vec_mask[:, None, None], new_body_iquat, mjx_model.body_iquat)
+
+        return sim_state.replace_v("mjx_model", mjx_model.replace(**replacements))
+
+    def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
                               joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
                               joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
-                              vec_mask : th.Tensor | None = None):
+                              com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              vec_mask : th.Tensor | None = None,
+                              reset_first : bool = True):
         """_summary_
 
         Parameters
         ----------
         link_masses : tuple[jnp.ndarray, th.Tensor]
-            tuple containing alist of link ids (from get_link_id) and corresponding
+            tuple containing  alist of link ids (from get_link_id) and corresponding
             body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
+            body mass will be set to old_mass*(1+ratio)
+        link_frictions : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            body friction ratios, where the new friction will be computed as old_friction*(1+ratio).
+        joint_armature_ratios : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint armature ratios, where the new armature will be computed as old_armature*(1+ratio).
+        joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint frictionloss ratios, where the new frictionloss will be computed as old_frictionloss*(1+ratio).
+        com_position_diffs : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            COM position differences, where the new COM position will be computed as old_COM_position + diff
+        com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            COM orientation differences in quatxyzw format, where the new COM orientation will be computed as old_COM_orientation + diff 
+        vec_mask : th.Tensor
+            Mask of shape (vec_size,) indicating which environments to update, if None all environments will be updated
+        reset_first : bool
+            Whether to reset the previous alterations before applying the new ones. If False, new alterations will
+            be applied on top of the current model parameters, which might lead to compounding effects if
+            the same parameters are altered multiple times.
         """
+        record_region_start("MjxAdapter.alter_model")
         # We need to be able to alter:
         #    body masses (body_mass)
         #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
@@ -2571,74 +2797,46 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
-        replacements = {}
-        mjx_model = self._sim_state.mjx_model
-        if link_masses is not None:            
-            masses_body_ids = link_masses[0]
-            body_masses_ratio_change = th2jax(link_masses[1],jax_device=self._jax_device)
-            new_body_mass = mjx_model.body_mass.at[:,masses_body_ids].mul(body_masses_ratio_change+1)
-            new_body_mass = jnp.where(vec_mask_jnp[:,None], new_body_mass, mjx_model.body_mass)
-            replacements["body_mass"] = jnp.clip(new_body_mass, min = 0.0001)
-        if link_frictions is not None:
-            frictions_body_ids = link_frictions[0]
-            body_frictions_ratio_change = th2jax(link_frictions[1],jax_device=self._jax_device)
-            frictions_body_ids_mask = jnp.zeros(shape=(mjx_model.nbody,),dtype=jnp.bool, device=self._jax_device)
-            frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
-            frictions_geoms_ids_mask = frictions_body_ids_mask[self._geom_bodyid_jax] # mask of the geoms to be changed
-            full_body_frictions_ratio_change = jnp.ones(shape=(self._vec_size, mjx_model.nbody,3),dtype=jnp.float32, device=self._jax_device)
-            full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:,frictions_body_ids].set(body_frictions_ratio_change)
-            geom_friction_ratios = full_body_frictions_ratio_change[:,self._geom_bodyid_jax]
-            new_allsim_allgeom_frictions = mjx_model.geom_friction+mjx_model.geom_friction*geom_friction_ratios # new randomization for all geoms on all sims
-            new_allsim_allgeom_frictions = jnp.clip(new_allsim_allgeom_frictions, min = 0.0)
-            new_allsim_geom_frictions = jnp.where(jnp.expand_dims(frictions_geoms_ids_mask,1).repeat(repeats=3,axis=1),
-                                                      new_allsim_allgeom_frictions,
-                                                      mjx_model.geom_friction)
-            new_geom_frictions = jnp.where(vec_mask_jnp[:,None,None], new_allsim_geom_frictions, mjx_model.geom_friction)
-            replacements["geom_friction"] = new_geom_frictions
-        if joint_armature_ratios is not None:
-            armatures_jids = joint_armature_ratios[0]
-            armatures_dof_ids = self._sim_conf.jnt_dofadr[armatures_jids] # This would need some additional logic for multi-dimensional joints
-            dof_armatures_ratio_change = th2jax(joint_armature_ratios[1],jax_device=self._jax_device)
-            new_armatures = mjx_model.dof_armature.at[:,armatures_dof_ids].mul(dof_armatures_ratio_change+1)
-            new_armatures = jnp.clip(new_armatures, min = 0.0001)
-            new_armatures = jnp.where(vec_mask_jnp[:,None], new_armatures, mjx_model.dof_armature)
-            replacements["dof_armature"] = new_armatures
-        if joint_frictionloss_ratios is not None:
-            frictionloss_jids = joint_frictionloss_ratios[0]
-            frictionloss_dof_ids = self._sim_conf.jnt_dofadr[frictionloss_jids]
-            dof_frictionloss_ratio_change = th2jax(joint_frictionloss_ratios[1],jax_device=self._jax_device)
-            new_frictionloss = mjx_model.dof_frictionloss.at[:,frictionloss_dof_ids].mul(dof_frictionloss_ratio_change+1)
-            new_frictionloss = jnp.where(vec_mask_jnp[:,None], new_frictionloss, mjx_model.dof_frictionloss)
-            replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min = 0.0001)
-        mjx_model = mjx_model.replace(**replacements)
-        self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
+        
+        record_time("MjxAdapter.alter_model: reset done")
+        body_masses_ratio_change=th2jax(link_masses[1], jax_device=self._jax_device) if link_masses is not None else None
+        body_frictions_ratio_change=th2jax(link_frictions[1], jax_device=self._jax_device) if link_frictions is not None else None
+        dof_armatures_ratio_change=th2jax(joint_armature_ratios[1], jax_device=self._jax_device) if joint_armature_ratios is not None else None
+        dof_frictionloss_ratio_change=th2jax(joint_frictionloss_ratios[1], jax_device=self._jax_device) if joint_frictionloss_ratios is not None else None
+        com_position_diff_xyz=th2jax(com_position_diffs[1], jax_device=self._jax_device) if com_position_diffs is not None else None
+        com_quat_diff_xyzw=th2jax(com_quatxyzw_diffs[1], jax_device=self._jax_device) if com_quatxyzw_diffs is not None else None
+
+        record_time("MjxAdapter.alter_model: data prepared")
+        self._sim_state = MjxAdapter._alter_model_jax(
+            sim_state=self._sim_state,
+            vec_size=self._sim_conf.vec_size,
+            geom_bodyid=self._sim_conf.geom_bodyid,
+            vec_mask=vec_mask_jnp,
+            apply_link_masses=link_masses is not None,
+            link_masses_body_ids=link_masses[0] if link_masses is not None else None,
+            body_masses_ratio_change=body_masses_ratio_change,
+            apply_link_frictions=link_frictions is not None,
+            frictions_body_ids=link_frictions[0] if link_frictions is not None else None,
+            body_frictions_ratio_change=body_frictions_ratio_change,
+            apply_joint_armature_ratios=joint_armature_ratios is not None,
+            armatures_dof_ids=self._sim_conf.jnt_dofadr[joint_armature_ratios[0]] if joint_armature_ratios is not None else None,
+            dof_armatures_ratio_change=dof_armatures_ratio_change,
+            apply_joint_frictionloss_ratios=joint_frictionloss_ratios is not None,
+            frictionloss_dof_ids=self._sim_conf.jnt_dofadr[joint_frictionloss_ratios[0]] if joint_frictionloss_ratios is not None else None,
+            dof_frictionloss_ratio_change=dof_frictionloss_ratio_change,
+            apply_com_position_diffs=com_position_diffs is not None,
+            com_body_pos_ids=com_position_diffs[0] if com_position_diffs is not None else None,
+            com_position_diff_xyz=com_position_diff_xyz,
+            apply_com_quatxyzw_diffs=com_quatxyzw_diffs is not None,
+            com_body_quat_ids=com_quatxyzw_diffs[0] if com_quatxyzw_diffs is not None else None,
+            com_quat_diff_xyzw=com_quat_diff_xyzw,
+            reset_first=reset_first,
+            original_mjx_model=self._original_mjx_model
+        )
+        record_time("MjxAdapter.alter_model: model altered")
         # ggLog.info(f"altering model with {replacements}")
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
-
-    def alter_model_sum(self, com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None,
-                              com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor],
-                              vec_mask : th.Tensor | None = None):
-        if vec_mask is not None:
-            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
-        else:
-            vec_mask_jnp = self._all_vecs
-        replacements = {}
-        mjx_model = self._sim_state.mjx_model
-        if com_position_diffs is not None:
-            com_position_diff_xyz = th2jax(com_position_diffs[1],jax_device=self._jax_device)
-            com_body_ids = com_position_diffs[0]
-            new_body_ipos = mjx_model.body_ipos.at[:,com_body_ids].add(com_position_diff_xyz)
-            new_body_ipos = jnp.where(vec_mask_jnp[:,None,None], new_body_ipos, mjx_model.body_ipos)
-            replacements["body_ipos"] = new_body_ipos
-        if com_quatxyzw_diffs is not None:
-            com_quat_diff_xyzw = th2jax(com_quatxyzw_diffs[1],jax_device=self._jax_device)
-            com_body_ids = com_quatxyzw_diffs[0]
-            altered_quat = mjx._src.math.quat_mul(com_quat_diff_xyzw[:,[3,0,1,2]],mjx_model.body_iquat)
-            new_body_iquat = mjx_model.body_iquat.at[:,com_body_ids].set(altered_quat)
-            new_body_iquat = jnp.where(vec_mask_jnp[:,None,None], new_body_iquat, mjx_model.body_iquat)
-            replacements["body_iquat"] = new_body_iquat
-        mjx_model = mjx_model.replace(**replacements)
-        self._sim_state = self._sim_state.replace_v("mjx_model",mjx_model)
+        record_region_end("MjxAdapter.alter_model")
 
     def get_current_contacts_num(self) -> th.Tensor:
         """Gets the number of contacts in this instant.

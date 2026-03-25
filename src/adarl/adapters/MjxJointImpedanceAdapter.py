@@ -16,8 +16,9 @@ from functools import partial
 import jax.tree_util
 from dataclasses import dataclass
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.base_utils import record_time, print_recorded_times
+from adarl.utils.base_utils import record_time, print_recorded_times, record_region_end, record_region_start
 import numpy as np
+from adarl.utils.dbg.dbg_checks import dbg_check
 
 @jax.jit
 @partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0, 0)) #vectorize along the number of simulations
@@ -307,9 +308,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         if joint_names is not None:
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None:
-            delay = th.where(vec_mask, -1000.0, float("+inf"))
-        else:
-            delay = -1000.0
+            delay_sec = th.where(vec_mask, delay_sec, float("+inf"))
             # This could probably be implemented fairly easily
         # ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
@@ -348,7 +347,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         if vec_mask is not None:
             delay = th.where(vec_mask, -1000.0, float("+inf"))
         else:
-            delay = -1000.0
+            delay = th.as_tensor(-1000.0).to(self._out_th_device, non_blocking=True)
             # th._assert_async(th.all(vec_mask),f"setJointsImpedanceCommand: vec_mask is not supported, must be None (controls all simulations)")
             # This could probably be implemented fairly easily
         # ggLog.info(f"Setting jimp command {joint_impedances_pvesd}")
@@ -356,10 +355,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                     delay_sec=delay)
         
     def _add_impedance_command(self,    joint_impedances_pvesd : th.Tensor,
-                                        delay_sec : th.Tensor | float = 0.0) -> None:
+                                        delay_sec : th.Tensor = 0.0) -> None:
         # No support for having commands that don't contain all joints
         joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
-        cmd_time_jax = th2jax(th.as_tensor(delay_sec).expand(self._vec_size)+self._simTime, self._jax_device)
+        cmd_time_jax = th2jax(delay_sec.expand(self._vec_size)+self._simTime, self._jax_device)
         # jids = self._sim_conf.imp_control_jids
 
         # # Create a command, commands are always of the size of _imp_control_jids
@@ -378,8 +377,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                                         cmds_queue=self._sim_state.cmds_queue,
                                                                                         cmds_queue_times=self._sim_state.cmds_queue_times)
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
-        if not jnp.all(inserted):
-            raise RuntimeError(f"Failed to insert commands, inserted = {inserted}")
+        jax2th(inserted, self._out_th_device)
+        dbg_check(lambda : jnp.all(inserted), 
+                  lambda : f"Failed to insert command, inserted = {inserted}",
+                  async_assert=True)
         # ggLog.info(f"added cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
 
     @staticmethod
