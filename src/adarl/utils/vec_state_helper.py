@@ -8,6 +8,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.spaces as spaces
 import adarl.utils.tensor_trees
 import adarl.utils.utils
+from adarl.utils.utils import masked_assign
 from adarl.utils.dbg.dbg_checks import dbg_check_size, dbg_check
 import numpy as np
 import torch as th
@@ -15,6 +16,7 @@ import typing
 from dataclasses import dataclass
 import math
 import numpy.typing as npt
+
 
 _T = TypeVar('_T', float, th.Tensor)
 def unnormalize(v : _T, min : _T, max : _T) -> _T:
@@ -276,7 +278,8 @@ class ThBoxStateHelper(StateHelper):
         return th.stack([instantaneous_state[k] for k in self.field_names], dim = -len(self.field_shape)-1) # stack along the field dimension
 
     @override
-    def reset_state(self, initial_values : th.Tensor | SupportsFloat | Mapping[FieldName,th.Tensor | float | Sequence[float]] | None= None):
+    def reset_state(self,   initial_values : th.Tensor | SupportsFloat | Mapping[FieldName,th.Tensor | float | Sequence[float]] | None= None,
+                            vec_mask: th.Tensor | None = None, old_state : th.Tensor | None = None):
         if initial_values is None:
             initial_values = th.tensor(0.0)
         if isinstance(initial_values,Mapping):
@@ -286,11 +289,21 @@ class ThBoxStateHelper(StateHelper):
             initial_values = th.as_tensor(initial_values)
         initial_values = initial_values.expand(self._vec_size,*self._state_shape[2:]).to(device=self._th_device, dtype=self._dtype, non_blocking=self._th_device.type=="cuda")
         dbg_check_size(initial_values, (self._state_shape[0],)+self._state_shape[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
-        state = initial_values.unsqueeze(1).expand(*self._state_shape).clone() # repeat along the history dimension
+        new_state = initial_values.unsqueeze(1).expand(*self._state_shape).clone() # repeat along the history dimension
         # state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))
-        assert state.size() == self._state_shape,    f"Unexpected resulting state size {state.size()}, should be {self._state_shape}."\
+        assert new_state.size() == self._state_shape,    f"Unexpected resulting state size {new_state.size()}, should be {self._state_shape}."\
                                                     f" Fields are {self.field_names}, subfields are {self.subfield_names}"
-        return state
+        
+        if vec_mask is None:
+            return new_state
+        else:
+            dbg_check(lambda: th.logical_or(th.all(vec_mask),
+                                            th.as_tensor(old_state is not None).to(vec_mask.device, non_blocking=vec_mask.device.type=="cuda")),
+                      lambda: "vec_mask is not all True but old_state is None",
+                      async_assert=True)
+            if old_state is None:
+                return new_state
+            return masked_assign(old_state, vec_mask, new_state, inplace=False)
     
     @override
     def update(self, instantaneous_state : th.Tensor | Mapping[FieldName,th.Tensor | float | Sequence[float]], state : th.Tensor, inplace = True):
@@ -590,12 +603,17 @@ class StateNoiseGenerator:
     def get_single_space(self):
         return self._single_state_space
 
-    def _resample_mu(self):
-        self._current_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std,
-                                                                              size = self._noise_shape,
-                                                                              generator=self._rng,
-                                                                              squash_sigma=self._squash_sigma),
-                                           self._step_std.expand(self._noise_shape)])
+    def _resample_mu(self, vec_mask : th.Tensor | None = None):
+        new_ep_mustd = th.stack([adarl.utils.utils.randn_from_mustd(self._episode_mu_std,
+                                                                    size = self._noise_shape,
+                                                                    generator=self._rng,
+                                                                    squash_sigma=self._squash_sigma),
+                                        self._step_std.expand(self._noise_shape)])
+        if vec_mask is None:
+            self._current_ep_mustd = new_ep_mustd
+        else:
+            perm = (1,0) + tuple(range(2, 2+len(self._noise_shape)-1))
+            masked_assign(self._current_ep_mustd.permute(perm), vec_mask, new_ep_mustd.permute(perm))
 
     def _generate_noise(self):        
         return adarl.utils.utils.randn_from_mustd(self._current_ep_mustd,
@@ -603,9 +621,19 @@ class StateNoiseGenerator:
                                                   generator=self._rng,
                                                   squash_sigma = self._squash_sigma)
 
-    def reset_state(self):
-        self._resample_mu()
-        return th.stack([self._generate_noise() for _ in range(self._history_length)], dim=1)
+    def reset_state(self, vec_mask : th.Tensor | None = None, old_state : th.Tensor | None = None):
+        self._resample_mu(vec_mask)
+        new_noise = th.stack([self._generate_noise() for _ in range(self._history_length)], dim=1)
+        if vec_mask is None:
+            return new_noise
+        else:
+            dbg_check(lambda: th.logical_or(th.all(vec_mask),
+                                            th.as_tensor(old_state is not None).to(vec_mask.device, non_blocking=vec_mask.device.type=="cuda")),
+                      lambda: "vec_mask is not all True but old_state is None",
+                      async_assert=True)
+            if old_state is None:
+                return new_noise
+            return masked_assign(old_state, vec_mask, new_noise, inplace=False)
     
     def update(self, state, inplace = True):
         # for i in range(1,self._history_length):
@@ -766,11 +794,17 @@ class DictStateHelper(StateHelper):
         
     
     @override
-    def reset_state(self, initial_values: Mapping[str,th.Tensor|Mapping[FieldName,th.Tensor | float | Sequence[float]]] | None = None) -> dict[str, th.Tensor]:
+    def reset_state(self, initial_values: Mapping[str,th.Tensor|Mapping[FieldName,th.Tensor | float | Sequence[float]]] | None = None,
+                            vec_mask: th.Tensor | None = None, old_state: dict[str, th.Tensor] | None = None) -> dict[str, th.Tensor]:
         if initial_values is None:
             initial_values = {k:th.tensor(0.0) for k in self.sub_helpers.keys()}
-        state = {k:self.sub_helpers[k].reset_state(v) for k,v in initial_values.items()}
-        noise_state = {k:ng.reset_state() for k,ng in self._all_noise_generators.items()}
+        state = {k:self.sub_helpers[k].reset_state(v,
+                                                   vec_mask=vec_mask,
+                                                   old_state=old_state[k] if old_state is not None else None)
+                    for k,v in initial_values.items()}
+        noise_state = {k:ng.reset_state(vec_mask,
+                                        old_state=old_state[k] if old_state is not None else None)
+                        for k,ng in self._all_noise_generators.items()}
         # noise_state = {k+"_n":ng.reset_state() for k,ng in self.noise_generators.items()}
         state.update(noise_state)
         return state        

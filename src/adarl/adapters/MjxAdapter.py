@@ -75,7 +75,7 @@ from mujoco.mjx._src import sensor
 from mujoco.mjx._src import solver
 from packaging.version import Version
 
-if True: #Version(jax.__version__) < Version("0.8.0"):
+if Version(jax.__version__) < Version("0.8.0"):
     def th2jax(tensor : th.Tensor, jax_device : jax.Device):
         # apparently there are issues with non-contiguous tensors, should be fixed in 0.8.0 (https://github.com/jax-ml/jax/issues/7657)
         # and with CPU tensors, should be fixed since Jan 2025 (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
@@ -730,6 +730,8 @@ class SimState:
     mon_links_stats_arr_v : jnp.ndarray
     mon_joint_state_pveae : jnp.ndarray  # precomputed joint states for monitored joints
     mon_link_state : jnp.ndarray  # precomputed link states for monitored links
+    """ pose and velocity state in format (pos_x,pos_y,pos_z, quat_w,quat_x,quat_y,quat_z, linvel_x,linvel_y,linvel_z, angvel_x,angvel_y,angvel_z)
+    """
     mon_link_acceleration : jnp.ndarray  # precomputed local linear acceleration for monitored links
     mon_collision_mask : jnp.ndarray  # precomputed collision mask for monitored pairs (vec_size, num_pairs)
     impulse_startends_stime : jnp.ndarray
@@ -832,12 +834,18 @@ class SimElementsState:
     All tensors are on the adapter's output torch device.
     Shapes use: V = vec_size, J = num_requested_joints, L = num_requested_links, P = num_monitored_collision_pairs.
     """
-    joint_state_pveae  : th.Tensor | None  # (V, J, 5)  pos, vel, cmd_effort, acc, actual_effort
-    link_state         : th.Tensor | None  # (V, L, 13) pos_xyz, ori_xyzw, linvel_xyz, angvel_xyz
-    link_acceleration  : th.Tensor | None  # (V, L, 3)  local linear acceleration
-    collision_mask     : th.Tensor | None  # (V, P)     bool, True if pair is in contact
-    joint_stats_pvaee  : th.Tensor | None  # (V, 4, J, 5) step stats [min,max,avg,std] of joint quantities (reordered to p,v,a,e,e)
-    link_stats_v       : th.Tensor | None  # (V, 4, L, 6) step stats [min,max,avg,std] of link linear+angular velocity
+    joint_state_pveae  : th.Tensor | None 
+    """(V, J, 5)  pos, vel, cmd_effort, acc, actual_effort"""
+    link_state         : th.Tensor | None
+    """(V, L, 13) pos_xyz, quat_xyzw, linvel_xyz, angvel_xyz"""
+    link_linacc        : th.Tensor | None
+    """(V, L, 3)  local linear acceleration"""
+    collision_mask     : th.Tensor | None
+    """(V, P)     bool, True if pair is in contact"""
+    joint_stats_pvaee  : th.Tensor | None
+    """(V, 4, J, 5) step stats [min,max,avg,std] of joint quantities (reordered to p,v,a,e,e)"""
+    link_stats_v       : th.Tensor | None
+    """(V, 4, L, 6) step stats [min,max,avg,std] of link linear+angular velocity"""
 
 
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
@@ -879,10 +887,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         log_freq_joints_trajectories : int = 1000,
                         safe_revolute_dof_armature = 0.01,
                         revolute_dof_armature_override = None,
-                        opt_override : dict[str,Any] | None = None):
+                        opt_override : dict[str,Any] | None = None,
+                        render_backend : Literal["cpu", "warp"] = "cpu",
+                        mjx_impl : Literal["jax","warp"] = "jax"):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._enable_rendering = enable_rendering
+        self._render_backend : Literal["cpu", "warp"] = render_backend
         self._jax_device = jax_device
         self._sim_step_dt = sim_step_dt
         self._sim_step_dt_th = th.as_tensor(sim_step_dt, device=output_th_device)
@@ -900,7 +911,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
         self._discardvisual = False
         self._opt_override = opt_override
-        self._mjx_impl = "jax"
+        self._mjx_impl = mjx_impl
         self._jax_float_dtype = jnp.float32
         self._out_cuda = self._out_th_device.type == "cuda"
 
@@ -937,6 +948,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._gui_freq = gui_frequency
         self._prev_step_end_wtime = 0.0
         self._viewer = None
+        self._warp_render_context = None
+        self._warp_render_context_pytree = None
+        self._warp_render_has_rgb = False
+        self._warp_render_has_depth = False
         self._all_vecs = jnp.ones((vec_size,), dtype=bool, device=self._jax_device)
         self._no_vecs = jnp.zeros((vec_size,), dtype=bool, device=self._jax_device)
         self._all_vecs_th = th.ones((vec_size,), dtype=th.bool, device=self._out_th_device)
@@ -998,6 +1013,39 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                              in_axes=(None, None, 0, 0, None)), # map over number of rays
                                 in_axes=((self._mjx_model_in_axes, 0, 0, 0, None)) # map over sims and per-env rays positions/directions
                             ))
+
+    def _init_warp_render_context(self):
+        if not self._enable_rendering or self._render_backend != "warp":
+            return
+        missing_symbols = [
+            name for name in ("create_render_context", "refit_bvh", "render", "get_rgb", "get_depth")
+            if not hasattr(mjx, name)
+        ]
+        if missing_symbols:
+            raise RuntimeError(
+                f"render_backend='warp' requested, but mujoco.mjx is missing rendering symbols: {missing_symbols}"
+            )
+
+        cam_active = [cid in self._cid2cname for cid in range(self._mj_model.ncam)]
+        self._warp_render_context = mjx.create_render_context(
+            self._mj_model,
+            nworld=self._vec_size,
+            cam_res=None,
+            render_rgb=True,
+            render_depth=True,
+            cam_active=cam_active,
+        )
+        self._warp_render_context_pytree = self._warp_render_context.pytree()
+        self._warp_render_has_rgb = True
+        self._warp_render_has_depth = True
+
+    @partial(jax.jit, static_argnames=["self"])
+    def _render_warp_jax(self, sim_state : SimState):
+        if self._warp_render_context_pytree is None:
+            raise RuntimeError("Warp render context not initialized")
+        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, self._warp_render_context_pytree)
+        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, self._warp_render_context_pytree)
+        return pixels, aux
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
@@ -1154,23 +1202,30 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._camera_sizes_hw_by_id : dict[int,tuple[int,int]] = {cid:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         self._camera_sizes_hw :dict[str,tuple[int,int]] = {self._cid2cname[cid]:hw for cid, hw in self._camera_sizes_hw_by_id.items()}
         if self._enable_rendering:
-            def make_renderer(h,w):
-                ggLog.info(f"Making renderer for size {h}x{w}")
-                # If you are having issues with the renderer trying to use a card that it cannot access 
-                # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
-                # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
-                # To be sure what exact device path to use you can navigate the folders
-                # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
-                # You can see the egl devices with eglinfo -B
-                # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
-                return mujoco.Renderer(self._mj_model,height=h,width=w)
-            self._render_scene_option = mujoco.MjvOption()
-            self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
-            # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
-            # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
-            self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
-                            for resolution in set(self._camera_sizes_hw.values())}
-            self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
+            if self._render_backend == "cpu":
+                def make_renderer(h,w):
+                    ggLog.info(f"Making renderer for size {h}x{w}")
+                    # If you are having issues with the renderer trying to use a card that it cannot access 
+                    # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
+                    # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
+                    # To be sure what exact device path to use you can navigate the folders
+                    # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
+                    # You can see the egl devices with eglinfo -B
+                    # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
+                    return mujoco.Renderer(self._mj_model,height=h,width=w)
+                self._render_scene_option = mujoco.MjvOption()
+                self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
+                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
+                self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
+                                for resolution in set(self._camera_sizes_hw.values())}
+                self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
+            elif self._render_backend == "warp":
+                self._renderers = {}
+                self._renderers_mj_datas = []
+                self._init_warp_render_context()
+            else:
+                raise RuntimeError(f"Unknown render backend '{self._render_backend}'")
         else:
             self._renderers = {}
         self._visualize_xfrc_applied = True
@@ -1658,9 +1713,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _render_rgb(self,   requestedCameras : list[str],
                             vec_mask : th.Tensor,
                             out_th_device : th.device,
-                            out : list[th.Tensor] | None = None):
-        selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu").tolist()
-        nvecs = len(selected_vecs)
+                            out : list[th.Tensor] | None = None,
+                            use_fixed_shapes : bool = False):
+        if use_fixed_shapes:
+            selected_vecs = list(range(self._vec_size))
+            nvecs = self._vec_size
+            active_vecs = vec_mask.to(device="cpu", non_blocking=False).tolist()
+        else:
+            selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu").tolist()
+            nvecs = len(selected_vecs)
+            active_vecs = None
         t0 = time.monotonic()
         
         # mj_data_batch = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
@@ -1678,7 +1740,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     raise RuntimeError(f"getRenderings: out[{i}].device={out[i].device} != cpu, all output tensors must be on cpu")
             image_batches_hwc = [out[i].numpy() for i in range(len(requestedCameras))]
         else:
-            image_batches_hwc = [np.ones(shape=arr_shapes[i], dtype=np.uint8) for i in range(len(requestedCameras))]
+            image_batches_hwc = [np.zeros(shape=arr_shapes[i], dtype=np.uint8) for i in range(len(requestedCameras))]
         self._forward_if_needed()
         # print(f"images.shapes = {[i.shape for i in images]}")
         # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
@@ -1691,6 +1753,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         tot_update_time = 0.0
         # ggLog.info(f"Rendering {nvecs} vecs and {len(requestedCameras)} cameras with resolutions {[self._camera_sizes_hw[cam] for cam in requestedCameras]}...")
         for env_i,env in enumerate(selected_vecs):
+            if use_fixed_shapes and not active_vecs[env]:
+                continue
             for cam_i in range(len(requestedCameras)):
                 cam = requestedCameras[cam_i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
@@ -1735,17 +1799,102 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f" copy took {tot_copy_time*1000:.3f}ms")
         return [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in image_batches_hwc], times
 
+    def _render_rgb_warp(self,
+                         requestedCameras : list[str],
+                         vec_mask : th.Tensor,
+                         out_th_device : th.device,
+                         out : list[th.Tensor] | None = None,
+                         use_fixed_shapes : bool = False):
+        if not self._warp_render_has_rgb or self._warp_render_context_pytree is None:
+            raise RuntimeError("Warp RGB rendering is not initialized")
+        nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
+        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
+            out_th_device, non_blocking=out_th_device.type=="cuda"
+        )
+        self._forward_if_needed()
+        pixels, _ = self._render_warp_jax(self._sim_state)
+
+        all_imgs : list[th.Tensor] = []
+        for cam_i, cam in enumerate(requestedCameras):
+            cid = self._cname2cid[cam]
+            rgb = mjx.get_rgb(self._warp_render_context_pytree, cid, p)(pixels)
+            rgb_th = jax2th(rgb, th_device=out_th_device)
+            vec_mask_dev = vec_mask.to(device=rgb_th.device, non_blocking=rgb_th.device.type=="cuda")
+            if use_fixed_shapes:
+                rgb_th = rgb_th.clone()
+                rgb_th[~vec_mask_dev] = 0
+            else:
+                rgb_th = rgb_th[vec_mask_dev]
+            if out is not None:
+                if out[cam_i].shape != rgb_th.shape:
+                    raise RuntimeError(f"getRenderings: out[{cam_i}].shape={out[cam_i].shape} != expected shape={rgb_th.shape}")
+                out[cam_i].copy_(rgb_th, non_blocking=out_th_device.type=="cuda")
+                all_imgs.append(out[cam_i])
+            else:
+                all_imgs.append(rgb_th)
+        return all_imgs, times
+
 
     def _render_depth(self, requestedCameras : list[str],
                             vec_mask : th.Tensor,
-                            out_th_device : th.device):
-        nvecs : int = th.count_nonzero(vec_mask).item() #type: ignore
+                            out_th_device : th.device,
+                            out : list[th.Tensor] | None = None,
+                            use_fixed_shapes : bool = False):
+        nvecs : int = self._vec_size if use_fixed_shapes else th.count_nonzero(vec_mask).item() #type: ignore
         times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
         all_imgs = []
-        for cam in requestedCameras:
+        for cam_i, cam in enumerate(requestedCameras):
             imgs = self._get_depth_image(cam, sim_state=self._sim_state).to(device=out_th_device, non_blocking=out_th_device.type=="cuda")
             imgs = imgs.unsqueeze(-1) # add channel dimension
-            all_imgs.append(imgs)
+            vec_mask_dev = vec_mask.to(device=imgs.device, non_blocking=imgs.device.type=="cuda")
+            if use_fixed_shapes:
+                imgs = imgs.clone()
+                imgs[~vec_mask_dev] = 0
+            else:
+                imgs = imgs[vec_mask_dev]
+            if out is not None:
+                if out[cam_i].shape != imgs.shape:
+                    raise RuntimeError(f"getRenderings: out[{cam_i}].shape={out[cam_i].shape} != expected shape={imgs.shape}")
+                out[cam_i].copy_(imgs, non_blocking=out_th_device.type=="cuda")
+                all_imgs.append(out[cam_i])
+            else:
+                all_imgs.append(imgs)
+        return all_imgs, times
+
+    def _render_depth_warp(self,
+                           requestedCameras : list[str],
+                           vec_mask : th.Tensor,
+                           out_th_device : th.device,
+                           out : list[th.Tensor] | None = None,
+                           use_fixed_shapes : bool = False):
+        if not self._warp_render_has_depth or self._warp_render_context_pytree is None:
+            raise RuntimeError("Warp depth rendering is not initialized")
+        nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
+        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
+            out_th_device, non_blocking=out_th_device.type=="cuda"
+        )
+        self._forward_if_needed()
+        pixels, _ = self._render_warp_jax(self._sim_state)
+
+        all_imgs : list[th.Tensor] = []
+        for cam_i, cam in enumerate(requestedCameras):
+            cid = self._cname2cid[cam]
+            depth = mjx.get_depth(self._warp_render_context_pytree, cid, p)(pixels)
+            depth = jnp.expand_dims(depth, axis=-1)
+            depth_th = jax2th(depth, th_device=out_th_device)
+            vec_mask_dev = vec_mask.to(device=depth_th.device, non_blocking=depth_th.device.type=="cuda")
+            if use_fixed_shapes:
+                depth_th = depth_th.clone()
+                depth_th[~vec_mask_dev] = 0
+            else:
+                depth_th = depth_th[vec_mask_dev]
+            if out is not None:
+                if out[cam_i].shape != depth_th.shape:
+                    raise RuntimeError(f"getRenderings: out[{cam_i}].shape={out[cam_i].shape} != expected shape={depth_th.shape}")
+                out[cam_i].copy_(depth_th, non_blocking=out_th_device.type=="cuda")
+                all_imgs.append(out[cam_i])
+            else:
+                all_imgs.append(depth_th)
         return all_imgs, times
     
     def _depth_img_to_rgb(self, depth_img, maxdist=3.0):
@@ -1759,24 +1908,27 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                       vec_mask : th.Tensor | None = None,
                       out_th_device : th.device | None = None,
                       out : list[th.Tensor] | None = None,
-                      depth : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
+                      depth : bool = False,
+                      use_fixed_shapes : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
         if out_th_device is None:
             out_th_device = self._out_th_device
-        if len(self._renderers)==0:
+        if not self._enable_rendering:
             raise RuntimeError(f"Called getRenderings, but rendering is not initialized. did you set enable_rendering?")
         if vec_mask is None:
             vec_mask = self._all_vecs_thcpu
 
-        if not depth:
-            return self._render_rgb(requestedCameras, vec_mask, out_th_device, out)
+        if self._render_backend == "warp":
+            if depth:
+                return self._render_depth_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+            else:
+                return self._render_rgb_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
         else:
-            all_imgs, times = self._render_depth(requestedCameras, vec_mask, out_th_device)
-            # ggLog.info(f"Got depth images of size {[img.shape for img in all_imgs]}")
-            # all_imgs = [self._depth_img_to_rgb(img, maxdist=3.0) for img in all_imgs]
-            if out is not None:
-                for i in range(len(requestedCameras)):
-                    out[i].copy_(all_imgs[i])
-            return all_imgs, times
+            if len(self._renderers)==0:
+                raise RuntimeError("CPU rendering backend selected, but renderers were not initialized")
+            if depth:
+                return self._render_depth(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+            else:
+                return self._render_rgb(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
 
 
     @override
@@ -1862,7 +2014,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 lstats  = lstats[:, :, link_ids, :]
         return SimElementsState(joint_state_pveae=jstate,
                                 link_state=lstate,
-                                link_acceleration=lacc,
+                                link_linacc=lacc,
                                 collision_mask=cmask,
                                 joint_stats_pvaee=jstats,
                                 link_stats_v=lstats)
@@ -1982,21 +2134,20 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @staticmethod
     @partial(jax.jit, donate_argnames=["sim_state"])
     def _update_monitored_data_cache(sim_state : SimState, sim_conf : SimConf) -> SimState:
-        jstate_pveae = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
+        replace = {}
+        replace["mon_joint_state_pveae"] = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
                                                                   sim_conf.monitored_qvadr,
                                                                   sim_state.mjx_data)
-        lstate = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
+        replace["mon_link_state"] = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
         # Compute local link linear acceleration
-        link_acc = MjxAdapter._get_links_acceleration_static(
+        replace["mon_link_acceleration"] = MjxAdapter._get_links_acceleration_static(
             sim_conf.monitored_lids, sim_conf.body_rootid, sim_state.mjx_data)
         # Compute collision mask for monitored pairs
-        collision_mask = MjxAdapter._check_collision_pairs_static(
-            sim_conf.monitored_collision_pairs, sim_conf.geom_bodyid, sim_state.mjx_data)
+        if len(sim_conf.monitored_collision_pairs) > 0:
+            replace["mon_collision_mask"] = MjxAdapter._check_collision_pairs_static(
+                sim_conf.monitored_collision_pairs, sim_conf.geom_bodyid, sim_state.mjx_data)
         # Store precomputed states
-        sim_state = sim_state.replace_d({"mon_joint_state_pveae" : jstate_pveae,
-                                         "mon_link_state" : lstate,
-                                         "mon_link_acceleration" : link_acc,
-                                         "mon_collision_mask" : collision_mask})
+        sim_state = sim_state.replace_d(replace)
         return sim_state
 
     @staticmethod
@@ -2250,9 +2401,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """Get the current time within the simulation."""
         return self._simTime
 
-    @staticmethod
     @partial(jax.jit, donate_argnames=("sim_state",))
-    def _set_joint_state_set_data(sim_state : SimState, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
+    def _set_joint_state_data(self, sim_state : SimState, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
         qpadr = qpadr_qvadr[0]
         qvadr = qpadr_qvadr[1]
         new_qpos = sim_state.mjx_data.qpos.at[:, qpadr].set(
@@ -2271,24 +2421,24 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     # @staticmethod
-    @partial(jax.jit, donate_argnames=["self","sim_state"], static_argnames=["vec_size","run_forward"])
-    def _set_joints_and_links_state_set_data(self,
-                                             sim_state : SimState,
-                                             sim_conf : SimConf,
-                                             vec_size : int,
-                                             run_forward : bool,
-                                             vec_mask_jnp : jnp.ndarray,
-                                             joint_qpadr_qvadr : jnp.ndarray,
-                                             joint_states_pve : jnp.ndarray,
-                                             mjmodel_lids : jnp.ndarray,
-                                             mjmodel_pose_xyz_xyzw : jnp.ndarray,
-                                             mjdata_qpadrs_qvadrs : jnp.ndarray,
-                                             mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray):
-        sim_state = MjxAdapter._set_joint_state_set_data(sim_state,
+    @partial(jax.jit, donate_argnames=["sim_state"], static_argnames=["self","vec_size","run_forward"])
+    def _set_joints_and_links_state_data(   self,
+                                            sim_state : SimState,
+                                            sim_conf : SimConf,
+                                            vec_size : int,
+                                            run_forward : bool,
+                                            vec_mask_jnp : jnp.ndarray,
+                                            joint_qpadr_qvadr : jnp.ndarray,
+                                            joint_states_pve : jnp.ndarray,
+                                            mjmodel_lids : jnp.ndarray,
+                                            mjmodel_pose_xyz_xyzw : jnp.ndarray,
+                                            mjdata_qpadrs_qvadrs : jnp.ndarray,
+                                            mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray):
+        sim_state = self._set_joint_state_data(sim_state,
                                                          vec_mask_jnp,
                                                          joint_qpadr_qvadr,
                                                          joint_states_pve)
-        sim_state = MjxAdapter._set_link_poses(sim_state,
+        sim_state = self._set_link_poses(sim_state,
                                               vec_size,
                                               mjmodel_lids,
                                               mjmodel_pose_xyz_xyzw,
@@ -2296,8 +2446,145 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                               mjdata_poses_xyzxyzw_vel_xyzxyz,
                                               vec_mask_jnp)
         if run_forward:
-            MjxAdapter._forward_all(self._mjx_forward, sim_state, sim_conf)
+            sim_state = self._forward_all(sim_state, sim_conf)
         return sim_state
+
+    def _prepare_joint_set_data(self,
+                                joint_names : Sequence[tuple[str,str]] | None = None,
+                                joint_states_pve : th.Tensor | None = None,
+                                ):
+        if joint_names is None:
+            if joint_states_pve is not None:
+                raise ValueError("joint_states_pve was provided without joint_names")
+        if joint_states_pve is None:
+            raise ValueError("joint_names was provided without joint_states_pve")
+        
+        if joint_names is not None:
+            if self._check_sizes and joint_states_pve.size() != (self._vec_size, len(joint_names), 3):
+                raise RuntimeError(f"joint_states_pve should have size {(self._vec_size, len(joint_names), 3)}, but it's {joint_states_pve.size()}")
+
+            jids = np.array([self._jname2jid[jn] for jn in joint_names])
+            joint_types = self._mj_model.jnt_type[jids]
+            if not np.all(np.logical_or(joint_types == mujoco.mjtJoint.mjJNT_HINGE,
+                                        joint_types == mujoco.mjtJoint.mjJNT_SLIDE)):
+                raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names, joint_types))}")
+
+            qpadr_qvadr = jnp.array(np.stack([self._mj_model.jnt_qposadr[jids],
+                                                    self._mj_model.jnt_dofadr[jids]]),
+                                          device=self._jax_device)
+            joint_states_pve_jnp = th2jax(joint_states_pve, jax_device=self._jax_device)
+        else:
+            qpadr_qvadr = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
+            joint_states_pve_jnp = jnp.array(np.empty((self._vec_size, 0, 3), dtype=np.float32), device=self._jax_device)
+        
+        return qpadr_qvadr, joint_states_pve_jnp
+
+    def _prepare_links_set_data(self, link_names: Sequence[tuple[str, str]] | None = None,
+                                link_states_pose_vel: th.Tensor | None = None):
+        if link_names is None:
+            if link_states_pose_vel is not None:
+                raise ValueError("link_states_pose_vel was provided without link_names")
+        if link_states_pose_vel is None:
+            raise ValueError("link_names was provided without link_states_pose_vel")
+
+        if link_names is not None:
+            link_ids = np.array([self._lname2lid[ln] for ln in link_names])
+            root_body_ids = self._mj_model.body_rootid[link_ids]
+            body_jnt_nums = self._mj_model.body_jntnum[link_ids]
+            body_parent_ids = self._mj_model.body_parentid[link_ids]
+
+            are_all_lids_root_bodies = np.all(root_body_ids == link_ids)
+            if not are_all_lids_root_bodies:
+                nonroot_lids = np.array(link_names)[root_body_ids != link_ids]
+                raise RuntimeError(f"All links in setLinksStateDirect must be root bodies, but links {nonroot_lids} are not.")
+            are_links_world = link_ids == 0
+            if np.any(are_links_world):
+                world_lids = np.array(link_names)[are_links_world]
+                raise RuntimeError(f"Cannot set state for world link, but links {world_lids} are among the requested ones.")
+
+            link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
+
+            links_without_parents_mask = np.logical_and(body_jnt_nums == 0, body_parent_ids == 0)
+            idx_without_parents = th.as_tensor(np.nonzero(links_without_parents_mask)[0]).to(self._out_th_device, non_blocking=self._out_cuda)
+            lids_without_parents = link_ids[links_without_parents_mask]
+            mjmodel_lids = jnp.array(lids_without_parents, device=self._jax_device)
+            mjmodel_pose_xyz_xyzw = th2jax(link_states_pose_vel[:, idx_without_parents], jax_device=self._jax_device)
+
+            links_conected_to_world_mask = np.logical_and(body_jnt_nums == 1, body_parent_ids == 0)
+            idx_connected_to_world = np.nonzero(links_conected_to_world_mask)[0]
+            idx_connected_to_world_th = th.as_tensor(idx_connected_to_world).to(self._out_th_device, non_blocking=self._out_cuda)
+            lids_connected_to_world = link_ids[links_conected_to_world_mask]
+
+            link_joint_ids = self._mj_model.body_jntadr[lids_connected_to_world]
+            link_joint_types = self._mj_model.jnt_type[link_joint_ids]
+            all_free_joints_mask = link_joint_types == mujoco.mjtJoint.mjJNT_FREE
+            if not np.all(all_free_joints_mask):
+                non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
+                raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
+
+            mjdata_qpadrs_qvadrs = jnp.array(np.stack([self._mj_model.jnt_qposadr[link_joint_ids],
+                                                       self._mj_model.jnt_dofadr[link_joint_ids]], axis=0),
+                                             device=self._jax_device)
+            mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:, idx_connected_to_world_th], jax_device=self._jax_device)
+
+            uncategorized_mask = ~(links_without_parents_mask | links_conected_to_world_mask)
+            if np.any(uncategorized_mask):
+                uncategorized_names = np.array(link_names)[uncategorized_mask]
+                raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
+        else:
+            mjmodel_lids = jnp.array(np.empty((0,), dtype=np.int32), device=self._jax_device)
+            mjmodel_pose_xyz_xyzw = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
+            mjdata_qpadrs_qvadrs = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
+            mjdata_poses_xyzxyzw_vel_xyzxyz = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
+        return mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz
+
+    @override
+    def setJointsAndLinksStateDirect(self,
+                                     joint_names : Sequence[tuple[str,str]] | None = None,
+                                     joint_states_pve : th.Tensor | None = None,
+                                     link_names : Sequence[tuple[str,str]] | None = None,
+                                     link_states_pose_vel : th.Tensor | None = None,
+                                     vec_mask : th.Tensor | None = None):
+        record_region_start("MjxAdapter.setJointsAndLinksStateDirect")
+
+        
+
+        
+
+        if joint_names is None and link_names is None:
+            record_region_end("MjxAdapter.setJointsAndLinksStateDirect")
+            return
+
+        if vec_mask is not None:
+            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
+        else:
+            vec_mask_jnp = self._all_vecs
+        record_time("MjxAdapter.setJointsAndLinksStateDirect: got vec_mask_jnp")
+
+        joint_qpadr_qvadr, joint_states_pve_jnp = self._prepare_joint_set_data(joint_names, joint_states_pve)
+        record_time("MjxAdapter.setJointsAndLinksStateDirect: prepared joint data")
+
+        (mjmodel_lids,
+         mjmodel_pose_xyz_xyzw,
+         mjdata_qpadrs_qvadrs,
+         mjdata_poses_xyzxyzw_vel_xyzxyz) = self._prepare_links_set_data(link_names, link_states_pose_vel)
+        record_time("MjxAdapter.setJointsAndLinksStateDirect: prepared link data")
+
+        self._sim_state = self._set_joints_and_links_state_data(sim_state = self._sim_state,
+                                                                sim_conf = self._sim_conf,
+                                                                vec_size = self._vec_size,
+                                                                run_forward = False,
+                                                                vec_mask = vec_mask_jnp,
+                                                                joint_qpadr_qvadr = joint_qpadr_qvadr,
+                                                                joint_states_pve = joint_states_pve_jnp,
+                                                                mjmodel_lids = mjmodel_lids,
+                                                                mjmodel_pose_xyz_xyzw = mjmodel_pose_xyz_xyzw,
+                                                                mjdata_qpadrs_qvadrs = mjdata_qpadrs_qvadrs,
+                                                                mjdata_poses_xyzxyzw_vel_xyzxyz = mjdata_poses_xyzxyzw_vel_xyzxyz)
+        record_time("MjxAdapter.setJointsAndLinksStateDirect: setted data")
+
+        self._mark_forward_needed()
+        record_region_end("MjxAdapter.setJointsAndLinksStateDirect")
 
     @override    
     def setJointsStateDirect(self, joint_names : list[tuple[str,str]], joint_states_pve : th.Tensor, vec_mask : th.Tensor | None = None):
@@ -2307,12 +2594,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._check_sizes and joint_states_pve.size() != (self._vec_size,len(joint_names),3):
             raise RuntimeError(f"joint_states_pve should have size {(self._vec_size,len(joint_names),3)}, but it's {joint_states_pve.size()}")
         
-        jids = np.array([self._jname2jid[jn] for jn in joint_names])
-        js_pve = th2jax(joint_states_pve, jax_device=self._jax_device)
         if vec_mask is not None:
             vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
         else:
             vec_mask_jnp = self._all_vecs
+        jids = np.array([self._jname2jid[jn] for jn in joint_names])
+        js_pve = th2jax(joint_states_pve, jax_device=self._jax_device)
         record_time("MjxAdapter.setJointsStateDirect: got js_pve and vec_mask_jnp")
 
 
@@ -2327,7 +2614,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         record_time("MjxAdapter.setJointsStateDirect: def func")
         qpadr_qvadr = jnp.array(np.stack([qpadr_np, qvadr_np]), device=self._jax_device)
         record_time("MjxAdapter.setJointsStateDirect: converted np->jax")
-        self._sim_state = MjxAdapter._set_joint_state_set_data(self._sim_state, vec_mask_jnp, qpadr_qvadr, js_pve)
+        self._sim_state = self._set_joint_state_data(self._sim_state, vec_mask_jnp, qpadr_qvadr, js_pve)
         record_time("MjxAdapter.setJointsStateDirect: setted data")
 
         # self._sim_state = MjxAdapter._reset_step_stats(self._sim_state, self._sim_conf)
@@ -2542,19 +2829,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _mark_forward_needed(self):
         self._forward_needed = True
 
-    @staticmethod
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
-    def _forward_all(forward_func, sim_state : SimState, sim_conf: SimConf) -> SimState:
-        data = forward_func(sim_state.mjx_model, sim_state.mjx_data)
+    @partial(jax.jit, static_argnames=("self",), donate_argnames=("sim_state",))
+    def _forward_all(self, sim_state : SimState, sim_conf: SimConf) -> SimState:
+        data = self._mjx_forward(sim_state.mjx_model, sim_state.mjx_data)
         sim_state = sim_state.replace_v("mjx_data", data)
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         return sim_state
 
     def _forward_if_needed(self):
         record_region_start("MjxAdapter._forward_if_needed")
         if self._forward_needed:
             # self._check_model_inaxes()
-            self._sim_state = MjxAdapter._forward_all(self._mjx_forward, self._sim_state, self._sim_conf)
+            self._sim_state = self._forward_all(self._sim_state, self._sim_conf)
             record_time("MjxAdapter._forward_if_needed: forward done")
             self._forward_needed = False
         record_region_end("MjxAdapter._forward_if_needed")
@@ -2635,32 +2921,32 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = self._all_vecs
         # print(f"r0 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
         # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
-        self._sim_state = self._reset_model_alterations(vec_mask_jnp, self._sim_state, self._original_mjx_model)
+        self._sim_state.mjx_model = self._reset_model_alterations(vec_mask_jnp, self._sim_state, self._original_mjx_model)
         # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
-    def _reset_model_alterations(vec_mask : jnp.ndarray, sim_state : SimState, original_mjx_model : mjx.Model) -> SimState:
+    @partial(jax.jit, donate_argnames=["mjx_model"])
+    def _reset_model_alterations(vec_mask : jnp.ndarray, mjx_model : mjx.Model, original_mjx_model : mjx.Model) -> mjx.Mmodel:
         resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
-                                       original_mjx_model.body_mass, sim_state.mjx_model.body_mass)
+                                       original_mjx_model.body_mass, mjx_model.body_mass)
         resetted_geom_friction = jnp.where(jnp.expand_dims(vec_mask,(1,2)),
-                                          original_mjx_model.geom_friction, sim_state.mjx_model.geom_friction)
+                                          original_mjx_model.geom_friction, mjx_model.geom_friction)
         resetted_body_ipos = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_ipos.shape[::-1]).T,
-                                       original_mjx_model.body_ipos, sim_state.mjx_model.body_ipos)
+                                       original_mjx_model.body_ipos, mjx_model.body_ipos)
         resetted_dof_armature = jnp.where(jnp.expand_dims(vec_mask, 1),
-                                       original_mjx_model.dof_armature, sim_state.mjx_model.dof_armature)
+                                       original_mjx_model.dof_armature, mjx_model.dof_armature)
         resetted_dof_frictionloss = jnp.where(jnp.expand_dims(vec_mask, 1),
-                                       original_mjx_model.dof_frictionloss, sim_state.mjx_model.dof_frictionloss)
+                                       original_mjx_model.dof_frictionloss, mjx_model.dof_frictionloss)
         resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_iquat.shape[::-1]).T,
-                                        original_mjx_model.body_iquat, sim_state.mjx_model.body_iquat)
-        resetted_model = sim_state.mjx_model.replace(body_mass = resetted_body_mass,
+                                        original_mjx_model.body_iquat, mjx_model.body_iquat)
+        resetted_model = mjx_model.replace(body_mass = resetted_body_mass,
                                                      body_ipos = resetted_body_ipos,
                                                      body_iquat = resetted_body_iquat,
                                                      geom_friction = resetted_geom_friction,
                                                      dof_armature = resetted_dof_armature,
                                                      dof_frictionloss = resetted_dof_frictionloss)
-        return sim_state.replace_v("mjx_model", resetted_model)
+        return resetted_model
 
     @staticmethod
     @partial(jax.jit, static_argnames=[ "vec_size",
@@ -2668,8 +2954,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        "apply_joint_armature_ratios", "apply_joint_frictionloss_ratios",
                                        "apply_com_position_diffs", "apply_com_quatxyzw_diffs",
                                        "reset_first"],
-                        donate_argnames=["sim_state"])
-    def _alter_model_jax(sim_state : SimState,
+                        donate_argnames=["mjx_model"])
+    def _alter_model_jax(mjx_model : mjx.Model,
                          vec_size : int,
                          geom_bodyid : jnp.ndarray,
                          vec_mask : jnp.ndarray,
@@ -2692,11 +2978,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                          com_body_quat_ids : jnp.ndarray | None,
                          com_quat_diff_xyzw : jnp.ndarray | None,
                          reset_first : bool = True, 
-                         original_mjx_model : mjx.Model | None = None) -> SimState:
+                         original_mjx_model : mjx.Model | None = None) -> mjx.Model:
         if reset_first:
-            sim_state = MjxAdapter._reset_model_alterations(vec_mask, sim_state, original_mjx_model)
+            mjx_model = MjxAdapter._reset_model_alterations(vec_mask, mjx_model, original_mjx_model)
         replacements = {}
-        mjx_model = sim_state.mjx_model
         if apply_link_masses:
             new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change + 1)
             new_body_mass = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
@@ -2746,7 +3031,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             new_body_iquat = mjx_model.body_iquat.at[:, com_body_quat_ids].set(altered_quat)
             replacements["body_iquat"] = jnp.where(vec_mask[:, None, None], new_body_iquat, mjx_model.body_iquat)
 
-        return sim_state.replace_v("mjx_model", mjx_model.replace(**replacements))
+        return mjx_model.replace(**replacements)
 
     def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
@@ -2807,8 +3092,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         com_quat_diff_xyzw=th2jax(com_quatxyzw_diffs[1], jax_device=self._jax_device) if com_quatxyzw_diffs is not None else None
 
         record_time("MjxAdapter.alter_model: data prepared")
-        self._sim_state = MjxAdapter._alter_model_jax(
-            sim_state=self._sim_state,
+        self._sim_state.mjx_model = MjxAdapter._alter_model_jax(
+            mjx_model=self._sim_state.mjx_model,
             vec_size=self._sim_conf.vec_size,
             geom_bodyid=self._sim_conf.geom_bodyid,
             vec_mask=vec_mask_jnp,

@@ -523,7 +523,7 @@ def expand_tensor_into_lower_dims(tensor : th.Tensor, target_size : th.Size) -> 
     tensor = tensor.permute(*list(range(tensor.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
     return tensor
 
-def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int | bool):
+def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int | bool, inplace : bool = True):
     """Inplace assign values to the original tensor, in locations defined by mask.
         newvalues must have the same shape as original.
         Should equivalent to:
@@ -546,10 +546,14 @@ def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Ten
         raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
     # mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
     mask = expand_tensor_into_lower_dims(row_mask, original.size())
-    th.where(mask,
-             newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
-             original,
-             out=original)
+    if inplace:
+        th.where(mask,
+                newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
+                original,
+                out=original)
+        return original
+    else:
+        return th.where(mask, newvalues, original)
 
 def masked_assign_sc(original : th.Tensor, mask : th.Tensor, newvalues : th.Tensor | float | int):
     """Inplace assign values to the original tensor, in locations defined by mask.

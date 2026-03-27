@@ -309,7 +309,6 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             raise RuntimeError(f"joint_names is not supported, must be None (controls all impedance_controlled_joints)")
         if vec_mask is not None:
             delay_sec = th.where(vec_mask, delay_sec, float("+inf"))
-            # This could probably be implemented fairly easily
         # ggLog.info(f"Adding joint impedance command {joint_impedances_pvesd}")
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay_sec)
@@ -357,8 +356,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def _add_impedance_command(self,    joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor = 0.0) -> None:
         # No support for having commands that don't contain all joints
+        record_region_start("MjxJointImpedanceAdapter.add_impedance_command")
         joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
         cmd_time_jax = th2jax(delay_sec.expand(self._vec_size)+self._simTime, self._jax_device)
+        record_time("MjxJointImpedanceAdapter.add_impedance_command: th->jax done")
         # jids = self._sim_conf.imp_control_jids
 
         # # Create a command, commands are always of the size of _imp_control_jids
@@ -376,12 +377,15 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                                         cmd_time=cmd_time_jax,
                                                                                         cmds_queue=self._sim_state.cmds_queue,
                                                                                         cmds_queue_times=self._sim_state.cmds_queue_times)
+        record_time("MjxJointImpedanceAdapter.add_impedance_command: insert cmd done")
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
-        jax2th(inserted, self._out_th_device)
-        dbg_check(lambda : jnp.all(inserted), 
+        record_time("MjxJointImpedanceAdapter.add_impedance_command: update sim state done")
+        inserted = jax2th(inserted, self._out_th_device)
+        dbg_check(lambda : th.all(inserted), 
                   lambda : f"Failed to insert command, inserted = {inserted}",
                   async_assert=True)
         # ggLog.info(f"added cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
+        record_region_end("MjxJointImpedanceAdapter.add_impedance_command")
 
     @staticmethod
     def _insert_cmd_to_queue(   cmd : jnp.ndarray,
@@ -662,14 +666,21 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def _get_joint_state_for_history(self, sim_state : SimStateJimp):
         return sim_state.vec_impjoints_pveaecpvesde
     
-    @override
-    def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
-        record_time("MjxJointImpedanceAdapter.setJointsStateDirect")
-        super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
-        record_time("MjxJointImpedanceAdapter.setJointsStateDirect: called super")
-        self._reset_filters()
-        record_time("MjxJointImpedanceAdapter.setJointsStateDirect: resetted filters")
+    # @override
+    # def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
+    #     record_time("MjxJointImpedanceAdapter.setJointsStateDirect")
+    #     super().setJointsStateDirect(joint_names, joint_states_pve, vec_mask)
+    #     record_time("MjxJointImpedanceAdapter.setJointsStateDirect: called super")
+    #     self._reset_filters()
+    #     record_time("MjxJointImpedanceAdapter.setJointsStateDirect: resetted filters")
 
     @override
     def control_period(self):
         self._sim_step_dt_th
+
+    @override
+    @partial(jax.jit, donate_argnames=("sim_state",))
+    def _set_joint_state_data(self, sim_state : SimState, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
+        sim_state = super()._set_joint_state_data(sim_state, vec_mask_jnp, qpadr_qvadr, js_pve)
+        sim_state = self._reset_filters_jax()
+        return sim_state
