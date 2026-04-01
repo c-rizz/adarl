@@ -135,7 +135,12 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         self._last_terminated = th.zeros((self._adarl_env.num_envs,), device=self._adarl_env._th_device, dtype=th.bool)
         self._last_truncated = th.zeros_like(self._last_terminated)
         self._sync_on_reinit = sync_on_reinit
-        self._cache_dirty = True
+        self._state_cache_dirty = True
+        self._info_cache_dirty = True
+
+    def _mark_caches_dirty(self):
+        self._state_cache_dirty = True
+        self._info_cache_dirty = True
 
     @override
     def step(self, actions : th.Tensor, autoreset : bool | None = None) -> Tuple[ ObsType,
@@ -170,7 +175,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             with self._envStepWallDurationAverage:
                 self._adarl_env.step()
                 self._ep_step_counts+=1
-                self._cache_dirty = True
+                self._mark_caches_dirty()
             record_time("EnvRunner stepped env")
 
             #Get new observation
@@ -288,7 +293,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         record_time("EnvRunner: done _on_episode_end")
         self._adarl_env.initialize_episodes(reinit_envs_mask, options=options)
         record_time("EnvRunner: done env.initialize_episodes")
-        self._cache_dirty = True
+        self._mark_caches_dirty()
         self._ep_step_counts[reinit_envs_mask] = 0
         self._ep_counts += 1*reinit_envs_mask
         self._tot_ep_rewards[reinit_envs_mask] = 0
@@ -302,6 +307,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         next_start_observations = self._adarl_env.get_observations(next_start_states)
         record_time("EnvRunner: got obs")
         next_start_infos = self._build_info(next_start_states)
+        record_time("EnvRunner: built info")
+
         record_region_end("EnvRunner reinit")
 
         # if self._reinit_count > 10:
@@ -379,7 +386,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
         #reset simulation state
         self._adarl_env.reset()
-        self._cache_dirty = True
+        self._mark_caches_dirty()
 
 
         self.reinit_envs(reinit_envs_mask=self._all_vecs,
@@ -389,9 +396,8 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          last_observations=observations,
                          last_infos=infos,
                          last_rewards=rewards,
-                         options=options)
-        self._cache_dirty = True
-        
+                         options=options)        
+        self._mark_caches_dirty()
 
         self._reset_count += 1
         self._cached_states = None
@@ -433,9 +439,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
             An observation of the environment. See the environment implementation for details on its format
 
         """
-        if self._cache_dirty:
+        if self._state_cache_dirty:
             self._cached_states = self._adarl_env.get_states()
-            self._cache_dirty = False
+            self._state_cache_dirty = False
         return self._cached_states
 
     def get_base_env(self) -> BaseVecEnv[ObsType]:
@@ -514,7 +520,23 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         #                                     th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
         info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
         info.update(adarl_env_info)
-        return clone_tensor_tree(info, detach=True)
+        return clone_tensor_tree(info)
+
+        # if self._info_cache_dirty:
+        #     info = {}
+        #     # timed_out = self._adarl_env.are_states_timedout(states)
+        #     # terminated = self._adarl_env.are_states_terminal(states)
+        #     # only_truncated = th.logical_and(timed_out, th.logical_not(terminated))
+        #     # info["TimeLimit.truncated"] = only_truncated
+        #     # info["timed_out"] = timed_out
+        #     adarl_env_info = self._adarl_env.get_infos(states)
+        #     # adarl_env_info["is_success"] = adarl_env_info.get("success",
+        #     #                                     th.as_tensor(False).to(device=self._adarl_env._th_device, non_blocking=self._adarl_env._th_device.type=="cuda").expand((self._adarl_env.num_envs,)))
+        #     info.update({k:th.as_tensor(v) for k,v in self._vec_ep_info.items()})
+        #     info.update(adarl_env_info)
+        #     self._cached_info = info
+        #     self._info_cache_dirty = False
+        # return clone_tensor_tree(self._cached_info, detach=True)
     
     @override
     def get_max_episode_steps(self):

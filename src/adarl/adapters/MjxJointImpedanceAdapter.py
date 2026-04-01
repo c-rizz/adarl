@@ -3,10 +3,20 @@ from __future__ import annotations
 import os
 os.environ["MUJOCO_GL"] = "egl"
 
-from adarl.adapters.MjxAdapter import MjxAdapter, jax2th, th2jax, SimState, SimConf
+from adarl.adapters.MjxAdapter import (
+    MjxAdapter,
+    MjxCommandBatch,
+    jax2th,
+    th2jax,
+    SimState,
+    SimConf,
+    StaticSimConf,
+    PublicCommand,
+    _InternalCommand,
+)
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.utils.utils import to_string_tensor, masked_assign
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 import jax
 from typing_extensions import override
 from typing import overload, Sequence
@@ -177,7 +187,6 @@ class SimConfJimp(SimConf):
             "body_rootid" : self.body_rootid,
             "monitored_collision_pairs" : self.monitored_collision_pairs,
             "geom_bodyid" : self.geom_bodyid,
-            "vec_size" : self.vec_size,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
             "jnt_dofadr" : self.jnt_dofadr
@@ -185,6 +194,62 @@ class SimConfJimp(SimConf):
         d.update(name_values)
         ret = SimConfJimp(**d)
         return ret
+
+
+@jax.tree_util.register_dataclass
+@dataclass
+class MjxJointImpedanceCommandBatch(MjxCommandBatch):
+    current_joint_impedance_command_pvesd : jnp.ndarray
+
+
+@dataclass(frozen=True)
+class SetCurrentJointImpedanceCommand(PublicCommand):
+    joint_impedances_pvesd : th.Tensor
+    vec_mask : th.Tensor | None = None
+    joint_names : Sequence[tuple[str, str]] | None = None
+
+    def build_internal_command(self, adapter : MjxJointImpedanceAdapter) -> _InternalCommand:
+        if self.joint_names is not None:
+            raise RuntimeError("joint_names is not supported, must be None (controls all impedance_controlled_joints)")
+        expected_size = (adapter._vec_size, adapter._sim_conf.imp_control_jids.shape[0], 5)
+        if self.joint_impedances_pvesd.size() != expected_size:
+            raise RuntimeError(f"joint_impedances_pvesd should have size {expected_size}, but it's {self.joint_impedances_pvesd.size()}")
+        return _InternalSetCurrentJointImpedanceCommand(
+            vec_mask=adapter._vec_mask_to_jax(self.vec_mask),
+            current_joint_impedance_command_pvesd=th2jax(self.joint_impedances_pvesd, adapter._jax_device),
+        )
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class _InternalSetCurrentJointImpedanceCommand(_InternalCommand):
+    vec_mask : jnp.ndarray
+    current_joint_impedance_command_pvesd : jnp.ndarray
+
+    def has_effect(self) -> bool:
+        return self.current_joint_impedance_command_pvesd.shape[1] > 0
+
+    def marks_forward_needed(self) -> bool:
+        return False
+
+    def run_jax(self, adapter : MjxJointImpedanceAdapter, sim_state : SimStateJimp, sim_conf : SimConfJimp, static_sim_conf : StaticSimConf) -> SimStateJimp:
+        if not self.has_effect():
+            return sim_state
+        cmd_delay = jnp.where(
+            self.vec_mask,
+            jnp.full_like(sim_state.sim_time, -1000.0),
+            jnp.full_like(sim_state.sim_time, float("+inf")),
+        )
+        new_queue, new_queue_times, _inserted = adapter._add_impedance_command_jax(
+            sim_time=sim_state.sim_time,
+            cmds_queue=sim_state.cmds_queue,
+            cmds_queue_times=sim_state.cmds_queue_times,
+            cmd_joint_pvesd=self.current_joint_impedance_command_pvesd,
+            cmd_delay=cmd_delay,
+        )
+        # TODO: somehow do a device-side assert on _inserted?
+        sim_state.replace_d({"cmds_queue_times" : new_queue_times, "cmds_queue" : new_queue})
+        return sim_state
 
 class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     
@@ -275,7 +340,6 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         body_rootid=self._sim_conf.body_rootid,
                                         monitored_collision_pairs=self._sim_conf.monitored_collision_pairs,
                                         geom_bodyid=self._sim_conf.geom_bodyid,
-                                        vec_size=self._sim_conf.vec_size,
                                         sim_dt=self._sim_conf.sim_dt,
                                         jnt_qposadr=self._sim_conf.jnt_qposadr,
                                         jnt_dofadr=self._sim_conf.jnt_dofadr,
@@ -353,12 +417,30 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._add_impedance_command(joint_impedances_pvesd=joint_impedances_pvesd,
                                     delay_sec=delay)
         
+    @partial(jax.jit, donate_argnames=("cmds_queue","cmds_queue_times"), static_argnames=("self"))
+    def _add_impedance_command_jax(self, sim_time : jnp.ndarray,
+                                         cmds_queue : jnp.ndarray,
+                                         cmds_queue_times : jnp.ndarray,
+                                         cmd_joint_pvesd : jnp.ndarray,
+                                         cmd_delay : jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        # sim_time=sim_state.sim_time
+        # cmds_queue=sim_state.cmds_queue,
+        # cmds_queue_times=sim_state.cmds_queue_times
+        new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=cmd_joint_pvesd,
+                                                                                        cmd_time=sim_time + cmd_delay,
+                                                                                        cmds_queue=cmds_queue,
+                                                                                        cmds_queue_times=cmds_queue_times)
+        return new_cmds_queue, new_cmds_queue_times, inserted
+        # return sim_state.replace_d({"cmds_queue" : new_cmds_queue, 
+        #                             "cmds_queue_times" : new_cmds_queue_times}), inserted
+        
+
     def _add_impedance_command(self,    joint_impedances_pvesd : th.Tensor,
                                         delay_sec : th.Tensor = 0.0) -> None:
         # No support for having commands that don't contain all joints
         record_region_start("MjxJointImpedanceAdapter.add_impedance_command")
         joint_impedances_pvesd_jax = th2jax(joint_impedances_pvesd, self._jax_device)
-        cmd_time_jax = th2jax(delay_sec.expand(self._vec_size)+self._simTime, self._jax_device)
+        cmd_delay_jax = th2jax(delay_sec.expand(self._vec_size), self._jax_device)
         record_time("MjxJointImpedanceAdapter.add_impedance_command: th->jax done")
         # jids = self._sim_conf.imp_control_jids
 
@@ -373,12 +455,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         # ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
         # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
-        new_cmds_queue, new_cmds_queue_times, inserted = self._insert_cmd_to_queue_vec( cmd=joint_impedances_pvesd_jax,
-                                                                                        cmd_time=cmd_time_jax,
-                                                                                        cmds_queue=self._sim_state.cmds_queue,
-                                                                                        cmds_queue_times=self._sim_state.cmds_queue_times)
-        record_time("MjxJointImpedanceAdapter.add_impedance_command: insert cmd done")
-        self._sim_state = self._sim_state.replace_d({"cmds_queue" : new_cmds_queue, "cmds_queue_times" : new_cmds_queue_times})
+        new_cmds, new_cmds_times, inserted = self._add_impedance_command_jax(self._sim_state.sim_time,
+                                                                             self._sim_state.cmds_queue,
+                                                                             self._sim_state.cmds_queue_times,
+                                                                             joint_impedances_pvesd_jax, cmd_delay_jax)
+        self._sim_state.cmds_queue = new_cmds
+        self._sim_state.cmds_queue_times = new_cmds_times
         record_time("MjxJointImpedanceAdapter.add_impedance_command: update sim state done")
         inserted = jax2th(inserted, self._out_th_device)
         dbg_check(lambda : th.all(inserted), 
@@ -661,7 +743,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     @override
     def get_current_joint_impedance_command(self) -> th.Tensor:
         return self._last_applied_jimp_cmd
-    
+
     @override
     def _get_joint_state_for_history(self, sim_state : SimStateJimp):
         return sim_state.vec_impjoints_pveaecpvesde
@@ -679,8 +761,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._sim_step_dt_th
 
     @override
-    @partial(jax.jit, donate_argnames=("sim_state",))
-    def _set_joint_state_data(self, sim_state : SimState, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
-        sim_state = super()._set_joint_state_data(sim_state, vec_mask_jnp, qpadr_qvadr, js_pve)
-        sim_state = self._reset_filters_jax()
+    @partial(jax.jit, static_argnames=["self"], donate_argnames=("sim_state",))
+    def _set_joint_state_data(self, sim_state : SimState, sim_conf : SimConf, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
+        sim_state = super()._set_joint_state_data(sim_state, sim_conf, vec_mask_jnp, qpadr_qvadr, js_pve)
+        sim_state = self._reset_filters_jax(sim_state, sim_conf)
         return sim_state

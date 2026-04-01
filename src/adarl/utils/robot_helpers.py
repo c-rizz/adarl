@@ -226,11 +226,29 @@ class Robot():
         ret : list[tuple[str,str]] = []
         for k in range(len(self._collision_geom_model.collisionPairs)):
             cr = self._collision_geom_model_data.collisionResults[k]
-            cp = self._collision_geom_model.collisionPairs[k]
             if cr.isCollision():
+                cp = self._collision_geom_model.collisionPairs[k]
                 ret.append((self._collision_geom_model.geometryObjects[cp.first].name,
                             self._collision_geom_model.geometryObjects[cp.second].name))
         return ret
+    
+    def has_collisions(self):
+
+        # this computeCollisions recoputes forward kinematics and geometry object placements
+        pinocchio.computeCollisions(model = self._model,
+                                    data = self._model_data,
+                                    geometry_model = self._collision_geom_model,
+                                    geometry_data = self._collision_geom_model_data,
+                                    q = self._joint_position,
+                                    stop_at_first_collision = True)
+        for k in range(len(self._collision_geom_model.collisionPairs)):
+            cr = self._collision_geom_model_data.collisionResults[k]
+            if cr.isCollision():
+                cp = self._collision_geom_model.collisionPairs[k]
+                collision_pair = (self._collision_geom_model.geometryObjects[cp.first].name,
+                            self._collision_geom_model.geometryObjects[cp.second].name)
+                return True, collision_pair
+        return False, None
 
     def _update_forward_kinematics(self):
         if self._need_to_recompute_forward_kin:

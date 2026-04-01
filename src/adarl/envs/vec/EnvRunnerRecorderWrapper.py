@@ -281,6 +281,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def _write_infobuffer(self, out_filename, infobuffer):
         infos = tt.map_tensor_tree(infobuffer, lambda t: th.as_tensor(t).detach())
         infos = tt.stack_tensor_tree(infos)
+        # sizes = tt.map_tensor_tree(infos, lambda t: t.shape if t is not None else None)
         infos_np = tt.map_tensor_tree(infos, lambda t: t.cpu().numpy())
         hdf5plot.save.save_dict(out_filename+".hdf5", infos_np, self._info_labels_np)
 

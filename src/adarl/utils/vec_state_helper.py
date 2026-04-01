@@ -121,6 +121,14 @@ class ThBoxStateHelper(StateHelper):
         """Defines the observable subfields for the observation. If None, all subfields are observable. Only supported for 1-dimensional fields."""
         obs_history_length : int = 1
         """Defines how many history steps are observable. Must be less than or equal to the state history_length."""
+        
+        @classmethod
+        def non_observable(cls):
+            return cls([],[],1)
+        
+        @classmethod
+        def fully_observable(cls):
+            return cls()
 
     def __init__(self,  fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
                         dtype : th.dtype,
@@ -132,6 +140,33 @@ class ThBoxStateHelper(StateHelper):
                         subfield_names : list[str] | np.ndarray | None = None,
                         flatten_observation = False,
                         observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None = None):
+        """_summary_
+
+        Parameters
+        ----------
+        fields_minmax : Mapping[FieldName,th.Tensor | Sequence[float] | Sequence[th.Tensor]]
+            _description_
+        dtype : th.dtype
+            _description_
+        th_device : th.device
+            _description_
+        field_size : list[int] | tuple[int,...]
+            _description_
+        vec_size : int
+            _description_
+        field_names : Sequence[FieldName] | None, optional
+            _description_, by default None
+        history_length : int, optional
+            _description_, by default 1
+        subfield_names : list[str] | np.ndarray | None, optional
+            _description_, by default None
+        flatten_observation : bool, optional
+            _description_, by default False
+        observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None, optional
+            Definitions for the possible generated observations, if None, then the state is fully observable for any observation name. By default None.
+            These will be used to generate observations, the proper observation will be generated when requested with the respective name
+            in observe(). 
+        """
         if field_names is None:
             field_names = list(fields_minmax.keys())
         self.field_names = field_names
@@ -904,7 +939,6 @@ class DictStateHelper(StateHelper):
             for obs_name in self._obs_defs:
                 obs_fields_names = self._obs_names(self._obs_defs[obs_name])
                 all_obs_fields_names.update({obs_name+"."+subobs_name:obsfield_name for subobs_name,obsfield_name in obs_fields_names.items()})
-            # ggLog.info(f"all_obs_fields_names = {{k:v.shape for k,v in all_obs_fields_names.items()}}")
             return all_obs_fields_names
 
     

@@ -55,6 +55,34 @@ def _build_observation_space(shape: tuple[int, ...] | Mapping,
             )
         )
     return _make_th_box(shape, device, low=low, high=high)
+
+
+def _space_bounds_for_dtype(dtype: np.dtype) -> tuple[Any, Any]:
+    if np.issubdtype(dtype, np.bool_):
+        return False, True
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        return info.min, info.max
+    return float("-inf"), float("inf")
+
+
+def _build_space_from_sample(
+    sample: Any,
+    device: th.device,
+    batch_size: int,
+) -> gym_spaces.Space:
+    if isinstance(sample, Mapping):
+        return ThDict(
+            OrderedDict(
+                (key, _build_space_from_sample(subsample, device, batch_size))
+                for key, subsample in sample.items()
+            )
+        )
+
+    sample_np = np.asarray(sample)
+    shape = sample_np.shape[1:] if sample_np.ndim > 0 and sample_np.shape[0] == batch_size else sample_np.shape
+    low, high = _space_bounds_for_dtype(sample_np.dtype)
+    return ThBox(low=low, high=high, shape=shape, dtype=sample_np.dtype, torch_device=device)
     
 
 MjpObsType = dict[str, th.Tensor]
@@ -77,13 +105,15 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
             device = th.device("cpu")
         else:
             device = th.device(device)
+        self.th_device = device
         self._action_device_th = th.device(action_device)
         if self._action_device_th.index is None:
             self._action_device_th = th.device(self._action_device_th.type, index=0)
         self._action_device_jax = jax.devices("gpu")[self._action_device_th.index] if self._action_device_th.type == "cuda" else jax.devices("cpu")[0]
         self._seed = seed
         self._mjp_env = env
-        self._jax_rng_key = jax.device_put(jax.random.PRNGKey(self._seed), jax.devices("gpu")[device.index])
+        self._jax_device = jax.devices("gpu")[device.index] if device.type == "cuda" else jax.devices("cpu")[0]
+        self._jax_rng_key = jax.device_put(jax.random.PRNGKey(self._seed), self._jax_device)
         self._rng_reset_key, self._rng_randomization_key = jax.random.split(self._jax_rng_key)
         self._rng_reset_key = jax.random.split(self._rng_reset_key, num_envs)
         self._rng_randomization_key = jax.random.split(self._rng_randomization_key, num_envs)
@@ -136,7 +166,9 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
                                     torch_device=device)
         vec_reward_space : ThBox = batch_space(single_reward_space, self.num_envs) #type: ignore[assignment]
 
-        info_space = gym_spaces.Dict({"steps" : ThBox(low=0, high=max_episode_steps, shape=(), dtype=np.int32, torch_device=device)})
+        probe_state = self._mjp_env.reset(self._rng_reset_key)
+        probe_infos = self._extract_public_infos(probe_state)
+        info_space = _build_space_from_sample(probe_infos, device, self.num_envs)
         ui_indexes = th.as_tensor(ui_render_envs, dtype=th.int32, device=device)
 
         super().__init__(
@@ -153,13 +185,25 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
             th_device=device,
         )
 
-
         self._reset_fn = jax.jit(self._mjp_env.reset)
         self._step_fn = jax.jit(self._mjp_env.step)
 
         self._reward_shape = single_reward_space.shape
         self._empty_mask = th.zeros((self.num_envs,), dtype=th.bool, device=self.th_device)
         self._last_actions: th.Tensor | None = None
+
+    def _extract_public_infos(self, state: mjx_env.State) -> dict[str, Any]:
+        extracted: OrderedDict[str, Any] = OrderedDict()
+        info = state.info
+        for key in ("steps", "truncation", "episode_done", "episode_metrics"):
+            if key in info:
+                extracted[key] = info[key]
+        if state.metrics:
+            extracted["metrics"] = state.metrics
+        return extracted
+
+    def _state_infos_to_torch(self, state: mjx_env.State) -> TensorTree[th.Tensor]:
+        return map_tensor_tree(self._extract_public_infos(state), _jax_to_torch)
 
     @override
     def step(self, actions: th.Tensor, autoreset: bool | None = None) -> Tuple[ MjpObsType,
@@ -195,8 +239,7 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
 
         reinit_done = terminateds_tensor | truncateds_tensor
 
-        # For now skip the infos, as they aren't really provided in a consistent way
-        consequent_infos = {"steps" : _jax_to_torch(info["steps"])}
+        consequent_infos = self._state_infos_to_torch(self.env_state)
         next_start_infos = consequent_infos
 
         # print(f"steps tensor: {consequent_infos['steps']}")
@@ -328,7 +371,7 @@ class PlaygroundMjxEnvRunner(EnvRunnerInterface[MjpObsType]):
         if not isinstance(obs, Mapping):
             obs = {self._obs_dict_wrapping_key: obs}
         obs_th  : MjpObsType = map_tensor_tree(obs, _jax_to_torch)
-        infos_th = {}
+        infos_th = self._state_infos_to_torch(self.env_state)
         return obs_th, infos_th
 
     @override
