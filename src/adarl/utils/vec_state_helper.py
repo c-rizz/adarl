@@ -123,12 +123,12 @@ class ThBoxStateHelper(StateHelper):
         """Defines how many history steps are observable. Must be less than or equal to the state history_length."""
         
         @classmethod
-        def non_observable(cls):
+        def not_observable(cls):
             return cls([],[],1)
         
         @classmethod
-        def fully_observable(cls):
-            return cls()
+        def fully_observable(cls, obs_history_length : int = 1):
+            return cls(obs_history_length=obs_history_length)
 
     def __init__(self,  fields_minmax : Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]],
                         dtype : th.dtype,
@@ -1071,51 +1071,56 @@ class RobotStatsStateHelper(ThBoxStateHelper):
                         th_device : th.device,
                         vec_size : int,
                         history_length : int = 1,
-                        include_senseff = False,
+                        include_senseff_and_power = False,
                         flatten_observation = False,
                         observation_definitions : dict[str,ThBoxStateHelper.SimpleObsDef] | ThBoxStateHelper.SimpleObsDef | None = None):
-        self._include_senseff = include_senseff
+        self._include_senseff_and_power = include_senseff_and_power
         joint_limit_minmax_pve = {k:th.as_tensor(v) for k,v in joint_limit_minmax_pve.items()}
         acc_minmax = {jn:th.stack([minmax_pve[0,1]-minmax_pve[1,1], minmax_pve[1,1]-minmax_pve[0,1]]).unsqueeze(1) for jn,minmax_pve in joint_limit_minmax_pve.items()}
-        if include_senseff:
-            subfield_names = [  "minpos","minvel","minacc","mineff","minseff",
-                                "maxpos","maxvel","maxacc","maxeff","maxseff",
-                                "avgpos","avgvel","avgacc","avgeff","avgseff",
-                                "stdpos","stdvel","stdacc","stdeff","stdseff"]
+        if include_senseff_and_power:
+            subfield_names = [  "minpos","minvel","minacc","mineff","minseff","minpow",
+                                "maxpos","maxvel","maxacc","maxeff","maxseff","maxpow",
+                                "avgpos","avgvel","avgacc","avgeff","avgseff","avgpow",
+                                "stdpos","stdvel","stdacc","stdeff","stdseff","stdpow"]
             senseff_minmax = th.as_tensor([[-10_000.0], [10_000.0]], device = th_device) # Can we have better sensed effort limits?
-            jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2], acc_minmax[jn], minmax_pve[:,[2]], senseff_minmax], dim=1) 
+            pow_minmax = th.as_tensor([[-1000_000.0], [1000_000.0]], device = th_device) # Can we have better power limits?
+            jlims_minmax_pvaee = {jn:th.cat([minmax_pve[:,:2], 
+                                             acc_minmax[jn], 
+                                             minmax_pve[:,[2]], 
+                                             senseff_minmax,
+                                             pow_minmax], dim=1) 
                                  for jn,minmax_pve in joint_limit_minmax_pve.items()}
         else:
             subfield_names = [  "minpos","minvel","minacc","mineff",
                                 "maxpos","maxvel","maxacc","maxeff",
                                 "avgpos","avgvel","avgacc","avgeff",
                                 "stdpos","stdvel","stdacc","stdeff"]
-            jlims_minmax_pvae = {jn:th.cat([minmax_pve[:,:2], acc_minmax[jn], minmax_pve[:,[2]]], dim=1)
+            jlims_minmax_pvaee = {jn:th.cat([minmax_pve[:,:2], acc_minmax[jn], minmax_pve[:,[2]]], dim=1)
                                  for jn,minmax_pve in joint_limit_minmax_pve.items()}
-        super().__init__(   field_names = list(jlims_minmax_pvae.keys()),
+        super().__init__(   field_names = list(jlims_minmax_pvaee.keys()),
                             dtype = dtype,
                             th_device = th_device,
                             field_size = (len(subfield_names),),
-                            fields_minmax= self._build_fields_minmax(jlims_minmax_pvae),
+                            fields_minmax= self._build_fields_minmax(jlims_minmax_pvaee),
                             history_length = history_length,
                             subfield_names = subfield_names,
                             vec_size=vec_size,
                             observation_definitions=observation_definitions,
                             flatten_observation=flatten_observation)
 
-    def _build_fields_minmax(self,  joint_limit_minmax_pve : Mapping[tuple[str,str],np.ndarray | th.Tensor] ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
+    def _build_fields_minmax(self,  joint_limit_minmax_pvaee : Mapping[tuple[str,str],np.ndarray | th.Tensor] ) -> Mapping[FieldName,th.Tensor|Sequence[float]|Sequence[th.Tensor]]:
         ret = {}
-        for joint,limits_minmax_pve in joint_limit_minmax_pve.items():
-            limits_minmax_pve = th.as_tensor(limits_minmax_pve)
-            expected_size = (2,5) if self._include_senseff else (2,4)
-            if limits_minmax_pve.size() != expected_size:
-                raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be {expected_size}, but it's {limits_minmax_pve.size()}")
-            std_max_pve = th.sqrt((limits_minmax_pve[0]**2+limits_minmax_pve[1]**2)/2 - ((limits_minmax_pve[0]+limits_minmax_pve[1])/2)**2)
-            std_min_pve = th.zeros_like(limits_minmax_pve[0])
+        for joint,limits_minmax_pvaee in joint_limit_minmax_pvaee.items():
+            limits_minmax_pvaee = th.as_tensor(limits_minmax_pvaee)
+            expected_size = (2,6) if self._include_senseff_and_power else (2,4)
+            if limits_minmax_pvaee.size() != expected_size:
+                raise  RuntimeError(f"Unexpected tensor size for joint_limit_minmax_pve['{joint}'], should be {expected_size}, but it's {limits_minmax_pvaee.size()}")
+            std_max_pve = th.sqrt((limits_minmax_pvaee[0]**2+limits_minmax_pvaee[1]**2)/2 - ((limits_minmax_pvaee[0]+limits_minmax_pvaee[1])/2)**2)
+            std_min_pve = th.zeros_like(limits_minmax_pvaee[0])
             std_minmax_pve = th.stack([std_min_pve,std_max_pve])
-            ret[joint] = th.concat([limits_minmax_pve,
-                                    limits_minmax_pve,
-                                    limits_minmax_pve,
+            ret[joint] = th.concat([limits_minmax_pvaee,
+                                    limits_minmax_pvaee,
+                                    limits_minmax_pvaee,
                                     std_minmax_pve], dim=1)
         # ggLog.info(f"stats minmax = \n{ret}")
         return ret

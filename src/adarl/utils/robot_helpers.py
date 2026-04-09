@@ -13,6 +13,22 @@ import faulthandler
 faulthandler.enable()
 from enum import Enum
 from adarl.utils.utils import quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
+import tempfile
+
+def buildModelFromMJCFString(model_string : str):
+    with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
+        f.write(model_string.encode())
+        f.flush()
+        model = pinocchio.buildModelFromMJCF(f.name)
+    return model
+
+def buildGeomFromMJCFString(model, model_string : str, geom_type : pinocchio.GeometryType):
+    with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
+        f.write(model_string.encode())
+        f.flush()
+        geom_model = pinocchio.buildGeomFromMJCF(model, f.name, geom_type)
+    return geom_model
+
 
 class JointProperties(TypedDict):
     joint_type : str
@@ -24,12 +40,20 @@ class Robot():
                                         "FLOATING",
                                         "CONTINUOUS"])
     
-    def __init__(self, model_urdf_string : str):
-        self._urdf_string = model_urdf_string
-        self._model = pinocchio.buildModelFromXML(self._urdf_string)
-        self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
-                                                                       self._urdf_string,
-                                                                       pinocchio.GeometryType.COLLISION)
+    def __init__(self, robot_description_string : str,
+                       robot_description_format : Literal["urdf", "sdf", "mjcf"] = "urdf"):
+        self._robot_string = robot_description_string
+        self._robot_format = robot_description_format
+        if robot_description_format == "urdf":
+            self._model = pinocchio.buildModelFromXML(self._robot_string)
+            self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
+                                                                        self._robot_string,
+                                                                        pinocchio.GeometryType.COLLISION)
+        elif robot_description_format == "mjcf":
+            self._model = buildModelFromMJCFString(self._robot_string)
+            self._collision_geom_model = buildGeomFromMJCFString(self._model, self._robot_string, pinocchio.GeometryType.COLLISION)
+        else:
+            raise NotImplementedError(f"Only urdf and mjcf formats are currently supported, but got {robot_description_format}")
         self._model_data = self._model.createData()
         # self._joint_position = pinocchio.randomConfiguration(self._model)
         q_size = sum([self._model.joints[jid].nq for jid in range(1,self._model.njoints)])

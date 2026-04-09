@@ -407,7 +407,7 @@ def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6,
 
 model_element_separator = "#"
 
-from mujoco.mjx._src.io import types, _get_contact, support
+from mujoco.mjx._src.io import mjwp, types, _get_contact, support
 
 @jax.jit
 def get_renderdata_dict(jax_data : mjx.Data):
@@ -547,6 +547,114 @@ def get_data_into(
       else:
         setattr(result_i, field.name, value)
 
+
+from typing import Optional, Dict, Union
+from mujoco.mjx._src.io import types, _resolve_impl_and_device, _put_data_jax, _put_data_c, _put_data_cpp, _check_warp_installed, _wp_to_np_type, _put_data_public_fields, _get_nested_attr
+import warnings
+def _put_data_warp(
+    m: mujoco.MjModel,
+    d: mujoco.MjData,
+    device: Optional[jax.Device] = None,
+    naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
+    njmax: Optional[int] = None,
+) -> types.Data:
+  """Puts mujoco.MjData onto a device, resulting in mjx.Data."""
+
+  from mujoco.mjx.warp import warp as wp
+  import mujoco.mjx.warp as mjxw
+  
+  with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
+    dw = mjwp.put_data(m, d, nworld=1, naconmax=naconmax, njmax=njmax, naccdmax=naccdmax)  # pylint: disable=undefined-variable
+
+  fields = _put_data_public_fields(d)
+  for k in fields:
+    if not hasattr(dw, k):
+      continue
+    field = _wp_to_np_type(getattr(dw, k))
+    if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
+      field = field.reshape(field.shape[1:])
+    fields[k] = field
+
+  impl_fields = {}
+  for k in mjxw.types.DataWarp.__annotations__.keys():
+    field = _get_nested_attr(dw, k, split='__')
+    field = _wp_to_np_type(field)
+    if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
+      field = field.reshape(field.shape[1:])
+    impl_fields[k] = field
+
+  data = types.Data(
+      **fields,
+      _impl=mjxw.types.DataWarp(**impl_fields),
+  )
+
+  data = jax.device_put(data, device=device)
+  return data
+
+
+def put_data(
+    m: mujoco.MjModel,
+    d: mujoco.MjData,
+    device: Optional[jax.Device] = None,
+    impl: Optional[Union[str, types.Impl]] = None,
+    nconmax: Optional[int] = None,
+    naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
+    njmax: Optional[int] = None,
+    dummy_arg_for_batching: Optional[jax.Array] = None,
+    keepalive_refs: Optional[Dict[int, Any]] = None,
+) -> types.Data:
+  """Puts mujoco.MjData onto a device, resulting in mjx.Data.
+
+  Args:
+    m: the model to use
+    d: the data to put on device
+    device: which device to use - if unspecified picks the default device
+    impl: implementation to use ('jax', 'warp')
+    nconmax: maximum number of contacts to allocate for warp
+    naconmax: maximum number of contacts to allocate for warp across all worlds
+      Since the number of worlds is **not** pre-defined in JAX, we use the
+      `naconmax` argument to set the upper bound for the number of contacts
+      across all worlds, rather than the `nconmax` argument from MuJoCo Warp.
+    njmax: maximum number of constraints to allocate for warp
+    dummy_arg_for_batching: dummy argument to use for batching in cpp
+      implementation
+    keepalive_refs: optional dict to store references to underlying MuJoCo
+      objects, preventing them from being garbage collected.
+
+  Returns:
+    an mjx.Data placed on device
+    DeprecationWarning: if nconmax is used
+  """
+  if nconmax is not None:
+    warnings.warn(
+        'nconmax will be deprecated in mujoco-mjx>=3.5. Use naconmax instead.',
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+  impl, device = _resolve_impl_and_device(impl, device)
+  if impl == types.Impl.JAX:
+    return _put_data_jax(m, d, device)
+  elif impl == types.Impl.C:
+    return _put_data_c(m, d, device)
+  elif impl == types.Impl.CPP:
+    return _put_data_cpp(
+        m,
+        d,
+        device,
+        dummy_arg_for_batching=dummy_arg_for_batching,
+        keepalive_refs=keepalive_refs,
+    )
+  elif impl == types.Impl.WARP:
+    _check_warp_installed()
+    naconmax = nconmax if naconmax is None else naconmax
+    return _put_data_warp(m, d, device, naconmax, naccdmax, njmax)
+
+  raise NotImplementedError(
+      f'put_data for implementation "{impl}" not implemented yet.'
+  )
 
 
 
@@ -768,7 +876,7 @@ class SimState:
     requested_qfrc_applied : jnp.ndarray
     sim_time : jnp.ndarray
     stats_step_count : jnp.ndarray
-    mon_joint_stats_arr_pvaee : jnp.ndarray
+    mon_joint_stats_arr_pvaeep : jnp.ndarray
     mon_links_stats_arr_v : jnp.ndarray
     mon_joint_state_pveae : jnp.ndarray  # precomputed joint states for monitored joints
     mon_link_state : jnp.ndarray  # precomputed link states for monitored links
@@ -796,7 +904,7 @@ class SimState:
              "stats_step_count" : self.stats_step_count,
              "impulse_startends_stime" : self.impulse_startends_stime,
              "impulses_xfrc" : self.impulses_xfrc,
-             "mon_joint_stats_arr_pvaee" : self.mon_joint_stats_arr_pvaee,
+             "mon_joint_stats_arr_pvaeep" : self.mon_joint_stats_arr_pvaeep,
              "mon_links_stats_arr_v" : self.mon_links_stats_arr_v,
              "mon_joint_state_pveae" : self.mon_joint_state_pveae,
              "mon_link_state" : self.mon_link_state,
@@ -1173,8 +1281,8 @@ class SimElementsState:
     """(V, L, 3)  local linear acceleration"""
     collision_mask     : th.Tensor | None
     """(V, P)     bool, True if pair is in contact"""
-    joint_stats_pvaee  : th.Tensor | None
-    """(V, 4, J, 5) step stats [min,max,avg,std] of joint quantities (reordered to p,v,a,e,e)"""
+    joint_stats_pvaeep  : th.Tensor | None
+    """(V, 4, J, 6) step stats [min,max,avg,std] of joint quantities (reordered to position,velocity,acceleration,cmd_effort,actual_effort,cmd_power)"""
     link_stats_v       : th.Tensor | None
     """(V, 4, L, 6) step stats [min,max,avg,std] of link linear+angular velocity"""
 
@@ -1252,7 +1360,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                     requested_qfrc_applied=jnp.empty((0,), device = jax_device),
                                     sim_time=jnp.empty((0,), device = jax_device),
                                     stats_step_count=jnp.zeros((1,), device = jax_device),
-                                    mon_joint_stats_arr_pvaee=jnp.empty((self._vec_size,0,5), device = jax_device),
+                                    mon_joint_stats_arr_pvaeep=jnp.empty((self._vec_size,0,6), device = jax_device),
                                     mon_links_stats_arr_v=jnp.empty((self._vec_size,0,6), device = jax_device),
                                     mon_joint_state_pveae=jnp.empty((self._vec_size,0,5), device = jax_device),
                                     mon_link_state=jnp.empty((self._vec_size,0,13), device = jax_device),
@@ -1300,8 +1408,20 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def sim_step_duration(self):
         return self._sim_step_dt_th
 
-    @staticmethod
-    def _mj_name_to_pair(mjname : str):
+    def _mj_name_to_pair(self, mjid : int, objtype):
+        mjname = mujoco.mj_id2name(self._mj_model, objtype, mjid)
+        if mjname is None:
+            if objtype == mujoco.mjtObj.mjOBJ_BODY:
+                objtype_name = "body"
+            elif objtype == mujoco.mjtObj.mjOBJ_JOINT:
+                objtype_name = "joint"
+            elif objtype == mujoco.mjtObj.mjOBJ_GEOM:
+                objtype_name = "geom"
+            elif objtype == mujoco.mjtObj.mjOBJ_CAMERA:
+                objtype_name = "camera"
+            else:
+                raise RuntimeError(f"Unsupported objtype {objtype}")
+            mjname = f"unknownmodel#{objtype_name}_{mjid}"
         if mjname == "world":
             return mjname,mjname
         sep = mjname.find(model_element_separator)
@@ -1345,7 +1465,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 in_axes=((self._mjx_model_in_axes, 0, 0, 0, None)) # map over sims and per-env rays positions/directions
                             ))
 
-    def _init_warp_render_context(self):
+    def _init_warp_render_context(self, resolutions : dict[str, tuple[int,int]] | None = None):
         if not self._enable_rendering or self._render_backend != "warp":
             return
         missing_symbols = [
@@ -1357,26 +1477,42 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 f"render_backend='warp' requested, but mujoco.mjx is missing rendering symbols: {missing_symbols}"
             )
 
-        cam_active = [cid in self._cid2cname for cid in range(self._mj_model.ncam)]
+        cam_active = [self._cid2cname[cid] in self._monitored_cameras for cid in range(self._mj_model.ncam)]
+        cam_res_wh = [(self._camera_sizes_hw[c][1], self._camera_sizes_hw[c][0])
+                        for c in self._monitored_cameras]
         self._warp_render_context = mjx.create_render_context(
             self._mj_model,
             nworld=self._vec_size,
-            cam_res=None,
+            cam_res=cam_res_wh,
             render_rgb=True,
             render_depth=True,
             cam_active=cam_active,
         )
         self._warp_render_context_pytree = self._warp_render_context.pytree()
+        self._warp_render_cname2idx = {cname: i for i, cname in enumerate(self._monitored_cameras)}
         self._warp_render_has_rgb = True
         self._warp_render_has_depth = True
+        ggLog.info(f"monitored_cameras = {self._monitored_cameras}")
+        ggLog.info(f"_cid2cname = {self._cid2cname}")
+        ggLog.info(f"Warp render context initialized with cam_active={cam_active}, res={cam_res_wh}")
 
-    @partial(jax.jit, static_argnames=["self"])
-    def _render_warp_jax(self, sim_state : SimState):
-        if self._warp_render_context_pytree is None:
+    @staticmethod
+    @partial(jax.vmap, in_axes=(None, None, 0))
+    def _vec_get_rgb(render_context, cidx, pixels):
+        return mjx.get_rgb(render_context, cidx, pixels)
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["render_context","cam_indexes"])
+    def _render_warp_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
+        if render_context is None:
             raise RuntimeError("Warp render context not initialized")
-        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, self._warp_render_context_pytree)
-        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, self._warp_render_context_pytree)
-        return pixels, aux
+        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
+        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        rgbs = []
+        for cidx in cam_indexes:
+            rgb = MjxAdapter._vec_get_rgb(render_context, cidx, pixels)
+            rgbs.append(rgb)
+        return rgbs
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
@@ -1408,7 +1544,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
             text_file.write(str(self._mj_model.opt))
 
-
+        self._safe_revolute_dof_damping = 2
+        self._safe_revolute_dof_frictionloss = 0.0
         for dof_id in range(self._mj_model.nv):
             joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
             if joint_type == mujoco.mjtJoint.mjJNT_HINGE:
@@ -1416,6 +1553,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
                 if self._revolute_dof_armature_override is not None:
                     self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
+                if self._mj_model.dof_frictionloss[dof_id] == 0:
+                    self._mj_model.dof_frictionloss[dof_id] = self._safe_revolute_dof_frictionloss
+                if self._mj_model.dof_damping[dof_id] == 0:
+                    self._mj_model.dof_damping[dof_id] = self._safe_revolute_dof_damping
 
         # model = models[0]
         # if model.format == "urdf.xacro":
@@ -1429,14 +1570,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # # Make model, data, and renderer
         # self._mj_model = mujoco.MjModel.from_xml_string(urdf_string)
 
-        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
+        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(jid, mujoco.mjtObj.mjOBJ_JOINT)
                            for jid in range(self._mj_model.njnt)}
         self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
-        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
+        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(lid, mujoco.mjtObj.mjOBJ_BODY)
                            for lid in range(self._mj_model.nbody)}
         self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
-        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
-                           for jid in range(self._mj_model.ncam)}
+        self._cid2cname : dict[int, str] = {cid:self._mj_name_to_pair(cid, mujoco.mjtObj.mjOBJ_CAMERA)[1]
+                           for cid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
         if default_link_group_collisions is not None:
             # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possible collisions 
@@ -1473,7 +1614,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_conf.jnt_dofadr = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         if self._mjx_impl == "warp":
-            mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
+            mjx_data = put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
                                     naconmax = self._vec_size*20, njmax = 100, naccdmax = self._vec_size*10)
         else:
             mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
@@ -1946,7 +2087,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
     def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool) -> tuple[SimState, jnp.ndarray | None]:
         if must_init_step:
-            self._sim_state = MjxAdapter._clear_step_stats(self._sim_state)
+            sim_state = MjxAdapter._clear_step_stats(sim_state)
         (sim_state, sim_conf), joints_state_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
                                                   init = (sim_state, sim_conf),
                                                   xs = (), 
@@ -2145,12 +2286,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             out_th_device, non_blocking=out_th_device.type=="cuda"
         )
         self._forward_if_needed()
-        pixels, _ = self._render_warp_jax(self._sim_state)
+        rgbs = self._render_warp_jax(self._sim_state,
+                                          self._warp_render_context_pytree,
+                                          tuple([self._warp_render_cname2idx[cam] for cam in requestedCameras]))
+        # ggLog.info(f"got warp render pixels with shape {[i.shape for i in rgbs]} for {nvecs} vecs and {len(requestedCameras)} cameras")
 
         all_imgs : list[th.Tensor] = []
-        for cam_i, cam in enumerate(requestedCameras):
-            cid = self._cname2cid[cam]
-            rgb = mjx.get_rgb(self._warp_render_context_pytree, cid, p)(pixels)
+        for i in range(len(requestedCameras)):
+            rgb = rgbs[i]
             rgb_th = jax2th(rgb, th_device=out_th_device)
             vec_mask_dev = vec_mask.to(device=rgb_th.device, non_blocking=rgb_th.device.type=="cuda")
             if use_fixed_shapes:
@@ -2159,10 +2302,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             else:
                 rgb_th = rgb_th[vec_mask_dev]
             if out is not None:
-                if out[cam_i].shape != rgb_th.shape:
-                    raise RuntimeError(f"getRenderings: out[{cam_i}].shape={out[cam_i].shape} != expected shape={rgb_th.shape}")
-                out[cam_i].copy_(rgb_th, non_blocking=out_th_device.type=="cuda")
-                all_imgs.append(out[cam_i])
+                if out[i].shape != rgb_th.shape:
+                    raise RuntimeError(f"getRenderings: out[{i}].shape={out[i].shape} != expected shape={rgb_th.shape}")
+                out[i].copy_(rgb_th, non_blocking=out_th_device.type=="cuda")
+                all_imgs.append(out[i])
             else:
                 all_imgs.append(rgb_th)
         return all_imgs, times
@@ -2243,6 +2386,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                       out : list[th.Tensor] | None = None,
                       depth : bool = False,
                       use_fixed_shapes : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
+        record_region_start("MjxAdapter.getRenderings")
         if out_th_device is None:
             out_th_device = self._out_th_device
         if not self._enable_rendering:
@@ -2252,16 +2396,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         if self._render_backend == "warp":
             if depth:
-                return self._render_depth_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+                r = self._render_depth_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
             else:
-                return self._render_rgb_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+                r = self._render_rgb_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
         else:
             if len(self._renderers)==0:
                 raise RuntimeError("CPU rendering backend selected, but renderers were not initialized")
             if depth:
-                return self._render_depth(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+                r = self._render_depth(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
             else:
-                return self._render_rgb(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+                r = self._render_rgb(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+        record_region_end("MjxAdapter.getRenderings")
+        return r
 
 
     @override
@@ -2316,7 +2462,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             link_state         : (vec_size, L, 13)     pos_xyz, ori_xyzw, linvel_xyz, angvel_xyz
             link_acceleration  : (vec_size, L, 3)      local linear acceleration
             collision_mask     : (vec_size, P)          bool contact flags for all monitored pairs
-            joint_stats_pvaee  : (vec_size, 4, J, 5)   [min,max,avg,std] of joint state over the step substeps (quantities ordered p,v,a,e,e)
+            joint_stats_pvaee  : (vec_size, 4, J, 6)   [min,max,avg,std] of joint state over the step substeps (quantities ordered position, velocity, acceleration, command_effort, actual_effort, power)
             link_stats_v       : (vec_size, 4, L, 6)   [min,max,avg,std] of link linear+angular velocity over the step substeps
         """
         self._forward_if_needed()
@@ -2325,7 +2471,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         lstate  = jax2th(self._sim_state.mon_link_state,                  th_device=self._out_th_device) if return_lstates else None
         lacc    = jax2th(self._sim_state.mon_link_acceleration,            th_device=self._out_th_device) if return_accelerations else None
         cmask   = jax2th(self._sim_state.mon_collision_mask,               th_device=self._out_th_device) if return_collisions else None
-        jstats  = jax2th(self._sim_state.mon_joint_stats_arr_pvaee[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,5)
+        jstats  = jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,6)
         lstats  = jax2th(self._sim_state.mon_links_stats_arr_v[:, :4],     th_device=self._out_th_device) if return_lstats else None  # (V,4,L,6)
         # Reorder joints in torch (avoids JAX retrace on dynamic indices)
         if joint_ids is not None:
@@ -2349,7 +2495,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 link_state=lstate,
                                 link_linacc=lacc,
                                 collision_mask=cmask,
-                                joint_stats_pvaee=jstats,
+                                joint_stats_pvaeep=jstats,
                                 link_stats_v=lstats)
     
     @staticmethod
@@ -2413,7 +2559,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @staticmethod
     @partial(jax.jit, donate_argnames=["sim_state"])
     def _init_stats(sim_state : SimState):
-        joint_stats_array = sim_state.mon_joint_stats_arr_pvaee
+        joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
         joint_stats_array = joint_stats_array.at[:,0].set(float("+inf")) # mins
         joint_stats_array = joint_stats_array.at[:,1].set(float("-inf")) # maxes
         joint_stats_array = joint_stats_array.at[:,2].set(0) # avg
@@ -2429,7 +2575,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         links_stats_array = links_stats_array.at[:,5].set(0)
 
         sim_state = sim_state.replace_d({"stats_step_count": 0,
-                                         "mon_joint_stats_arr_pvaee" : joint_stats_array,
+                                         "mon_joint_stats_arr_pvaeep" : joint_stats_array,
                                          "mon_links_stats_arr_v" : links_stats_array})
         return sim_state
 
@@ -2440,13 +2586,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 sim_state : SimState):
         current_jstate_pvaee = current_jstate_pvae
         step_count = sim_state.stats_step_count + 1
-        joint_stats_array = sim_state.mon_joint_stats_arr_pvaee
-        joint_stats_array = joint_stats_array.at[:,4].set(jnp.add(    joint_stats_array[:,4], current_jstate_pvaee)) # sum of values
-        joint_stats_array = joint_stats_array.at[:,5].set(jnp.add(    joint_stats_array[:,5], jnp.square(current_jstate_pvaee))) # sum of squares
-        joint_stats_array = joint_stats_array.at[:,0].set(jnp.minimum(joint_stats_array[:,0], current_jstate_pvaee))
-        joint_stats_array = joint_stats_array.at[:,1].set(jnp.maximum(joint_stats_array[:,1], current_jstate_pvaee))
-        joint_stats_array = joint_stats_array.at[:,2].set(joint_stats_array[:,4]/step_count) # average values
-        joint_stats_array = joint_stats_array.at[:,3].set(jnp.sqrt(jnp.clip(joint_stats_array[:,5]/step_count-jnp.square(joint_stats_array[:,2]),min=0))) # standard deviation
+        joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
+        jvel = current_jstate_pvaee[:,:,1]
+        jtorque = current_jstate_pvaee[:,:,2]
+        power = jvel * jtorque
+        current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, power[:,:,None]], axis=2)
+        values_sum              = jnp.add(    joint_stats_array[:,4], current_jstate_pvaeep)
+        values_sum_of_squares   = jnp.add(    joint_stats_array[:,5], jnp.square(current_jstate_pvaeep))
+        values_min              = jnp.minimum(joint_stats_array[:,0], current_jstate_pvaeep)
+        values_max              = jnp.maximum(joint_stats_array[:,1], current_jstate_pvaeep)
+        values_avg              = values_sum/step_count
+        values_std              = jnp.sqrt(jnp.clip(values_sum_of_squares/step_count-jnp.square(values_avg),min=0))
+        joint_stats_array = joint_stats_array.at[:,0].set(values_min) # min
+        joint_stats_array = joint_stats_array.at[:,1].set(values_max) # max
+        joint_stats_array = joint_stats_array.at[:,2].set(values_avg) # average values
+        joint_stats_array = joint_stats_array.at[:,3].set(values_std) # standard deviation
+        joint_stats_array = joint_stats_array.at[:,4].set(values_sum) # sum of values
+        joint_stats_array = joint_stats_array.at[:,5].set(values_sum_of_squares) # sum of squares
 
         link_stats_array = sim_state.mon_links_stats_arr_v
         link_stats_array = link_stats_array.at[:,4].set(jnp.add(    link_stats_array[:,4], current_lstate_v)) # sum of values
@@ -2458,7 +2614,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
         sim_state = sim_state.replace_d({"stats_step_count" : step_count,
-                                         "mon_joint_stats_arr_pvaee" : joint_stats_array,
+                                         "mon_joint_stats_arr_pvaeep" : joint_stats_array,
                                          "mon_links_stats_arr_v" : link_stats_array})
         # jax.debug.print("updated stats: count={c}, arr={arr}", c=step_count, arr=stats_array)
         return sim_state
@@ -2552,7 +2708,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
 
     def _rebuild_step_stats_arrs(self):
-        self._sim_state.mon_joint_stats_arr_pvaee = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, self._sim_conf.monitored_jids.shape[0],5),
+        self._sim_state.mon_joint_stats_arr_pvaeep = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, self._sim_conf.monitored_jids.shape[0],6),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
         self._sim_state.mon_links_stats_arr_v = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, self._sim_conf.monitored_lids.shape[0],6),
@@ -2582,10 +2738,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     def get_joints_state_step_stats(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee, self._out_th_device)[:,:4,:,:4]
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep, self._out_th_device)[:,:4,:,:4]
 
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaee, self._out_th_device)[:,:4]
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep, self._out_th_device)[:,:4]
     
     def get_links_state_step_stats(self) -> th.Tensor:
         return jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)

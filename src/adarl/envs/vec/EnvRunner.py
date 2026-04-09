@@ -250,7 +250,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                     reinit_done = self._no_vecs
 
         record_region_end("EnvRunner loop ----------------------------")
-        if self._total_vsteps % 1000 == 0:
+        if self._total_vsteps % self._log_freq == 0:
             print_recorded_times(f"num_envs = {self.num_envs}, step {self._total_vsteps-1}")
         else:
             clear_recorded_times()

@@ -129,7 +129,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         ggLog.info(f"ZmqXBotAdapter: found joints: {list(self._xbotjname_to_jid.keys())}")
         # self._robot_urdf = self._xbot_zmq_client.get_urdf()
         # self._robot_urdf = _fix_urdf_package_paths(self._robot_urdf)
-        self._robot_helper = Robot(model_urdf_string=self._robot_urdf)
+        self._robot_helper = Robot(robot_description_string=self._robot_urdf)
 
         self._jimpedance_controlled_joints_jids = np.array([self._xbotjname_to_jid[jn] for model_name,jn in self._jimpedance_controlled_joints])
         self._started = True

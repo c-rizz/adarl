@@ -313,6 +313,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
 
     def _saveLastEpisode(self, filename : str):
+        record_region_start("EnvRunnerRecorderWrapper _saveLastEpisode")
         # ggLog.info(f"rec._saveLastEpisode() filename={filename}")
         if len(self._imgBuffer) > 1:
             if self._has_vec_obs:
@@ -326,6 +327,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 self._write_vecbuffer(filename,self._vecBuffer)
                 self._write_infobuffer(filename+"_info",self._infoBuffer)
             self._saved_eps_count += 1
+        record_region_end("EnvRunnerRecorderWrapper _saveLastEpisode")
         
         
 
@@ -365,6 +367,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                             last_rewards : th.Tensor,
                             last_terminateds : th.Tensor, 
                             last_truncateds : th.Tensor):
+        record_region_start("EnvRunnerRecorderWrapper _on_ep_end")
         # ggLog.info(f"rec._on_ep_end() envs_ended_mask={envs_ended_mask}")
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         run_id = adarl.utils.session.default_session.run_info["run_id"]
@@ -403,6 +406,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             self._infoBuffer = []
             self._extra_info_buffer = []
             self._stored_frames = 0
+        record_region_end("EnvRunnerRecorderWrapper _on_ep_end")
         
 
     def close(self):
