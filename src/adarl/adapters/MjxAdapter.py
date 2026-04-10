@@ -952,6 +952,8 @@ class SimConf:
     sim_dt : jnp.ndarray
     jnt_qposadr : jnp.ndarray
     jnt_dofadr : jnp.ndarray
+    monitored_sids : jnp.ndarray  # site IDs (in MuJoCo space) to monitor as links
+    site_bodyid : jnp.ndarray  # maps site id -> parent body id (for velocity derivation)
 
 
 
@@ -967,7 +969,9 @@ class SimConf:
             "geom_bodyid" : self.geom_bodyid,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
-            "jnt_dofadr" : self.jnt_dofadr}
+            "jnt_dofadr" : self.jnt_dofadr,
+            "monitored_sids" : self.monitored_sids,
+            "site_bodyid" : self.site_bodyid}
         if non_strict:
             name_values = {k:v for k,v in name_values.items() if k in d}
         # ggLog.info(f"d0 = "+str({k:type(v) for k,v in d.items()}))
@@ -1378,7 +1382,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                     geom_bodyid=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
                                     sim_dt=jnp.array(sim_step_dt, device = self._jax_device),
                                     jnt_qposadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
-                                    jnt_dofadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32))
+                                    jnt_dofadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
+                                    monitored_sids=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
+                                    site_bodyid=jnp.empty((0,), device = jax_device, dtype=jnp.int32))
         self._renderer : mujoco.Renderer | None = None
         self._check_sizes = True
         self._show_gui = show_gui
@@ -1400,6 +1406,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._dbg_info = MjxAdapter.DebugInfo()
 
+        self._mon_body_count = 0
+        self._mon_site_count = 0
+        self._mon_link_jax_to_user = th.empty((0,), dtype=th.long, device=self._out_th_device)
         self._record_joint_hist = record_whole_joint_trajectories
         self._joints_pveae_history = []
         self._log_freq_joints_trajcetories = log_freq_joints_trajectories
@@ -1419,6 +1428,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 objtype_name = "geom"
             elif objtype == mujoco.mjtObj.mjOBJ_CAMERA:
                 objtype_name = "camera"
+            elif objtype == mujoco.mjtObj.mjOBJ_SITE:
+                objtype_name = "site"
             else:
                 raise RuntimeError(f"Unsupported objtype {objtype}")
             mjname = f"unknownmodel#{objtype_name}_{mjid}"
@@ -1576,6 +1587,20 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(lid, mujoco.mjtObj.mjOBJ_BODY)
                            for lid in range(self._mj_model.nbody)}
         self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
+        # Sites are exposed as links with IDs offset by nbody
+        self._nbody = self._mj_model.nbody
+        self._sid2sname : dict[int, tuple[str,str]] = {sid:self._mj_name_to_pair(sid, mujoco.mjtObj.mjOBJ_SITE)
+                           for sid in range(self._mj_model.nsite)}
+        self._sname2sid = {sn:sid for sid,sn in self._sid2sname.items()}
+        # Merge sites into the link namespace (site unified lid = nbody + sid)
+        for sid, sname in self._sid2sname.items():
+            if sname in self._lname2lid:
+                ggLog.warn(f"Site name {sname} collides with an existing body name, skipping site. "
+                           f"Rename the site in the MJCF to make it addressable as a link.")
+                continue
+            unified_lid = self._nbody + sid
+            self._lid2lname[unified_lid] = sname
+            self._lname2lid[sname] = unified_lid
         self._cid2cname : dict[int, str] = {cid:self._mj_name_to_pair(cid, mujoco.mjtObj.mjOBJ_CAMERA)[1]
                            for cid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
@@ -1598,6 +1623,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
         self._sim_conf.body_rootid = self._body_rootid
+        self._sim_conf.site_bodyid = jax.device_put(jnp.array(self._mj_model.site_bodyid, dtype=jnp.int32), device=self._jax_device)
         # mjx_model.opt.timestep.at[:].set(self._sim_step_dt)
         import operator
         model_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_model)
@@ -1710,6 +1736,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         all_links = list(self._lname2lid.keys())
         for lname in all_links:
             body_id = self._lname2lid[lname]
+            if body_id >= self._nbody:
+                continue  # sites have no geoms
             self._lid2geoms[body_id] = self._sim_state.mjx_model.body_geomadr[body_id:body_id+self._sim_state.mjx_model.body_geomnum[body_id]]
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
@@ -1722,8 +1750,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"MJXAdapter: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
         ggLog.info(f"MJXAdapter: dof armatures:{self._mj_model.dof_armature}")
         
-        ggLog.info(f"MJXAdapter: Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys()])))
-        ggLog.info(f"MJXAdapter: Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys()])))
+        ggLog.info(f"MJXAdapter: Bodies parentid:\n"+("\n".join([f" - body_parentid[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_parentid[lid]}" for lid in self._lid2lname.keys() if lid < self._nbody])))
+        ggLog.info(f"MJXAdapter: Bodies jnt_num:\n"+("\n".join([f" - body_jntnum[{lid}({self._lid2lname[lid]})]= {self._mj_model.body_jntnum[lid]}" for lid in self._lid2lname.keys() if lid < self._nbody])))
         
         # print(f"got cam resolutions {self._camera_sizes}")
         # self._check_model_inaxes()        
@@ -1826,6 +1854,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         link_contypes = {}
         link_conaffinity = {}
         for l in all_links:
+            if self._lname2lid[l] >= self._nbody:
+                continue  # skip sites, they don't participate in collisions
             contype_mask = 0
             for gid in link_to_group_ids[l]:
                 contype_mask |= 1<<gid
@@ -1848,11 +1878,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         geom_conaffinity : jnp.ndarray = self._mj_model.geom_conaffinity.copy()
         for lname in all_links:
             body_id = self._lname2lid[lname]
+            if body_id >= self._nbody:
+                continue  # skip sites
             for geom_id in range(self._mj_model.body_geomadr[body_id],
                                  self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
                 visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
         for lname in all_links:
             body_id = self._lname2lid[lname]
+            if body_id >= self._nbody:
+                continue  # skip sites
             aff = link_conaffinity[lname]
             typ = link_contypes[lname]
             body_conaffinity[body_id] = aff
@@ -1941,9 +1975,34 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str,str]]):
         super().set_monitored_links(linksToObserve)
         # Cache Python versions to avoid JAX->numpy sync in getters
+        # Unified lid includes both bodies (lid < nbody) and sites (lid = nbody + sid)
         monitored_lids_list = [self._lname2lid[ln] for ln in self._monitored_links]
+        # Partition into body IDs and site IDs (in MuJoCo space), preserving relative order
+        monitored_body_ids = [lid for lid in monitored_lids_list if lid < self._nbody]
+        monitored_site_ids = [lid - self._nbody for lid in monitored_lids_list if lid >= self._nbody]
+        self._sim_conf.monitored_lids = jnp.array(monitored_body_ids, device=self._jax_device, dtype=jnp.int32)
+        self._sim_conf.monitored_sids = jnp.array(monitored_site_ids, device=self._jax_device, dtype=jnp.int32)
+        self._mon_body_count = len(monitored_body_ids)
+        self._mon_site_count = len(monitored_site_ids)
+        # JAX internally stores [bodies|sites]. Build permutation from JAX layout -> user order.
+        # For each user-order index, find its position in the JAX [bodies|sites] layout.
+        body_idx = 0  # running index into the bodies portion
+        site_idx = 0  # running index into the sites portion
+        jax_to_user = [0] * len(monitored_lids_list)  # jax_layout_idx -> user_idx
+        user_to_jax = [0] * len(monitored_lids_list)  # user_idx -> jax_layout_idx
+        for user_idx, lid in enumerate(monitored_lids_list):
+            if lid < self._nbody:
+                jax_idx = body_idx
+                body_idx += 1
+            else:
+                jax_idx = self._mon_body_count + site_idx
+                site_idx += 1
+            user_to_jax[user_idx] = jax_idx
+            jax_to_user[jax_idx] = user_idx
+        self._mon_link_jax_to_user = th.tensor(jax_to_user, dtype=th.long, device=self._out_th_device)
+        # _monitored_lid_to_idx maps unified lid -> user-order index (for get_monitored_links_ids)
         self._monitored_lid_to_idx = {lid: idx for idx, lid in enumerate(monitored_lids_list)}
-        self._sim_conf.monitored_lids = jnp.array(monitored_lids_list, device=self._jax_device, dtype=jnp.int32)
+        # _monitored_links stays in user order (set by super())
         self._rebuild_step_stats_arrs()
 
     def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
@@ -2589,8 +2648,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
         jvel = current_jstate_pvaee[:,:,1]
         jtorque = current_jstate_pvaee[:,:,2]
-        power = jvel * jtorque
-        current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, power[:,:,None]], axis=2)
+        work_spent = jnp.clip(jvel * jtorque, 0.0, 1e6)
+        current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, work_spent[:,:,None]], axis=2)
         values_sum              = jnp.add(    joint_stats_array[:,4], current_jstate_pvaeep)
         values_sum_of_squares   = jnp.add(    joint_stats_array[:,5], jnp.square(current_jstate_pvaeep))
         values_min              = jnp.minimum(joint_stats_array[:,0], current_jstate_pvaeep)
@@ -2627,10 +2686,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         replace["mon_joint_state_pveae"] = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
                                                                   sim_conf.monitored_qvadr,
                                                                   sim_state.mjx_data)
-        replace["mon_link_state"] = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
-        # Compute local link linear acceleration
-        replace["mon_link_acceleration"] = MjxAdapter._get_links_acceleration_static(
+        body_link_state = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
+        # Compute local link linear acceleration (only for bodies)
+        body_link_acceleration = MjxAdapter._get_links_acceleration_static(
             sim_conf.monitored_lids, sim_conf.body_rootid, sim_state.mjx_data)
+        # If there are monitored sites, compute their state and concatenate
+        if sim_conf.monitored_sids.shape[0] > 0:
+            site_link_state = MjxAdapter._get_sites_state_jax(sim_conf.monitored_sids, sim_conf.site_bodyid, sim_state.mjx_data)
+            replace["mon_link_state"] = jnp.concatenate([body_link_state, site_link_state], axis=1)
+            # Acceleration is unavailable for sites — fill with zeros here, replaced with NaN on the PyTorch side
+            vec_size = body_link_state.shape[0]
+            site_acceleration_zeros = jnp.zeros((vec_size, sim_conf.monitored_sids.shape[0], 3))
+            replace["mon_link_acceleration"] = jnp.concatenate([body_link_acceleration, site_acceleration_zeros], axis=1)
+        else:
+            replace["mon_link_state"] = body_link_state
+            replace["mon_link_acceleration"] = body_link_acceleration
         # Compute collision mask for monitored pairs
         if len(sim_conf.monitored_collision_pairs) > 0:
             replace["mon_collision_mask"] = MjxAdapter._check_collision_pairs_static(
@@ -2708,20 +2778,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return _transform_acceleration(com_linacc, com_angacc, com_linvel, com_angvel, com_offset_xyz, body_rotmat)
 
     def _rebuild_step_stats_arrs(self):
+        total_mon_links = self._sim_conf.monitored_lids.shape[0] + self._sim_conf.monitored_sids.shape[0]
         self._sim_state.mon_joint_stats_arr_pvaeep = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, self._sim_conf.monitored_jids.shape[0],6),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
-        self._sim_state.mon_links_stats_arr_v = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, self._sim_conf.monitored_lids.shape[0],6),
+        self._sim_state.mon_links_stats_arr_v = jnp.zeros(shape=(self._static_sim_conf.vec_size, 6, total_mon_links, 6),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
         # Initialize precomputed state arrays
         self._sim_state.mon_joint_state_pveae = jnp.zeros(shape=(self._static_sim_conf.vec_size, self._sim_conf.monitored_jids.shape[0], 5),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
-        self._sim_state.mon_link_state = jnp.zeros(shape=(self._static_sim_conf.vec_size, self._sim_conf.monitored_lids.shape[0], 13),
+        self._sim_state.mon_link_state = jnp.zeros(shape=(self._static_sim_conf.vec_size, total_mon_links, 13),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
-        self._sim_state.mon_link_acceleration = jnp.zeros(shape=(self._static_sim_conf.vec_size, self._sim_conf.monitored_lids.shape[0], 3),
+        self._sim_state.mon_link_acceleration = jnp.zeros(shape=(self._static_sim_conf.vec_size, total_mon_links, 3),
                                                         dtype=self._jax_float_dtype,
                                                         device=self._jax_device)
         self._sim_state.mon_collision_mask = jnp.zeros(shape=(self._static_sim_conf.vec_size, self._sim_conf.monitored_collision_pairs.shape[0]),
@@ -2744,7 +2815,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep, self._out_th_device)[:,:4]
     
     def get_links_state_step_stats(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)
+        stats = jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)
+        return stats[:, :, self._mon_link_jax_to_user, :]
 
     @staticmethod
     @partial(jax.jit)
@@ -2752,6 +2824,26 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jnp.concatenate([mjx_data.xpos[:,body_ids], # frame position
                                 mjx_data.xquat[:,body_ids][:,:,[1,2,3,0]], # frame orientation
                                 mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # com linear and angular velocity
+
+    @staticmethod
+    @partial(jax.jit)
+    def _get_sites_state_jax(site_ids : jnp.ndarray, site_bodyid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        """Compute state for sites treated as links.
+        Position from site_xpos, orientation from site_xmat->quat,
+        velocity derived from parent body velocity via rigid body kinematics.
+        """
+        site_pos = mjx_data.site_xpos[:, site_ids]  # (V, S, 3)
+        site_quat_xyzw = jax_mat_to_quat_xyzw(mjx_data.site_xmat[:, site_ids])  # (V, S, 4)
+        # Derive velocity from parent body
+        parent_body_ids = site_bodyid[site_ids]
+        parent_cvel = mjx_data.cvel[:, parent_body_ids]  # (V, S, 6) = [angvel, linvel]
+        parent_angvel = parent_cvel[:, :, 0:3]  # (V, S, 3)
+        parent_linvel = parent_cvel[:, :, 3:6]  # (V, S, 3)
+        parent_pos = mjx_data.xpos[:, parent_body_ids]  # (V, S, 3)
+        r = site_pos - parent_pos  # offset from parent body origin to site
+        site_linvel = parent_linvel + jnp.cross(parent_angvel, r)  # (V, S, 3)
+        site_angvel = parent_angvel  # same angular velocity as parent (rigidly attached)
+        return jnp.concatenate([site_pos, site_quat_xyzw, site_linvel, site_angvel], axis=-1)  # (V, S, 13)
     
     @staticmethod
     @jax.jit
@@ -2806,6 +2898,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
         full_state = jax2th(self._sim_state.mon_link_state, th_device=self._out_th_device)
         record_time("getLinksState: got full state")
+        # JAX stores [bodies|sites]; permute back to user-specified order
+        full_state = full_state[:, self._mon_link_jax_to_user, :]
         if requestedLinks is None:
             return full_state
         # Duck type: if element is tuple it's a name, otherwise assume lid
@@ -2853,7 +2947,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_if_needed()
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
         full_acc = jax2th(self._sim_state.mon_link_acceleration, th_device=self._out_th_device)
+        # Replace site entries with NaN (sites have no acceleration data, stored as zeros on JAX side to avoid jax_debug_nans)
+        if self._mon_site_count > 0:
+            full_acc = full_acc.clone()
+            full_acc[:, self._mon_body_count:, :] = float('nan')
+        # JAX stores [bodies|sites]; permute back to user-specified order
+        full_acc = full_acc[:, self._mon_link_jax_to_user, :]
         if requestedLinks is None:
+            record_region_end("MjxAdapter.get_local_link_linear_acceleration")
             return full_acc
         # KeyError will propagate if link doesn't exist or isn't monitored
         if isinstance(requestedLinks, th.Tensor):
@@ -2979,6 +3080,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         if link_names is not None:
             link_ids = np.array([self._lname2lid[ln] for ln in link_names])
+            site_mask = link_ids >= self._nbody
+            if np.any(site_mask):
+                site_names = np.array(link_names)[site_mask]
+                raise RuntimeError(f"Cannot set state for sites (they are kinematic, attached to a body): {site_names.tolist()}")
             root_body_ids = self._mj_model.body_rootid[link_ids]
             body_jnt_nums = self._mj_model.body_jntnum[link_ids]
             body_parent_ids = self._mj_model.body_parentid[link_ids]
@@ -3260,6 +3365,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = self._all_vecs
 
         lids = np.array([self._lname2lid[ln] for ln in link_names])
+        site_mask = lids >= self._nbody
+        if np.any(site_mask):
+            site_names = np.array(link_names)[site_mask]
+            raise RuntimeError(f"Cannot set state for sites (they are kinematic, attached to a body): {site_names.tolist()}")
         root_body_ids = self._mj_model.body_rootid[lids]
         body_jnt_nums = self._mj_model.body_jntnum[lids]
         body_parent_ids = self._mj_model.body_parentid[lids]

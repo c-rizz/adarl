@@ -189,7 +189,9 @@ class SimConfJimp(SimConf):
             "geom_bodyid" : self.geom_bodyid,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
-            "jnt_dofadr" : self.jnt_dofadr
+            "jnt_dofadr" : self.jnt_dofadr,
+            "monitored_sids" : self.monitored_sids,
+            "site_bodyid" : self.site_bodyid
             }
         d.update(name_values)
         ret = SimConfJimp(**d)
@@ -343,6 +345,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         sim_dt=self._sim_conf.sim_dt,
                                         jnt_qposadr=self._sim_conf.jnt_qposadr,
                                         jnt_dofadr=self._sim_conf.jnt_dofadr,
+                                        monitored_sids=self._sim_conf.monitored_sids,
+                                        site_bodyid=self._sim_conf.site_bodyid,
                                         imp_control_jids=jnp.empty((0,), dtype=jnp.int32, device=self._jax_device),
                                         use_second_order_reference_filter=self._use_second_order_reference_filter,
                                         use_exponential_reference_filter=self._use_exponential_reference_filter,
