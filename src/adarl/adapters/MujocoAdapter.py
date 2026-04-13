@@ -13,7 +13,7 @@ from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import compile_xacro_string
-from adarl.adapters.MjxAdapter import aggregate_models, apply_opt_reset, add_arrow_to_renderer
+from adarl.adapters.MjxAdapter import aggregate_models, apply_opt_preset, add_arrow_to_renderer
 import copy
 import adarl.utils.dbg.ggLog as ggLog
 import pprint
@@ -86,7 +86,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           add_sky=self._add_sky,
                                           uneven_ground=self._uneven_ground,
                                           discardvisual=self._discardvisual)
-        self._mj_model = apply_opt_reset(self._mj_model, self._opt_preset, self._opt_override)
+        self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         self._mj_model.opt.timestep = self._sim_step_dt
         self._mj_data = mujoco.MjData(self._mj_model)

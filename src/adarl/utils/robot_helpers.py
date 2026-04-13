@@ -417,8 +417,8 @@ class Robot():
             joints = self.get_joint_names()
         limits_minmax_pve = {}
         p_minmax = np.stack([self._model.lowerPositionLimit,self._model.upperPositionLimit])
-        v_minmax = np.stack([-self._model.velocityLimit,self._model.velocityLimit])
-        e_minmax = np.stack([-self._model.effortLimit,self._model.effortLimit])
+        v_minmax = np.stack([-self._model.velocityLimit,    self._model.velocityLimit])
+        e_minmax = np.stack([-self._model.effortLimit,      self._model.effortLimit])
         for jn in joints:
             joint_idx = self._joint_name_to_idx[jn]
             q_idx = self._model.idx_qs[joint_idx]

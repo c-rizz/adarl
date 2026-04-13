@@ -456,8 +456,6 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         #     raise RuntimeError(f"Tried to set impedance command for joint that has not been set with set_impedance_controlled_joints")
 
         # cmd = cmd.at[:,cmd_idxs].set(joint_impedances_pvesd_jax)
-        # ggLog.info(f"adding cmd: times = {self._sim_state.cmds_queue_times} \n cmds = {self._sim_state.cmds_queue}")
-        # ggLog.info(f"inserting cmd: cmd_time = {cmd_time},  cmds_queue_times = {self._sim_state.cmds_queue_times}")
         # So now we have a properly formulated command in cmd and cmd_time
         new_cmds, new_cmds_times, inserted = self._add_impedance_command_jax(self._sim_state.sim_time,
                                                                              self._sim_state.cmds_queue,
@@ -751,6 +749,56 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     @override
     def _get_joint_state_for_history(self, sim_state : SimStateJimp):
         return sim_state.vec_impjoints_pveaecpvesde
+
+    @override
+    def _sim_step_fast_for_scan_full_pveae(self, sim_state_conf : tuple[SimStateJimp,SimConf], _) -> tuple[tuple[SimStateJimp,SimConf], jnp.ndarray | None]:
+        sim_state, sim_conf = sim_state_conf
+        if self._record_joint_hist:
+            # Save pre-forward kinematics and command (the state+command the controller acted on)
+            pre_pos = sim_state.mjx_data.qpos[:, self._jids_to_imp_cmd_qpadr]
+            pre_vel = sim_state.mjx_data.qvel[:, self._jids_to_imp_cmd_qvadr]
+        # Full step: apply_commands (stores pvesd in sim_state), apply_impulses, forward, caches/stats
+        sim_state = self._apply_commands(sim_state)
+        sim_state = self._apply_impulses(sim_state)
+        new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
+        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
+                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
+        if self._record_joint_hist:
+            # pvesd (cols 6-10) from the pre-stored filtered command
+            pre_pvesd = sim_state.vec_impjoints_pveaecpvesde[:, :, 6:11]
+            joint_state = self._assemble_jimp_joint_history(
+                sim_state.mjx_data, pre_pos, pre_vel, pre_pvesd)
+        else:
+            joint_state = None
+        return (sim_state, sim_conf), joint_state
+
+    def _assemble_jimp_joint_history(self, mjx_data, pre_pos : jnp.ndarray, pre_vel : jnp.ndarray,
+                                     pre_pvesd : jnp.ndarray) -> jnp.ndarray:
+        """Assemble 12-column joint history from pre-forward pos/vel/pvesd and post-forward real forces.
+
+        All force data (cols 2-5, 11) comes from post-forward mjx_data — no stale or recomputed values.
+        """
+        qvadr = self._jids_to_imp_cmd_qvadr
+        qfrc_actuator   = mjx_data.qfrc_actuator[:, qvadr]
+        qfrc_applied    = mjx_data.qfrc_applied[:, qvadr]
+        qacc            = mjx_data.qacc[:, qvadr]
+        qfrc_passive    = mjx_data.qfrc_passive[:, qvadr]
+        qfrc_constraint = mjx_data.qfrc_constraint[:, qvadr]
+        pveaec = jnp.stack([
+            pre_pos,                                        # pos (pre-forward)
+            pre_vel,                                        # vel (pre-forward)
+            qfrc_applied + qfrc_actuator,                   # cmd_eff (post-forward)
+            qacc,                                           # acc (post-forward)
+            qfrc_applied + qfrc_passive + qfrc_constraint,  # eff (post-forward)
+            qfrc_constraint,                                # constr_eff (post-forward)
+        ], axis=2)
+        return jnp.concat([
+            pveaec,                                         # pveaec (6)
+            pre_pvesd,                                      # pvesd (5) - filtered command from _apply_impedance_cmds
+            jnp.expand_dims(qfrc_applied, 2),               # act_eff = real qfrc_applied (1) (actuators disabled in JIMP)
+        ], axis=2)
     
     # @override
     # def setJointsStateDirect(self, joint_names: list[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):

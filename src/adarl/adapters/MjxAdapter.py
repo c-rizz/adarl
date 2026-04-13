@@ -36,6 +36,7 @@ from packaging.version import Version
 import faulthandler
 import pathlib
 from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end
+from adarl.utils.session import default_session
 
 faulthandler.enable()
 
@@ -43,8 +44,8 @@ jax.config.update("jax_compilation_cache_dir", "/tmp/jax_cache")
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 jax.config.update("jax_enable_compilation_cache", True)
-jax.config.update("jax_log_compiles", True)
-jax.config.update("jax_transfer_guard_device_to_host", "log") # Should log implicit device-to-host transfers
+# jax.config.update("jax_log_compiles", True)
+# jax.config.update("jax_transfer_guard_device_to_host", "log") # Should log implicit device-to-host transfers
 jax.config.update("jax_debug_nans", True) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_disable_jit", True)  # 
@@ -773,7 +774,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
     mj_model = big_speck.compile()
     return mj_model, big_speck
 
-def apply_opt_reset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None):
+def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None):
     if preset_name is None or preset_name == "mujoco_default":
         pass
     elif preset_name == "fastest":
@@ -1332,9 +1333,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         revolute_dof_armature_override = None,
                         opt_override : dict[str,Any] | None = None,
                         render_backend : Literal["cpu", "warp"] = "cpu",
-                        mjx_impl : Literal["jax","warp"] = "jax"):
+                        mjx_impl : Literal["jax","warp"] = "jax",
+                        disable_builtin_actuators : bool = True):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
+        self._disable_builtin_actuators = disable_builtin_actuators
         self._enable_rendering = enable_rendering
         self._render_backend : Literal["cpu", "warp"] = render_backend
         self._jax_device = jax_device
@@ -1410,6 +1413,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mon_site_count = 0
         self._mon_link_jax_to_user = th.empty((0,), dtype=th.long, device=self._out_th_device)
         self._record_joint_hist = record_whole_joint_trajectories
+        ggLog.info(f"MjxAdapter initialized with record_whole_joint_trajectories={record_whole_joint_trajectories}")
         self._joints_pveae_history = []
         self._log_freq_joints_trajcetories = log_freq_joints_trajectories
 
@@ -1525,6 +1529,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             rgbs.append(rgb)
         return rgbs
 
+    def _aggregate_models(self, models, log_folder):
+        """Aggregate models into a single MuJoCo model. Override in subclasses to modify the model before compilation."""
+        return aggregate_models(models,
+                                add_ground=self._add_ground,
+                                add_sky=self._add_sky,
+                                uneven_ground=self._uneven_ground,
+                                discardvisual=self._discardvisual,
+                                log_folder=log_folder)
+
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
                        default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None):
@@ -1533,20 +1546,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         scenario_logs_folder = self._log_folder+"/MjxAdapter/scenario_logs"
         # jax.profiler.start_server(9999)
         self._uneven_ground = False
-        self._mj_model, big_speck = aggregate_models(models,
-                                          add_ground=self._add_ground,
-                                          add_sky=self._add_sky,
-                                          uneven_ground=self._uneven_ground,
-                                          discardvisual=self._discardvisual,
-                                          log_folder=scenario_logs_folder)
+        self._mj_model, big_speck = self._aggregate_models(models, scenario_logs_folder)
         self._mj_model.opt.timestep = self._sim_step_dt
+        if self._disable_builtin_actuators:
+            self._mj_model.opt.disableactuator = -1 # disable all built-in actuators, we will apply forces/torques directly to the joints in the control step
         # I prevent slipping by using a big impratio see for example:
         # - https://github.com/google-deepmind/mujoco_menagerie/blob/d98292efc73511aa7a4ca958eaaf226403d56cb7/anybotics_anymal_b/anymal_b.xml#L4 
         # and the discussion at these links:
         # - https://github.com/google-deepmind/mujoco/discussions/656#discussioncomment-4416347
         # - https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
         # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
-        self._mj_model = apply_opt_reset(self._mj_model, self._opt_preset, self._opt_override)
+        self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         os.makedirs(scenario_logs_folder, exist_ok=True)
@@ -1561,12 +1571,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
             if joint_type == mujoco.mjtJoint.mjJNT_HINGE:
                 if self._mj_model.dof_armature[dof_id] == 0:
+                    ggLog.warn(f"Revolute dof {dof_id} has zero armature. Setting it to {self._safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
                     self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
                 if self._revolute_dof_armature_override is not None:
+                    ggLog.info(f"Overriding revolute dof {dof_id} armature to {self._revolute_dof_armature_override} (was {self._mj_model.dof_armature[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
                     self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
                 if self._mj_model.dof_frictionloss[dof_id] == 0:
+                    ggLog.warn(f"Revolute dof {dof_id} has zero frictionloss. Setting it to {self._safe_revolute_dof_frictionloss}.")
                     self._mj_model.dof_frictionloss[dof_id] = self._safe_revolute_dof_frictionloss
                 if self._mj_model.dof_damping[dof_id] == 0:
+                    ggLog.warn(f"Revolute dof {dof_id} has zero damping. Setting it to {self._safe_revolute_dof_damping}.")
                     self._mj_model.dof_damping[dof_id] = self._safe_revolute_dof_damping
 
         # model = models[0]
@@ -2098,50 +2112,38 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state.replace_v( "mjx_data", sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied))
 
 
-
-
-
-
-
-
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
-    def _sim_step_fast(self, iteration, sim_state : SimState, sim_conf : SimConf) -> SimState:
-        sim_state = self._apply_commands(sim_state)
-        sim_state = self._apply_impulses(sim_state)
-        new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model,sim_state.mjx_data)
-        sim_state = sim_state.replace_d( {"mjx_data": new_mjx_data,
-                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
-        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
-        return sim_state 
-    
-
-
-    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
-    # def _sim_step_fast_for_scan(self, sim_state : SimState, _) -> tuple[SimState, None]:
-    #     sim_state = self._sim_step_fast(0, sim_state)
-    #     return sim_state, None
-    
-    # @partial(jax.jit, static_argnames=("self","iterations"), donate_argnames=("sim_state"))
-    # def _run_fast(self, sim_state : SimState, iterations : int) -> SimState:
-    #     sim_state = jax.lax.scan(   self._sim_step_fast_for_scan, 
-    #                                 init = sim_state,
-    #                                 xs = (), 
-    #                                 length = iterations)[0]
-    #     # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
-    #     #                                                 body_fun=self._sim_step_fast,
-    #     #                                                 init_val=(sim_state, joint_stats_arr))
-    #     return sim_state
-    
     # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
     def _sim_step_fast_for_scan_full_pveae(self, sim_state_conf : tuple[SimState,SimConf], _) -> tuple[tuple[SimState,SimConf], jnp.ndarray | None]:
         sim_state, sim_conf = sim_state_conf
-        sim_state = self._sim_step_fast(0, sim_state, sim_conf)
         if self._record_joint_hist:
-            joint_state = self._get_joint_state_for_history(sim_state=sim_state)
+            # Save pre-forward kinematics (the state the controller acted on)
+            pre_pos = sim_state.mjx_data.qpos[:, sim_conf.monitored_qpadr]
+            pre_vel = sim_state.mjx_data.qvel[:, sim_conf.monitored_qvadr]
+        # Full step: apply_commands, apply_impulses, integrate_and_forward, update caches/stats
+        sim_state = self._apply_commands(sim_state)
+        sim_state = self._apply_impulses(sim_state)
+        new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
+        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
+                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
+        if self._record_joint_hist:
+            joint_state = self._assemble_base_joint_history(sim_state.mjx_data, sim_conf, pre_pos, pre_vel)
         else:
             joint_state = None
         return (sim_state, sim_conf), joint_state
+
+    def _assemble_base_joint_history(self, mjx_data, sim_conf : SimConf, pre_pos : jnp.ndarray, pre_vel : jnp.ndarray) -> jnp.ndarray:
+        """Assemble 6-column joint history (pveaec) from pre-forward pos/vel and post-forward real forces."""
+        qvadr = sim_conf.monitored_qvadr
+        return jnp.stack([
+            pre_pos,                                                                                     # pos (pre-forward)
+            pre_vel,                                                                                     # vel (pre-forward)
+            mjx_data.qfrc_applied[:, qvadr] + mjx_data.qfrc_actuator[:, qvadr],                          # cmd_eff (post-forward)
+            mjx_data.qacc[:, qvadr],                                                                     # acc (post-forward)
+            mjx_data.qfrc_applied[:, qvadr] + mjx_data.qfrc_passive[:, qvadr] + mjx_data.qfrc_constraint[:, qvadr],  # eff (post-forward)
+            mjx_data.qfrc_constraint[:, qvadr],                                                          # constr_eff (post-forward)
+        ], axis=2)
     
     @partial(jax.jit, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
     def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool) -> tuple[SimState, jnp.ndarray | None]:
@@ -2167,7 +2169,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # convert to torch and save as hdf5
         dir = f"{self._log_folder}/MjxAdapter_joint_hist"
         os.makedirs(dir, exist_ok=True)
-        out_filename = f"{dir}/MjxAdapter_{int(time.time())}.hdf5"
+        run_id = default_session.run_info["run_id"]
+        out_filename = f"{dir}/MjxAdapter_{run_id}_{self._total_iterations}.hdf5"
         import h5py
         with h5py.File(out_filename, "w") as f:
             # loop through obs, action, reward, terminated, truncation
@@ -2577,9 +2580,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr], #commanded effort
-                            mjx_data.qacc[:,qpadr],
-                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]], #actual effort
+                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_actuator[:,qvadr], #commanded effort
+                            mjx_data.qacc[:,qvadr],
+                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_passive[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
+                            ],
                             axis = 2)
     
     @staticmethod
@@ -2596,9 +2600,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr], #commanded effort
-                            mjx_data.qacc[:,qpadr],
-                            mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
+                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_actuator[:,qvadr], #commanded effort
+                            mjx_data.qacc[:,qvadr],
+                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_passive[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
                             mjx_data.qfrc_constraint[:,qvadr]],
                             axis = 2)
     
