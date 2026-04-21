@@ -64,10 +64,8 @@ T = TypeVar('T')
 U = TypeVar('U')
 def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T], _key = "") -> TensorTree[T]:
     if isinstance(src_tree, dict):
-        r = {}
-        for k in src_tree.keys():
-            r[k] = map_tensor_tree(src_tree[k], func = func, _key = _key+f".{k}")
-        return r
+        return {k: map_tensor_tree(v, func = func, _key = _key+f".{k}")
+                for k,v in src_tree.items()}
     elif isinstance(src_tree, tuple):
         r = tuple([map_tensor_tree(e, func = func, _key = _key+f".T{i}") for i,e in enumerate(src_tree)])
         return r

@@ -914,13 +914,23 @@ def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_con
                 env_controller.run(step_duration_sec)
 
 
-def th_compile_ext(copy_outs : bool = False, just_graphit : bool = False, *compile_args, **compile_kwargs):
+def th_compile_ext(copy_outs : bool = False,
+                   just_graphit : bool = False,
+                   skip_eval_unsafe_warmup : int = 0,
+                   skip_eval_unsafe_manual_arg_guard : int = -1,
+                   *compile_args, **compile_kwargs):
     """A wrapper for torch.compile that can automatically copy outputs, useful for problematic cudagraphs
 
     Parameters
     ----------
     copy_outs : bool, optional
         Whether to copy outputs, by default False
+    just_graphit : bool, optional
+        Use the graphit wrapper instead of torch.compile, which only does graph tracing and does not try to apply any optimization, 
+        it's however quite limited. By default False
+    skip_eval_unsafe_warmup : int, optional
+        If >0, the returned function will be wrapped with skip_eval_unsafe, and the 
+        guards will be skipped after skip_eval_unsafe_warmup calls, by default 0
 
     Returns
     -------
@@ -941,6 +951,8 @@ def th_compile_ext(copy_outs : bool = False, just_graphit : bool = False, *compi
                 return func
             else:
                 compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
+                if skip_eval_unsafe_warmup > 0:
+                    compiled_func = wrap_skip_eval_unsafe(compiled_func, warmup_runs=skip_eval_unsafe_warmup, manual_arg_guard=skip_eval_unsafe_manual_arg_guard)
                 if copy_outs:
                     def compile_and_clone(*args, **kwargs):
                         outs = compiled_func(*args, **kwargs)
@@ -951,6 +963,44 @@ def th_compile_ext(copy_outs : bool = False, just_graphit : bool = False, *compi
                         return compiled_func(*args, **kwargs)                
                     return compile
     return compiling_decorator
+
+
+_func_calls_counts : dict[tuple[Callable,Any], int] = {}
+def wrap_skip_eval_unsafe(func, warmup_runs : int, manual_arg_guard : int = -1):
+    """ Wraps the function with skip_eval_unsafe, so that after warmup_runs,
+        torch compile guards are skipped.
+
+    Parameters
+    ----------
+    func : Callable
+        function containing the torch compiled call
+    warmup_runs : int
+        How many times to run the function beforestrating to skip the guards.
+    manual_arg_guard : int, optional
+        If >=0, the argument at this position will be used as a guard key, so 
+        that the calls count will be tracked separately for each different value of this argument. This is useful if
+        the function is called with different argument values that should be treated independently (for example self
+        when it's a class method).
+
+    Returns
+    -------
+    Callable
+        The wrapped function
+    """
+    def wrapped(*args, **kwargs):
+        if manual_arg_guard >= 0:
+            guard_arg = args[manual_arg_guard]
+        else:
+            guard_arg = None
+        calls_count = _func_calls_counts.get((func, guard_arg), 0)
+        _func_calls_counts[(func, guard_arg)] = calls_count + 1         
+        if calls_count < warmup_runs:
+            return func(*args, **kwargs)
+        else:
+            # print(f"Skipping eval unsafe guards for {func} with guard_arg={guard_arg} after {calls_count} calls")
+            with th.compiler.set_stance(skip_guard_eval_unsafe=True):
+                return func(*args, **kwargs)
+    return wrapped
 
 def get_func_input_args(exclude : list[str] = []) -> dict:
     _, _, _, values_flocals = inspect.getargvalues(inspect.currentframe().f_back) #type: ignore

@@ -27,7 +27,12 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
             th._assert_async(passed, assert_msg)
         else:
             if not passed:
-                msg = build_msg() if build_msg is not None else f"dbg_check failed"
+                if build_msg is not None:
+                    msg = build_msg()
+                elif assert_msg is not None:
+                    msg = assert_msg
+                else:
+                    msg = f"dbg_check failed"
                 if just_warn:
                     ggLog.warn(msg)
                 else:

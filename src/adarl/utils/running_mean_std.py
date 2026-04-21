@@ -2,6 +2,7 @@ from typing import Tuple, Union
 
 import torch as th
 import adarl.utils.dbg.ggLog as ggLog
+from adarl.utils.dbg.dbg_checks import dbg_check
 from adarl.utils.utils import conditioned_assign
 
 class RunningMeanStd(object):
@@ -54,6 +55,9 @@ class RunningMeanStd(object):
 
     def update(self, x : th.Tensor) -> None:
         batch_mean = th.mean(x, dim=0)
+        dbg_check(lambda: x.size()[0] >1 and x.nelement() > 0, 
+                  lambda: f"RunningMeanStd.update(): x should have more than 1 sample to compute meaningful statistics. But x.size() = {x.size()}",
+                  just_warn=True)
         batch_var = th.var(x, dim=0)
         batch_size = x.size()[0]
         self.update_from_moments(batch_mean, batch_var, batch_size)

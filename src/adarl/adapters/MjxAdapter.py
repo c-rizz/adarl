@@ -422,16 +422,18 @@ def get_renderdata_dict(jax_data : mjx.Data):
         'site_xmat' : jax_data.site_xmat,
         'xipos' : jax_data.xipos,
         'ximat' : jax_data.ximat,
-        'xfrc_applied' : jax_data.xfrc_applied
+        'xfrc_applied' : jax_data.xfrc_applied,
+        'contact' : jax_data.contact,
     }
 
 def get_renderdata_into(
     cpu_data: list[mujoco.MjData],
     jax_data
 ):
-    """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco.MjData. 
+    """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco.MjData.
         Just to avoid copying all fields when only these are needed."""
     poses = jax.device_get(get_renderdata_dict(jax_data))
+    contact = poses['contact']
     for i in range(len(cpu_data)):
         cdata = cpu_data[i]
         cdata.xpos = poses['xpos'][i]
@@ -443,6 +445,17 @@ def get_renderdata_into(
         cdata.xipos = poses['xipos'][i]
         cdata.ximat = poses['ximat'][i].reshape((-1,9))
         cdata.xfrc_applied = poses['xfrc_applied'][i]
+
+        # Copy active contacts so that mjVIS_CONTACTPOINT etc. can be rendered.
+        # Active contacts are those with dist <= 0, same criterion as mjx.get_data_into.
+        contact_i = jax.tree_util.tree_map(lambda x, i=i: x[i], contact)
+        ncon = int((contact_i.dist <= 0).sum())
+        if ncon != cdata.ncon or cdata.nefc != 0:
+            mujoco._functions._realloc_con_efc(cdata, ncon=ncon, nefc=0)  # pylint: disable=protected-access
+        _get_contact(cdata.contact, contact_i)
+        # efc_address would index into an efc array we don't populate; invalidate it.
+        if cdata.contact.efc_address.size:
+            cdata.contact.efc_address[:] = -1
 
 def get_data_into(
     result: mujoco.MjData | List[mujoco.MjData],
@@ -2578,13 +2591,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
         #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
         #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
-        return jnp.stack([  mjx_data.qpos[:,qpadr],
-                            mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_actuator[:,qvadr], #commanded effort
-                            mjx_data.qacc[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_passive[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
-                            ],
-                            axis = 2)
+        return MjxAdapter._get_vec_joint_states_raw_pveaec(qpadr, qvadr, mjx_data)[...,:5]
     
     @staticmethod
     @jax.jit
@@ -2598,11 +2605,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f"qfrc_constraint={mjx_data.qfrc_constraint[:,qvadr]}"
         #            f"qfrc_passive={mjx_data.qfrc_constraint[:,qvadr]}"
         #            f"qfrc_bias={mjx_data.qfrc_constraint[:,qvadr]}")
+        commanded_effort = mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_actuator[:,qvadr]
+        # sensed_effort = mjx_data.qfrc_smooth[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]
+        sensed_effort = commanded_effort + mjx_data.qfrc_passive[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr]
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_actuator[:,qvadr], #commanded effort
+                            commanded_effort, #commanded effort
                             mjx_data.qacc[:,qvadr],
-                            mjx_data.qfrc_applied[:,qvadr] + mjx_data.qfrc_passive[:,qvadr] + mjx_data.qfrc_constraint[:,qvadr], #actual effort
+                            sensed_effort, #actual effort
                             mjx_data.qfrc_constraint[:,qvadr]],
                             axis = 2)
     
@@ -2652,8 +2662,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
         jvel = current_jstate_pvaee[:,:,1]
         jtorque = current_jstate_pvaee[:,:,2]
-        work_spent = jnp.clip(jvel * jtorque, 0.0, 1e6)
-        current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, work_spent[:,:,None]], axis=2)
+        power_spent = jnp.clip(jvel * jtorque, 0.0, 1e6)
+        current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, power_spent[:,:,None]], axis=2)
         values_sum              = jnp.add(    joint_stats_array[:,4], current_jstate_pvaeep)
         values_sum_of_squares   = jnp.add(    joint_stats_array[:,5], jnp.square(current_jstate_pvaeep))
         values_min              = jnp.minimum(joint_stats_array[:,0], current_jstate_pvaeep)

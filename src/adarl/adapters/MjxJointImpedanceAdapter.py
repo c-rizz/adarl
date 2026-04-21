@@ -249,8 +249,7 @@ class _InternalSetCurrentJointImpedanceCommand(_InternalCommand):
             cmd_joint_pvesd=self.current_joint_impedance_command_pvesd,
             cmd_delay=cmd_delay,
         )
-        # TODO: somehow do a device-side assert on _inserted?
-        sim_state.replace_d({"cmds_queue_times" : new_queue_times, "cmds_queue" : new_queue})
+        sim_state = sim_state.replace_d({"cmds_queue_times" : new_queue_times, "cmds_queue" : new_queue})
         return sim_state
 
 class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
@@ -571,20 +570,25 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._sim_state = self._sim_state.replace_d({"cmds_queue" : jnp.zeros(shape=(self._vec_size, self._queue_size, len(self._sim_conf.imp_control_jids), 5), dtype=jnp.float32, device=self._jax_device),
                                                      "cmds_queue_times" : jnp.full(fill_value=float("+inf"), shape=(self._vec_size, self._queue_size), dtype=jnp.float32, device=self._jax_device)})
         
-    @staticmethod
-    @partial(jax.jit, donate_argnames=("sim_state",), static_argnames=("reset_state"))
-    def _reset_filters_jax(sim_state : SimStateJimp , sim_conf : SimConfJimp, reset_state : bool = True):
+    @partial(jax.jit, donate_argnames=("sim_state",), static_argnames=("self","reset_state"))
+    def _reset_filters_jax(self, sim_state : SimStateJimp , sim_conf : SimConfJimp, reset_state : bool = True):
         
         current_pve = MjxJointImpedanceAdapter._get_vec_joint_states_pveae(sim_conf, sim_state.mjx_data, sim_conf.imp_control_jids)[...,:3]
-        current_pv = current_pve[:,:,:2]
         state_repl = {  "filtered_pve_states" : current_pve}
+        # For the reference filter, use commanded references from the queue if available,
+        # otherwise fall back to measured positions.
+        current_cmd, has_cmd, _, _ = self._get_cmd_and_cleanup_vec(sim_state.cmds_queue,
+                                                                   sim_state.cmds_queue_times,
+                                                                   sim_state.sim_time)
+        ref_pve = jnp.where(has_cmd[:, None, None], current_cmd[:, :, :3], current_pve)
+        ref_pv = ref_pve[:, :, :2]
         vec_ref_filter_coeffs, ref_filter_state = _compute_filter_coeffs_and_state( sim_conf.sim_dt,
                                                                                     sim_conf.ref_filter_cutoff_freqs,
-                                                                                    current_pve)
+                                                                                    ref_pve)
         state_repl["ref_filter_coeffs"] = vec_ref_filter_coeffs
         if reset_state:
             state_repl["ref_filter_state"] = ref_filter_state
-            state_repl["filtered_pv_references"] = current_pv
+            state_repl["filtered_pv_references"] = ref_pv
         # ggLog.info(f"resetted filter to coeffs {vec_ref_filter_coeffs} and state {ref_filter_state}")
         # ggLog.info(f"resetted refs filter")
         sim_state = sim_state.replace_d(state_repl)
@@ -781,19 +785,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         All force data (cols 2-5, 11) comes from post-forward mjx_data — no stale or recomputed values.
         """
         qvadr = self._jids_to_imp_cmd_qvadr
-        qfrc_actuator   = mjx_data.qfrc_actuator[:, qvadr]
+        qpadr = self._jids_to_imp_cmd_qpadr
         qfrc_applied    = mjx_data.qfrc_applied[:, qvadr]
-        qacc            = mjx_data.qacc[:, qvadr]
-        qfrc_passive    = mjx_data.qfrc_passive[:, qvadr]
-        qfrc_constraint = mjx_data.qfrc_constraint[:, qvadr]
-        pveaec = jnp.stack([
-            pre_pos,                                        # pos (pre-forward)
-            pre_vel,                                        # vel (pre-forward)
-            qfrc_applied + qfrc_actuator,                   # cmd_eff (post-forward)
-            qacc,                                           # acc (post-forward)
-            qfrc_applied + qfrc_passive + qfrc_constraint,  # eff (post-forward)
-            qfrc_constraint,                                # constr_eff (post-forward)
-        ], axis=2)
+        current_pveaec = self._get_vec_joint_states_raw_pveaec(qpadr, qvadr, mjx_data)
+        pveaec = current_pveaec.at[..., 0].set(pre_pos)
+        pveaec = pveaec.at[..., 1].set(pre_vel)
+        
         return jnp.concat([
             pveaec,                                         # pveaec (6)
             pre_pvesd,                                      # pvesd (5) - filtered command from _apply_impedance_cmds
