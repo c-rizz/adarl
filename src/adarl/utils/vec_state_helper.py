@@ -16,6 +16,7 @@ import typing
 from dataclasses import dataclass
 import math
 import numpy.typing as npt
+import copy
 
 
 _T = TypeVar('_T', float, th.Tensor)
@@ -827,6 +828,18 @@ class DictStateHelper(StateHelper):
         return DictStateHelper( state_helpers=state_helpers,
                                 obs_definitions=self._init_obs_defs)
         
+    def reorder_substates(self, new_order : list[str]) -> DictStateHelper:
+        if set(new_order) != set(self.sub_helpers.keys()):
+            raise RuntimeError(f"New order {new_order} does not match existing substates {list(self.sub_helpers.keys())}")
+        state_helpers = {k:self.sub_helpers[k] for k in new_order}
+        obs_defs = {}
+        for k in self._init_obs_defs:
+            obs_def = copy.deepcopy(self._init_obs_defs[k])
+            obs_def.observable_substates = [s for s in new_order if s in obs_def.observable_substates]
+            obs_def.concatenable_substates = [s for s in new_order if s in obs_def.concatenable_substates]
+            obs_defs[k] = obs_def
+        return DictStateHelper( state_helpers=state_helpers,
+                                obs_definitions=obs_defs)
     
     @override
     def reset_state(self, initial_values: Mapping[str,th.Tensor|Mapping[FieldName,th.Tensor | float | Sequence[float]]] | None = None,

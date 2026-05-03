@@ -135,6 +135,8 @@ def get_space_labels(space : gym_spaces.Dict | ThBox):
         return space.labels
     elif isinstance(space, gym_spaces.Dict):
         return {k: get_space_labels(space.spaces[k]) for k in space.spaces}
+    elif isinstance(space, gym_spaces.Box):
+        return np.array([f"{i}" for i in range(np.prod(space.shape, dtype=int))], dtype=object)
     else:
         raise NotImplemented(f"Cannot get labels from space of type {type(space)}")
     

@@ -276,9 +276,12 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         log_folder="./",
                         safe_revolute_dof_armature = 0.01,
                         revolute_dof_armature_override = None,
+                        revolute_dof_damping_override = None,
+                        revolute_dof_frictionloss_override = None,
                         opt_override : dict[str,Any] | None = None,
                         reference_filter_cutoff_frequency : float = 20.0,
-                        reference_filter_mode :  str = "second_order"):
+                        reference_filter_mode :  str = "second_order",
+                        mjx_impl : Literal["jax","warp"] = "jax"):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -297,8 +300,11 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         log_folder=log_folder,
                         safe_revolute_dof_armature=safe_revolute_dof_armature,
                         revolute_dof_armature_override=revolute_dof_armature_override,
+                        revolute_dof_damping_override=revolute_dof_damping_override,
+                        revolute_dof_frictionloss_override=revolute_dof_frictionloss_override,
                         opt_preset=opt_preset,
-                        opt_override=opt_override)
+                        opt_override=opt_override,
+                        mjx_impl=mjx_impl)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,

@@ -10,7 +10,7 @@ from vidgear.gears import WriteGear
 import math
 import adarl.utils.session
 from adarl.utils.utils import puttext_cv, masked_assign, to_string_tensor
-from typing import Callable, Optional, Any
+from typing import Callable, Optional, Any, Mapping
 import h5py
 import lzma
 import pickle
@@ -45,7 +45,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                         record_infoobs = True,
                         record_video = True,
                         publish : bool = False,
-                        stream : bool = False):
+                        stream : bool = False,
+                        override_obs_labels : Mapping[str, list[str]] | None = None):
         super().__init__(runner=runner)
         if stream:
             adarl.utils.dbg.dbg_img.helper.enable_web_dbg(True)
@@ -68,6 +69,10 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             vec_obs_keys = [vec_obs_keys]
         self._vec_obs_keys : list[str] = list(vec_obs_keys) if vec_obs_keys is not None else []
         self._vecobs_buffer : dict[str, list] = {k: [] for k in self._vec_obs_keys}
+        if override_obs_labels is not None:
+            self._vecobs_labels = override_obs_labels
+        else:
+            self._vecobs_labels : Mapping[str, np.ndarray|list[str]] = get_space_labels(self._runner.single_observation_space)
         self._vecBuffer : dict[str, list] = {"action":[], "reward":[], "terminated":[], "truncated":[]}
         self._infoBuffer : list[dict] = []
         self._extra_info_buffer : list[dict] = [] # extra info that comes from outside via add_to_info
@@ -265,34 +270,59 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                     writer.write(npimg)
             writer.close()
         
-    def _write_infobuffer(self, out_filename, infobuffer):
-        infos = tt.map_tensor_tree(infobuffer, lambda t: th.as_tensor(t).detach())
-        infos = tt.stack_tensor_tree(infos)
+    def _write_unstacked_thtree(self, out_filename, thtree, labels = None):
+        thtree = tt.map_tensor_tree(thtree, lambda t: th.as_tensor(t).detach())
+        thtree = tt.stack_tensor_tree(thtree)
         # sizes = tt.map_tensor_tree(infos, lambda t: t.shape if t is not None else None)
-        infos_np = tt.map_tensor_tree(infos, lambda t: t.cpu().numpy())
-        hdf5plot.save.save_dict(out_filename+".hdf5", infos_np, self._info_labels_np)
+        nptree = tt.map_tensor_tree(thtree, lambda t: t.cpu().numpy())
+        hdf5plot.save.save_dict(out_filename+".hdf5", nptree, labels)
 
-        
-    def _write_vecbuffer(self, out_filename, vecbuffer, vecbuffer_labels={}):
-        out_filename += ".hdf5"
-        # ggLog.info(f"writing buffer {vecbuffer}")
+    def _restructure_vecbuffers(self, vecbuffer):
+        d = {}
+        for k,v in vecbuffer.items():
+            if len(v) == 0:
+                continue
+            try:
+                # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
+                v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
+                v = stack_tensor_tree(src_trees=v)
+                d[k] = v
+            except TypeError as e:
+                raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
+        d = flatten_tensor_tree(d) # flatten in case we have complex observations
+        d = {(k if isinstance(k,str) else ".".join(k)):v for k,v in d.items()} # flatten the keys
+        print(f"restructure_vecbuffers: restructured vecbuffer keys&sizes = "+str({k: v.shape if isinstance(v, th.Tensor) else None for k,v in d.items()}))
+        nptree = tt.map_tensor_tree(d, lambda t: t.cpu().numpy())
+        return nptree
+    
+    def _save_restructured_vecbuffers(self, out_filename, vecbuffer, vecbuffer_labels={}):
         try:
-            with h5py.File(out_filename, "w") as f:
-                # loop through obs keys, action, reward, terminated, truncation
-                for k,v in vecbuffer.items():
-                    if len(v) == 0:
-                        continue
-                    try:
-                        # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
-                        v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
-                        v = stack_tensor_tree(src_trees=v)
-                        v = flatten_tensor_tree(v) # flatten in case we have complex observations
-                        for sk,sv in v.items():
-                            f.create_dataset(f"{k}.{sk}", data=sv)
-                    except TypeError as e:
-                        raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
+            hdf5plot.save.save_dict(out_filename+".hdf5",
+                                    self._restructure_vecbuffers(vecbuffer),
+                                    vecbuffer_labels)
         except Exception as e:
             raise RuntimeError(f"Error saving vecbuffer to {out_filename}, exception={adarl.utils.utils.exc_to_str(e)}")
+
+    # def _write_vecbuffer(self, out_filename, vecbuffer, vecbuffer_labels={}):
+    #     out_filename += ".hdf5"
+    #     # ggLog.info(f"writing buffer {vecbuffer}")
+    #     try:
+    #         with h5py.File(out_filename, "w") as f:
+    #             # loop through obs keys, action, reward, terminated, truncation
+    #             for k,v in vecbuffer.items():
+    #                 if len(v) == 0:
+    #                     continue
+    #                 try:
+    #                     # we now have a list of observations (or actions, rewards, ...), make the list into batched obs
+    #                     v = map_tensor_tree(v, lambda t: th.as_tensor(t).detach().cpu()) # make it a tensor if it isnt
+    #                     v = stack_tensor_tree(src_trees=v)
+    #                     v = flatten_tensor_tree(v) # flatten in case we have complex observations
+    #                     for sk,sv in v.items():
+    #                         f.create_dataset(f"{k}.{sk}", data=sv)
+    #                 except TypeError as e:
+    #                     raise RuntimeError(f"Error saving {k}, type={type(v)}, exception={adarl.utils.utils.exc_to_str(e)}")
+    #     except Exception as e:
+    #         raise RuntimeError(f"Error saving vecbuffer to {out_filename}, exception={adarl.utils.utils.exc_to_str(e)}")
 
 
     def _saveLastEpisode(self, filename : str):
@@ -302,8 +332,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             if self._record_video:
                 self._writeVideo(filename,self._imgBuffer, self._vecBuffer, self._infoBuffer, self._extra_info_buffer)
             if self._record_infoobs:
-                self._write_vecbuffer(filename, {**self._vecobs_buffer, **self._vecBuffer})
-                self._write_infobuffer(filename+"_info",self._infoBuffer)
+                self._save_restructured_vecbuffers(filename, {**self._vecobs_buffer, **self._vecBuffer}, self._vecobs_labels)
+                self._write_unstacked_thtree(filename+"_info",self._infoBuffer, self._info_labels_np)
             self._saved_eps_count += 1
         record_region_end("EnvRunnerRecorderWrapper _saveLastEpisode")
         
