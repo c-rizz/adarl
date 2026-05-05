@@ -231,8 +231,7 @@ class CheckpointCallbackRB(TrainingCallback):
         self._successes = [0]*50
         self._success_ratio = 0.0
         self._best_success_ratio = 0
-        self._ep_last_model_checkpoint = 0
-
+        self._ep_last_model_checkpoint = float('-inf')
         self._model = model
         self._buffer = buffer
 
@@ -244,7 +243,9 @@ class CheckpointCallbackRB(TrainingCallback):
         run_id = adarl.utils.session.default_session.run_info["run_id"]
         exp_name = adarl.utils.session.default_session.run_info["experiment_name"]
         train_iter = adarl.utils.session.default_session.run_info["train_iterations"].value
-        fname_base = f"{exp_name}_{run_id}_{self._save_count:05d}_{self.name_prefix}_{self._episode_counter:09d}ep_{self._step_counter:09d}st_{train_iter:09d}it"
+        ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value
+        step_count = adarl.utils.session.default_session.run_info["collected_steps"].value
+        fname_base = f"{exp_name}_{run_id}_{self._save_count:05d}_{self.name_prefix}_{ep_count:09d}ep_{step_count:09d}st_{train_iter:09d}it"
         fname_base = fname_base.replace(".", "_")+".zip"
         if is_best:
             fname_base = "best_"+fname_base

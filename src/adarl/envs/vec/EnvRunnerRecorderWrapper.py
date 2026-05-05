@@ -398,7 +398,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 if self._saveBestEpisodes:
                     self._saveLastEpisode(f"{self._outFolder}/best/{fname}")            
                     self._saved_best_eps_count += 1
-            if self._saveFrequency_ep==1 or (self._saveFrequency_ep>0 and ep_count - self._last_saved_ep >= self._saveFrequency_ep):
+            if ep_count - self._last_saved_ep >= max(self._saveFrequency_ep,1) and self._stored_frames > 1:
                 self._saveLastEpisode(f"{self._outFolder}/{fname}")
                 self._last_saved_ep = ep_count
 
@@ -422,11 +422,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         # ggLog.info(f"self._outFolder = {self._outFolder}")
         # self._saveLastEpisode(self._outFolder+(f"/ep_{self._episodeCounter}".zfill(6)+f"_{self._epReward}.mp4"))
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
-        run_id = adarl.utils.session.default_session.run_info["run_id"]
-        step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
-        tot_ep_reward = self._ep_rewards[self._env_idx].sum()
-        fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{tot_ep_reward:09.9g}_{self._saved_eps_count}"
-        self._saveLastEpisode(f"{self._outFolder}/{fname}")
+        if ep_count - self._last_saved_ep >= max(self._saveFrequency_ep,1) and self._stored_frames > 1:
+            run_id = adarl.utils.session.default_session.run_info["run_id"]
+            step_count = adarl.utils.session.default_session.run_info["collected_steps"].value if self._use_global_ep_count else  self._tot_vstep_counter*self.num_envs
+            tot_ep_reward = self._ep_rewards[self._env_idx].sum()
+            fname = f"ep_{run_id}_{ep_count:09d}_{step_count:010d}_{tot_ep_reward:09.9g}_{self._saved_eps_count}"
+            self._saveLastEpisode(f"{self._outFolder}/{fname}")
         return self._runner.close()
 
     # def setSaveAllEpisodes(self, enable : bool, disable_after_one_episode : bool = False):

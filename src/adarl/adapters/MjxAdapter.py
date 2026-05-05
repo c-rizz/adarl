@@ -694,8 +694,17 @@ def quat_wxyz_to_rotmat(quat_wxyz : jnp.ndarray) -> jnp.ndarray:
                      dtype=quat_wxyz.dtype)
 
 
-def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : bool, uneven_ground : bool, discardvisual : bool, log_folder : str | None):
-    """Build and setup the environment scenario. Should be called by the environment before startup()."""
+def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : bool, uneven_ground : bool, discardvisual : bool, log_folder : str | None,
+                     geom_overrides : dict[str, dict[str, Any]] | None = None):
+    """Build and setup the environment scenario. Should be called by the environment before startup().
+
+    Parameters
+    ----------
+    geom_overrides : dict[str, dict[str, Any]] | None
+        Optional per-geom field overrides applied to the merged spec before compile.
+        Maps geom name -> {field_name: value}, e.g. {"robot#foot": {"solimp": [0.9, 0.95, 0.001, 0.5, 2]}}.
+        Note that attached geoms are prefixed with `<modelname>#` (model_element_separator).
+    """
     ggLog.info(f"MjxAdapter building scenario")
     if add_ground or add_sky:
         n="\n"
@@ -721,7 +730,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                                         <worldbody>
                                             <body name="ground_link">
                                                 <light  pos="0 0 1"
-                                                        dir="0.3 0.3 -1" 
+                                                        dir="0.3 0.3 -1"
                                                         type="directional"
                                                         ambient="0.2 0.2 0.2"
                                                         diffuse="0.7 0.7 0.7"
@@ -760,7 +769,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
         if model.pose is not None:
             raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
     big_speck = mujoco.MjSpec()
-    
+
     world_frame = big_speck.worldbody.add_frame()
     big_speck.compiler.degree = False
     big_speck.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
@@ -782,18 +791,36 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                 f.attach_body(body, mname+model_element_separator, "")
                 # ggLog.info(f"Attaching body '{mname}';'{body.name}' to '{attachment_link}'")
             body = spec.worldbody.next_body(body)
+
+    if geom_overrides:
+        geoms_by_name = {g.name: g for g in big_speck.geoms}
+        for geom_name, field_overrides in geom_overrides.items():
+            if geom_name not in geoms_by_name:
+                raise RuntimeError(f"geom_overrides: no geom named '{geom_name}' in the merged spec. "
+                                   f"Available geoms: {sorted(geoms_by_name.keys())}")
+            geom = geoms_by_name[geom_name]
+            for field, new_value in field_overrides.items():
+                if not hasattr(geom, field):
+                    raise RuntimeError(f"geom_overrides: geom '{geom_name}' has no field '{field}'")
+                if type(new_value) != type(getattr(geom, field)):
+                    raise RuntimeError(f"geom_overrides: geom '{geom_name}' field '{field}' has type {type(getattr(geom, field))} but got value of type {type(new_value)}")
+                setattr(geom, field, new_value)
+                ggLog.info(f"geom_overrides: set {geom_name}.{field} = {new_value}")
+
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
     mj_model = big_speck.compile()
     return mj_model, big_speck
 
-def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None):
+def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None,
+                     opt_override_enableflags : dict[str,bool] | None = None) -> mujoco.MjModel:
     
     good_impratio = 1.0
+    # good_cone = mujoco.mjtCone.mjCONE_PYRAMIDAL #ELLIPTIC
     if preset_name is None or preset_name == "mujoco_default":
         pass
     elif preset_name == "fastest":
-        # Copied from barkour example
+        # Inspired from barkour example
         mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
         mj_model.opt.iterations = 1 # constraint solver iterations
         mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
@@ -833,8 +860,15 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
     else:
         raise RuntimeError(f"Unknown opt preset '{preset_name}'")
     if opt_override is not None:
-             for k,v in opt_override.items():
-                setattr(mj_model.opt,k,v)
+        for k,v in opt_override.items():
+            setattr(mj_model.opt,k,v)
+    if opt_override_enableflags is not None:
+        for f,v in opt_override_enableflags.items():
+            if v:
+                mj_model.opt.enableflags |= getattr(mujoco.mjtEnableBit, f)
+            else:
+                mj_model.opt.enableflags &= ~getattr(mujoco.mjtEnableBit, f)
+    # mj_model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_OVERRIDE
     return mj_model
 
 
@@ -1504,7 +1538,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         opt_override : dict[str,Any] | None = None,
                         render_backend : Literal["cpu", "warp"] = "cpu",
                         mjx_impl : Literal["jax","warp"] = "jax",
-                        disable_builtin_actuators : bool = True):
+                        disable_builtin_actuators : bool = True,
+                        geom_overrides : dict[str,Any] | None = None):
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._disable_builtin_actuators = disable_builtin_actuators
@@ -1529,6 +1564,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._revolute_dof_frictionloss_override = revolute_dof_frictionloss_override
         self._discardvisual = False
         self._opt_override = opt_override
+        self._geom_overrides = geom_overrides
         self._mjx_impl = mjx_impl
         self._jax_float_dtype = jnp.float32
         self._out_cuda = self._out_th_device.type == "cuda"
@@ -1708,7 +1744,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 add_sky=self._add_sky,
                                 uneven_ground=self._uneven_ground,
                                 discardvisual=self._discardvisual,
-                                log_folder=log_folder)
+                                log_folder=log_folder,
+                                geom_overrides=self._geom_overrides)
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
