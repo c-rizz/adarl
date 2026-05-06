@@ -186,6 +186,7 @@ class SimConfJimp(SimConf):
             "monitored_jids" : self.monitored_jids,
             "body_rootid" : self.body_rootid,
             "monitored_collision_pairs" : self.monitored_collision_pairs,
+            "pair_sensor_adrs" : self.pair_sensor_adrs,
             "geom_bodyid" : self.geom_bodyid,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
@@ -358,7 +359,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         use_second_order_reference_filter=self._use_second_order_reference_filter,
                                         use_exponential_reference_filter=self._use_exponential_reference_filter,
                                         ref_filter_cutoff_freqs=th2jax(self._ref_filter_cutoff_freqs_th, self._jax_device),
-                                        pv_ref_filter_alpha = pv_ref_filter_alpha
+                                        pv_ref_filter_alpha = pv_ref_filter_alpha,
+                                        pair_sensor_adrs = self._sim_conf.pair_sensor_adrs
                                         )
         # Controlled joint state filter (Only used for the impedance control feedback, not by getJointState)
         pve_sensing_filter_decimation_time = 0.005        
@@ -775,7 +777,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
         sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:
             # pvesd (cols 6-10) from the pre-stored filtered command

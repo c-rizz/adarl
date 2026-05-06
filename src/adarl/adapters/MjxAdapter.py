@@ -695,7 +695,8 @@ def quat_wxyz_to_rotmat(quat_wxyz : jnp.ndarray) -> jnp.ndarray:
 
 
 def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : bool, uneven_ground : bool, discardvisual : bool, log_folder : str | None,
-                     geom_overrides : dict[str, dict[str, Any]] | None = None):
+                     geom_overrides : dict[str, dict[str, Any]] | None = None,
+                     contact_pairs : list[tuple[str, str]] | None = None):
     """Build and setup the environment scenario. Should be called by the environment before startup().
 
     Parameters
@@ -807,6 +808,25 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                 setattr(geom, field, new_value)
                 ggLog.info(f"geom_overrides: set {geom_name}.{field} = {new_value}")
 
+    # Inject one mjSENS_CONTACT sensor per monitored body pair (warp backend only — JAX reads
+    # mjx_data.contact directly). Sensors are named __pair_<i>__ so adrs can be recovered
+    # post-compile by name. intprm encoding: [num, reduce_code, data_field_bitmask] where
+    # data="found" maps to bitmask 1.
+    if contact_pairs:
+        for i, (body_a, body_b) in enumerate(contact_pairs):
+            if big_speck.body(body_a) is None:
+                raise RuntimeError(f"contact_pairs[{i}]: no body named '{body_a}' in the merged spec")
+            if big_speck.body(body_b) is None:
+                raise RuntimeError(f"contact_pairs[{i}]: no body named '{body_b}' in the merged spec")
+            sens = big_speck.add_sensor()
+            sens.name = f"__pair_{i}__"
+            sens.type = mujoco.mjtSensor.mjSENS_CONTACT
+            sens.objtype = mujoco.mjtObj.mjOBJ_BODY
+            sens.objname = body_a
+            sens.reftype = mujoco.mjtObj.mjOBJ_BODY
+            sens.refname = body_b
+            sens.intprm = [1, 0, 1]
+
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
     mj_model = big_speck.compile()
@@ -831,7 +851,7 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
         mj_model.opt.iterations = 3
         mj_model.opt.ls_iterations = 3
         mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
-        mj_model.opt.noslip_iterations = 3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
+        mj_model.opt.noslip_iterations = 0 #3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "fast":
         mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
@@ -1150,7 +1170,8 @@ class SimConf:
     monitored_lids : jnp.ndarray
     monitored_jids : jnp.ndarray
     body_rootid : jnp.ndarray  # maps all bodies to their root body (for acceleration computation)
-    monitored_collision_pairs : jnp.ndarray  # (num_pairs, 2) body id pairs to check for collision
+    monitored_collision_pairs : jnp.ndarray  # (num_pairs, 2) body id pairs to check for collision (JAX backend path)
+    pair_sensor_adrs : jnp.ndarray  # (num_pairs,) sensordata adrs of __pair_i__ contact sensors (warp backend path)
     geom_bodyid : jnp.ndarray  # maps geom ids to body ids
     sim_dt : jnp.ndarray
     jnt_qposadr : jnp.ndarray
@@ -1169,6 +1190,7 @@ class SimConf:
             "monitored_jids" : self.monitored_jids,
             "body_rootid" : self.body_rootid,
             "monitored_collision_pairs" : self.monitored_collision_pairs,
+            "pair_sensor_adrs" : self.pair_sensor_adrs,
             "geom_bodyid" : self.geom_bodyid,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
@@ -1590,6 +1612,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                     monitored_lids=jnp.empty((0,),  device = jax_device, dtype=jnp.int32),
                                     body_rootid=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
                                     monitored_collision_pairs=jnp.empty((0,2), device = jax_device, dtype=jnp.int32),
+                                    pair_sensor_adrs=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
                                     geom_bodyid=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
                                     sim_dt=jnp.array(sim_step_dt, device = self._jax_device),
                                     jnt_qposadr=jnp.empty((0,), device = jax_device, dtype=jnp.int32),
@@ -1620,6 +1643,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mon_body_count = 0
         self._mon_site_count = 0
         self._mon_link_jax_to_user = th.empty((0,), dtype=th.long, device=self._out_th_device)
+        self._scenario_built = False
+        self._monitored_collision_pairs : list[tuple[tuple[str,str], tuple[str,str]]] = []
+        self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
         self._record_joint_hist = record_whole_joint_trajectories
         ggLog.info(f"MjxAdapter initialized with record_whole_joint_trajectories={record_whole_joint_trajectories}")
         self._joints_pveae_history = []
@@ -1739,13 +1765,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _aggregate_models(self, models, log_folder):
         """Aggregate models into a single MuJoCo model. Override in subclasses to modify the model before compilation."""
+        # Build post-attach body-name pairs for contact sensors. Sensors are warp-only;
+        # the JAX backend keeps reading mjx_data.contact, so no sensors get injected for it.
+        contact_pairs : list[tuple[str, str]] | None = None
+        if self._mjx_impl == "warp" and len(self._monitored_collision_pairs) > 0:
+            def _to_body_name(p):
+                if p == ("world", "world"):
+                    return "world"
+                return p[0] + model_element_separator + p[1]
+            contact_pairs = [(_to_body_name(a), _to_body_name(b)) for a, b in self._monitored_collision_pairs]
         return aggregate_models(models,
                                 add_ground=self._add_ground,
                                 add_sky=self._add_sky,
                                 uneven_ground=self._uneven_ground,
                                 discardvisual=self._discardvisual,
                                 log_folder=log_folder,
-                                geom_overrides=self._geom_overrides)
+                                geom_overrides=self._geom_overrides,
+                                contact_pairs=contact_pairs)
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
@@ -1837,6 +1873,27 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._cid2cname : dict[int, str] = {cid:self._mj_name_to_pair(cid, mujoco.mjtObj.mjOBJ_CAMERA)[1]
                            for cid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
+
+        # Resolve buffered monitored collision pairs once lname2lid is available.
+        # The JAX backend uses the (P,2) body-id array; the warp backend uses the
+        # sensor adrs recovered from the __pair_<i>__ sensors injected at compile time.
+        if len(self._monitored_collision_pairs) > 0:
+            lid_pairs = [ (self._lname2lid[la], self._lname2lid[lb]) for la,lb in self._monitored_collision_pairs]
+            self._monitored_collision_pair_to_idx = {}
+            for idx, (a, b) in enumerate(lid_pairs):
+                self._monitored_collision_pair_to_idx[(a, b)] = idx
+                self._monitored_collision_pair_to_idx[(b, a)] = idx
+            self._sim_conf.monitored_collision_pairs = jnp.array(lid_pairs, device=self._jax_device, dtype=jnp.int32)
+            if self._mjx_impl == "warp":
+                pair_adrs = []
+                for i in range(len(self._monitored_collision_pairs)):
+                    sname = f"__pair_{i}__"
+                    sid = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_SENSOR, sname)
+                    if sid < 0:
+                        raise RuntimeError(f"Internal error: contact sensor '{sname}' missing after compile")
+                    pair_adrs.append(int(self._mj_model.sensor_adr[sid]))
+                self._sim_conf.pair_sensor_adrs = jnp.array(pair_adrs, device=self._jax_device, dtype=jnp.int32)
+
         if default_link_group_collisions is not None:
             # the size of some internal fields in mjx_data (e.g. nefc) are determined by the number of possible collisions 
             # So it may be necessary to set the collisions masks before creatign mjx_data
@@ -1978,9 +2035,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._is_geom_visual = jnp.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
 
 
-        ggLog.info(f"MJXAdapter: links  lname2lid = {self._lname2lid}")
-        ggLog.info(f"MJXAdapter: joints jname2jid = {self._jname2jid}")
-        ggLog.info(f"MJXAdapter: {self._mj_model.ncam} cameras cname2cid = {self._cname2cid}")
+        ggLog.info(f"MJXAdapter: links  lname2lid = {pprint.pformat(self._lname2lid)}")
+        ggLog.info(f"MJXAdapter: joints jname2jid = {pprint.pformat(self._jname2jid)}")
+        ggLog.info(f"MJXAdapter: {self._mj_model.ncam} cameras cname2cid = {pprint.pformat(self._cname2cid)}")
 
         ggLog.info(f"MJXAdapter: Joint limits:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_range[jid] for jid,jname in self._jid2jname.items()}.items()])))
         ggLog.info(f"MJXAdapter: Joint child bodies:\n"+("\n".join([f" - {jn}: {r}" for jn,r in {jname:self._mj_model.jnt_bodyid[jid] for jid,jname in self._jid2jname.items()}.items()])))
@@ -1995,6 +2052,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"self._sim_state.mjx_model.nconmax = {self._sim_state.mjx_model.nconmax}")
         # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
 
+        self._scenario_built = True
 
 
     def startup(self):
@@ -2249,28 +2307,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._rebuild_step_stats_arrs()
 
     def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
-        """Set collision pairs to monitor. Collision masks will be precomputed during step().
-        
+        """Set collision pairs to monitor. Must be called before build_scenario.
+
+        Pairs are buffered here and resolved to body ids / sensor adrs inside build_scenario,
+        once the model is compiled and the lname2lid map exists. The warp backend additionally
+        gets one mjSENS_CONTACT sensor per pair injected into the spec.
+
         Parameters
         ----------
         collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
             List of link name pairs to monitor for collisions.
             Each pair is ((model_a, link_a), (model_b, link_b)).
         """
+        if self._scenario_built:
+            raise RuntimeError("Monitored collision pairs cannot be changed after build_scenario has been called.")
         self._monitored_collision_pairs = list(collision_pairs)
-        # Cache for quick lookup: (body_id_a, body_id_b) -> index in monitored array
-        self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
-        if len(collision_pairs) == 0:
-            self._sim_conf.monitored_collision_pairs = jnp.empty((0,2), device=self._jax_device, dtype=jnp.int32)
-        else:
-            body_ids_a = [self._lname2lid[p[0]] for p in collision_pairs]
-            body_ids_b = [self._lname2lid[p[1]] for p in collision_pairs]
-            for idx, (a, b) in enumerate(zip(body_ids_a, body_ids_b)):
-                self._monitored_collision_pair_to_idx[(a, b)] = idx
-                self._monitored_collision_pair_to_idx[(b, a)] = idx  # Store both directions
-            self._sim_conf.monitored_collision_pairs = jnp.array(
-                list(zip(body_ids_a, body_ids_b)), device=self._jax_device, dtype=jnp.int32)
-        self._rebuild_step_stats_arrs()
 
     def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]) -> th.Tensor:
         """Get indices into monitored collision pairs array.
@@ -2354,7 +2405,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
         sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:
             joint_state = self._assemble_base_joint_history(sim_state.mjx_data, sim_conf, pre_pos, pre_vel)
@@ -2908,9 +2959,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
 
-    @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
-    def _update_monitored_data_cache(sim_state : SimState, sim_conf : SimConf) -> SimState:
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _update_monitored_data_cache(self, sim_state : SimState, sim_conf : SimConf) -> SimState:
         replace = {}
         replace["mon_joint_state_pveae"] = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
                                                                   sim_conf.monitored_qvadr,
@@ -2930,10 +2980,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             replace["mon_link_state"] = body_link_state
             replace["mon_link_acceleration"] = body_link_acceleration
-        # Compute collision mask for monitored pairs
-        if len(sim_conf.monitored_collision_pairs) > 0:
-            replace["mon_collision_mask"] = MjxAdapter._check_collision_pairs_static(
-                sim_conf.monitored_collision_pairs, sim_conf.geom_bodyid, sim_state.mjx_data)
+        # Collision mask for monitored pairs — backend-specific path. self._mjx_impl is static
+        # under jit, so the Python branch is resolved at trace time and only one path is traced.
+        if self._mjx_impl == "warp":
+            if sim_conf.pair_sensor_adrs.shape[0] > 0:
+                replace["mon_collision_mask"] = sim_state.mjx_data.sensordata[:, sim_conf.pair_sensor_adrs] > 0
+        else:
+            if len(sim_conf.monitored_collision_pairs) > 0:
+                replace["mon_collision_mask"] = MjxAdapter._check_collision_pairs_static(
+                    sim_conf.monitored_collision_pairs, sim_conf.geom_bodyid, sim_state.mjx_data)
         # Store precomputed states
         sim_state = sim_state.replace_d(replace)
         return sim_state
@@ -3028,12 +3083,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         dtype=jnp.bool_,
                                                         device=self._jax_device)
 
-    @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
-    def _reset_monitored_data_and_stats(sim_state : SimState, sim_conf : SimConf) -> SimState:
+    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    def _reset_monitored_data_and_stats(self, sim_state : SimState, sim_conf : SimConf) -> SimState:
         # ggLog.info(f"resetting stats")
         sim_state = MjxAdapter._clear_step_stats(sim_state)
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf) # populate with current state, so that there are safe-ish values here
         return sim_state
 
@@ -4014,69 +4068,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
         record_region_end("MjxAdapter.alter_model")
 
-    def get_current_contacts_num(self) -> th.Tensor:
-        """Gets the number of contacts in this instant.
-
-        Returns
-        -------
-        th.Tensor
-            Tensor of size (self.vec_size,) with the number of contacts in each environment
-        """
-        self._forward_if_needed()
-        return jax2th(self._sim_state.mjx_data.ncon, th_device=self._out_th_device)
-
-    # @partial(jax.jit, static_argnames=["self"])
-    def _get_current_colliding_link_id_pairs(self, sim_state : SimState) -> jnp.ndarray:
-        # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
-        # self._forward_if_needed()
-        if self._mjx_impl == "warp":
-            raise NotImplementedError("")
-
-        active_contacts = sim_state.mjx_data.contact.dist < sim_state.mjx_data.contact.includemargin # size (vec_size, ncon)
-        # print(f"sim_state.mjx_data.contact.dist = {sim_state.mjx_data.contact.dist}")
-        # print(f"sim_state.mjx_data.contact.includemargin = {sim_state.mjx_data.contact.includemargin}")
-        # print(f"active_contacts = {active_contacts}")
-        geom_pairs = sim_state.mjx_data.contact.geom # size (vec_size, ncon, 2)
-        geom_pairs = jnp.where(jnp.expand_dims(active_contacts,-1), geom_pairs, -1)
-        # print(f"geom_pairs = {geom_pairs}")
-        body_pairs = self._geom_bodyid_jax[geom_pairs]
-        # print(f"body_pairs = {body_pairs}")
-        # body_pairs = body_pairs.at[:,sim_state.mjx_data.ncon:].set(-1)
-        # print(f"ncon = {sim_state.mjx_data.ncon}")
-        # print(f"body_pairs = {body_pairs}")
-        return body_pairs # size (vec_size, ncon, 2)
-
-        print(f"ncon = {sim_state.mjx_data.ncon}")
-        geom_pairs = sim_state.mjx_data.contact.geom
-        print(f"geom_pairs = {geom_pairs}, size = {geom_pairs.shape}")
-        body_pairs = self._geom_bodyid_jax[geom_pairs]
-        body_pairs = body_pairs.at[:,self._sim_state.mjx_data.ncon:].set(-1)
-        return body_pairs
-    
-    @partial(jax.jit, static_argnames=["self"])
-    def _check_links_colliding(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
-        """Returns a boolean array of shape (vec_size, queried_body_pairs.shape[0]).
-
-        Parameters
-        ----------
-        sim_state : SimState
-            _description_
-        queried_body_pairs : jnp.ndarray
-            The body pairs to check for, array of shape (number_of_pairs,2)
-
-        Returns
-        -------
-        jnp.ndarray
-            Boolean array of shape (vec_size, queried_body_pairs.shape[0])
-        """
-        colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state)
-        # print(f"colliding_body_pairs = {colliding_body_pairs}")
-        # colliding_body_pairs is of shape (vec_size, collision_num, 2)
-        # body_pairs is of shape (num_queried_pairs, 2)
-        a_to_b = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
-        b_to_a = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs[:,[1,0]], axis = -1), axis=1)
-        return jnp.logical_or(a_to_b,b_to_a)
-
     def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
         """Check if link pairs are colliding.
         
@@ -4106,178 +4097,242 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             reorder_indices = self.get_collision_pair_ids(requested_pairs)
         return full_mask[:, reorder_indices]
+    
+    # def get_current_contacts_num(self) -> th.Tensor:
+    #     """Gets the number of contacts in this instant.
+    #
+    #     Returns
+    #     -------
+    #     th.Tensor
+    #         Tensor of size (self.vec_size,) with the number of contacts in each environment
+    #     """
+    #     self._forward_if_needed()
+    #     return jax2th(self._sim_state.mjx_data.ncon, th_device=self._out_th_device)
+    #
+    # @partial(jax.jit, static_argnames=["self"])
+    # def _get_current_colliding_link_id_pairs(self, sim_state : SimState) -> jnp.ndarray:
+    #     # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
+    #     # self._forward_if_needed()
+    #     if self._mjx_impl == "warp":
+    #         raise NotImplementedError("")
 
-    def _get_contacts_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
-        """Get a mask that indicates which of the current contacts are between the queried pairs.
+    #     active_contacts = sim_state.mjx_data.contact.dist < sim_state.mjx_data.contact.includemargin # size (vec_size, ncon)
+    #     # print(f"sim_state.mjx_data.contact.dist = {sim_state.mjx_data.contact.dist}")
+    #     # print(f"sim_state.mjx_data.contact.includemargin = {sim_state.mjx_data.contact.includemargin}")
+    #     # print(f"active_contacts = {active_contacts}")
+    #     geom_pairs = sim_state.mjx_data.contact.geom # size (vec_size, ncon, 2)
+    #     geom_pairs = jnp.where(jnp.expand_dims(active_contacts,-1), geom_pairs, -1)
+    #     # print(f"geom_pairs = {geom_pairs}")
+    #     body_pairs = self._geom_bodyid_jax[geom_pairs]
+    #     # print(f"body_pairs = {body_pairs}")
+    #     # body_pairs = body_pairs.at[:,sim_state.mjx_data.ncon:].set(-1)
+    #     # print(f"ncon = {sim_state.mjx_data.ncon}")
+    #     # print(f"body_pairs = {body_pairs}")
+    #     return body_pairs # size (vec_size, ncon, 2)
 
-        Parameters
-        ----------
-        sim_state : SimState
-            _description_
-        queried_body_pairs : jnp.ndarray
-            size (number_of_pairs,2)
+    #     print(f"ncon = {sim_state.mjx_data.ncon}")
+    #     geom_pairs = sim_state.mjx_data.contact.geom
+    #     print(f"geom_pairs = {geom_pairs}, size = {geom_pairs.shape}")
+    #     body_pairs = self._geom_bodyid_jax[geom_pairs]
+    #     body_pairs = body_pairs.at[:,self._sim_state.mjx_data.ncon:].set(-1)
+    #     return body_pairs
+    
+    # @partial(jax.jit, static_argnames=["self"])
+    # def _check_links_colliding(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
+    #     """Returns a boolean array of shape (vec_size, queried_body_pairs.shape[0]).
 
-        Returns
-        -------
-        jnp.ndarray
-            _description_
-        """
-        colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state) # (vec_size, ncon, 2)
-        colliding_body_pairs = jnp.expand_dims(colliding_body_pairs,2)
-        # print(f"colliding_body_pairs = {colliding_body_pairs}")
-        # colliding_body_pairs is of shape (vec_size, collision_num, 1, 2)
-        # body_pairs is of shape                    (num_queried_pairs, 2)
-        # comparison is (vec_size, collision_num, num_queried_pairs, 2)
-        a_to_b = jnp.all(colliding_body_pairs == queried_body_pairs,          axis = -1)
-        b_to_a = jnp.all(colliding_body_pairs == queried_body_pairs[:,[1,0]], axis = -1)
-        is_queried = jnp.any(jnp.logical_or(a_to_b,b_to_a), axis=-1) # (vec_size, collision_num)
-        return is_queried
+    #     Parameters
+    #     ----------
+    #     sim_state : SimState
+    #         _description_
+    #     queried_body_pairs : jnp.ndarray
+    #         The body pairs to check for, array of shape (number_of_pairs,2)
 
-    @partial(jax.jit, static_argnames=["self"])
-    def _get_total_contact_forces_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray):
-        """Get the total contact forces for a set of body pairs.
-
-        Parameters
-        ----------
-        sim_state : SimState
-            _description_
-        queried_body_pairs : jnp.ndarray
-            size (number_of_pairs,2)
-
-        Returns
-        -------
-        jnp.ndarray
-            size (vec_size, number_of_pairs, 6) with the total force:torque for each environment and each body pair.
-            If there are no contacts for an environment and body pair, the force:torque will be zero.
-        """
-        total_forces = jax.vmap(lambda x: self._get_total_contact_force_for_pair(sim_state, x), in_axes=[None, 0])(queried_body_pairs) # (number_of_pairs, vec_size, 6)
-        return jnp.transpose(total_forces, (1,0,2)) # (vec_size, number_of_pairs, 6)
-
-    def _get_total_contact_force_for_pair(self, sim_state : SimState, queried_body_pair : jnp.ndarray):
-        """Get the total contact force for a specific body pair.
-
-        Parameters
-        ----------
-        sim_state : SimState
-            _description_
-        queried_body_pair : jnp.ndarray
-            size (2,)
-
-        Returns
-        -------
-        jnp.ndarray
-            size (vec_size, 6) with the total force:torque for each environment.
-            If there are no contacts for an environment, the force:torque will be zero.
-        """
-        contacts_mask = self._get_contacts_for_pairs(sim_state, jnp.expand_dims(queried_body_pair,0)) # (vec_size, ncon)
-        # print(f"contacts_mask = {contacts_mask}")
-        net_force = jax.vmap(lambda x, y: self._get_net_6d_force_for_contacts(x, y), in_axes=(0, 0))(sim_state.mjx_data, contacts_mask) # (vec_size, 6)
-        return net_force
-
-    def _get_net_6d_force_for_contacts(self, single_mjx_data : mjx.Data, single_contacts_mask : jnp.ndarray):
-        """Get the net 6D force for a set of contacts, on a single simulation.
-
-        Parameters
-        ----------
-        single_mjx_data : mjx.Data
-            The Mujoco data object containing the contact forces. (not vectorized)
-        single_contacts_mask : jnp.ndarray
-            A mask indicating which contacts to consider.
-
-        Returns
-        -------
-        jnp.ndarray
-            The net force:torque for the specified contacts, size (6,).
-        """
-        forces = self._get_force(single_mjx_data, single_mjx_data.contact.efc_address) # (ncon, 10)
-        forces : jnp.ndarray = jnp.where(jnp.expand_dims(single_contacts_mask,-1), forces, 0.0)
-        if self._mj_model.opt.cone == mjx.ConeType.ELLIPTIC:
-            cond_dims = single_mjx_data.contact.dim # (ncon,)
-            invalid_components = jnp.arange(0,forces.shape[-1]) >= cond_dims # (ncon,10)
-            forces = forces.at[:,invalid_components].set(0.0)
-            # net_3d_force = jnp.sum(forces[:,:3], axis=0) # (3,)
-            # net_3d_torque = jnp.sum(forces[:,3:6], axis=0) # (3,)
-            net_6d_force = jnp.sum(forces, axis=0) # (6,) # can I sum directly?
-            return net_6d_force
-        else:
-            raise NotImplementedError("Pyramidal friction cone not implemented yet")
-            forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
-
-    @staticmethod
-    @partial(jax.vmap, in_axes=(None, 1))
-    def _get_force(single_mjx_data : mjx.Data, efc_addr : jnp.ndarray):
-        """Get the contact force for a specific contact.
-
-        Parameters
-        ----------
-        mjx_data : mjx.Data
-            The Mujoco data object containing the contact forces. (not vectorized)
-        efc_addr : jnp.ndarray
-            The address of the contact force in the Mujoco data.
-
-        Returns
-        -------
-        jnp.ndarray
-            The contact force for the specified contact.
-        """
-        return single_mjx_data.efc_force[efc_addr:efc_addr + 10] # return the maximum size of each
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         Boolean array of shape (vec_size, queried_body_pairs.shape[0])
+    #     """
+    #     colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state)
+    #     # print(f"colliding_body_pairs = {colliding_body_pairs}")
+    #     # colliding_body_pairs is of shape (vec_size, collision_num, 2)
+    #     # body_pairs is of shape (num_queried_pairs, 2)
+    #     a_to_b = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs, axis = -1), axis=1)
+    #     b_to_a = jnp.any(jnp.all(jnp.expand_dims(colliding_body_pairs,2) == queried_body_pairs[:,[1,0]], axis = -1), axis=1)
+    #     return jnp.logical_or(a_to_b,b_to_a)
 
 
-    def _get_current_colliding_link_id_pairs_and_forces(self, sim_state : SimState) -> jnp.ndarray:
-        # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
-        # self._forward_if_needed()
-        from mujoco.mjx._src.support import contact_force
+    # def _get_contacts_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
+    #     """Get a mask that indicates which of the current contacts are between the queried pairs.
+
+    #     Parameters
+    #     ----------
+    #     sim_state : SimState
+    #         _description_
+    #     queried_body_pairs : jnp.ndarray
+    #         size (number_of_pairs,2)
+
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         _description_
+    #     """
+    #     colliding_body_pairs = self._get_current_colliding_link_id_pairs(sim_state) # (vec_size, ncon, 2)
+    #     colliding_body_pairs = jnp.expand_dims(colliding_body_pairs,2)
+    #     # print(f"colliding_body_pairs = {colliding_body_pairs}")
+    #     # colliding_body_pairs is of shape (vec_size, collision_num, 1, 2)
+    #     # body_pairs is of shape                    (num_queried_pairs, 2)
+    #     # comparison is (vec_size, collision_num, num_queried_pairs, 2)
+    #     a_to_b = jnp.all(colliding_body_pairs == queried_body_pairs,          axis = -1)
+    #     b_to_a = jnp.all(colliding_body_pairs == queried_body_pairs[:,[1,0]], axis = -1)
+    #     is_queried = jnp.any(jnp.logical_or(a_to_b,b_to_a), axis=-1) # (vec_size, collision_num)
+    #     return is_queried
+    #
+    # @partial(jax.jit, static_argnames=["self"])
+    # def _get_total_contact_forces_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray):
+    #     """Get the total contact forces for a set of body pairs.
+
+    #     Parameters
+    #     ----------
+    #     sim_state : SimState
+    #         _description_
+    #     queried_body_pairs : jnp.ndarray
+    #         size (number_of_pairs,2)
+
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         size (vec_size, number_of_pairs, 6) with the total force:torque for each environment and each body pair.
+    #         If there are no contacts for an environment and body pair, the force:torque will be zero.
+    #     """
+    #     total_forces = jax.vmap(lambda x: self._get_total_contact_force_for_pair(sim_state, x), in_axes=[None, 0])(queried_body_pairs) # (number_of_pairs, vec_size, 6)
+    #     return jnp.transpose(total_forces, (1,0,2)) # (vec_size, number_of_pairs, 6)
+
+    # def _get_total_contact_force_for_pair(self, sim_state : SimState, queried_body_pair : jnp.ndarray):
+    #     """Get the total contact force for a specific body pair.
+
+    #     Parameters
+    #     ----------
+    #     sim_state : SimState
+    #         _description_
+    #     queried_body_pair : jnp.ndarray
+    #         size (2,)
+
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         size (vec_size, 6) with the total force:torque for each environment.
+    #         If there are no contacts for an environment, the force:torque will be zero.
+    #     """
+    #     contacts_mask = self._get_contacts_for_pairs(sim_state, jnp.expand_dims(queried_body_pair,0)) # (vec_size, ncon)
+    #     # print(f"contacts_mask = {contacts_mask}")
+    #     net_force = jax.vmap(lambda x, y: self._get_net_6d_force_for_contacts(x, y), in_axes=(0, 0))(sim_state.mjx_data, contacts_mask) # (vec_size, 6)
+    #     return net_force
+
+    # def _get_net_6d_force_for_contacts(self, single_mjx_data : mjx.Data, single_contacts_mask : jnp.ndarray):
+    #     """Get the net 6D force for a set of contacts, on a single simulation.
+
+    #     Parameters
+    #     ----------
+    #     single_mjx_data : mjx.Data
+    #         The Mujoco data object containing the contact forces. (not vectorized)
+    #     single_contacts_mask : jnp.ndarray
+    #         A mask indicating which contacts to consider.
+
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         The net force:torque for the specified contacts, size (6,).
+    #     """
+    #     forces = self._get_force(single_mjx_data, single_mjx_data.contact.efc_address) # (ncon, 10)
+    #     forces : jnp.ndarray = jnp.where(jnp.expand_dims(single_contacts_mask,-1), forces, 0.0)
+    #     if self._mj_model.opt.cone == mjx.ConeType.ELLIPTIC:
+    #         cond_dims = single_mjx_data.contact.dim # (ncon,)
+    #         invalid_components = jnp.arange(0,forces.shape[-1]) >= cond_dims # (ncon,10)
+    #         forces = forces.at[:,invalid_components].set(0.0)
+    #         # net_3d_force = jnp.sum(forces[:,:3], axis=0) # (3,)
+    #         # net_3d_torque = jnp.sum(forces[:,3:6], axis=0) # (3,)
+    #         net_6d_force = jnp.sum(forces, axis=0) # (6,) # can I sum directly?
+    #         return net_6d_force
+    #     else:
+    #         raise NotImplementedError("Pyramidal friction cone not implemented yet")
+    #         forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
+
+    # @staticmethod
+    # @partial(jax.vmap, in_axes=(None, 1))
+    # def _get_force(single_mjx_data : mjx.Data, efc_addr : jnp.ndarray):
+    #     """Get the contact force for a specific contact.
+
+    #     Parameters
+    #     ----------
+    #     mjx_data : mjx.Data
+    #         The Mujoco data object containing the contact forces. (not vectorized)
+    #     efc_addr : jnp.ndarray
+    #         The address of the contact force in the Mujoco data.
+
+    #     Returns
+    #     -------
+    #     jnp.ndarray
+    #         The contact force for the specified contact.
+    #     """
+    #     return single_mjx_data.efc_force[efc_addr:efc_addr + 10] # return the maximum size of each
 
 
-        mjx_data = sim_state.mjx_data
+    # def _get_current_colliding_link_id_pairs_and_forces(self, sim_state : SimState) -> jnp.ndarray:
+    #     # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
+    #     # self._forward_if_needed()
+    #     from mujoco.mjx._src.support import contact_force
 
-        cond_dims = mjx_data.contact.dim
-        efc_addrs = mjx_data.contact.efc_address
-        if self._mj_model.opt.cone == mjx.ConeType.PYRAMIDAL:
-            raise NotImplementedError("Pyramidal friction cone not implemented yet")
-            forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
-        else:
-            forces = mjx_data.efc_force[contact_ids:contact_ids + cond_dims]
 
-        if transform_in_world_frame:
-            frame_rot_mat = mjx_data.contact.frame[contact_id]
-            assert cond_dim == 3
-            # rotate forces into global frame
-            # see: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_vis_visualize.c#L230C19-L230C22
-            forces = frame_rot_mat.T @ forces
+    #     mjx_data = sim_state.mjx_data
 
-        return body_pairs
+    #     cond_dims = mjx_data.contact.dim
+    #     efc_addrs = mjx_data.contact.efc_address
+    #     if self._mj_model.opt.cone == mjx.ConeType.PYRAMIDAL:
+    #         raise NotImplementedError("Pyramidal friction cone not implemented yet")
+    #         forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
+    #     else:
+    #         forces = mjx_data.efc_force[contact_ids:contact_ids + cond_dims]
 
-    def get_contact_force(self, sim_state : SimState,
-                                contact_id: int,
-                                transform_in_world_frame=False):
-        """
-        Get 6D force:torque for one contact, in contact frame.
-        If con_dim of contact is just 3, this will return just the 3D forces.
-        See: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_support.c#L1707
+    #     if transform_in_world_frame:
+    #         frame_rot_mat = mjx_data.contact.frame[contact_id]
+    #         assert cond_dim == 3
+    #         # rotate forces into global frame
+    #         # see: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_vis_visualize.c#L230C19-L230C22
+    #         forces = frame_rot_mat.T @ forces
 
-        :param sys:
-        :param state_sim:
-        :param contact_id: the index of the contact e.g. in state_sim.contact.geom[contact_id, :]
-        :param transform_in_world_frame: if true, the force will be transformed into the world frame (just works with con_dim = 3).
-        :return:
-        """
-        mjx_data = sim_state.mjx_data
-        cond_dim = mjx_data.contact.dim[contact_id]
-        efc_addr = mjx_data.contact.efc_address[contact_id]
-        if self._mj_model.opt.cone == mjx.ConeType.PYRAMIDAL:
-            raise NotImplementedError("Pyramidal friction cone not implemented yet")
-            forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
-        else:
-            forces = mjx_data.efc_force[contact_id:contact_id + cond_dim]
+    #     return body_pairs
 
-        if transform_in_world_frame:
-            frame_rot_mat = mjx_data.contact.frame[contact_id]
-            assert cond_dim == 3
-            # rotate forces into global frame
-            # see: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_vis_visualize.c#L230C19-L230C22
-            forces = frame_rot_mat.T @ forces
-        return forces
+    # def get_contact_force(self, sim_state : SimState,
+    #                             contact_id: int,
+    #                             transform_in_world_frame=False):
+    #     """
+    #     Get 6D force:torque for one contact, in contact frame.
+    #     If con_dim of contact is just 3, this will return just the 3D forces.
+    #     See: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_support.c#L1707
+
+    #     :param sys:
+    #     :param state_sim:
+    #     :param contact_id: the index of the contact e.g. in state_sim.contact.geom[contact_id, :]
+    #     :param transform_in_world_frame: if true, the force will be transformed into the world frame (just works with con_dim = 3).
+    #     :return:
+    #     """
+    #     mjx_data = sim_state.mjx_data
+    #     cond_dim = mjx_data.contact.dim[contact_id]
+    #     efc_addr = mjx_data.contact.efc_address[contact_id]
+    #     if self._mj_model.opt.cone == mjx.ConeType.PYRAMIDAL:
+    #         raise NotImplementedError("Pyramidal friction cone not implemented yet")
+    #         forces = __contact_force_decode_pyramid(cond_dim, efc_force_pyramid=state_sim.efc_force[efc_addr:], friction_mu=state_sim.contact.friction[contact_id])
+    #     else:
+    #         forces = mjx_data.efc_force[contact_id:contact_id + cond_dim]
+
+    #     if transform_in_world_frame:
+    #         frame_rot_mat = mjx_data.contact.frame[contact_id]
+    #         assert cond_dim == 3
+    #         # rotate forces into global frame
+    #         # see: https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_vis_visualize.c#L230C19-L230C22
+    #         forces = frame_rot_mat.T @ forces
+    #     return forces
 
     @override
     def set_link_impulses(self, link_ids : jnp.ndarray,
