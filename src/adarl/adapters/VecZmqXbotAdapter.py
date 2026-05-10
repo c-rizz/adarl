@@ -62,6 +62,10 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
         return self._sub_adapter.get_joints_state_step_stats().unsqueeze(0)
         
     @override
+    def get_links_state_step_stats(self) -> th.Tensor:
+        raise NotImplementedError()
+    
+    @override
     def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_pose : bool = False) -> th.Tensor:
         if requestedLinks is None:
             requestedLinks = self.sub_adapter()._monitored_links

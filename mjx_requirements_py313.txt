@@ -117,14 +117,14 @@ psutil
 ptyprocess
 pure_eval
 py-cpuinfo
-pybullet
+# pybullet
 pydlpack
 pygame
 Pygments
 PyOpenGL
 pyparsing
 python-dateutil
-pytinyrenderer
+# pytinyrenderer
 pytz
 PyYAML
 pyzmq

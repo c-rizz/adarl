@@ -18,7 +18,7 @@ from adarl.adapters.StandaloneRealAdapter import StandaloneRealAdapter
 from adarl.utils.base_utils import _fix_urdf_package_paths
 
 import pyxbot
-from pyxbot.zmq_client import XbotZmqClient, JointCommand
+from pyxbot.zmq_client import XbotZmqClient, JointsCommand
 import numpy as np
 
 
@@ -249,7 +249,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         #     ggLog.warn(f"Used fallback because only had commands for joints_ids:\n {list(commanded_joint_impedances_by_jid.keys())}")
         #     ggLog.warn(f"Which correspond to joint names:\n {[jn for jn,ji in joint_impedances_pvesd_dict.items()]}")
         # ggLog.info(f"Sending commanded joint impedances:\n {commanded_pvesd}")
-        self._xbot_zmq_client.send_command(JointCommand(joint_names = commanded_joint_names,
+        self._xbot_zmq_client.send_command(JointsCommand(joint_names = commanded_joint_names,
                                                         pvesd = commanded_pvesd,
                                                         ctrl_mode = np.full(shape=(len(commanded_joint_names),1), fill_value=63, dtype=np.uint32)))
 
@@ -310,7 +310,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
     def _sense_if_needed(self):
         if self._sense_needed or self._sense_always:
-            self._xbot_zmq_client.sense()
+            self._xbot_zmq_client.sense(timeout_s=60.0)
             self._sense_needed = False
     @override
     def step(self) -> float:
@@ -360,6 +360,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                     max_time_s : float = 60,
                                     joint_velocity_termination_threshold = 0.01,
                                     joint_velocity_scaling : dict[Tuple[str,str],float] = {}) -> None:
+        # ggLog.info(f"moveToJointPoseSync called with jointPositions={jointPositions}, velocity_scaling={velocity_scaling}, acceleration_scaling={acceleration_scaling}, joint_position_tolerance={joint_position_tolerance}, max_time_s={max_time_s}, joint_velocity_termination_threshold={joint_velocity_termination_threshold}, joint_velocity_scaling={joint_velocity_scaling}")
         self.clear_commands()
         if velocity_scaling is None:
             velocity_scaling = 1.0
@@ -405,7 +406,6 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                f"Target  joint position: "+str([f"{jp: 2.4f}" for jp in jointPositions.values()])+"\n"
                                f"Durations {[(jn,traj_tpva[-1][0]) for jn,traj_tpva in joint_trajs.items()]}\n"
                                f"Raise the max_time if it is actually ok.")
-        # print(f"joint_trajs max_v = {max([max(t[2]) for t in joint_trajs.values() ])}")
         t0 = self.getEnvTimeFromStartup()
         for jn in joint_trajs.keys():
             joint_trajs[jn][:,0] += t0

@@ -192,7 +192,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         Returns
         -------
         th.Tensor
-            Torch tensor of size (vec_size, 6,len(monitored_joints),5) containing min,max,average,std,sum,sum of
+            Torch tensor of size (vec_size, 4,len(monitored_joints),5) containing min,max,average,std of
             squares of the <position,velocity, acceleration, commanded effort, sensed effort, spent power> of
             each monitored joint. The joints are in the order specified in set_monitored_joints.
         """
