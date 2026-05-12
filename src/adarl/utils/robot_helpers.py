@@ -287,13 +287,15 @@ class Robot():
         ret = {}
         ref_pose = None
         for frame in self._model.frames:
-            joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parentJoint if hasattr(frame,"parentJoint") else frame.parent]
-            # print(f"joint_frame_pose = {type(joint_frame_pose)}")
-            link_pose = joint_frame_pose*frame.placement
-            if frames is None or frame.name in frames:
-                ret[frame.name] = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
-            if reference_frame is not None and reference_frame == frame.name:
-                ref_pose = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
+            is_reference_frame = reference_frame is not None and reference_frame == frame.name
+            is_requested_frame = frames is None or frame.name in frames
+            if is_requested_frame or is_reference_frame:
+                joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parentJoint if hasattr(frame,"parentJoint") else frame.parent]
+                link_pose = joint_frame_pose*frame.placement
+                if is_requested_frame:
+                    ret[frame.name] = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
+                if is_reference_frame:
+                    ref_pose = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
         if reference_frame is not None:
             if ref_pose is None:
                 raise RuntimeError(f"Reference frame {reference_frame} not found")
@@ -367,7 +369,6 @@ class Robot():
 
 
     def set_joint_pose_by_names(self, joints : dict[str,np.ndarray]):
-        # print(f"setting joint pose {joints}")
         for jn in joints:
             if jn not in self.get_joint_names():
                 raise RuntimeError(f"Tried to move set position of joint {jn}, but it does not exist, existing joints = {self.get_joint_names()}")

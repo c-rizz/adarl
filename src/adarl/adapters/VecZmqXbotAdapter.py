@@ -134,15 +134,18 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
 
     @override
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str, str]]):
+        self._monitored_joints = jointsToObserve
         return self._sub_adapter.set_monitored_joints(jointsToObserve)
     
     @override
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str, str]]):
+        self._monitored_links = linksToObserve
         return self._sub_adapter.set_monitored_links(linksToObserve)
     
     @override
-    def set_monitored_cameras(self, camera_names: Sequence[tuple[str, str]]):
-        return self._sub_adapter.set_monitored_joints(camera_names)
+    def set_monitored_cameras(self, camera_names: Sequence[str]):
+        self._monitored_cameras = camera_names
+        return self._sub_adapter.set_monitored_cameras(camera_names)
     
     @override
     def get_impedance_controlled_joints(self) -> list[tuple[str,str]]:
