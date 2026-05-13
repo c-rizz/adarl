@@ -630,12 +630,18 @@ def maybeprint(msg : str):
     if _doprint:
         print(msg)
 
+disable_clear_recorded_times = False
+def set_disable_clear_recorded_times(disable : bool):
+    global disable_clear_recorded_times
+    disable_clear_recorded_times = disable
+    
 def clear_recorded_times():
     global _rec_times
     global _t0
-    _rec_times = []
-    _t0 = time.monotonic()
-    _region_stack[0] = ("root",_t0)
+    if not disable_clear_recorded_times:
+        _rec_times = []
+        _t0 = time.monotonic()
+        _region_stack[0] = ("root",_t0)
 
 def set_recorded_times_stats_len(statslen : int):
     global _statslen

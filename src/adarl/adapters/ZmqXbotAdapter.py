@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import time
-from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping
+from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
 from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate
@@ -52,9 +52,13 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         is_simulated : bool | None = False,
                         walltime_factor : float = 1.0,
                         remote_ip : str ='localhost',
-                        remote_port : int =5557,
-                        remote_joint_state_port : int =5556,
-                        remote_cmd_port : int =5558,
+                        comm_protocol : Literal["tcp", "ipc"] ='ipc', # or 'ipc'
+                        tcp_service_port : int =5557,
+                        tcp_state_port : int =5556,
+                        tcp_cmd_port : int =5558,
+                        ipc_pub_path : str ="/tmp/xbot2_zmq_pub.ipc",
+                        ipc_cmd_path : str ="/tmp/xbot2_zmq_cmd.ipc",
+                        ipc_service_path : str ="/tmp/xbot2_zmq_rep.ipc",
                         robot_urdf : str | None = None):
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
@@ -98,9 +102,13 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._control_dt = 0.001 # can I get this from somewhere?
 
         self._xbot_zmq_client = XbotZmqClient(  remote_ip = remote_ip,
-                                                remote_port = remote_port,
-                                                remote_joint_state_port = remote_joint_state_port,
-                                                remote_cmd_port = remote_cmd_port)
+                                                protocol = comm_protocol,
+                                                tcp_service_port = tcp_service_port,
+                                                tcp_pub_port = tcp_state_port,
+                                                tcp_cmd_port = tcp_cmd_port,
+                                                ipc_pub_path = ipc_pub_path,
+                                                ipc_cmd_path = ipc_cmd_path,
+                                                ipc_service_path = ipc_service_path)
 
     def is_simulated(self):
         return self._is_simulated
