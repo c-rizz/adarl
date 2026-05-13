@@ -36,9 +36,9 @@ class KeyboardListener():
 
     def get_key_press_count(self, key):
         count = self._key_press_counter.get(key, 0)
-        if count ==0 and key in self._currently_pressed_keys: # happens if the key is held pressed, and reset_key_press_counters has been called
-            self._on_press(key)
-            count = 1
+        # if count ==0 and key in self._currently_pressed_keys: # happens if the key is held pressed, and reset_key_press_counters has been called
+        #     self._on_press(key)
+        #     count = 1
         return count
     
     def reset_key_press_counters(self):

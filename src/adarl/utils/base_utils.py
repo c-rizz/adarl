@@ -81,38 +81,93 @@ import subprocess
 import re
 from typing import TypedDict, Mapping
 
-class AverageKeeper:
-    def __init__(self, bufferSize = 100):
+class MultiAverageKeeper:
+    """Rolling-window statistics for n_channels values updated together."""
+    def __init__(self, bufferSize: int = 100, n_channels: int = 1):
         self._bufferSize = bufferSize
+        self._n = n_channels
         self.reset()
 
-    def addValue(self, newValue):
-        self._buffer.append(newValue)
-        self._last_added = newValue
-        self._all_time_sum += newValue
+    def addValues(self, newValues):
+        self._sum -= self._buffer[self._pos]
+        self._buffer[self._pos] = newValues
+        self._pos = (self._pos + 1) % self._bufferSize
+        if not self._full:
+            self._count += 1
+            if self._count == self._bufferSize:
+                self._full = True
+        self._sum += newValues
+        self._last_added = np.asarray(newValues, dtype=np.float64)
+        self._all_time_sum += newValues
         self._all_time_count += 1
-        self._avg = float(sum(self._buffer))/len(self._buffer)
-        self._all_time_avg = self._all_time_sum/self._all_time_count
 
-    def getAverage(self, all_time : bool = False):
+    def getAverage(self, all_time: bool = False):
+        if self._count == 0:
+            return np.zeros(self._n)
         if all_time:
-            return self._all_time_avg
-        else:
-            return self._avg
-        
+            return self._all_time_sum / self._all_time_count
+        return self._sum / self._count
+
+    def getStd(self):
+        if self._count == 0:
+            return np.zeros(self._n)
+        return np.std(self._buffer[:self._count], axis=0)
+
+    def getMax(self):
+        if self._count == 0:
+            return None
+        return np.max(self._buffer[:self._count], axis=0)
+
+    def getMin(self):
+        if self._count == 0:
+            return None
+        return np.min(self._buffer[:self._count], axis=0)
+
     def getLast(self):
         return self._last_added
 
     def reset(self):
-        self._buffer = collections.deque(maxlen=self._bufferSize)
-        self._avg = 0.0
-        self._all_time_sum = 0.0
-        self._all_time_count = 0.0
-        self._all_time_avg = 0.0
+        self._buffer = np.zeros((self._bufferSize, self._n), dtype=np.float64)
+        self._sum = np.zeros(self._n, dtype=np.float64)
+        self._pos = 0
+        self._count = 0
+        self._full = False
+        self._last_added = None
+        self._all_time_sum = np.zeros(self._n, dtype=np.float64)
+        self._all_time_count = 0
+
+
+class AverageKeeper:
+    def __init__(self, bufferSize = 100):
+        self._multi = MultiAverageKeeper(bufferSize=bufferSize, n_channels=1)
+
+    def addValue(self, newValue):
+        self._multi.addValues([newValue])
+
+    def getAverage(self, all_time: bool = False):
+        return float(self._multi.getAverage(all_time)[0])
+
+    def getStd(self):
+        return float(self._multi.getStd()[0])
+
+    def getMax(self):
+        v = self._multi.getMax()
+        return None if v is None else float(v[0])
+
+    def getMin(self):
+        v = self._multi.getMin()
+        return None if v is None else float(v[0])
+
+    def getLast(self):
+        last = self._multi.getLast()
+        return None if last is None else float(last[0])
+
+    def reset(self):
+        self._multi.reset()
 
     def __enter__(self):
         self._t0 = time.monotonic()
-    
+
     def __exit__(self, exc_type, exc_val, exc_t):
         self.addValue(time.monotonic()-self._t0)
 
@@ -690,4 +745,81 @@ def print_recorded_times(title : str | None = None, clear : bool = True):
     ggLog.info(msg)
     if clear:
         clear_recorded_times()
-        
+
+import gc
+import resource
+
+gc_callback_registered = False
+gc_call_counter = 0
+gc_call_start = float("-inf")
+def gc_callback(phase, info):
+    global gc_call_counter
+    global gc_call_start
+    if phase == "start":
+        gc._t = time.perf_counter()
+        gc_call_counter += 1
+        gc_call_start = time.perf_counter()
+    else:
+        dt = time.perf_counter() - gc._t
+        if dt > 0.01:
+            print(f"GC gen{info['generation']} took {dt*1000:.1f}ms")
+
+def register_gc_monitor():
+    # gc.disable() # we will manually trigger gc and monitor it with a callback, to avoid unexpected long gc pauses
+    global gc_callback_registered
+    if not gc_callback_registered:
+        gc_callback_registered = True
+        gc.callbacks.append(gc_callback)
+
+
+_DELAY_CH   = 0
+_GC_CH      = 1
+_VCTX_CH    = 2
+_IVCTX_CH   = 3
+_DELAYSTATS_N_CH = 4
+
+class DelayStats:
+    def __init__(self, maxlen = 100):
+        self._keeper = MultiAverageKeeper(bufferSize=maxlen, n_channels=_DELAYSTATS_N_CH)
+        self._start_time = None
+        register_gc_monitor()
+
+    def mark_start(self):
+        self._gc_call_counter = gc_call_counter
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        self._vctx_start = ru.ru_nvcsw
+        self._ivctx_start = ru.ru_nivcsw
+        self._start_time = time.monotonic()
+
+    def mark_end(self):
+        if self._start_time is None:
+            raise RuntimeError("mark_end() called before mark_start()")
+        delay = time.monotonic() - self._start_time
+        gc_calls = gc_call_counter - self._gc_call_counter
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        vctx = ru.ru_nvcsw - self._vctx_start
+        ivctx = ru.ru_nivcsw - self._ivctx_start
+        self.add_delay_data(delay, gc_calls, vctx, ivctx)
+
+    def add_delay_data(self, delay: float, gc_calls: int, vctx: int = 0, ivctx: int = 0):
+        self._keeper.addValues([delay, gc_calls, vctx, ivctx])
+
+    def clear(self):
+        self._keeper.reset()
+
+    def get_stats(self):
+        if self._keeper._count == 0:
+            return {"mean": None, "max": None, "min": None}
+        avg = self._keeper.getAverage()
+        mn  = self._keeper.getMin()
+        mx  = self._keeper.getMax()
+        std = self._keeper.getStd()
+        return {
+            "delay_mean_ms":      float(avg[_DELAY_CH]*1000),
+            "delay_std_ms":       float(std[_DELAY_CH]*1000),
+            "delay_max_ms":       float(mx[_DELAY_CH]*1000),
+            "delay_min_ms":       float(mn[_DELAY_CH]*1000),
+            "avg_gc_calls": float(avg[_GC_CH]),
+            "avg_vctx":  float(avg[_VCTX_CH]),
+            "avg_ivctx": float(avg[_IVCTX_CH]),
+        }

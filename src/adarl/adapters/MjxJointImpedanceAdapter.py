@@ -5,7 +5,6 @@ os.environ["MUJOCO_GL"] = "egl"
 
 from adarl.adapters.MjxAdapter import (
     MjxAdapter,
-    MjxCommandBatch,
     jax2th,
     th2jax,
     SimState,
@@ -197,13 +196,6 @@ class SimConfJimp(SimConf):
         d.update(name_values)
         ret = SimConfJimp(**d)
         return ret
-
-
-@jax.tree_util.register_dataclass
-@dataclass
-class MjxJointImpedanceCommandBatch(MjxCommandBatch):
-    current_joint_impedance_command_pvesd : jnp.ndarray
-
 
 @dataclass(frozen=True)
 class SetCurrentJointImpedanceCommand(PublicCommand):

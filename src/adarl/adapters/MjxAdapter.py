@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
@@ -836,43 +835,46 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
                      opt_override_enableflags : dict[str,bool] | None = None) -> mujoco.MjModel:
     
     good_impratio = 1.0
+    mjINT_EULER = mujoco.mjtIntegrator.mjINT_EULER # type: ignore
+    mjDSBL_EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP # type: ignore
+    mjtEnableBit = mujoco.mjtEnableBit # type: ignore
     # good_cone = mujoco.mjtCone.mjCONE_PYRAMIDAL #ELLIPTIC
     if preset_name is None or preset_name == "mujoco_default":
         pass
     elif preset_name == "fastest":
         # Inspired from barkour example
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 1 # constraint solver iterations
         mj_model.opt.ls_iterations = 5 # doc: "Ensures that at most iterations times ls_iterations linesearch iterations are performed during each constraint solve"
-        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.disableflags |= mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "faster":
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 3
         mj_model.opt.ls_iterations = 3
-        mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        mj_model.opt.disableflags |= mjDSBL_EULERDAMP
         mj_model.opt.noslip_iterations = 0 #3 # may cause instability (https://mujoco.readthedocs.io/en/latest/modeling.html#solver-settings)
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "fast":
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 10
         mj_model.opt.ls_iterations = 5
         # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "medium":
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 20
         mj_model.opt.ls_iterations = 5
         # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "slow":
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 30
         mj_model.opt.ls_iterations = 5
         # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "slower":
-        mj_model.opt.integrator = mujoco.mjtIntegrator.mjINT_EULER
+        mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 50
         mj_model.opt.ls_iterations = 5
         # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
@@ -885,9 +887,9 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
     if opt_override_enableflags is not None:
         for f,v in opt_override_enableflags.items():
             if v:
-                mj_model.opt.enableflags |= getattr(mujoco.mjtEnableBit, f)
+                mj_model.opt.enableflags |= getattr(mjtEnableBit, f)
             else:
-                mj_model.opt.enableflags &= ~getattr(mujoco.mjtEnableBit, f)
+                mj_model.opt.enableflags &= ~getattr(mjtEnableBit, f)
     # mj_model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_OVERRIDE
     return mj_model
 
@@ -915,11 +917,12 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
     def fmt_arr(a) -> str:
         return np.array2string(np.asarray(a), precision=3, suppress_small=True, separator=" ")
 
+    mjtJoint = mujoco.mjtJoint # type: ignore
     jtype_map = {
-        int(mujoco.mjtJoint.mjJNT_FREE):  "FREE",
-        int(mujoco.mjtJoint.mjJNT_BALL):  "BALL",
-        int(mujoco.mjtJoint.mjJNT_SLIDE): "SLIDE",
-        int(mujoco.mjtJoint.mjJNT_HINGE): "HINGE",
+        int(mjtJoint.mjJNT_FREE):  "FREE",
+        int(mjtJoint.mjJNT_BALL):  "BALL",
+        int(mjtJoint.mjJNT_SLIDE): "SLIDE",
+        int(mjtJoint.mjJNT_HINGE): "HINGE",
     }
 
     out.append("=== MjModel ===")
@@ -1210,32 +1213,6 @@ class SimConf:
 
 
 
-
-
-
-@jax.tree_util.register_dataclass
-@dataclass
-class MjxCommandBatch:
-    vec_mask : jnp.ndarray
-    joint_qpadr_qvadr : jnp.ndarray
-    joint_states_pve : jnp.ndarray
-    mjmodel_lids : jnp.ndarray
-    mjmodel_pose_xyz_xyzw : jnp.ndarray
-    mjdata_qpadrs_qvadrs : jnp.ndarray
-    mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray
-    link_masses_body_ids : jnp.ndarray
-    body_masses_ratio_change : jnp.ndarray
-    frictions_body_ids : jnp.ndarray
-    body_frictions_ratio_change : jnp.ndarray
-    armatures_dof_ids : jnp.ndarray
-    dof_armatures_ratio_change : jnp.ndarray
-    frictionloss_dof_ids : jnp.ndarray
-    dof_frictionloss_ratio_change : jnp.ndarray
-    com_body_pos_ids : jnp.ndarray
-    com_position_diff_xyz : jnp.ndarray
-    com_body_quat_ids : jnp.ndarray
-    com_quat_diff_xyzw : jnp.ndarray
-
 class PublicCommand:
     def build_internal_command(self, adapter : MjxAdapter) -> _InternalCommand:
         raise NotImplementedError()
@@ -1292,6 +1269,7 @@ class AlterModelCommand(PublicCommand):
     link_masses : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     link_frictions : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     joint_armature_ratios : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
+    joint_damping_ratios : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     joint_frictionloss_ratios : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     com_position_diffs : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     com_quatxyzw_diffs : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
@@ -1303,9 +1281,11 @@ class AlterModelCommand(PublicCommand):
         body_masses_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
         frictions_body_ids = adapter._empty_jax_array((0,), np.int32)
         body_frictions_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0, 3), np.float32)
-        armatures_dof_ids = adapter._empty_jax_array((0,), np.int32)
+        dof_armatures_dof_ids = adapter._empty_jax_array((0,), np.int32)
         dof_armatures_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
-        frictionloss_dof_ids = adapter._empty_jax_array((0,), np.int32)
+        dof_dampings_dof_ids = adapter._empty_jax_array((0,), np.int32)
+        dof_dampings_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
+        dof_frictionloss_dof_ids = adapter._empty_jax_array((0,), np.int32)
         dof_frictionloss_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
         com_body_pos_ids = adapter._empty_jax_array((0,), np.int32)
         com_position_diff_xyz = adapter._empty_jax_array((adapter._vec_size, 0, 3), np.float32)
@@ -1321,11 +1301,15 @@ class AlterModelCommand(PublicCommand):
             body_frictions_ratio_change = th2jax(self.link_frictions[1], jax_device=adapter._jax_device)
 
         if self.joint_armature_ratios is not None:
-            armatures_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_armature_ratios[0])]
+            dof_armatures_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_armature_ratios[0])]
             dof_armatures_ratio_change = th2jax(self.joint_armature_ratios[1], jax_device=adapter._jax_device)
 
+        if self.joint_damping_ratios is not None:
+            dof_dampings_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_damping_ratios[0])]
+            dof_dampings_ratio_change = th2jax(self.joint_damping_ratios[1], jax_device=adapter._jax_device)
+
         if self.joint_frictionloss_ratios is not None:
-            frictionloss_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_frictionloss_ratios[0])]
+            dof_frictionloss_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_frictionloss_ratios[0])]
             dof_frictionloss_ratio_change = th2jax(self.joint_frictionloss_ratios[1], jax_device=adapter._jax_device)
 
         if self.com_position_diffs is not None:
@@ -1342,9 +1326,11 @@ class AlterModelCommand(PublicCommand):
             body_masses_ratio_change=body_masses_ratio_change,
             frictions_body_ids=frictions_body_ids,
             body_frictions_ratio_change=body_frictions_ratio_change,
-            armatures_dof_ids=armatures_dof_ids,
+            dof_armatures_dof_ids=dof_armatures_dof_ids,
             dof_armatures_ratio_change=dof_armatures_ratio_change,
-            frictionloss_dof_ids=frictionloss_dof_ids,
+            dof_dampings_dof_ids=dof_dampings_dof_ids,
+            dof_dampings_ratio_change=dof_dampings_ratio_change,
+            dof_frictionloss_dof_ids=dof_frictionloss_dof_ids,
             dof_frictionloss_ratio_change=dof_frictionloss_ratio_change,
             com_body_pos_ids=com_body_pos_ids,
             com_position_diff_xyz=com_position_diff_xyz,
@@ -1440,9 +1426,11 @@ class _InternalAlterModelCommand(_InternalCommand):
     body_masses_ratio_change : jnp.ndarray
     frictions_body_ids : jnp.ndarray
     body_frictions_ratio_change : jnp.ndarray
-    armatures_dof_ids : jnp.ndarray
+    dof_armatures_dof_ids : jnp.ndarray
     dof_armatures_ratio_change : jnp.ndarray
-    frictionloss_dof_ids : jnp.ndarray
+    dof_dampings_dof_ids : jnp.ndarray
+    dof_dampings_ratio_change : jnp.ndarray
+    dof_frictionloss_dof_ids : jnp.ndarray
     dof_frictionloss_ratio_change : jnp.ndarray
     com_body_pos_ids : jnp.ndarray
     com_position_diff_xyz : jnp.ndarray
@@ -1452,8 +1440,9 @@ class _InternalAlterModelCommand(_InternalCommand):
     def has_effect(self) -> bool:
         return (   self.link_masses_body_ids.shape[0] > 0
                 or self.frictions_body_ids.shape[0] > 0
-                or self.armatures_dof_ids.shape[0] > 0
-                or self.frictionloss_dof_ids.shape[0] > 0
+                or self.dof_armatures_dof_ids.shape[0] > 0
+                or self.dof_dampings_dof_ids.shape[0] > 0
+                or self.dof_frictionloss_dof_ids.shape[0] > 0
                 or self.com_body_pos_ids.shape[0] > 0
                 or self.com_body_quat_ids.shape[0] > 0)
 
@@ -1462,8 +1451,9 @@ class _InternalAlterModelCommand(_InternalCommand):
             return sim_state
         apply_link_masses = self.link_masses_body_ids.shape[0] > 0
         apply_link_frictions = self.frictions_body_ids.shape[0] > 0
-        apply_joint_armature_ratios = self.armatures_dof_ids.shape[0] > 0
-        apply_joint_frictionloss_ratios = self.frictionloss_dof_ids.shape[0] > 0
+        apply_dof_armature_ratios = self.dof_armatures_dof_ids.shape[0] > 0
+        apply_dof_damping_ratios = self.dof_dampings_dof_ids.shape[0] > 0
+        apply_dof_frictionloss_ratios = self.dof_frictionloss_dof_ids.shape[0] > 0
         apply_com_position_diffs = self.com_body_pos_ids.shape[0] > 0
         apply_com_quatxyzw_diffs = self.com_body_quat_ids.shape[0] > 0
         mjx_model = adapter._alter_model_jax(
@@ -1477,11 +1467,14 @@ class _InternalAlterModelCommand(_InternalCommand):
             apply_link_frictions=apply_link_frictions,
             frictions_body_ids=self.frictions_body_ids,
             body_frictions_ratio_change=self.body_frictions_ratio_change,
-            apply_joint_armature_ratios=apply_joint_armature_ratios,
-            armatures_dof_ids=self.armatures_dof_ids,
+            apply_dof_armature_ratios=apply_dof_armature_ratios,
+            dof_armatures_dof_ids=self.dof_armatures_dof_ids,
             dof_armatures_ratio_change=self.dof_armatures_ratio_change,
-            apply_joint_frictionloss_ratios=apply_joint_frictionloss_ratios,
-            frictionloss_dof_ids=self.frictionloss_dof_ids,
+            apply_dof_damping_ratios=apply_dof_damping_ratios,
+            dof_dampings_dof_ids=self.dof_dampings_dof_ids,
+            dof_dampings_ratio_change=self.dof_dampings_ratio_change,
+            apply_dof_frictionloss_ratios=apply_dof_frictionloss_ratios,
+            dof_frictionloss_dof_ids=self.dof_frictionloss_dof_ids,
             dof_frictionloss_ratio_change=self.dof_frictionloss_ratio_change,
             apply_com_position_diffs=apply_com_position_diffs,
             com_body_pos_ids=self.com_body_pos_ids,
@@ -1687,6 +1680,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "body_iquat":0,
                                           "dof_armature":0,
                                           "dof_frictionloss":0,
+                                          "dof_damping":0,
                                           "body_pos":0,
                                           "body_quat":0}) # model fields to be vmapped
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
@@ -3881,22 +3875,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        original_mjx_model.body_ipos, mjx_model.body_ipos)
         resetted_dof_armature = jnp.where(jnp.expand_dims(vec_mask, 1),
                                        original_mjx_model.dof_armature, mjx_model.dof_armature)
+        resetted_dof_damping = jnp.where(jnp.expand_dims(vec_mask, 1),
+                                       original_mjx_model.dof_damping, mjx_model.dof_damping)
         resetted_dof_frictionloss = jnp.where(jnp.expand_dims(vec_mask, 1),
                                        original_mjx_model.dof_frictionloss, mjx_model.dof_frictionloss)
         resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_iquat.shape[::-1]).T,
                                         original_mjx_model.body_iquat, mjx_model.body_iquat)
-        resetted_model = mjx_model.replace(body_mass = resetted_body_mass,
-                                                     body_ipos = resetted_body_ipos,
-                                                     body_iquat = resetted_body_iquat,
-                                                     geom_friction = resetted_geom_friction,
-                                                     dof_armature = resetted_dof_armature,
-                                                     dof_frictionloss = resetted_dof_frictionloss)
+        resetted_model = mjx_model.replace( body_mass = resetted_body_mass,
+                                            body_ipos = resetted_body_ipos,
+                                            body_iquat = resetted_body_iquat,
+                                            geom_friction = resetted_geom_friction,
+                                            dof_armature = resetted_dof_armature,
+                                            dof_damping = resetted_dof_damping,
+                                            dof_frictionloss = resetted_dof_frictionloss)
         return resetted_model
 
     @staticmethod
     @partial(jax.jit, static_argnames=[ "vec_size",
                                         "apply_link_masses", "apply_link_frictions",
-                                       "apply_joint_armature_ratios", "apply_joint_frictionloss_ratios",
+                                       "apply_dof_armature_ratios", "apply_dof_damping_ratios", "apply_dof_frictionloss_ratios",
                                        "apply_com_position_diffs", "apply_com_quatxyzw_diffs",
                                        "reset_first"],
                         donate_argnames=["mjx_model"])
@@ -3910,11 +3907,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                          apply_link_frictions : bool,
                          frictions_body_ids : jnp.ndarray | None,
                          body_frictions_ratio_change : jnp.ndarray | None,
-                         apply_joint_armature_ratios : bool,
-                         armatures_dof_ids : jnp.ndarray | None,
+                         apply_dof_armature_ratios : bool,
+                         dof_armatures_dof_ids : jnp.ndarray | None,
                          dof_armatures_ratio_change : jnp.ndarray | None,
-                         apply_joint_frictionloss_ratios : bool,
-                         frictionloss_dof_ids : jnp.ndarray | None,
+                         apply_dof_damping_ratios : bool,
+                         dof_dampings_dof_ids : jnp.ndarray | None,
+                         dof_dampings_ratio_change : jnp.ndarray | None,
+                         apply_dof_frictionloss_ratios : bool,
+                         dof_frictionloss_dof_ids : jnp.ndarray | None,
                          dof_frictionloss_ratio_change : jnp.ndarray | None,
                          apply_com_position_diffs : bool,
                          com_body_pos_ids : jnp.ndarray | None,
@@ -3952,15 +3952,18 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 vec_mask[:, None, None], new_allsim_geom_frictions, mjx_model.geom_friction
             )
 
-        if apply_joint_armature_ratios:
-            new_armatures = mjx_model.dof_armature.at[:, armatures_dof_ids].mul(dof_armatures_ratio_change + 1)
+        if apply_dof_armature_ratios:
+            new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].mul(dof_armatures_ratio_change + 1)
             new_armatures = jnp.clip(new_armatures, min=0.0001)
             replacements["dof_armature"] = jnp.where(vec_mask[:, None], new_armatures, mjx_model.dof_armature)
 
-        if apply_joint_frictionloss_ratios:
-            new_frictionloss = mjx_model.dof_frictionloss.at[:, frictionloss_dof_ids].mul(
-                dof_frictionloss_ratio_change + 1
-            )
+        if apply_dof_damping_ratios:
+            new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].mul(dof_dampings_ratio_change + 1)
+            new_dampings = jnp.clip(new_dampings, min=0.0001)
+            replacements["dof_damping"] = jnp.where(vec_mask[:, None], new_dampings, mjx_model.dof_damping)
+
+        if apply_dof_frictionloss_ratios:
+            new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].mul(dof_frictionloss_ratio_change + 1)
             new_frictionloss = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
             replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min=0.0001)
 
@@ -3981,6 +3984,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
                               joint_armature_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              joint_damping_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
                               joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
                               com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
                               com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
@@ -4000,6 +4004,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_armature_ratios : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of joint ids (from get_joint_id) and corresponding
             joint armature ratios, where the new armature will be computed as old_armature*(1+ratio).
+        joint_damping_ratios : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint damping ratios, where the new damping will be computed as old_damping*(1+ratio).
         joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of joint ids (from get_joint_id) and corresponding
             joint frictionloss ratios, where the new frictionloss will be computed as old_frictionloss*(1+ratio).
@@ -4033,6 +4040,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         body_frictions_ratio_change=th2jax(link_frictions[1], jax_device=self._jax_device) if link_frictions is not None else None
         dof_armatures_ratio_change=th2jax(joint_armature_ratios[1], jax_device=self._jax_device) if joint_armature_ratios is not None else None
         dof_frictionloss_ratio_change=th2jax(joint_frictionloss_ratios[1], jax_device=self._jax_device) if joint_frictionloss_ratios is not None else None
+        dof_dampings_ratio_change=th2jax(joint_damping_ratios[1], jax_device=self._jax_device) if joint_damping_ratios is not None else None
         com_position_diff_xyz=th2jax(com_position_diffs[1], jax_device=self._jax_device) if com_position_diffs is not None else None
         com_quat_diff_xyzw=th2jax(com_quatxyzw_diffs[1], jax_device=self._jax_device) if com_quatxyzw_diffs is not None else None
 
@@ -4048,12 +4056,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             apply_link_frictions=link_frictions is not None,
             frictions_body_ids=link_frictions[0] if link_frictions is not None else None,
             body_frictions_ratio_change=body_frictions_ratio_change,
-            apply_joint_armature_ratios=joint_armature_ratios is not None,
-            armatures_dof_ids=self._sim_conf.jnt_dofadr[joint_armature_ratios[0]] if joint_armature_ratios is not None else None,
+
+            apply_dof_armature_ratios=joint_armature_ratios is not None,
+            dof_armatures_dof_ids=self._sim_conf.jnt_dofadr[joint_armature_ratios[0]] if joint_armature_ratios is not None else None,
             dof_armatures_ratio_change=dof_armatures_ratio_change,
-            apply_joint_frictionloss_ratios=joint_frictionloss_ratios is not None,
-            frictionloss_dof_ids=self._sim_conf.jnt_dofadr[joint_frictionloss_ratios[0]] if joint_frictionloss_ratios is not None else None,
+            
+            apply_dof_frictionloss_ratios=joint_frictionloss_ratios is not None,
+            dof_frictionloss_dof_ids=self._sim_conf.jnt_dofadr[joint_frictionloss_ratios[0]] if joint_frictionloss_ratios is not None else None,
             dof_frictionloss_ratio_change=dof_frictionloss_ratio_change,
+
+            apply_dof_damping_ratios=joint_damping_ratios is not None,
+            dof_damping_dof_ids=self._sim_conf.jnt_dofadr[joint_damping_ratios[0]] if joint_damping_ratios is not None else None,
+            dof_dampings_ratio_change=dof_dampings_ratio_change,
+
             apply_com_position_diffs=com_position_diffs is not None,
             com_body_pos_ids=com_position_diffs[0] if com_position_diffs is not None else None,
             com_position_diff_xyz=com_position_diff_xyz,
