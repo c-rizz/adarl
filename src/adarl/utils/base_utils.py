@@ -749,43 +749,126 @@ def print_recorded_times(title : str | None = None, clear : bool = True):
 import gc
 import resource
 
-gc_callback_registered = False
-gc_call_counter = 0
-gc_call_start = float("-inf")
-def gc_callback(phase, info):
-    global gc_call_counter
-    global gc_call_start
-    if phase == "start":
-        gc._t = time.perf_counter()
-        gc_call_counter += 1
-        gc_call_start = time.perf_counter()
-    else:
-        dt = time.perf_counter() - gc._t
-        if dt > 0.01:
-            print(f"GC gen{info['generation']} took {dt*1000:.1f}ms")
+# gc.set_debug(gc.DEBUG_COLLECTABLE | gc.DEBUG_UNCOLLECTABLE)
 
-def register_gc_monitor():
-    # gc.disable() # we will manually trigger gc and monitor it with a callback, to avoid unexpected long gc pauses
-    global gc_callback_registered
-    if not gc_callback_registered:
-        gc_callback_registered = True
-        gc.callbacks.append(gc_callback)
+class GcMonitor:
+    def __init__(self, track_collected_types: bool = False, track_type_growth: bool = False):
+        self._registered = False
+        self.call_counter = 0
+        self.call_start = float("-inf")
+        self.calls_durations: list[float] = []
+        self.track_collected_types = track_collected_types
+        self.collected_types: dict[str, int] = {}
+        self.collected_num = 0
+        self.track_type_growth = track_type_growth
+        self.type_growth: dict[str, int] = {}
+        self._type_snapshot: dict[int, str] = {}
+        self._prev_type_counts: dict[str, int] = {}
+        self._snapshot_taken = False
+        self._disabled = False
+
+    @staticmethod
+    def _describe(o) -> str:
+        return type(o).__name__
+        # This more detail description SEGFAULTS
+        # try:
+        #     t = type(o)
+        #     if t is dict:
+        #         keys = [k for k in list(o.keys())[:4] if isinstance(k, str)]
+        #         d = f"dict{{{','.join(keys)}}}" if keys else "dict"
+        #     if t in (tuple, list):
+        #         sig = ",".join(type(e).__qualname__ for e in o[:4])
+        #         d = f"{t.__name__}({sig})"
+        #     mod = getattr(t, "__module__", "") or ""
+        #     d = f"{mod}.{t.__qualname__}" if mod and mod != "builtins" else t.__qualname__
+        # except Exception:
+        #     d = "<error>"
+        # print(f"Describing object of type {type(o)} as {d}")
+        # return d
+
+    def _callback(self, phase, info):
+        if self._disabled:
+            return
+        if phase == "start":
+            self.call_counter += 1
+            self.call_start = time.perf_counter()
+            self._snapshot_taken = False
+            if info["generation"] == 2:
+                print(f"Will be looking at {len(gc.get_objects(2))} objects for GC gen2")
+            if self.track_collected_types or self.track_type_growth:
+                if self.track_collected_types:
+                    self._type_snapshot = {id(o): self._describe(o) for o in gc.get_objects()}
+                self._snapshot_taken = True
+        else:
+            dt = time.perf_counter() - self.call_start
+            self.calls_durations.append(dt)
+            if self._snapshot_taken:
+                after_objs = gc.get_objects()
+                if self.track_collected_types:
+                    after_ids = {id(o) for o in after_objs}
+                    for oid, label in self._type_snapshot.items():
+                        if oid not in after_ids:
+                            self.collected_types[label] = self.collected_types.get(label, 0) + 1
+                            self.collected_num += 1
+                    self._type_snapshot = {}
+                if self.track_type_growth:
+                    cur_counts: dict[str, int] = {}
+                    for o in after_objs:
+                        label = self._describe(o)
+                        cur_counts[label] = cur_counts.get(label, 0) + 1
+                    for label, count in cur_counts.items():
+                        delta = count - self._prev_type_counts.get(label, 0)
+                        if delta != 0:
+                            self.type_growth[label] = self.type_growth.get(label, 0) + delta
+                    self._prev_type_counts = cur_counts
+                self._snapshot_taken = False
+            if dt > 0.01:
+                print(f"GC gen{info['generation']} took {dt*1000:.1f}ms. Collected {info['collected']} objects. Uncollectable {info['uncollectable']} objects.\n"
+                      f"      Total collected: {self.collected_num} objects. Collected types: {self.collected_types}. Type growth: {self.type_growth}")
+
+    def reset_counters(self):
+        self.call_counter = 0
+        self.call_start = float("-inf")
+        self.calls_durations = []
+        self.collected_types = {}
+        self.collected_num = 0
+        self._type_snapshot = {}
+        self.type_growth = {}
+        self._prev_type_counts = {}
+
+    def register(self):
+        if not self._registered:
+            self._registered = True
+            gc.callbacks.append(self._callback)
+
+    def set_disabled(self, disabled: bool):
+        self._disabled = disabled
 
 
-_DELAY_CH   = 0
-_GC_CH      = 1
-_VCTX_CH    = 2
-_IVCTX_CH   = 3
-_DELAYSTATS_N_CH = 4
+from enum import IntEnum, auto
+
+class _DSCh(IntEnum):
+    DELAY        = 0
+    GC           = auto()
+    VCTX         = auto()
+    IVCTX        = auto()
+    GC_DURATIONS = auto()
+    N_CH         = auto()  # always last — equals the channel count
 
 class DelayStats:
     def __init__(self, maxlen = 100):
-        self._keeper = MultiAverageKeeper(bufferSize=maxlen, n_channels=_DELAYSTATS_N_CH)
+        self._keeper = MultiAverageKeeper(bufferSize=maxlen, n_channels=_DSCh.N_CH)
         self._start_time = None
-        register_gc_monitor()
+        use_slow_gc_checks = False
+        self._gc_registered = False
+        self._gc_monitor = GcMonitor(track_collected_types=use_slow_gc_checks, track_type_growth=False)
 
     def mark_start(self):
-        self._gc_call_counter = gc_call_counter
+        if not self._gc_registered:
+            self._gc_monitor.register()
+            self._gc_registered = True
+
+        self._gc_monitor.reset_counters()
         ru = resource.getrusage(resource.RUSAGE_SELF)
         self._vctx_start = ru.ru_nvcsw
         self._ivctx_start = ru.ru_nivcsw
@@ -795,14 +878,15 @@ class DelayStats:
         if self._start_time is None:
             raise RuntimeError("mark_end() called before mark_start()")
         delay = time.monotonic() - self._start_time
-        gc_calls = gc_call_counter - self._gc_call_counter
+        gc_calls = self._gc_monitor.call_counter
+        gc_calls_durations_sum = sum(self._gc_monitor.calls_durations)
         ru = resource.getrusage(resource.RUSAGE_SELF)
         vctx = ru.ru_nvcsw - self._vctx_start
         ivctx = ru.ru_nivcsw - self._ivctx_start
-        self.add_delay_data(delay, gc_calls, vctx, ivctx)
+        self.add_delay_data(delay, gc_calls, vctx, ivctx, gc_calls_durations_sum)
 
-    def add_delay_data(self, delay: float, gc_calls: int, vctx: int = 0, ivctx: int = 0):
-        self._keeper.addValues([delay, gc_calls, vctx, ivctx])
+    def add_delay_data(self, delay: float, gc_calls: int, vctx: int = 0, ivctx: int = 0, gc_calls_durations_sum: float = 0.0):
+        self._keeper.addValues([delay, gc_calls, vctx, ivctx, gc_calls_durations_sum])
 
     def clear(self):
         self._keeper.reset()
@@ -814,12 +898,23 @@ class DelayStats:
         mn  = self._keeper.getMin()
         mx  = self._keeper.getMax()
         std = self._keeper.getStd()
+        last = self._keeper.getLast()
+        ch = _DSCh
         return {
-            "delay_mean_ms":      float(avg[_DELAY_CH]*1000),
-            "delay_std_ms":       float(std[_DELAY_CH]*1000),
-            "delay_max_ms":       float(mx[_DELAY_CH]*1000),
-            "delay_min_ms":       float(mn[_DELAY_CH]*1000),
-            "avg_gc_calls": float(avg[_GC_CH]),
-            "avg_vctx":  float(avg[_VCTX_CH]),
-            "avg_ivctx": float(avg[_IVCTX_CH]),
+            "last_gc_collected_num": int(last[ch.GC]),
+            "last_gc_calls":      int(last[ch.GC]),
+            "last_vctx":          int(last[ch.VCTX]),
+            "last_ivctx":         int(last[ch.IVCTX]),
+            "last_delay_ms":      float(last[ch.DELAY]*1000),
+            "last_gc_calls_durations_sum": float(last[ch.GC_DURATIONS]),
+            "delay_mean_ms":      float(avg[ch.DELAY]*1000),
+            "delay_std_ms":       float(std[ch.DELAY]*1000),
+            "delay_max_ms":       float(mx[ch.DELAY]*1000),
+            "delay_min_ms":       float(mn[ch.DELAY]*1000),
+            "avg_gc_calls": float(avg[ch.GC]),
+            "avg_vctx":  float(avg[ch.VCTX]),
+            "avg_ivctx": float(avg[ch.IVCTX]),
+            "avg_gc_calls_durations_sum": float(avg[ch.GC_DURATIONS]),
+            "gc_collected_types": ", ".join(f"{t}:{n}" for t, n in sorted(self._gc_monitor.collected_types.items(), key=lambda x: -x[1])[:10]) or "none",
+            "gc_type_growth":     ", ".join(f"{t}:{n:+d}" for t, n in sorted(self._gc_monitor.type_growth.items(), key=lambda x: -x[1])[:10]) or "none",
         }

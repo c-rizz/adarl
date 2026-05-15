@@ -75,16 +75,46 @@ from mujoco.mjx._src import sensor
 from mujoco.mjx._src import solver
 from packaging.version import Version
 
+
+from typing import TypeAlias 
+mujoco_mjtGeom :            TypeAlias = mujoco.mjtGeom # type: ignore
+mujoco_mju_quat2Mat :       TypeAlias = mujoco.mju_quat2Mat # type: ignore
+mujoco_mjv_initGeom :       TypeAlias = mujoco.mjv_initGeom # type: ignore
+mujoco_mjtCatBit :          TypeAlias = mujoco.mjtCatBit # type: ignore
+mujoco_mjv_connector :      TypeAlias = mujoco.mjv_connector # type: ignore
+mujoco_MjData :             TypeAlias = mujoco.MjData # type: ignore
+mujoco__functions :         TypeAlias = mujoco._functions # type: ignore
+mujoco_mju_dense2sparse :   TypeAlias = mujoco.mju_dense2sparse # type: ignore
+mujoco_MjModel :            TypeAlias = mujoco.MjModel # type: ignore
+mujoco_MjSpec :             TypeAlias = mujoco.MjSpec # type: ignore
+mujoco_mjtInertiaFromGeom : TypeAlias = mujoco.mjtInertiaFromGeom # type: ignore
+mujoco_MjsBody :            TypeAlias = mujoco.MjsBody # type: ignore
+mujoco_mjtSensor :          TypeAlias = mujoco.mjtSensor # type: ignore
+mujoco_mjtObj :             TypeAlias = mujoco.mjtObj # type: ignore
+mujoco_mj_id2name :         TypeAlias = mujoco.mj_id2name # type: ignore
+mujoco_mjtTrn :             TypeAlias = mujoco.mjtTrn # type: ignore
+mujoco_mj_printModel :      TypeAlias = mujoco.mj_printModel # type: ignore
+mujoco_mjtJoint :           TypeAlias = mujoco.mjtJoint # type: ignore
+jax_Device :                TypeAlias = jax.Device # type: ignore
+mujoco_mjtIntegrator :      TypeAlias = mujoco.mjtIntegrator # type: ignore
+mujoco_mjtDisableBit :      TypeAlias = mujoco.mjtDisableBit # type: ignore
+mujoco_mj_resetData :       TypeAlias = mujoco.mj_resetData # type: ignore
+mujoco_mj_name2id :         TypeAlias = mujoco.mj_name2id # type: ignore
+mujoco_MjvOption :          TypeAlias = mujoco.MjvOption # type: ignore
+mujoco_mjtVisFlag :         TypeAlias = mujoco.mjtVisFlag # type: ignore
+mujoco_mj_camlight :        TypeAlias = mujoco.mj_camlight # type: ignore
+
+
 if Version(jax.__version__) < Version("0.8.0"):
-    def th2jax(tensor : th.Tensor, jax_device : jax.Device):
+    def th2jax(tensor : th.Tensor, jax_device : jax_Device):
         # apparently there are issues with non-contiguous tensors, should be fixed in 0.8.0 (https://github.com/jax-ml/jax/issues/7657)
         # and with CPU tensors, should be fixed since Jan 2025 (https://github.com/jax-ml/jax/issues/25066#issuecomment-2494697463)
         return jnp.from_dlpack(tensor.contiguous().cuda(non_blocking=False)).to_device(jax_device)
     
     def jax2th(array : jnp.ndarray, th_device : th.device):
-        return thdlpack.from_dlpack(array.to_device(jax.devices("gpu")[0])).to(th_device, non_blocking=th_device.type=="cuda")
+        return thdlpack.from_dlpack(array.to_device(jax_Devices("gpu")[0])).to(th_device, non_blocking=th_device.type=="cuda")
 else:
-    def th2jax(tensor : th.Tensor, jax_device : jax.Device):
+    def th2jax(tensor : th.Tensor, jax_device : jax_Device):
         return jnp.from_dlpack(tensor.contiguous()).to_device(jax_device)
                                                     
     def jax2th(array : jnp.ndarray, th_device : th.device):
@@ -364,8 +394,9 @@ def get_rows_cols(array : jnp.ndarray,
     index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]          for ia in index_arrs]
     return array[jnp.ix_(*index_arrs)].squeeze(zerodim_axes)
 
+
 def add_geom_to_renderer(renderer : mujoco.Renderer,
-                         geom_type : mujoco.mjtGeom, 
+                         geom_type : mujoco_mjtGeom, 
                          size_xyz : np.ndarray,
                          pos_xyz  : np.ndarray,
                          quat_xyzw  : np.ndarray,
@@ -375,8 +406,8 @@ def add_geom_to_renderer(renderer : mujoco.Renderer,
     ggLog.info(f"adding geom {dict( geom_type=geom_type, size_xyz=size_xyz, pos_xyz=pos_xyz, quat_xyzw=quat_xyzw, rgba=rgba)}")
     quat_xyzw = quat_xyzw.astype(np.float64)
     orient_mat = np.empty((9,),dtype=quat_xyzw.dtype)
-    mujoco.mju_quat2Mat(orient_mat, quat_xyzw[...,[3,0,1,2]])
-    mujoco.mjv_initGeom(geom=renderer.scene.geoms[renderer.scene.ngeom],
+    mujoco_mju_quat2Mat(orient_mat, quat_xyzw[...,[3,0,1,2]])
+    mujoco_mju_quat2Mat(geom=renderer.scene.geoms[renderer.scene.ngeom],
                         type=geom_type,
                         size=size_xyz,
                         pos=pos_xyz,
@@ -387,18 +418,18 @@ def add_geom_to_renderer(renderer : mujoco.Renderer,
 def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6, 1]):
   """Add an arrow to the scene."""
   scene = renderer.scene
-  scene.geoms[scene.ngeom].category = mujoco.mjtCatBit.mjCAT_STATIC
-  mujoco.mjv_initGeom(
+  scene.geoms[scene.ngeom].category = mujoco_mjtCatBit.mjCAT_STATIC
+  mujoco_mju_quat2Mat(
       geom=scene.geoms[scene.ngeom],
-      type=mujoco.mjtGeom.mjGEOM_ARROW,
+      type=mujoco_mjtGeom.mjGEOM_ARROW,
       size=np.zeros(3),
       pos=np.zeros(3),
       mat=np.zeros(9),
       rgba=np.asarray(rgba).astype(np.float32),
   )
-  mujoco.mjv_connector(
+  mujoco_mjv_connector(
       geom=scene.geoms[scene.ngeom],
-      type=mujoco.mjtGeom.mjGEOM_ARROW,
+      type=mujoco_mjtGeom.mjGEOM_ARROW,
       width=radius,
       from_=from_,
       to=to,
@@ -426,10 +457,10 @@ def get_renderdata_dict(jax_data : mjx.Data):
     }
 
 def get_renderdata_into(
-    cpu_data: list[mujoco.MjData],
+    cpu_data: list[mujoco_MjData],
     jax_data
 ):
-    """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco.MjData.
+    """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco_MjData.
         Just to avoid copying all fields when only these are needed."""
     poses = jax.device_get(get_renderdata_dict(jax_data))
     contact = poses['contact']
@@ -450,14 +481,14 @@ def get_renderdata_into(
         contact_i = jax.tree_util.tree_map(lambda x, i=i: x[i], contact)
         ncon = int((contact_i.dist <= 0).sum())
         if ncon != cdata.ncon or cdata.nefc != 0:
-            mujoco._functions._realloc_con_efc(cdata, ncon=ncon, nefc=0)  # pylint: disable=protected-access
+            mujoco__functions._realloc_con_efc(cdata, ncon=ncon, nefc=0)  # pylint: disable=protected-access
         _get_contact(cdata.contact, contact_i)
         # efc_address would index into an efc array we don't populate; invalidate it.
         if cdata.contact.efc_address.size:
             cdata.contact.efc_address[:] = -1
 
 def get_data_into(
-    result: mujoco.MjData | List[mujoco.MjData],
+    result: mujoco_MjData | list[mujoco_MjData],
     m,
     d,
     exclude : list[str] = []
@@ -467,7 +498,7 @@ def get_data_into(
       return mjx.get_data_into(result, m, d)
 
   # Copy of get_data_into from mjx, with an exclude argument added, as some useless fields were causing issues
-  """Gets mjx.Data from a device into an existing mujoco.MjData or list."""
+  """Gets mjx.Data from a device into an existing mujoco_MjData or list."""
   batched = isinstance(result, list)
   if batched and len(d.qpos.shape) < 2:
     raise ValueError('dst is a list, but d is not batched.')
@@ -495,7 +526,7 @@ def get_data_into(
     nefc = int(efc_active.sum())
     result_i.nJ = nefc * m.nv
     if ncon != result_i.ncon or nefc != result_i.nefc:
-      mujoco._functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc)  # pylint: disable=protected-access
+      mujoco__functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc)  # pylint: disable=protected-access
     result_i.efc_J_rownnz[:] = np.repeat(m.nv, nefc)
     result_i.efc_J_rowadr[:] = np.arange(0, nefc * m.nv, m.nv)
     result_i.efc_J_colind[:] = np.tile(np.arange(m.nv), nefc)
@@ -521,7 +552,7 @@ def get_data_into(
         moment_colind = np.zeros(m.nJmom, dtype=np.int32)
         actuator_moment = np.zeros(m.nJmom)
         if m.nu:
-          mujoco.mju_dense2sparse(
+          mujoco_mju_dense2sparse(
               actuator_moment,
               d_i.actuator_moment,
               moment_rownnz,
@@ -565,14 +596,14 @@ from typing import Optional, Dict, Union
 from mujoco.mjx._src.io import types, _resolve_impl_and_device, _put_data_jax, _put_data_c, _put_data_cpp, _check_warp_installed, _wp_to_np_type, _put_data_public_fields, _get_nested_attr
 import warnings
 def _put_data_warp(
-    m: mujoco.MjModel,
-    d: mujoco.MjData,
-    device: Optional[jax.Device] = None,
+    m: mujoco_MjModel,
+    d: mujoco_MjData,
+    device: Optional[jax_Device] = None,
     naconmax: Optional[int] = None,
     naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
 ) -> types.Data:
-  """Puts mujoco.MjData onto a device, resulting in mjx.Data."""
+  """Puts mujoco_MjData onto a device, resulting in mjx.Data."""
 
   from mujoco.mjx.warp import warp as wp
   import mujoco.mjx.warp as mjxw
@@ -607,9 +638,9 @@ def _put_data_warp(
 
 
 def put_data(
-    m: mujoco.MjModel,
-    d: mujoco.MjData,
-    device: Optional[jax.Device] = None,
+    m: mujoco_MjModel,
+    d: mujoco_MjData,
+    device: Optional[jax_Device] = None,
     impl: Optional[Union[str, types.Impl]] = None,
     nconmax: Optional[int] = None,
     naconmax: Optional[int] = None,
@@ -618,7 +649,7 @@ def put_data(
     dummy_arg_for_batching: Optional[jax.Array] = None,
     keepalive_refs: Optional[Dict[int, Any]] = None,
 ) -> types.Data:
-  """Puts mujoco.MjData onto a device, resulting in mjx.Data.
+  """Puts mujoco_MjData onto a device, resulting in mjx.Data.
 
   Args:
     m: the model to use
@@ -744,7 +775,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                                     pose=None,
                                     kwargs={}))
 
-    specs : list[tuple[str, mujoco.MjSpec, tuple[str,str] | None]] = []
+    specs : list[tuple[str, mujoco_MjSpec, tuple[str,str] | None]] = []
     ggLog.info(f"Spawning models: {[model.name for model in models]}")
     for model in models:
         mformat = model.format.strip().lower()
@@ -753,6 +784,8 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                                                             model_kwargs=model.kwargs)
         elif mformat in ("urdf","mjcf"):
             def_string = model.definition_string
+            if def_string is None:
+                raise RuntimeError(f"Model '{model.name}' has format '{model.format}' but no definition_string")
         else:
             raise RuntimeError(f"Unsupported model format '{model.format}' for model '{model.name}'")
         if mformat in ("urdf","urdf.xacro"):
@@ -761,18 +794,18 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
             pathlib.Path(log_folder).mkdir(parents=True, exist_ok=True)
             with open(f"{log_folder}/model_{model.name}.{mformat}", "w") as f:
                 f.write(def_string)
-        mjSpec = mujoco.MjSpec.from_string(def_string)
+        mjSpec = mujoco_MjSpec.from_string(def_string)
         # mjSpec.compiler.discardvisual = False
         mjSpec.compiler.degree = False
-        mjSpec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
+        mjSpec.compiler.inertiafromgeom = mujoco_mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
         specs.append((model.name, mjSpec, model.attachment_link))
         if model.pose is not None:
             raise NotImplementedError(f"Error adding model '{model.name}' ModelSpawnDef.pose is not supported yet")
-    big_speck = mujoco.MjSpec()
+    big_speck = mujoco_MjSpec()
 
     world_frame = big_speck.worldbody.add_frame()
     big_speck.compiler.degree = False
-    big_speck.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
+    big_speck.compiler.inertiafromgeom = mujoco_mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
     # big_speck.compiler.discardvisual = False
     for mname, spec, attachment_link in specs:
         if model_element_separator in mname:
@@ -786,7 +819,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
             if attachment_link is None:
                 world_frame.attach_body(body, mname+model_element_separator, "")
             else:
-                parentbody : mujoco.MjsBody = big_speck.body(model_element_separator.join(attachment_link))
+                parentbody : mujoco_MjsBody = big_speck.body(model_element_separator.join(attachment_link))
                 f = parentbody.add_frame()
                 f.attach_body(body, mname+model_element_separator, "")
                 # ggLog.info(f"Attaching body '{mname}';'{body.name}' to '{attachment_link}'")
@@ -819,10 +852,10 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
                 raise RuntimeError(f"contact_pairs[{i}]: no body named '{body_b}' in the merged spec")
             sens = big_speck.add_sensor()
             sens.name = f"__pair_{i}__"
-            sens.type = mujoco.mjtSensor.mjSENS_CONTACT
-            sens.objtype = mujoco.mjtObj.mjOBJ_BODY
+            sens.type = mujoco_mjtSensor.mjSENS_CONTACT
+            sens.objtype = mujoco_mjtObj.mjOBJ_BODY
             sens.objname = body_a
-            sens.reftype = mujoco.mjtObj.mjOBJ_BODY
+            sens.reftype = mujoco_mjtObj.mjOBJ_BODY
             sens.refname = body_b
             sens.intprm = [1, 0, 1]
 
@@ -831,12 +864,12 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
     mj_model = big_speck.compile()
     return mj_model, big_speck
 
-def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_override : dict[str,Any] | None,
-                     opt_override_enableflags : dict[str,bool] | None = None) -> mujoco.MjModel:
+def apply_opt_preset(mj_model : mujoco_MjModel, preset_name : str | None, opt_override : dict[str,Any] | None,
+                     opt_override_enableflags : dict[str,bool] | None = None) -> mujoco_MjModel:
     
     good_impratio = 1.0
-    mjINT_EULER = mujoco.mjtIntegrator.mjINT_EULER # type: ignore
-    mjDSBL_EULERDAMP = mujoco.mjtDisableBit.mjDSBL_EULERDAMP # type: ignore
+    mjINT_EULER = mujoco_mjtIntegrator.mjINT_EULER # type: ignore
+    mjDSBL_EULERDAMP = mujoco_mjtDisableBit.mjDSBL_EULERDAMP # type: ignore
     mjtEnableBit = mujoco.mjtEnableBit # type: ignore
     # good_cone = mujoco.mjtCone.mjCONE_PYRAMIDAL #ELLIPTIC
     if preset_name is None or preset_name == "mujoco_default":
@@ -859,25 +892,25 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
         mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 10
         mj_model.opt.ls_iterations = 5
-        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        # mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "medium":
         mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 20
         mj_model.opt.ls_iterations = 5
-        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        # mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "slow":
         mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 30
         mj_model.opt.ls_iterations = 5
-        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        # mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     elif preset_name == "slower":
         mj_model.opt.integrator = mjINT_EULER
         mj_model.opt.iterations = 50
         mj_model.opt.ls_iterations = 5
-        # mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_EULERDAMP
+        # mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         mj_model.opt.impratio = good_impratio # see comment above
     else:
         raise RuntimeError(f"Unknown opt preset '{preset_name}'")
@@ -894,10 +927,10 @@ def apply_opt_preset(mj_model : mujoco.MjModel, preset_name : str | None, opt_ov
     return mj_model
 
 
-def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> str:
-    """Return a structured human-readable description of a mujoco.MjModel.
+def format_mj_model(mj_model : mujoco_MjModel, *, full_dump : bool = False) -> str:
+    """Return a structured human-readable description of a mujoco_MjModel.
 
-    `print(mj_model)` is uninformative and `mujoco.mj_printModel` produces a wall
+    `print(mj_model)` is uninformative and `mujoco_mj_printModel` produces a wall
     of low-level array dumps. This walks the main tables (bodies / joints /
     dofs / actuators / sensors / cameras / geoms / sites) showing names, indices,
     and the most useful per-element fields.
@@ -905,19 +938,19 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
     Parameters
     ----------
     full_dump : bool
-        If True, append the full mujoco.mj_printModel output (very long).
+        If True, append the full mujoco_mj_printModel output (very long).
     """
     M = mj_model
     out : list[str] = []
 
     def name_of(objtype : int, oid : int, default : str = "<unnamed>") -> str:
-        n = mujoco.mj_id2name(M, objtype, int(oid))
+        n = mujoco_mj_id2name(M, objtype, int(oid))
         return n if n is not None else default
 
     def fmt_arr(a) -> str:
         return np.array2string(np.asarray(a), precision=3, suppress_small=True, separator=" ")
 
-    mjtJoint = mujoco.mjtJoint # type: ignore
+    mjtJoint = mujoco_mjtJoint # type: ignore
     jtype_map = {
         int(mjtJoint.mjJNT_FREE):  "FREE",
         int(mjtJoint.mjJNT_BALL):  "BALL",
@@ -934,12 +967,13 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
                f"iterations={M.opt.iterations}  ls_iterations={M.opt.ls_iterations}  "
                f"impratio={M.opt.impratio}")
 
+    mjtObj = mujoco_mjtObj # type: ignore
     out.append("")
     out.append("=== Bodies ===")
     for bid in range(M.nbody):
         pid = int(M.body_parentid[bid])
-        pname = name_of(mujoco.mjtObj.mjOBJ_BODY, pid) if pid != bid else "<root>"
-        out.append(f"  [{bid:3d}] {name_of(mujoco.mjtObj.mjOBJ_BODY, bid):30s} "
+        pname = name_of(mjtObj.mjOBJ_BODY, pid) if pid != bid else "<root>"
+        out.append(f"  [{bid:3d}] {name_of(mjtObj.mjOBJ_BODY, bid):30s} "
                    f"parent={pname:30s} mass={float(M.body_mass[bid]):10.4g}  "
                    f"pos={fmt_arr(M.body_pos[bid])}  ipos={fmt_arr(M.body_ipos[bid])}")
 
@@ -947,8 +981,8 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
     out.append("=== Joints ===")
     for jid in range(M.njnt):
         jtype = jtype_map.get(int(M.jnt_type[jid]), str(int(M.jnt_type[jid])))
-        body  = name_of(mujoco.mjtObj.mjOBJ_BODY, int(M.jnt_bodyid[jid]))
-        out.append(f"  [{jid:3d}] {name_of(mujoco.mjtObj.mjOBJ_JOINT, jid):30s} "
+        body  = name_of(mjtObj.mjOBJ_BODY, int(M.jnt_bodyid[jid]))
+        out.append(f"  [{jid:3d}] {name_of(mjtObj.mjOBJ_JOINT, jid):30s} "
                    f"type={jtype:5s}  body={body:30s} "
                    f"qpos[{int(M.jnt_qposadr[jid]):3d}] dof[{int(M.jnt_dofadr[jid]):3d}]  "
                    f"limited={bool(M.jnt_limited[jid])}  range={fmt_arr(M.jnt_range[jid])}")
@@ -957,7 +991,7 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
     out.append("=== DoFs ===")
     for did in range(M.nv):
         jid = int(M.dof_jntid[did])
-        jname = name_of(mujoco.mjtObj.mjOBJ_JOINT, jid)
+        jname = name_of(mjtObj.mjOBJ_JOINT, jid)
         jtype = jtype_map.get(int(M.jnt_type[jid]), str(int(M.jnt_type[jid])))
         out.append(f"  [{did:3d}] {jname:30s} {jtype:5s}  "
                    f"damping={float(M.dof_damping[did]):10.4g}  "
@@ -970,11 +1004,11 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
         for aid in range(M.nu):
             trntype = int(M.actuator_trntype[aid])
             trnid   = int(M.actuator_trnid[aid, 0])
-            if trntype == int(mujoco.mjtTrn.mjTRN_JOINT):
-                target = "joint:" + name_of(mujoco.mjtObj.mjOBJ_JOINT, trnid)
+            if trntype == int(mujoco_mjtTrn.mjTRN_JOINT):
+                target = "joint:" + name_of(mjtObj.mjOBJ_JOINT, trnid)
             else:
                 target = f"trntype={trntype} trnid={trnid}"
-            out.append(f"  [{aid:3d}] {name_of(mujoco.mjtObj.mjOBJ_ACTUATOR, aid):30s} "
+            out.append(f"  [{aid:3d}] {name_of(mjtObj.mjOBJ_ACTUATOR, aid):30s} "
                        f"target={target:38s} ctrlrange={fmt_arr(M.actuator_ctrlrange[aid])}  "
                        f"forcerange={fmt_arr(M.actuator_forcerange[aid])}  "
                        f"gear={fmt_arr(M.actuator_gear[aid])}")
@@ -986,7 +1020,7 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
             objtype = int(M.sensor_objtype[sid])
             objid   = int(M.sensor_objid[sid])
             obj = name_of(objtype, objid) if objtype != 0 else "-"
-            out.append(f"  [{sid:3d}] {name_of(mujoco.mjtObj.mjOBJ_SENSOR, sid):30s} "
+            out.append(f"  [{sid:3d}] {name_of(mjtObj.mjOBJ_SENSOR, sid):30s} "
                        f"type={int(M.sensor_type[sid]):3d}  adr={int(M.sensor_adr[sid]):4d}  "
                        f"dim={int(M.sensor_dim[sid]):2d}  obj={obj}")
 
@@ -994,8 +1028,8 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
         out.append("")
         out.append("=== Cameras ===")
         for cid in range(M.ncam):
-            body = name_of(mujoco.mjtObj.mjOBJ_BODY, int(M.cam_bodyid[cid]))
-            out.append(f"  [{cid:3d}] {name_of(mujoco.mjtObj.mjOBJ_CAMERA, cid):30s} "
+            body = name_of(mjtObj.mjOBJ_BODY, int(M.cam_bodyid[cid]))
+            out.append(f"  [{cid:3d}] {name_of(mjtObj.mjOBJ_CAMERA, cid):30s} "
                        f"body={body:30s} mode={int(M.cam_mode[cid])}  "
                        f"pos={fmt_arr(M.cam_pos[cid])}  fovy={float(M.cam_fovy[cid]):.2f}")
 
@@ -1003,8 +1037,8 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
         out.append("")
         out.append("=== Geoms ===")
         for gid in range(M.ngeom):
-            body = name_of(mujoco.mjtObj.mjOBJ_BODY, int(M.geom_bodyid[gid]))
-            out.append(f"  [{gid:3d}] {name_of(mujoco.mjtObj.mjOBJ_GEOM, gid):30s} "
+            body = name_of(mjtObj.mjOBJ_BODY, int(M.geom_bodyid[gid]))
+            out.append(f"  [{gid:3d}] {name_of(mjtObj.mjOBJ_GEOM, gid):30s} "
                        f"type={int(M.geom_type[gid]):2d}  body={body:30s} "
                        f"size={fmt_arr(M.geom_size[gid])}  pos={fmt_arr(M.geom_pos[gid])}  "
                        f"contype={int(M.geom_contype[gid])} conaffinity={int(M.geom_conaffinity[gid])}")
@@ -1013,8 +1047,8 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
         out.append("")
         out.append("=== Sites ===")
         for sid in range(M.nsite):
-            body = name_of(mujoco.mjtObj.mjOBJ_BODY, int(M.site_bodyid[sid]))
-            out.append(f"  [{sid:3d}] {name_of(mujoco.mjtObj.mjOBJ_SITE, sid):30s} "
+            body = name_of(mjtObj.mjOBJ_BODY, int(M.site_bodyid[sid]))
+            out.append(f"  [{sid:3d}] {name_of(mjtObj.mjOBJ_SITE, sid):30s} "
                        f"body={body:30s} pos={fmt_arr(M.site_pos[sid])}")
 
     out.append("")
@@ -1026,7 +1060,7 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
         tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
         tmp.close()
         try:
-            mujoco.mj_printModel(M, tmp.name)
+            mujoco_mj_printModel(M, tmp.name)
             with open(tmp.name, "r") as f:
                 out.append("")
                 out.append("=== mj_printModel (verbose) ===")
@@ -1037,8 +1071,8 @@ def format_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False) -> s
     return "\n".join(out)
 
 
-def print_mj_model(mj_model : mujoco.MjModel, *, full_dump : bool = False, file : str | None = None) -> None:
-    """Pretty-print a mujoco.MjModel. See `format_mj_model` for options.
+def print_mj_model(mj_model : mujoco_MjModel, *, full_dump : bool = False, file : str | None = None) -> None:
+    """Pretty-print a mujoco_MjModel. See `format_mj_model` for options.
 
     If `file` is given, the text is written to that path instead of stdout.
     """
@@ -1144,10 +1178,10 @@ class SimState:
         return ret
     
 mj_jnt_type_to_adarl = {
-    mujoco.mjtJoint.mjJNT_FREE  : JointType.FLOATING,
-    mujoco.mjtJoint.mjJNT_HINGE : JointType.REVOLUTE,
-    mujoco.mjtJoint.mjJNT_SLIDE : JointType.PRISMATIC,
-    mujoco.mjtJoint.mjJNT_BALL : JointType.SPHERICAL
+    mujoco_mjtJoint.mjJNT_FREE  : JointType.FLOATING,
+    mujoco_mjtJoint.mjJNT_HINGE : JointType.REVOLUTE,
+    mujoco_mjtJoint.mjJNT_SLIDE : JointType.PRISMATIC,
+    mujoco_mjtJoint.mjJNT_BALL : JointType.SPHERICAL
 }
 
 
@@ -1531,7 +1565,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def __init__(self, vec_size : int,
                         enable_rendering : bool,
-                        jax_device : jax.Device,
+                        jax_device : jax_Device,
                         output_th_device : th.device,
                         sim_step_dt : float = 2/1024,
                         step_length_sec : float = 10/1024,
@@ -1585,8 +1619,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._out_cuda = self._out_th_device.type == "cuda"
 
         self._realtime_factor = realtime_factor
-        self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device),
-                                    mjx_model=jnp.empty((0,), device = jax_device),
+        self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device), # type: ignore
+                                    mjx_model=jnp.empty((0,), device = jax_device), # type: ignore
                                     requested_qfrc_applied=jnp.empty((0,), device = jax_device),
                                     sim_time=jnp.empty((0,), device = jax_device),
                                     stats_step_count=jnp.zeros((1,), device = jax_device),
@@ -1649,17 +1683,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return self._sim_step_dt_th
 
     def _mj_name_to_pair(self, mjid : int, objtype):
-        mjname = mujoco.mj_id2name(self._mj_model, objtype, mjid)
+        mjname = mujoco_mj_id2name(self._mj_model, objtype, mjid)
         if mjname is None:
-            if objtype == mujoco.mjtObj.mjOBJ_BODY:
+            if objtype == mujoco_mjtObj.mjOBJ_BODY:
                 objtype_name = "body"
-            elif objtype == mujoco.mjtObj.mjOBJ_JOINT:
+            elif objtype == mujoco_mjtObj.mjOBJ_JOINT:
                 objtype_name = "joint"
-            elif objtype == mujoco.mjtObj.mjOBJ_GEOM:
+            elif objtype == mujoco_mjtObj.mjOBJ_GEOM:
                 objtype_name = "geom"
-            elif objtype == mujoco.mjtObj.mjOBJ_CAMERA:
+            elif objtype == mujoco_mjtObj.mjOBJ_CAMERA:
                 objtype_name = "camera"
-            elif objtype == mujoco.mjtObj.mjOBJ_SITE:
+            elif objtype == mujoco_mjtObj.mjOBJ_SITE:
                 objtype_name = "site"
             else:
                 raise RuntimeError(f"Unsupported objtype {objtype}")
@@ -1695,7 +1729,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_forward = jax.jit(jax.vmap(mjx.forward, in_axes=(self._mjx_model_in_axes, 0)))
         # self._mjx_forward_post = jax.jit(jax.vmap(_forward_post, in_axes=(self._mjx_model_in_axes, 0)))
         if self._mjx_impl == "jax":
-            if self._mj_model.opt.integrator == mujoco.mjtIntegrator.mjINT_EULER:
+            if self._mj_model.opt.integrator == mujoco_mjtIntegrator.mjINT_EULER:
                 stepping_func = mjx_integrate_and_forward_split
             else:
                 stepping_func = mjx_integrate_and_forward_full
@@ -1790,7 +1824,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._disable_builtin_actuators:
             self._mj_model.opt.disableactuator = -1 # disable all built-in actuators, we will apply forces/torques directly to the joints in the control step
             # MJX and warp actually seem to ignore disableactuator, so we also set the corresponding disable flag to be sure:
-            self._mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ACTUATION
+            self._mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_ACTUATION
         # I prevent slipping by using a big impratio see for example:
         # - https://github.com/google-deepmind/mujoco_menagerie/blob/d98292efc73511aa7a4ca958eaaf226403d56cb7/anybotics_anymal_b/anymal_b.xml#L4 
         # and the discussion at these links:
@@ -1810,7 +1844,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._safe_revolute_dof_frictionloss = 0.2
         for dof_id in range(self._mj_model.nv):
             joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
-            if joint_type == mujoco.mjtJoint.mjJNT_HINGE:
+            if joint_type == mujoco_mjtJoint.mjJNT_HINGE:
                 if self._mj_model.dof_armature[dof_id] == 0:
                     ggLog.warn(f"Revolute dof {dof_id} has zero armature. Setting it to {self._safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
                     self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
@@ -1842,17 +1876,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #     raise RuntimeError(f"Unsupported model format '{model.format}'")
         # self._model_name = model.name
         # # Make model, data, and renderer
-        # self._mj_model = mujoco.MjModel.from_xml_string(urdf_string)
+        # self._mj_model = mujoco_MjModel.from_xml_string(urdf_string)
 
-        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(jid, mujoco.mjtObj.mjOBJ_JOINT)
+        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(jid, mujoco_mjtObj.mjOBJ_JOINT)
                            for jid in range(self._mj_model.njnt)}
         self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
-        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(lid, mujoco.mjtObj.mjOBJ_BODY)
+        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(lid, mujoco_mjtObj.mjOBJ_BODY)
                            for lid in range(self._mj_model.nbody)}
         self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
         # Sites are exposed as links with IDs offset by nbody
         self._nbody = self._mj_model.nbody
-        self._sid2sname : dict[int, tuple[str,str]] = {sid:self._mj_name_to_pair(sid, mujoco.mjtObj.mjOBJ_SITE)
+        self._sid2sname : dict[int, tuple[str,str]] = {sid:self._mj_name_to_pair(sid, mujoco_mjtObj.mjOBJ_SITE)
                            for sid in range(self._mj_model.nsite)}
         self._sname2sid = {sn:sid for sid,sn in self._sid2sname.items()}
         # Merge sites into the link namespace (site unified lid = nbody + sid)
@@ -1864,7 +1898,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             unified_lid = self._nbody + sid
             self._lid2lname[unified_lid] = sname
             self._lname2lid[sname] = unified_lid
-        self._cid2cname : dict[int, str] = {cid:self._mj_name_to_pair(cid, mujoco.mjtObj.mjOBJ_CAMERA)[1]
+        self._cid2cname : dict[int, str] = {cid:self._mj_name_to_pair(cid, mujoco_mjtObj.mjOBJ_CAMERA)[1]
                            for cid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
 
@@ -1882,7 +1916,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 pair_adrs = []
                 for i in range(len(self._monitored_collision_pairs)):
                     sname = f"__pair_{i}__"
-                    sid = mujoco.mj_name2id(self._mj_model, mujoco.mjtObj.mjOBJ_SENSOR, sname)
+                    sid = mujoco_mj_name2id(self._mj_model, mujoco_mjtObj.mjOBJ_SENSOR, sname)
                     if sid < 0:
                         raise RuntimeError(f"Internal error: contact sensor '{sname}' missing after compile")
                     pair_adrs.append(int(self._mj_model.sensor_adr[sid]))
@@ -1900,8 +1934,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         print_mj_model(self._mj_model, full_dump=True, file=scenario_logs_folder+"/mj_model_full.txt")
 
 
-        self._mj_data = mujoco.MjData(self._mj_model)
-        mujoco.mj_resetData(self._mj_model, self._mj_data)
+        self._mj_data = mujoco_MjData(self._mj_model)
+        mujoco_mj_resetData(self._mj_model, self._mj_data)
 
         if self._mjx_impl == "warp":
             import mujoco.mjx.warp as mjxw
@@ -1982,8 +2016,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
         if self._show_gui:
-            self._viewer_mj_data : mujoco.MjData = mjx.get_data(self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
-            mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
+            self._viewer_mj_data : mujoco_MjData = mjx.get_data(self._mj_model, jax.tree_util.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
+            mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_util.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
             self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
 
         self._camera_sizes_hw_by_id : dict[int,tuple[int,int]] = {cid:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
@@ -2000,13 +2034,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     # You can see the egl devices with eglinfo -B
                     # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
                     return mujoco.Renderer(self._mj_model,height=h,width=w)
-                self._render_scene_option = mujoco.MjvOption()
-                self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                self._render_scene_option = mujoco_MjvOption()
+                self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_CONTACTPOINT] = 1
                 # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
                 # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
                 self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
                                 for resolution in set(self._camera_sizes_hw.values())}
-                self._renderers_mj_datas : list[mujoco.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
+                self._renderers_mj_datas : list[mujoco_MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
             elif self._render_backend == "warp":
                 self._renderers = {}
                 self._renderers_mj_datas = []
@@ -2189,7 +2223,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             for geom_id in range(self._mj_model.body_geomadr[body_id],
                                  self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
                 # this will pass also through the visual geoms!
-                # geom_name = mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                # geom_name = mujoco_mj_id2name(self._mj_model, mujoco_mjtObj.mjOBJ_GEOM, geom_id)
                 # geom_rgba = self._mj_model.geom_rgba[geom_id]
                 # ggLog.info(f"{lname} [{body_id}] : {geom_id} [{geom_name}]: coll={typ:b}/{aff:b} rgba = {geom_rgba}, aff = {aff}, typ = {typ} ")
                 # geom_contype[geom_id] = 1
@@ -2457,7 +2491,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
         record_region_start("MjxAdapter.run")
-        run_fast_jit_compiles = self._run_fast_save_full_jpveae._cache_size()
+        run_fast_jit_compiles = self._run_fast_save_full_jpveae._cache_size() # type: ignore
         wt0 = time.monotonic()
         st0 = self._simTime
         # self._sent_motor_torque_commands_by_bid_jid = {}
@@ -2477,7 +2511,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._read_new_contacts()
         wtime_simulating = time.monotonic()-wt0
         # ggLog.info(f"run done.")
-        if self._run_fast_save_full_jpveae._cache_size() > run_fast_jit_compiles and run_fast_jit_compiles>0:
+        if self._run_fast_save_full_jpveae._cache_size() > run_fast_jit_compiles and run_fast_jit_compiles>0: # type: ignore
             ggLog.warn(f"run_fast was recompiled")
 
         self._total_iterations += iterations
@@ -2531,7 +2565,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             selected_vecs = th.nonzero(vec_mask, as_tuple=True)[0].to("cpu").tolist()
             nvecs = len(selected_vecs)
-            active_vecs = None
+            active_vecs = [] # made into a list just for typing
         t0 = time.monotonic()
         
         # mj_data_batch = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
@@ -2552,7 +2586,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             image_batches_hwc = [np.zeros(shape=arr_shapes[i], dtype=np.uint8) for i in range(len(requestedCameras))]
         self._forward_if_needed()
         # print(f"images.shapes = {[i.shape for i in images]}")
-        # mj_datas : list[mujoco.MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
+        # mj_datas : list[mujoco_MjData] = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         t_precopy = time.monotonic()
         # get_data_into(self._renderers_mj_datas,self._mj_model, self._sim_state.mjx_data,exclude=["qLD"])
         get_renderdata_into(self._renderers_mj_datas, self._sim_state.mjx_data)
@@ -2569,7 +2603,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
                 renderer = self._renderers[self._camera_sizes_hw[cam]]
                 mjdata = self._renderers_mj_datas[env]
-                mujoco.mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
+                mujoco_mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
                 t_preupdate = time.monotonic()
                 renderer.update_scene(mjdata, self._cname2cid[cam], scene_option=self._render_scene_option)
                 if self._visualize_xfrc_applied:
@@ -2581,7 +2615,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             # force_quat = quat_xyzw_between_vecs_py(th.as_tensor([1.0,0,0]), th.as_tensor(force_vec, dtype=th.float32)).numpy()
                             body_pos = mjdata.xipos[body_id]
                             # add_geom_to_renderer(renderer,
-                            #                         geom_type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                            #                         geom_type=mujoco_mjtGeom.mjGEOM_CYLINDER,
                             #                         size_xyz=np.array([0.05, force,0.05]),
                             #                         pos_xyz=body_pos,
                             #                         quat_xyzw=force_quat,
@@ -3333,8 +3367,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
             jids = np.array([self._jname2jid[jn] for jn in joint_names])
             joint_types = self._mj_model.jnt_type[jids]
-            if not np.all(np.logical_or(joint_types == mujoco.mjtJoint.mjJNT_HINGE,
-                                        joint_types == mujoco.mjtJoint.mjJNT_SLIDE)):
+            if not np.all(np.logical_or(joint_types == mujoco_mjtJoint.mjJNT_HINGE,
+                                        joint_types == mujoco_mjtJoint.mjJNT_SLIDE)):
                 raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names, joint_types))}")
 
             qpadr_qvadr = jnp.array(np.stack([self._mj_model.jnt_qposadr[jids],
@@ -3389,7 +3423,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
             link_joint_ids = self._mj_model.body_jntadr[lids_connected_to_world]
             link_joint_types = self._mj_model.jnt_type[link_joint_ids]
-            all_free_joints_mask = link_joint_types == mujoco.mjtJoint.mjJNT_FREE
+            all_free_joints_mask = link_joint_types == mujoco_mjtJoint.mjJNT_FREE
             if not np.all(all_free_joints_mask):
                 non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
                 raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
@@ -3539,7 +3573,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all(np.logical_or(jtypes == mujoco.mjtJoint.mjJNT_HINGE, jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all(np.logical_or(jtypes == mujoco_mjtJoint.mjJNT_HINGE, jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names,jtypes))}")
         qpadr_np = self._mj_model.jnt_qposadr[jids]
         qvadr_np = self._mj_model.jnt_dofadr[jids]
@@ -3679,7 +3713,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         jids = self._mj_model.body_jntadr[lids_connected_to_world]
         jtypes = self._mj_model.jnt_type[jids]
-        all_free_joints_mask = jtypes == mujoco.mjtJoint.mjJNT_FREE
+        all_free_joints_mask = jtypes == mujoco_mjtJoint.mjJNT_FREE
         if not np.all(all_free_joints_mask):
             non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
             raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
@@ -3735,7 +3769,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #     elif parent_joints_num == 1 and parent_body_id==0:
         #         jid = self._mj_model.body_jntadr[lid]
         #         jtype = self._mj_model.jnt_type[jid]
-        #         if jtype == mujoco.mjtJoint.mjJNT_FREE:
+        #         if jtype == mujoco_mjtJoint.mjJNT_FREE:
         #             # ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
         #             qadr = self._mj_model.jnt_qposadr[jid]
         #             dadr = self._mj_model.jnt_dofadr[jid]
@@ -3866,7 +3900,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @staticmethod
     @partial(jax.jit, donate_argnames=["mjx_model"])
-    def _reset_model_alterations(vec_mask : jnp.ndarray, mjx_model : mjx.Model, original_mjx_model : mjx.Model) -> mjx.Mmodel:
+    def _reset_model_alterations(vec_mask : jnp.ndarray, mjx_model : mjx.Model, original_mjx_model : mjx.Model) -> mjx.Model:
         resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
                                        original_mjx_model.body_mass, mjx_model.body_mass)
         resetted_geom_friction = jnp.where(jnp.expand_dims(vec_mask,(1,2)),
@@ -3928,6 +3962,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             mjx_model = MjxAdapter._reset_model_alterations(vec_mask, mjx_model, original_mjx_model)
         replacements = {}
         if apply_link_masses:
+            if body_masses_ratio_change is None or link_masses_body_ids is None:
+                raise ValueError("To apply link mass changes, both body_masses_ratio_change and link_masses_body_ids must be provided")
             new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change + 1)
             new_body_mass = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
             replacements["body_mass"] = jnp.clip(new_body_mass, min=0.0001)
@@ -3953,16 +3989,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             )
 
         if apply_dof_armature_ratios:
+            if dof_armatures_ratio_change is None or dof_armatures_dof_ids is None:
+                raise ValueError("To apply joint armature changes, both dof_armatures_ratio_change and dof_armatures_dof_ids must be provided")
             new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].mul(dof_armatures_ratio_change + 1)
             new_armatures = jnp.clip(new_armatures, min=0.0001)
             replacements["dof_armature"] = jnp.where(vec_mask[:, None], new_armatures, mjx_model.dof_armature)
 
         if apply_dof_damping_ratios:
+            if dof_dampings_ratio_change is None or dof_dampings_dof_ids is None:
+                raise ValueError("To apply joint damping changes, both dof_dampings_ratio_change and dof_dampings_dof_ids must be provided")
             new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].mul(dof_dampings_ratio_change + 1)
             new_dampings = jnp.clip(new_dampings, min=0.0001)
             replacements["dof_damping"] = jnp.where(vec_mask[:, None], new_dampings, mjx_model.dof_damping)
 
         if apply_dof_frictionloss_ratios:
+            if dof_frictionloss_ratio_change is None or dof_frictionloss_dof_ids is None:
+                raise ValueError("To apply joint frictionloss changes, both dof_frictionloss_ratio_change and dof_frictionloss_dof_ids must be provided")
             new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].mul(dof_frictionloss_ratio_change + 1)
             new_frictionloss = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
             replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min=0.0001)
@@ -3972,7 +4014,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             replacements["body_ipos"] = jnp.where(vec_mask[:, None, None], new_body_ipos, mjx_model.body_ipos)
 
         if apply_com_quatxyzw_diffs:
-            altered_quat = mjx._src.math.quat_mul(
+            if com_quat_diff_xyzw is None or com_body_quat_ids is None:
+                raise ValueError("To apply COM orientation changes, both com_quat_diff_xyzw and com_body_quat_ids must be provided")
+            quat_mul = mjx._src.math.quat_mul
+            altered_quat = quat_mul(
                 com_quat_diff_xyzw[:, :, [3, 0, 1, 2]],
                 mjx_model.body_iquat[:, com_body_quat_ids],
             )
