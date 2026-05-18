@@ -176,7 +176,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             if model != self._model_name:
                 raise RuntimeError(f"Requested joint for model different from the monitored one (asked '{model, jname}', but have '{self._model_name}')")
         # jids = [self._xbotjname_to_jid[jname] for model, jname in requestedJoints]
-        jnames = [jname for model, jname in requestedJoints]
+        jnames = [jn[1] for jn in requestedJoints]
         self._sense_if_needed()
 
         joints_pve = self._xbot_zmq_client.get_joints_state(jnames).pve()
@@ -464,7 +464,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def get_current_joint_impedance_command(self) -> th.Tensor:
         ref_j_pvesd = self._get_current_refs_pvesd()
         # pvesd_by_name = {(mn,jn):ref_j_pvesd[self._xbotjname_to_jid[jn]] for mn,jn in self._jimpedance_controlled_joints}
-        return th.as_tensor(ref_j_pvesd[self._jimpedance_controlled_joints_jids], device=self._torch_device, dtype=th.float32)
+        return th.as_tensor(ref_j_pvesd, device=self._torch_device, dtype=th.float32)
     
     def _get_imus_for_links(self, requestedLinks : Sequence[tuple[str,str]]) -> dict[str, str]:
         imus = self._xbot_zmq_client.get_imu_names()
