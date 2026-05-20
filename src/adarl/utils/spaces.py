@@ -137,10 +137,10 @@ class ThBox(gym.spaces.Box):
             self.zero_action = th.as_tensor(self.zero_action, dtype=self.torch_dtype).to(self.th_device)
         else:
             # for backward compat
-            self.bounded_above = self.bounded_above.cpu().numpy().astype(np.bool_)
-            self.bounded_below = self.bounded_below.cpu().numpy().astype(np.bool_)
-            self.high = self.high.cpu().numpy()
-            self.low = self.low.cpu().numpy()
+            self.bounded_above = th.as_tensor(self.bounded_above).cpu().numpy().astype(np.bool_)
+            self.bounded_below = th.as_tensor(self.bounded_below).cpu().numpy().astype(np.bool_)
+            self.high = th.as_tensor(self.high).cpu().numpy()
+            self.low = th.as_tensor(self.low).cpu().numpy()
         if isinstance(self.labels,list):
             self.labels = np.array(self.labels, dtype=object)
 

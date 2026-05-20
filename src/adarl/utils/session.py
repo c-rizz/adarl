@@ -143,7 +143,8 @@ class Session():
                 th._logging.set_logs(recompiles=True,
                                      graph_breaks=True,
                                      inductor=logging.INFO,
-                                     cudagraphs=True)
+                                     cudagraphs=True,
+                                     )
                 import torch._inductor.config as iconfig
                 iconfig.trace.enabled = True
                 iconfig.trace.graph_diagram = True
