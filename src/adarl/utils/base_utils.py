@@ -515,6 +515,8 @@ def compile_xacro_string(model_definition_string, model_kwargs = None, extra_pkg
     # ggLog.info(f"Xacro args = {xacro_args}")
     # ggLog.info(f"Input xacro: \n{model_definition_string}")
     doc = xacro.parse(model_definition_string)
+    if 'extra_find_pkgs' not in inspect.signature(xacro.process_doc).parameters:
+        raise RuntimeError("Your xacro version does not support the extra_find_pkgs argument. Please use the c-rizz version at https://github.com/c-rizz/xacro_standalone/tree/extra_find_pkg_path.")
     xacro.process_doc(doc, mappings = mappings, extra_find_pkgs=extra_pkg_paths, **xacro_args)
     model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
     model_definition_string = _fix_urdf_ros_paths(model_definition_string, extra_pkg_paths=extra_pkg_paths)

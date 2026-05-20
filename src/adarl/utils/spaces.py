@@ -83,6 +83,7 @@ class ThBox(gym.spaces.Box):
             self.zero_action = default_value.expand_as(self._high_th)
         else:
             self.zero_action = (self._high_th+self._low_th)/2
+        self.zero_action = self.zero_action.to(self.th_device)
     
     @property
     def torch_dtype(self) -> th.dtype:
@@ -111,10 +112,13 @@ class ThBox(gym.spaces.Box):
         state = self.__dict__.copy()
         state.pop("_np_random",None)
         # serialize ndarrays as torch tensors to avoid issues with numpy 2.0/1.x
-        state["bounded_above"] = th.as_tensor(self.bounded_above*1, dtype=th.bool)
-        state["bounded_below"] = th.as_tensor(self.bounded_below*1, dtype=th.bool)
-        state["high"] = th.as_tensor(self.high)
-        state["low"] = th.as_tensor(self.low)
+        state["bounded_above"] = th.as_tensor(self.bounded_above*1, dtype=th.bool).tolist()
+        state["bounded_below"] = th.as_tensor(self.bounded_below*1, dtype=th.bool).tolist()
+        state["high"] = th.as_tensor(self.high).tolist()
+        state["low"] = th.as_tensor(self.low).tolist()
+        state["_high_th"] = th.as_tensor(self._high_th).tolist()
+        state["_low_th"] = th.as_tensor(self._low_th).tolist()
+        state["zero_action"] = th.as_tensor(self.zero_action).tolist()
         if isinstance(self.labels,np.ndarray):
             state["labels"] = self.labels.tolist()
         state.pop("dtype", None)
@@ -122,11 +126,21 @@ class ThBox(gym.spaces.Box):
     
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.bounded_above = self.bounded_above.cpu().numpy().astype(np.bool_)
-        self.bounded_below = self.bounded_below.cpu().numpy().astype(np.bool_)
-        self.high = self.high.cpu().numpy()
-        self.low = self.low.cpu().numpy()
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
+        if isinstance(self.high,list):
+            self.bounded_above = th.as_tensor(self.bounded_above, dtype=th.bool).cpu().numpy().astype(np.bool_)
+            self.bounded_below = th.as_tensor(self.bounded_below, dtype=th.bool).cpu().numpy().astype(np.bool_)
+            self.high = th.as_tensor(self.high, dtype=self.torch_dtype).cpu().numpy()
+            self.low = th.as_tensor(self.low, dtype=self.torch_dtype).cpu().numpy()
+            self._high_th = th.as_tensor(self._high_th, dtype=self.torch_dtype).to(self.th_device)
+            self._low_th = th.as_tensor(self._low_th, dtype=self.torch_dtype).to(self.th_device)
+            self.zero_action = th.as_tensor(self.zero_action, dtype=self.torch_dtype).to(self.th_device)
+        else:
+            # for backward compat
+            self.bounded_above = self.bounded_above.cpu().numpy().astype(np.bool_)
+            self.bounded_below = self.bounded_below.cpu().numpy().astype(np.bool_)
+            self.high = self.high.cpu().numpy()
+            self.low = self.low.cpu().numpy()
         if isinstance(self.labels,list):
             self.labels = np.array(self.labels, dtype=object)
 

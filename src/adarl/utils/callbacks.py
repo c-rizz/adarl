@@ -251,7 +251,10 @@ class CheckpointCallbackRB(TrainingCallback):
             fname_base = "best_"+fname_base
         path = os.path.join(self.save_path, fname_base)
         ggLog.info(f"Saving model checkpoint to {path}...")
+        sync_dbg_state = th.cuda.get_sync_debug_mode()
+        th.cuda.set_sync_debug_mode("default")
         self._model.save(path)
+        th.cuda.set_sync_debug_mode(sync_dbg_state)
         ggLog.info(f"Model checkpoint saved to {path}")
         if not is_best:
             if count_ep:

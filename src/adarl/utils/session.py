@@ -85,10 +85,7 @@ class Session():
         self._initialized = True
         self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
-            if debug:
-                debug_level = 1
-            else:
-                debug_level = 0
+            debug_level = 1 if debug else 0
         else:
             debug_level = debug
         self.debug_level = debug_level
