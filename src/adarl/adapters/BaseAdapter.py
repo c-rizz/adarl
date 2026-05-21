@@ -319,11 +319,11 @@ class BaseAdapter(ABC):
             self._run_async_thread = Thread(target=self.run_async_loop, args=[on_finish_callback])
             self._run_async_thread.start()
 
-    def wait_run_async(self):
+    def wait_run_async(self, timeout_sec : float = -1.):
         with self._running_run_async_lock:
             if self._run_async_thread is None:
                 return
-        self._run_async_thread.join()
+        self._run_async_thread.join(timeout=timeout_sec)
 
     def stop_run_async(self):        
         with self._running_run_async_lock:
