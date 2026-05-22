@@ -8,7 +8,7 @@ import random
 
 from adarl.envs.vec.ControlledVecEnv import ControlledVecEnv
 import adarl
-from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor
+from adarl.utils.utils import Pose, build_pose, JointState, to_string_tensor, masked_assign
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter, ModelSpawnDef
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
@@ -57,6 +57,10 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         cams = [self._lowres_camera_name]
         if self._enable_highres_camera:
             cams.append("simple_camera")
+        if self._img_obs:
+            self._stacked_img_size = (adapter.vec_size(), self._img_obs_frame_stacking_size, self._img_obs_resolution, self._img_obs_resolution)
+            
+            self._stacked_img = th.empty(self._stacked_img_size, dtype=th.uint8, device=th_device)
         adapter.set_monitored_cameras(cams)
         super().__init__(   adapter=adapter,
                             render=render,
@@ -114,26 +118,31 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
     def _initialize_episodes(self, vec_mask : th.Tensor | None = None, options = {}) -> None:
         super()._initialize_episodes(vec_mask=vec_mask, options=options)
         if self._img_obs:
-            sub_step_imgs_vec_hw : list[th.Tensor] = [None,None,None]  #type: ignore
-            for i in range(self._img_obs_frame_stacking_size):
-                imgs_vec_hwc, times = self._adapter.getRenderings([self._lowres_camera_name], depth=self._use_depth_camera)
-                # ggLog.info(f"imgs_vec_chw[0].shape = {imgs_vec_chw[0].shape}")
-                imgs_vec_hw = self.reshape_imgs(imgs_vec_chw=imgs_vec_hwc[0].permute(0,3,1,2))
-                sub_step_imgs_vec_hw[i] = imgs_vec_hw
-            self._stacked_img = th.cat(sub_step_imgs_vec_hw,dim=1).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+            obs_h = obs_w = self._img_obs_resolution
+            rendresult = self._adapter.getRenderings([self._lowres_camera_name], depth=self._use_depth_camera)
+            # current_times_vec = rendresult[1][0]
+            current_images_vec_chw = rendresult[0][0].permute(0,3,1,2) # to NCHW
+            current_images_vec_chw = self.reshape_imgs(imgs_vec_chw=current_images_vec_chw).view((self.num_envs, obs_h, obs_w))
+            current_images_expanded_vec = current_images_vec_chw.unsqueeze(1).expand(self._stacked_img_size) # expand into stacking axis
+            current_images_expanded_vec = current_images_expanded_vec.to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+            if vec_mask is None:
+                self._stacked_img.copy_(current_images_expanded_vec)
+            else:
+                masked_assign(self._stacked_img, vec_mask, current_images_expanded_vec)
         if isinstance(self._adapter, BaseVecSimulationAdapter):
-            self._adapter.setLinksStateDirect([self._lowres_camera_link_name],
-                                            link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
-                                            vec_mask=vec_mask)
+            self._adapter.setLinksStateDirect([ self._lowres_camera_link_name],
+                                                link_states_pose_vel=th.as_tensor(self._camera_pose + [0,0,0,0,0,0]).expand(self.num_envs, 1, 13),
+                                                vec_mask=vec_mask)
         else:
             raise NotImplementedError()
 
     @override
     def get_observations(self, state) -> dict[Any, th.Tensor]:
         if not self._img_obs:
-            return state["vec"][:,:-1]
+            r = state["vec"][:,:-1]
         else:
-            return state["img"]
+            r = state["img"]
+        return r
 
     @override
     def get_states(self) -> dict[str, th.Tensor]:
@@ -201,10 +210,11 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             all_renderings = all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,1,cam_h,cam_w)
         else:
             all_renderings = all_renderings_fvhwc.permute(0,1,4,2,3).view(-1,3,cam_h,cam_w)
-        frames = self.reshape_imgs(imgs_vec_chw=all_renderings).view((nframes, self.num_envs, obs_h, obs_w))
+        all_renderings = self.reshape_imgs(imgs_vec_chw=all_renderings).view((nframes, self.num_envs, obs_h, obs_w))
         # dbg_check_size(frames, (self.num_envs, 1, self._img_obs_resolution, self._img_obs_resolution))
         tot_reshape_time = time.monotonic() - t_pre_reshape
-        self._stacked_img = frames.permute(1,0,2,3).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+        new_stacked_frames = all_renderings.permute(1,0,2,3).to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+        self._stacked_img.copy_(new_stacked_frames)
         t1 = time.monotonic()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1

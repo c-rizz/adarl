@@ -566,7 +566,8 @@ def launchRun(runFunction,
         pkg_path = pkgutil_get_path(pkg,"")
         if pkg_path is None:
             raise RuntimeError(f"Failed to get path for package {pkg}")
-        shutil.copytree(pkg_path, folderName+"/pkgs/"+pkg)
+        shutil.copytree(pkg_path, folderName+"/pkgs/"+pkg,
+                        ignore=shutil.ignore_patterns("__pycache__","*.pyc","*.pyo","*.dist-info","*.egg-info"))
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 
