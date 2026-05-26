@@ -10,10 +10,26 @@ def get_caller_info():
     lineno = frame.f_lineno
     return filename, lineno
 
+def get_stacktrace_string(depth : int = 5, exclude_bottom_frames : int = 0):
+    stack = inspect.stack()
+    # exclude this function itself (frame 0) and any bottom frames
+    start = 1 + exclude_bottom_frames
+    end = min(start + depth, len(stack))
+    frames = stack[start:end]
+    lines = []
+    for frame_info in frames:
+        lines.append(f"  File \"{frame_info.filename}\", line {frame_info.lineno}, in {frame_info.function}")
+        if frame_info.code_context:
+            lines.append(f"    {frame_info.code_context[0].strip()}")
+    return "\n".join(lines)
+
+
+
 printed_dbg_check_msg = False
 def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callable[[],str] | None = None, just_warn : bool = False,
               async_assert : bool = False,
-              assert_msg : str | None = None):
+              assert_msg : str | None = None,
+              stacktrace_depth : int = 0):
     from adarl.utils.session import default_session
     if default_session.debug_level>0:
         global printed_dbg_check_msg
@@ -24,6 +40,8 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
         if async_assert and isinstance(passed, th.Tensor):
             if assert_msg is None:
                 assert_msg = f"dbg_check failed at {get_caller_info()}"
+                if stacktrace_depth>0:
+                    assert_msg += f"\nStack trace:\n{get_stacktrace_string(depth=stacktrace_depth, exclude_bottom_frames=2)}"
             th._assert_async(passed, assert_msg)
         else:
             if not passed:
@@ -32,7 +50,9 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
                 elif assert_msg is not None:
                     msg = assert_msg
                 else:
-                    msg = f"dbg_check failed"
+                    msg = f"dbg_check failed"                
+                if stacktrace_depth>0:
+                    msg += f"\nStack trace:\n{get_stacktrace_string(depth=stacktrace_depth, exclude_bottom_frames=2)}"
                 if just_warn:
                     ggLog.warn(msg)
                 else:

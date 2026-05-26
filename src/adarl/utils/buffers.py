@@ -94,7 +94,7 @@ class BaseBuffer(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def sample(self, batch_size: int) -> TransitionBatch:
+    def sample(self, batch_size: int, sample_duration : int = 1) -> TransitionBatch:
         raise NotImplementedError()
 
 
@@ -123,7 +123,7 @@ class BaseBuffer(ABC):
 
 class BaseValidatingBuffer(BaseBuffer):
     @abstractmethod
-    def sample_validation(self, batch_size : int):
+    def sample_validation(self, batch_size : int, sample_duration : int = 1) -> TransitionBatch:
         raise NotImplementedError()
     
     @abstractmethod

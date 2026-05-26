@@ -122,9 +122,14 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             rendresult = self._adapter.getRenderings([self._lowres_camera_name], depth=self._use_depth_camera)
             # current_times_vec = rendresult[1][0]
             current_images_vec_chw = rendresult[0][0].permute(0,3,1,2) # to NCHW
+            # ggLog.info(f"raw current_images_vec_chw device and type: {current_images_vec_chw.device}, {current_images_vec_chw.dtype}")
+            # ggLog.info(f"raw current_images_vec_chw minmax: {current_images_vec_chw.min().item()} - {current_images_vec_chw.max().item()}")
+            
             current_images_vec_chw = self.reshape_imgs(imgs_vec_chw=current_images_vec_chw).view((self.num_envs, obs_h, obs_w))
             current_images_expanded_vec = current_images_vec_chw.unsqueeze(1).expand(self._stacked_img_size) # expand into stacking axis
             current_images_expanded_vec = current_images_expanded_vec.to(device=self._th_device, non_blocking=self._th_device.type == "cuda")
+            # ggLog.info(f"current_images_expanded_vec device and type: {current_images_expanded_vec.device}, {current_images_expanded_vec.dtype}")
+            # ggLog.info(f"current_images_expanded_vec minmax: {current_images_expanded_vec.min().item()} - {current_images_expanded_vec.max().item()}")
             if vec_mask is None:
                 self._stacked_img.copy_(current_images_expanded_vec)
             else:

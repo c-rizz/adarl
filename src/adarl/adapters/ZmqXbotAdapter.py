@@ -546,3 +546,9 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                 acceeleration = acc + correction
             accelerations.append(self._thtens(acceleration))
         return th.stack(accelerations)
+    
+    @override
+    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
+        self._xbot_zmq_client.set_filter_frequency_hz(reference_filter_cutoff_frequency.item(),
+                                                      enabled=reference_filter_cutoff_frequency.item()>0.0 and self._enable_filters)
+

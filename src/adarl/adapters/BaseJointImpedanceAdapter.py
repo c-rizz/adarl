@@ -99,3 +99,17 @@ class BaseJointImpedanceAdapter(BaseAdapter):
             
         """
         raise NotImplementedError()
+    
+    @abstractmethod
+    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
+        """Set a low pass filter on the reference commands. The filter type is implementation dependent.
+        It is applied to the position and velocity references, the effort reference is not filtered. 
+        The cutoff frequency is the same for all joints.
+
+
+        Parameters
+        ----------
+        reference_filter_cutoff_frequency : th.Tensor
+            zero-dimensional tensor containing the cutoff frequency of the filter in Hz. If negative or zero, then the filter is disabled.
+        """
+        raise NotImplementedError()

@@ -139,3 +139,19 @@ class BaseVecJointImpedanceAdapter(BaseVecJointEffortAdapter):
             
         """
         raise NotImplementedError()
+    
+    @abstractmethod
+    def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor, vec_mask : th.Tensor | None = None):
+        """Set a low pass filter on the reference commands. The filter type is implementation dependent.
+        It is applied to the position and velocity references, the effort reference is not filtered. 
+        The cutoff frequency is the same for all joints.
+
+        Parameters
+        ----------
+        reference_filter_cutoff_frequency : th.Tensor
+            A (vec_size,) tensor, containing the cutoff frequency in Hz. If negative or zero, then the filter is disabled.
+        vec_mask : th.Tensor
+            Tensor of size (vec_size,), indicating which simulators to update with the new setting. If None, apply to all
+
+        """
+        raise NotImplementedError()

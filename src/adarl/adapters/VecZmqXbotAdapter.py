@@ -228,3 +228,8 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
     @override
     def initialize_for_step(self):
         return self.sub_adapter.initialize_for_step()
+    
+    @override
+    def set_reference_filter(self, reference_filter_cutoff_frequency: th.Tensor, vec_mask: th.Tensor | None = None):
+        if vec_mask is None or vec_mask[0]:
+            return self._sub_adapter.set_reference_filter(reference_filter_cutoff_frequency)

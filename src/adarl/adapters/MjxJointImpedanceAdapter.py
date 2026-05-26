@@ -75,6 +75,9 @@ def _second_order_filter(u, filter_coeffs, filter_state):
     new_filter_state = new_filter_state.at[3].set(y)  # Update the last state with the output
     # at this point the state is [ u, u_prev, u_prev2, y, y_prev]
     # print(f"out u.shape = {u.shape}, filter_coeffs.shape = {filter_coeffs.shape}, filter_state.shape = {filter_state.shape}")
+    filter_enabled = jnp.all(filter_coeffs != 0.0, axis=-1)
+    y = jnp.where(filter_enabled, y, u)
+    new_filter_state = jnp.where(filter_enabled, new_filter_state, filter_state)
     return y, new_filter_state
 
 @jax.jit
@@ -110,7 +113,9 @@ def _compute_filter_coeffs_and_state(dt, cutoff_freq, initial_value, eps=1.0):
     a0 = 1.0 + 4.0*eps/(omega*dt) + 4.0/jnp.power(omega*dt, 2.0)
     a1 = 2 - 8.0/jnp.power(omega*dt, 2.0)
     a2 = 1.0 + 4.0/jnp.power(omega*dt, 2.0) - 4.0*eps/(omega*dt)
-    return jnp.array([1/a0, b1/a0, b2/a0, -a1/a0, -a2/a0], dtype=jnp.float32), jnp.full(fill_value=initial_value, shape=(5,), dtype=jnp.float32)
+    coefs = jnp.array([1/a0, b1/a0, b2/a0, -a1/a0, -a2/a0], dtype=jnp.float32)
+    coefs = jnp.where(cutoff_freq > 0, coefs, jnp.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32))
+    return coefs, jnp.full(fill_value=initial_value, shape=(5,), dtype=jnp.float32)
 
 
 
@@ -275,7 +280,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         geom_overrides : dict[str,Any] | None = None,
                         reference_filter_cutoff_frequency : float = 20.0,
                         reference_filter_mode :  str = "second_order",
-                        mjx_impl : Literal["jax","warp"] = "jax"):
+                        mjx_impl : Literal["jax","warp"] = "jax",
+                        render_backend : Literal["cpu","warp"] = "cpu"):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -299,7 +305,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         opt_preset=opt_preset,
                         opt_override=opt_override,
                         geom_overrides=geom_overrides,
-                        mjx_impl=mjx_impl)
+                        mjx_impl=mjx_impl,
+                        render_backend=render_backend)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
@@ -635,14 +642,6 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         # self._sim_state = sim_state.replace_d(state_repl)
         
     def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor, vec_mask : th.Tensor | None = None):
-        """Set the parameters of the filter applied to the command references
-
-        Parameters
-        ----------
-        reference_filter_cutoff_frequency : float
-            Cutoff frequency of the filter in Hz
-
-        """
         if vec_mask is not None:
             th.where(vec_mask, self._ref_filter_cutoff_freqs_th, reference_filter_cutoff_frequency, out=self._ref_filter_cutoff_freqs_th)
         else:

@@ -21,12 +21,12 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
     adapter.build_scenario([ModelSpawnDef( name="cartpole",
                                            definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/cartpole_v0.urdf.xacro")).read_text(),
                                            format="urdf.xacro",
-                                           pose=adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
+                                           pose=None, #adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
                                            kwargs={}),
                             ModelSpawnDef( name="ball",
                                            definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/ball.urdf")).read_text(),
                                            format="urdf",
-                                           pose=adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
+                                           pose=None, #adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
                                            kwargs={}), #"0.707 -0.707 0 0"}),
                             # ModelSpawnDef( name="ball2",
                             #                definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/ball.urdf")).read_text(),
@@ -36,7 +36,7 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
                             ModelSpawnDef( name="camera",
                                            definition_string=Path(adarl.utils.utils.pkgutil_get_path("adarl","models/simple_camera.mjcf.xacro")).read_text(),
                                            format="mjcf.xacro",
-                                           pose=adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
+                                           pose=None, #adarl.utils.utils.build_pose(0,0,0,0,0,0,1),
                                            kwargs={"camera_width":480,
                                                    "camera_height":int(480*9/16),
                                                    "position_xyz":"0 2 0.5",
@@ -69,9 +69,9 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
     #                                        kwargs={})])
     
     vsize = adapter.vec_size()
-    print(f"detected joints = {adapter.detected_joints()}")
-    print(f"detected links = {adapter.detected_links()}")
-    print(f"detected cameras = {adapter.detected_cameras()}")
+    print(f"detected joints = {adapter.get_detected_joints()}")
+    print(f"detected links = {adapter.get_detected_links()}")
+    print(f"detected cameras = {adapter.get_detected_cameras()}")
     n = "\n"
     adapter.set_monitored_joints([("cartpole","cartpole_joint"),("cartpole","foot_joint")])
     adapter.set_monitored_links([("cartpole","bar_link"),("cartpole","base_link"),("camera","simple_camera_link")])
@@ -146,7 +146,9 @@ test_sim_adapter(MjxJointImpedanceAdapter(  vec_size=1000,
                                             realtime_factor=-1,
                                             show_gui=False,
                                             max_joint_impedance_ctrl_torques = {('cartpole','foot_joint') : 100.0,
-                                                                                ('cartpole','cartpole_joint') : 100.0}),
+                                                                                ('cartpole','cartpole_joint') : 100.0},
+                                            mjx_impl="jax",
+                                            render_backend="cpu"),
                                             render = render,
                                             print_state = False)
 # test_sim_adapter(MjxAdapter(vec_size=10000,

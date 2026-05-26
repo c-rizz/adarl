@@ -57,7 +57,8 @@ class RunningMeanStd(object):
         batch_mean = th.mean(x, dim=0)
         dbg_check(lambda: x.size()[0] >1 and x.nelement() > 0, 
                   lambda: f"RunningMeanStd.update(): x should have more than 1 sample to compute meaningful statistics. But x.size() = {x.size()}",
-                  just_warn=True)
+                  just_warn=True,
+                  stacktrace_depth=10)
         batch_var = th.var(x, dim=0)
         batch_size = x.size()[0]
         self.update_from_moments(batch_mean, batch_var, batch_size)
