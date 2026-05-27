@@ -1,18 +1,18 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from adarl.utils.tensor_trees import map_tensor_tree
-from adarl.utils.utils import dbg_check_finite
+from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check_device
 from cmath import inf
 from dataclasses import dataclass
 from gymnasium import spaces
-from stable_baselines3.common.buffers import ReplayBuffer, DictReplayBuffer, DictReplayBufferSamples
 from stable_baselines3.common.preprocessing import get_obs_shape
-from stable_baselines3.common.vec_env import VecNormalize, VecEnv
-from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
-from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
+# from stable_baselines3.common.vec_env import VecNormalize, VecEnv
+# from stable_baselines3.her.goal_selection_strategy import GoalSelectionStrategy
+# from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 from typing import Union, List, Dict, Any, Optional, Callable, NamedTuple, Mapping
 import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.mp_helper as mp_helper
+from adarl.utils.utils import masked_assign, th_compile_ext
 import ctypes
 import numpy as np
 import psutil
@@ -47,24 +47,35 @@ import warnings
 #                 self.pos = 0
 #             copied += to_copy
 
-class BaseBuffer(ABC):
-    
+class BaseBuffer(ABC):    
     def __init__(self,  buffer_size: int,
                         observation_space: spaces.Space,
                         action_space: spaces.Space,
-                        device: Union[th.device, str] = "auto",
-                        n_envs: int = 1,):
+                        out_device: Union[th.device, str] = "auto",
+                        n_envs: int = 1,
+                        storage_torch_device: Union[th.device, str] = "cpu"):
         self.buffer_size = buffer_size
         self.observation_space = observation_space
         self.action_space = action_space
         self.obs_shape = get_obs_shape(observation_space)  # type: ignore[assignment]
 
         self.action_dim = int(np.prod(action_space.shape))
-        self.pos = 0
         self.full = False
-        self.device = device
-        self.th_device = th.device(device)
+        self.out_device = th.device(out_device)
+        self.out_th_device = th.device(out_device)
+        self._storage_torch_device = th.device(storage_torch_device)
         self.n_envs = n_envs
+        self._pos_th = th.as_tensor(0, device=self._storage_torch_device)
+        self.pos = 0
+
+    @property
+    def pos(self):
+        return self._pos
+    
+    @pos.setter
+    def pos(self, pos):
+        self._pos = pos
+        self._pos_th.fill_(pos)
 
     @abstractmethod
     def memory_size(self):
@@ -83,12 +94,9 @@ class BaseBuffer(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> TransitionBatch:
+    def sample(self, batch_size: int, sample_duration : int = 1) -> TransitionBatch:
         raise NotImplementedError()
 
-    @abstractmethod
-    def _get_samples(self, batch_inds: th.Tensor, env: Optional[VecNormalize] = None) -> TransitionBatch:
-        raise NotImplementedError()
 
     @abstractmethod
     def storage_torch_device(self):
@@ -115,7 +123,7 @@ class BaseBuffer(ABC):
 
 class BaseValidatingBuffer(BaseBuffer):
     @abstractmethod
-    def sample_validation(self, batch_size : int):
+    def sample_validation(self, batch_size : int, sample_duration : int = 1) -> TransitionBatch:
         raise NotImplementedError()
     
     @abstractmethod
@@ -131,92 +139,92 @@ class TransitionBatch():
     terminated : th.Tensor
     rewards : th.Tensor
 
+# from stable_baselines3.common.buffers import DictReplayBuffer, DictReplayBufferSamples
+# class RandomHoldoutBuffer(DictReplayBuffer):
+#     def __init__(self,
+#                 buffer_size: int,
+#                 observation_space: spaces.Space,
+#                 action_space: spaces.Space,
+#                 device: Union[th.device, str] = "cpu",
+#                 n_envs: int = 1,
+#                 optimize_memory_usage: bool = False,
+#                 handle_timeout_termination: bool = True,
+#                 storage_torch_device: str = "cpu",
+#                 buffer_class : type = None,
+#                 validation_ratio : float = 0.1,
+#                 disable : bool = False):
+#         super().__init__(buffer_size = buffer_size,
+#                          observation_space = observation_space,
+#                          action_space = action_space,
+#                          device = device,
+#                          n_envs = n_envs,
+#                          optimize_memory_usage = optimize_memory_usage,
+#                          handle_timeout_termination = handle_timeout_termination)
+#         self._storage_torch_device = storage_torch_device
+#         self._validation_ratio = validation_ratio
+#         self._train_buffer = buffer_class(buffer_size=buffer_size,
+#                                             observation_space = observation_space,
+#                                             action_space = action_space,
+#                                             device = device,
+#                                             n_envs = n_envs,
+#                                             optimize_memory_usage = optimize_memory_usage,
+#                                             handle_timeout_termination = handle_timeout_termination,
+#                                             storage_torch_device = storage_torch_device)
+#         self._disable = disable
+#         if disable:
+#             self._validation_buffer = None
+#         else:                                            
+#             self._validation_buffer = buffer_class( buffer_size=int(buffer_size),
+#                                                     observation_space = observation_space,
+#                                                     action_space = action_space,
+#                                                     device = device,
+#                                                     n_envs = n_envs,
+#                                                     optimize_memory_usage = optimize_memory_usage,
+#                                                     handle_timeout_termination = handle_timeout_termination,
+#                                                     storage_torch_device = storage_torch_device)
 
-class RandomHoldoutBuffer(DictReplayBuffer):
-    def __init__(self,
-                buffer_size: int,
-                observation_space: spaces.Space,
-                action_space: spaces.Space,
-                device: Union[th.device, str] = "cpu",
-                n_envs: int = 1,
-                optimize_memory_usage: bool = False,
-                handle_timeout_termination: bool = True,
-                storage_torch_device: str = "cpu",
-                buffer_class : type = None,
-                validation_ratio : float = 0.1,
-                disable : bool = False):
-        super().__init__(buffer_size = buffer_size,
-                         observation_space = observation_space,
-                         action_space = action_space,
-                         device = device,
-                         n_envs = n_envs,
-                         optimize_memory_usage = optimize_memory_usage,
-                         handle_timeout_termination = handle_timeout_termination)
-        self._storage_torch_device = storage_torch_device
-        self._validation_ratio = validation_ratio
-        self._train_buffer = buffer_class(buffer_size=buffer_size,
-                                            observation_space = observation_space,
-                                            action_space = action_space,
-                                            device = device,
-                                            n_envs = n_envs,
-                                            optimize_memory_usage = optimize_memory_usage,
-                                            handle_timeout_termination = handle_timeout_termination,
-                                            storage_torch_device = storage_torch_device)
-        self._disable = disable
-        if disable:
-            self._validation_buffer = None
-        else:                                            
-            self._validation_buffer = buffer_class( buffer_size=int(buffer_size),
-                                                    observation_space = observation_space,
-                                                    action_space = action_space,
-                                                    device = device,
-                                                    n_envs = n_envs,
-                                                    optimize_memory_usage = optimize_memory_usage,
-                                                    handle_timeout_termination = handle_timeout_termination,
-                                                    storage_torch_device = storage_torch_device)
-
-    def size(self):
-        if self._disable:
-            return self._train_buffer.size()
-        else:
-            return self._train_buffer.size() + self._validation_buffer.size()
+#     def size(self):
+#         if self._disable:
+#             return self._train_buffer.size()
+#         else:
+#             return self._train_buffer.size() + self._validation_buffer.size()
 
 
-    def memory_size(self):
-        if self._disable:
-            return self._train_buffer.memory_size()
-        else:
-            return self._train_buffer.memory_size() + self._validation_buffer.memory_size()
+#     def memory_size(self):
+#         if self._disable:
+#             return self._train_buffer.memory_size()
+#         else:
+#             return self._train_buffer.memory_size() + self._validation_buffer.memory_size()
 
-    def add(self,
-            obs: np.ndarray,
-            next_obs: np.ndarray,
-            action: np.ndarray,
-            reward: np.ndarray,
-            done: np.ndarray,
-            infos: List[Dict[str, Any]]) -> None:
-        if random.random() > self._validation_ratio or self._disable:
-            buffer_to_use = self._train_buffer
-        else:
-            buffer_to_use = self._validation_buffer
+#     def add(self,
+#             obs: np.ndarray,
+#             next_obs: np.ndarray,
+#             action: np.ndarray,
+#             reward: np.ndarray,
+#             done: np.ndarray,
+#             infos: List[Dict[str, Any]]) -> None:
+#         if random.random() > self._validation_ratio or self._disable:
+#             buffer_to_use = self._train_buffer
+#         else:
+#             buffer_to_use = self._validation_buffer
 
-        buffer_to_use.add(obs,next_obs, action, reward, done, infos)
+#         buffer_to_use.add(obs,next_obs, action, reward, done, infos)
 
-    def update(self, buffer : DictReplayBuffer):
-        self._train_buffer.update(buffer._train_buffer)
-        if not self._disable: # if not disabled
-            self._validation_buffer.update(buffer._validation_buffer)
+#     def update(self, buffer : DictReplayBuffer):
+#         self._train_buffer.update(buffer._train_buffer)
+#         if not self._disable: # if not disabled
+#             self._validation_buffer.update(buffer._validation_buffer)
     
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> DictReplayBufferSamples:
-        if validation_set and not self._disable:
-            buffer_to_use = self._validation_buffer
-        else:
-            buffer_to_use = self._train_buffer
+#     def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> DictReplayBufferSamples:
+#         if validation_set and not self._disable:
+#             buffer_to_use = self._validation_buffer
+#         else:
+#             buffer_to_use = self._train_buffer
 
-        return buffer_to_use.sample(batch_size=batch_size, env=env)
+#         return buffer_to_use.sample(batch_size=batch_size, env=env)
 
-    def storage_torch_device(self):
-        return self._storage_torch_device
+#     def storage_torch_device(self):
+#         return self._storage_torch_device
 
 
 # from https://github.com/pytorch/pytorch/blob/ac79c874cefee2f8bc1605eed9a924d80c0b3542/torch/testing/_internal/common_utils.py#L349
@@ -256,7 +264,8 @@ class BasicStorage():
         n_envs: int = 1,
         storage_torch_device: Union[str,th.device] = "cpu",
         share_mem : bool = True,
-        allow_rollover = False
+        allow_rollover = False,
+        rewards_num : int = 1
     ):
 
         assert isinstance(observation_space, spaces.Dict), "BasicStorage must be used with Dict obs space only"
@@ -268,6 +277,7 @@ class BasicStorage():
         self.n_envs = n_envs
         self._share_mem = share_mem
         self._allow_rollover = allow_rollover
+        self._rewards_num = rewards_num
         
         self._allocate_buffers(self.buffer_size)
         # self._addcount = 0
@@ -318,7 +328,7 @@ class BasicStorage():
         self.actions = th.zeros((buffer_size, self.n_envs) + self._action_space.shape, 
                                 dtype=numpy_to_torch_dtype(self._action_space.dtype),
                                 device = self._storage_torch_device)
-        self.rewards = th.zeros((buffer_size, self.n_envs), dtype=th.float32, device = self._storage_torch_device)
+        self.rewards = th.zeros((buffer_size, self.n_envs, self._rewards_num), dtype=th.float32, device = self._storage_torch_device)
         self.terminated = th.zeros((buffer_size, self.n_envs), dtype=th.uint8, device = self._storage_torch_device)
         self.truncated = th.zeros((buffer_size, self.n_envs), dtype=th.uint8,  device = self._storage_torch_device)
 
@@ -359,7 +369,9 @@ class BasicStorage():
     ) -> None:
         if not self._allow_rollover and int(self._addcount_since_clear) >= self.buffer_size:
             raise RuntimeError(f"Called add with full buffer and allow_rollover is false")
-        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
+        # dbg_check_device([obs,next_obs,action,reward,truncated,terminated], device=reward.device)
+        for tt in [obs,next_obs,action,reward,truncated,terminated]: # cannot check them all together, they may be on different devices
+            dbg_check_finite(tt, async_assert=True)
         pos = int(self._addcount_since_clear) % self.buffer_size
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
         # Copy to avoid modification by reference
@@ -388,9 +400,12 @@ class BasicStorage():
         ep_ends = th.logical_or(terminated, truncated).count_nonzero().to(device="cpu", non_blocking=True)
         # ggLog.info(f"ep_ends = {ep_ends}")
 
+        reward_th = th.as_tensor(reward)
+        if reward_th.dim() == 1:
+            reward_th = reward_th.unsqueeze(-1)
         # print(f"storing action[{pos}] {action}")
         self.actions[pos].copy_(th.as_tensor(action), non_blocking=True)
-        self.rewards[pos].copy_(th.as_tensor(reward), non_blocking=True)
+        self.rewards[pos].copy_(reward_th, non_blocking=True)
         self.terminated[pos].copy_(th.as_tensor(terminated), non_blocking=True)
         self.truncated[pos].copy_(th.as_tensor(truncated), non_blocking=True)
         for device in devices_to_sync:
@@ -459,23 +474,27 @@ class ThDReplayBuffer(BaseBuffer):
     def __init__(
         self,
         buffer_size: int,
-        observation_space: spaces.Dict,
+        observation_space: spaces.Space,
         action_space: spaces.Space,
-        device: Union[th.device, str] = "cpu",
+        out_device: Union[th.device, str] = "cpu",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
         storage_torch_device: Union[str,th.device] = "cpu",
         fallback_to_cpu_storage: bool = True,
-        copy_outputs : bool = True
+        copy_outputs : bool = True,
+        random_add : bool = False
     ):
-        super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
+        super().__init__(buffer_size, observation_space, action_space, out_device,
+                         n_envs=n_envs,
+                         storage_torch_device=storage_torch_device)
 
         assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
         self.buffer_size = max(buffer_size // n_envs, 1)
         self._observation_space = observation_space
         self._action_space = action_space
         self._copy_outputs = copy_outputs
+        self._random_add = random_add
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         if handle_timeout_termination == False:
@@ -483,7 +502,7 @@ class ThDReplayBuffer(BaseBuffer):
 
         storage_torch_device = th.device(storage_torch_device)
         self._storage_torch_device = storage_torch_device
-        if storage_torch_device == "cuda" and device == "cpu":
+        if storage_torch_device == "cuda" and out_device == "cpu":
             raise AttributeError(f"Storage device is gpu, and output device is cpu. This doesn't make much sense. Use either [gpu,gpu], [cpu,gpu], or [cpu,cpu]")
 
         assert optimize_memory_usage is False, "DictReplayBuffer does not support optimize_memory_usage"
@@ -503,19 +522,22 @@ class ThDReplayBuffer(BaseBuffer):
             pred_avail = self.predict_memory_consumption()
             consumptionRatio = pred_avail[0]/pred_avail[1]
             if consumptionRatio>0.5:
-                warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                ggLog.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                                 f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB)\n"
                                  "Falling back to CPU memory\n"
                                  "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
                 time.sleep(3)
                 self._storage_torch_device = th.device("cpu")
+                self._pos_th = self._pos_th.to(self._storage_torch_device)
         pred_avail = self.predict_memory_consumption()
         consumptionRatio = pred_avail[0]/pred_avail[1]
-        if consumptionRatio>0.5:
-            warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+        ggLog.info(f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}")
+        ggLog.info(f"Replay buffer observation_space = {observation_space}")
+        if consumptionRatio>0.6:
+            ggLog.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                             f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
                              "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
-            time.sleep(3)
+            time.sleep(10)
 
         self._allocate_buffers(self.buffer_size)
         self._addcount = 0
@@ -603,48 +625,55 @@ class ThDReplayBuffer(BaseBuffer):
         # if infos is not None and truncated is not None:
         #     raise RuntimeError(f"Can only provided either inifo or truncated")
         # ggLog.info(f"{type(self)}: Adding step {self._addcount}, {self.size()}")
-        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated])
+        dbg_check_finite([obs,next_obs,action,reward,truncated,terminated], async_assert=True)
         self._addcount+=1
 
         devices_to_sync = {t.device for t in [action,reward,terminated,truncated] if isinstance(t, th.Tensor)}
         devices_to_sync.add(self._storage_torch_device)
+        pos : int = self.pos
+        if self._random_add and self.full:
+            # would be nice to randomize pos along the different envs
+            pos : int = th.randint(0, self.buffer_size, size=tuple(), device = "cpu").item()
+            # pos = th.randint(0, self.buffer_size, size=tuple(), device = self._storage_torch_device) # would be nice to randomize pos along the different envs
         # Copy to avoid modification by reference
         for key in self.observations.keys():
             # Reshape needed when using multiple envs with discrete observations
             # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 obs[key] = obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.observations[key][self.pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
+            self.observations[key][pos].copy_(th.as_tensor(obs[key]), non_blocking=True)
             if isinstance(obs,th.Tensor): devices_to_sync.add(obs.device)
 
         for key in self.next_observations.keys():
             if isinstance(self._observation_space.spaces[key], spaces.Discrete):
                 next_obs[key] = next_obs[key].reshape((self.n_envs,) + self.obs_shape[key])
-            self.next_observations[key][self.pos].copy_(next_obs[key], non_blocking=True)
+            self.next_observations[key][pos].copy_(next_obs[key], non_blocking=True)
             if isinstance(next_obs,th.Tensor): devices_to_sync.add(next_obs.device)
 
         # Same reshape, for actions
         if isinstance(self.action_space, spaces.Discrete):
             action = action.reshape((self.n_envs, self.action_dim))
 
-        self.actions[self.pos].copy_(th.as_tensor(action), non_blocking=True)
-        self.rewards[self.pos].copy_(th.as_tensor(reward), non_blocking=True)            
-        self.truncated[self.pos].copy_(th.as_tensor(truncated), non_blocking=True)
-        self.terminated[self.pos].copy_(th.as_tensor(terminated), non_blocking=True)
+        self.actions[pos].copy_(th.as_tensor(action), non_blocking=True)
+        self.rewards[pos].copy_(th.as_tensor(reward), non_blocking=True)            
+        self.truncated[pos].copy_(th.as_tensor(truncated), non_blocking=True)
+        self.terminated[pos].copy_(th.as_tensor(terminated), non_blocking=True)
         for device in devices_to_sync:
             if device.type == "cuda":
                 th.cuda.synchronize(device)
 
-        self.pos += 1
-        if self.pos == self.buffer_size:
+        pos += 1
+        if pos == self.buffer_size:
             self.full = True
-            self.pos = 0
+            pos = 0
+        self.pos = pos
 
     @override
     def collected_frames(self):
         return self._addcount*self.n_envs
 
     @override
+    @th_compile_ext(mode="max-autotune-no-cudagraphs", fullgraph=True, copy_outs=True) # blindly using cudagraphs may copy the whole buffer to make it static
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None, validation_set : bool = False) -> TransitionBatch:
         """
         Sample elements from the replay buffer.
@@ -658,21 +687,16 @@ class ThDReplayBuffer(BaseBuffer):
         if (self.optimize_memory_usage):
             raise RuntimeError("Memory optimization is not supported")
         
-        upper_bound = self.buffer_size if self.full else self.pos
-        batch_inds = th.randint(0, upper_bound, size=(batch_size,), device = self._storage_torch_device)
-        return self._get_samples(batch_inds, env=env)
-        # return super(ReplayBuffer, self).sample(batch_size=batch_size, env=env)
-
-    def _get_samples(self, batch_inds: th.Tensor, env: Optional[VecNormalize] = None) -> TransitionBatch:
-        # Sample randomly the env idx
-        # env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
-        if not isinstance(batch_inds, th.Tensor):
-            batch_inds = th.tensor(batch_inds, device = self._storage_torch_device) # cuda sync point (if not already a cuda tensor)
-        else:
-            batch_inds.to(self._storage_torch_device) # ensure it is on cuda if it should (avoids synchronizations when indexing later on)
+        # upper_bound = self.buffer_size if self.full else self._pos_th        
+        # batch_inds = th.randint(0, upper_bound, size=(batch_size,), device = self._storage_torch_device)
+        batch_inds = th.randint(0, self.buffer_size, size=(batch_size,), device = self._storage_torch_device)
+        if not self.full:
+            # Ugly accrocchio to bypass issues with either item() or randint internals that happens under compile
+            upper_bound = self._pos_th
+            batch_inds = (batch_inds * upper_bound/self.buffer_size).to(dtype=th.long)
         env_indices = th.randint(low = 0, high=self.n_envs, size=(len(batch_inds),), device = self._storage_torch_device)
 
-        data = TransitionBatch(
+        data = dict(
             observations={key: obs[batch_inds, env_indices, :] for key, obs in self.observations.items()},
             actions=self.actions[batch_inds, env_indices],
             next_observations={key: obs[batch_inds, env_indices, :] for key, obs in self.next_observations.items()},
@@ -682,12 +706,12 @@ class ThDReplayBuffer(BaseBuffer):
         
         if self._copy_outputs:
             data = map_tensor_tree(data, lambda t: t.detach().clone())
-        map_tensor_tree(data, lambda t: t.to(device = self.th_device, non_blocking=True))
-        if self.th_device.type == "cuda":
-            th.cuda.synchronize(self.th_device)
-        dbg_check_finite(data)
+        map_tensor_tree(data, lambda t: t.to(device = self.out_th_device, non_blocking=self.out_th_device.type=="cuda"))
+        if self.out_th_device.type != "cuda":
+            th.cuda.synchronize(self.out_th_device)
+        dbg_check_finite(data, async_assert=True, assert_msg="Non finite data in sampled replay buffer data.")
 
-        return data
+        return TransitionBatch(**data)
 
     @override
     def storage_torch_device(self):
@@ -705,25 +729,27 @@ class ThDReplayBuffer(BaseBuffer):
         prev_size = self.size()
         copied = 0
         while copied < buffer.size():
-            space_to_end = self.buffer_size - self.pos
-            to_copy = min(space_to_end, buffer.size()-copied)
+            pos = self.pos
+            space_to_end = self.buffer_size - pos
+            to_copy = int(min(space_to_end, buffer.size()-copied))
 
-            self.actions[self.pos:self.pos + to_copy] = buffer.actions[copied:copied+to_copy]
-            self.rewards[self.pos:self.pos + to_copy] = buffer.rewards[copied:copied+to_copy]
-            self.terminated[self.pos:self.pos + to_copy]   = buffer.terminated[copied:copied+to_copy]
+            self.actions[pos:pos + to_copy] = buffer.actions[copied:copied+to_copy]
+            self.rewards[pos:pos + to_copy] = buffer.rewards[copied:copied+to_copy]
+            self.terminated[pos:pos + to_copy]   = buffer.terminated[copied:copied+to_copy]
 
             for key in self.observations.keys():
-                self.observations[key][self.pos:self.pos + to_copy] = buffer.observations[key][copied:copied+to_copy]
+                self.observations[key][pos:pos + to_copy] = buffer.observations[key][copied:copied+to_copy]
             for key in self.next_observations.keys():
-                self.next_observations[key][self.pos:self.pos + to_copy] = buffer.next_observations[key][copied:copied+to_copy]
+                self.next_observations[key][pos:pos + to_copy] = buffer.next_observations[key][copied:copied+to_copy]
                 
-            self.truncated[self.pos:self.pos + to_copy] = buffer.truncated[copied:copied+to_copy]
+            self.truncated[pos:pos + to_copy] = buffer.truncated[copied:copied+to_copy]
                 
-            self.pos += to_copy
-            if self.pos == self.buffer_size:
+            pos += to_copy
+            if pos == self.buffer_size:
                 self.full = True
-                self.pos = 0
-            copied += to_copy     
+                pos = 0
+            self.pos = pos
+            copied += to_copy
         new_size = self.size()
         if new_size-prev_size != buffer.size() and not self.full: raise RuntimeError(f"Error updating buffer {new_size}-{prev_size}!={buffer.size()}")       
 
@@ -742,49 +768,49 @@ class ThDReplayBuffer(BaseBuffer):
     #         pos = (pos+1) % self.buffer_size
 
 
-class GenericHerReplayBuffer(HerReplayBuffer):
-    def __init__(self,
-                    buffer_size : int,
-                    observation_space: spaces.Space,
-                    action_space: spaces.Space,
-                    device: Union[th.device, str] = "cpu",
-                    n_envs: int = 1,
-                    optimize_memory_usage: bool = False,
-                    env: VecEnv = None,
-                    buffer_class = None,
-                    buffer_kwargs = None,
-                    max_episode_length: Optional[int] = None,
-                    n_sampled_goal: int = 4,
-                    goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
-                    online_sampling: bool = True,
-                    handle_timeout_termination: bool = True):
+# class GenericHerReplayBuffer(HerReplayBuffer):
+#     def __init__(self,
+#                     buffer_size : int,
+#                     observation_space: spaces.Space,
+#                     action_space: spaces.Space,
+#                     device: Union[th.device, str] = "cpu",
+#                     n_envs: int = 1,
+#                     optimize_memory_usage: bool = False,
+#                     env: VecEnv = None,
+#                     buffer_class = None,
+#                     buffer_kwargs = None,
+#                     max_episode_length: Optional[int] = None,
+#                     n_sampled_goal: int = 4,
+#                     goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
+#                     online_sampling: bool = True,
+#                     handle_timeout_termination: bool = True):
 
-        if online_sampling:
-            if buffer_class is not None:
-                raise AttributeError("Cannot specify replay_buffer_class with online_sampling")
-            replay_buffer = None
-        else:
-            replay_buffer = buffer_class(   buffer_size,
-                                            observation_space,
-                                            action_space,
-                                            device = device,
-                                            n_envs = n_envs,
-                                            optimize_memory_usage = optimize_memory_usage,
-                                            **buffer_kwargs)
-        super().__init__(env = env,
-                         buffer_size = buffer_size,
-                         device = device,
-                         replay_buffer = replay_buffer,
-                         max_episode_length = max_episode_length,
-                         n_sampled_goal = n_sampled_goal,
-                         goal_selection_strategy = goal_selection_strategy,
-                         online_sampling = online_sampling,
-                         handle_timeout_termination = handle_timeout_termination)
-
-    
-    def memory_size(self):
-        return self.replay_buffer.memory_size()
+#         if online_sampling:
+#             if buffer_class is not None:
+#                 raise AttributeError("Cannot specify replay_buffer_class with online_sampling")
+#             replay_buffer = None
+#         else:
+#             replay_buffer = buffer_class(   buffer_size,
+#                                             observation_space,
+#                                             action_space,
+#                                             device = device,
+#                                             n_envs = n_envs,
+#                                             optimize_memory_usage = optimize_memory_usage,
+#                                             **buffer_kwargs)
+#         super().__init__(env = env,
+#                          buffer_size = buffer_size,
+#                          device = device,
+#                          replay_buffer = replay_buffer,
+#                          max_episode_length = max_episode_length,
+#                          n_sampled_goal = n_sampled_goal,
+#                          goal_selection_strategy = goal_selection_strategy,
+#                          online_sampling = online_sampling,
+#                          handle_timeout_termination = handle_timeout_termination)
 
     
-    def storage_torch_device(self):
-        return self.replay_buffer.storage_torch_device()
+#     def memory_size(self):
+#         return self.replay_buffer.memory_size()
+
+    
+#     def storage_torch_device(self):
+#         return self.replay_buffer.storage_torch_device()

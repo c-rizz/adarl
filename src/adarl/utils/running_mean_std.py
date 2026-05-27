@@ -2,8 +2,8 @@ from typing import Tuple, Union
 
 import torch as th
 import adarl.utils.dbg.ggLog as ggLog
-
-
+from adarl.utils.dbg.dbg_checks import dbg_check
+from adarl.utils.utils import conditioned_assign
 
 class RunningMeanStd(object):
     def __init__(self, tensor_size, torch_device, dtype, epsilon: float = 1e-8):
@@ -20,7 +20,7 @@ class RunningMeanStd(object):
         self._epsilon = epsilon
         self.mean = th.zeros(tensor_size, device=torch_device, dtype=dtype)
         self.var = th.ones(tensor_size, device=torch_device, dtype=dtype)
-        self.count = th.tensor(epsilon, device=torch_device, dtype=th.float64)
+        self.count = th.tensor(0, device=torch_device, dtype=th.int64)
 
     def copy(self) -> "RunningMeanStd":
         """
@@ -53,32 +53,40 @@ class RunningMeanStd(object):
         """
         self.update_from_moments(other.mean, other.var, other.count)
 
-    def update(self, x) -> None:
+    def update(self, x : th.Tensor) -> None:
         batch_mean = th.mean(x, dim=0)
+        dbg_check(lambda: x.size()[0] >1 and x.nelement() > 0, 
+                  lambda: f"RunningMeanStd.update(): x should have more than 1 sample to compute meaningful statistics. But x.size() = {x.size()}",
+                  just_warn=True,
+                  stacktrace_depth=10)
         batch_var = th.var(x, dim=0)
         batch_size = x.size()[0]
         self.update_from_moments(batch_mean, batch_var, batch_size)
 
     def update_from_moments(self, batch_mean, batch_var, batch_size: Union[int, float]) -> None:
         delta = batch_mean - self.mean
-        tot_count = self.count + batch_size
+        new_count = self.count + batch_size
+        new_count_ep = new_count + self._epsilon
 
-        new_mean = self.mean + delta * batch_size / tot_count
+        new_mean = self.mean + delta * batch_size / new_count_ep
         m_a = self.var * self.count
         m_b = batch_var * batch_size
-        m_2 = m_a + m_b + th.square(delta) * self.count * batch_size / (self.count + batch_size)
-        new_var = m_2 / (self.count + batch_size)
-
-        new_count = batch_size + self.count
+        m_2 = m_a + m_b + th.square(delta) * self.count * batch_size / new_count_ep
+        new_var = m_2 / new_count_ep
         
         # skip if there are infs and nans
-        if th.all(th.isfinite(new_mean)) and th.all(th.isfinite(new_var)) and th.all(th.isfinite(new_count)):
-            # use copy_() to avoid breaking buffer registration
-            self.mean.copy_(new_mean)
-            self.var.copy_(new_var)
-            self.count.copy_(new_count)
-        else:
-            ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping")
+        all_finite = th.all(th.stack([th.all(th.isfinite(new_mean)), th.all(th.isfinite(new_var)), th.all(th.isfinite(new_count))]))
+        conditioned_assign(self.mean, all_finite, new_mean)
+        conditioned_assign(self.var, all_finite, new_var)
+        conditioned_assign(self.count, all_finite, new_count)
+        # if all_finite:
+        #     self.mean.copy_(new_mean)
+        #     self.var.copy_(new_var)
+        #     self.count.copy_(new_count)
+        # else:
+        #     ggLog.warn(f"Detected nan/inf in mean/std tracker, skipping (new_mean:{th.all(th.isfinite(new_mean))} "
+        #                f"new_var:{th.all(th.isfinite(new_var))} "
+        #                f"new_count:{new_count}). Good samples up to now: {self.count}.")
 
 
 
@@ -92,7 +100,7 @@ class RunningNormalizer(th.nn.Module):
         self.register_buffer("vec_running_var",   self._running_stats.var)
         self.register_buffer("vec_running_count", self._running_stats.count)
 
-    def forward(self, x):
-        if not (self.training or self._freeze_stats):
+    def forward(self, x : th.Tensor):
+        if self.training and not self._freeze_stats: # only update in training mode
             self._running_stats.update(x)
         return (x - self._running_stats.mean)/(th.sqrt(self._running_stats.var)+self._epsilon)

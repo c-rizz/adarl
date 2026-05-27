@@ -30,7 +30,7 @@ from adarl.utils.wandb_wrapper import wandb_log
 import torch as th
 from adarl.utils.tensor_trees import map_tensor_tree
 import copy
-
+from typing_extensions import override
 ObsType = TypeVar("ObsType")
 
 class GymEnvWrapper(gym.Env, Generic[ObsType]):
@@ -75,6 +75,8 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         self._verbose = verbose
         self._quiet = quiet
+        if quiet:
+            ggLog.info(f"GymEnvWrapper is quiet")
         self._logEpisodeInfo = episodeInfoLogFile is not None
         self._episodeInfoLogFile : str = episodeInfoLogFile if episodeInfoLogFile is not None else ""
 
@@ -169,7 +171,11 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             sub_rewards = {}
             # Not really setting the rewards, just populating the fields with zeros
             try:
-                _ = self._ggEnv.computeReward(state,state,self._ggEnv.action_space.sample(), sub_rewards=sub_rewards, env_conf = self._ggEnv.get_configuration())
+                _ = self._ggEnv.computeReward(state,
+                                              state,
+                                              (self._ggEnv.action_space.low+self._ggEnv.action_space.high)/2,
+                                              sub_rewards=sub_rewards,
+                                              env_conf = self._ggEnv.get_configuration())
             except ValueError:
                 pass
             self._total_sub_rewards = {k: v*0.0 for k,v in sub_rewards.items()}
@@ -234,6 +240,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         info.update(ggInfo)
         return copy.deepcopy(info)
 
+    @override
     def step(self, action) -> Tuple[ObsType, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Run one step of the environment's dynamics.
 
@@ -274,7 +281,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             reward = 0
             terminated = True
             truncated = self._ggEnv.reachedTimeout() and not self._ggEnv.is_timelimited() # If this env is time-limited this is not a truncation, it's the proper ending
-            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeSinceBuild()
             self._alltime_stepping_time += time.monotonic() - t0
             info = self._build_info()
             return (observation, reward, terminated, truncated, info)
@@ -291,14 +298,14 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
         # Step the environment
         with self._simStepWallDurationAverage:
-            self._lastStepStartEnvTime = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepStartEnvTime = self._ggEnv.getSimTimeSinceBuild()
             self._ggEnv.performStep()
             self._framesCounter+=1
 
         #Get new observation
         with self._getStateDurationAverage:
             state = self._getStateCached()
-            self._lastStepEndEnvTime = self._ggEnv.getSimTimeFromEpStart()
+            self._lastStepEndEnvTime = self._ggEnv.getSimTimeSinceBuild()
 
         # Assess the situation
         with self._getObsRewDurationAverage:
@@ -316,7 +323,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         
 
         tf = time.monotonic()
-        self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeFromEpStart()
+        self._lastStepEndSimTimeFromStart = self._ggEnv.getSimTimeSinceBuild()
         self._lastValidStepWallTime = tf
         stepDuration = tf - t0
         self._envStepDurationAverage.addValue(newValue = stepDuration)
@@ -334,7 +341,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
+    @override
     def reset(self, seed = None, options = {}):
         """Reset the state of the environment and return an initial observation.
 
@@ -347,7 +354,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
         if seed is not None:
             self._ggEnv.seed(seed)
         if self._verbose:
-            ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+")-------")
+            ggLog.info(" ------- Resetting Environment (#"+str(self._resetCount)+f" at step {self._framesCounter} quiet= {self._quiet})-------")
 
         if self._resetCount > 0:
             self._update_dbg_info()
@@ -356,10 +363,10 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
             else:
                 if self._logEpisodeInfo:
                     self._logInfoCsv()
-                if self._verbose:
-                    for k,v in self._dbg_info.items():
-                        ggLog.info(k," = ",v)
-                elif not self._quiet:
+                # if self._verbose:
+                #     for k,v in self._dbg_info.items():
+                #         ggLog.info(k," = ",v)
+                if not self._quiet:
                     msg =  (f"ep = {self._dbg_info['reset_count']:d}"+
                             f" rwrd = {self._dbg_info['ep_reward']:.3f}"+
                             f" stps = {self._dbg_info['ep_frames_count']:d}"+
@@ -426,8 +433,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
-
+    @override
     def render(self, mode : str = 'rgb_array') -> np.ndarray:
         """Get a rendering of the environment.
 
@@ -471,8 +477,7 @@ class GymEnvWrapper(gym.Env, Generic[ObsType]):
 
 
 
-
-
+    @override
     def close(self):
         """Close the environment.
 

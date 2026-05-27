@@ -1,7 +1,7 @@
 from typing import Optional, List, Union, Tuple
 import adarl.utils.dbg.ggLog as ggLog
 import numpy as np
-from adarl.utils.utils import pyTorch_makeDeterministic, createSymlink, exc_to_str
+from adarl.utils.base_utils import createSymlink, exc_to_str, cpu_info, pkgutil_get_path
 
 import datetime
 import threading
@@ -13,7 +13,6 @@ from pathlib import Path
 import yaml
 import subprocess
 import faulthandler
-import adarl.utils.utils
 import multiprocessing
 import multiprocessing.pool
 import random
@@ -23,6 +22,40 @@ import adarl.utils.mp_helper as mp_helper
 import adarl.utils.wandb_wrapper as wandb_wrapper
 import signal
 faulthandler.enable() # enable handlers for SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
+import dataclasses 
+import socket
+import cpuinfo
+import warnings
+import traceback
+import pprint
+
+
+warning_printstack = False
+original_showwarning = None
+def custom_showwarning(message, category, filename, lineno, file=None, line=None):
+    original_showwarning(message, category, filename, lineno, file=file, line=line)
+    if warning_printstack:
+        traceback.print_stack()  # Print full Python stack trace
+    else:
+        stacklist = traceback.extract_stack(limit=10)[:-1]
+        stacklist = traceback.format_list(stacklist)
+        stacklist = [ss[:-1].replace("\n",": ")[:200] for ss in stacklist]
+        print("\n".join(stacklist))
+
+def override_warning_func():
+    global original_showwarning
+    original_showwarning = warnings.showwarning
+    warnings.showwarning = custom_showwarning
+
+def cleanup_config_for_json(config : dict) -> dict:
+    clean_config = {}
+    for k,v in config.items():
+        try:
+            yaml.dump({k:v}, default_flow_style=None)
+            clean_config[k] = v
+        except TypeError as e2:
+            ggLog.error(f"Could not JSON serialize config entry {k}:{v}\n{exc_to_str(e2)}")
+    return clean_config
 
 class Session():
     def __init__(self):
@@ -32,6 +65,7 @@ class Session():
         self._wandb_wrapper = wandb_wrapper.default_wrapper
         self._id = f"{int(time.monotonic()*1000000)}_{int(random.random()*1000000000)}"
         self._initialized = False
+        self.run_info = {}
         # ggLog.info(f"Created session {self._id}")
 
     def reapply_globals(self):
@@ -49,16 +83,14 @@ class Session():
                         use_wandb = True):
         
         self._initialized = True
-        self._wandb_wrapper.start_worker()
         self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
-            if debug:
-                debug_level = 1
-            else:
-                debug_level = 0
+            debug_level = 1 if debug else 0
         else:
             debug_level = debug
         self.debug_level = debug_level
+        if experiment_name is None:
+            experiment_name = os.path.basename(main_file_path)
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
         # ggLog.info(f"Initializing session {self} in process {os.getpid()}")
@@ -71,7 +103,12 @@ class Session():
         self.run_info["collected_episodes"] = mp_helper.get_context().Value("i",0)
         self.run_info["collected_steps"] = mp_helper.get_context().Value("i",0)
         self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
+        self.run_info["extras"] = mp_helper.get_manager().dict() # For any extra info to be shared across processes
         self.run_info["seed"] = seed
+        self.run_info["hosthostname"] = os.environ.get("HOSTHOSTNAME","") # To identify the host machine in docker
+        self.run_info["hostname"] = socket.gethostname()
+        self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
+        self.run_info["gpu"] = ""
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
                                                    folderName=folderName,
@@ -79,7 +116,8 @@ class Session():
                                                    run_id=run_id,
                                                    comment=run_comment,
                                                    use_wandb=use_wandb)
-        ggLog.addLogFile(self._logFolder+"/gglog.log")
+        self.run_info["log_folder"] = self._logFolder
+        ggLog.addLogFile(self._logFolder+"/gglog.log", capture_std=True)
         if seed is None:
             raise AttributeError("You must specify the run seed")
         ggLog.setId(str(seed))
@@ -88,20 +126,41 @@ class Session():
         setupSigintHandler()
         if using_pytorch:
             import torch as th
+            from adarl.utils.utils import get_gpu_names
+            self.run_info["gpu"] = get_gpu_names()
             th.set_printoptions(linewidth=160)
+            from adarl.utils.utils import pyTorch_makeDeterministic
             pyTorch_makeDeterministic(seed)
+            th._dynamo.config.capture_scalar_outputs = True
             if debug_level>0:
+                if debug_level>1:
+                    os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
+                if debug_level>2:
+                    warnings.simplefilter("always")
+                override_warning_func()
                 th.cuda.set_sync_debug_mode("warn")
-            th.autograd.set_detect_anomaly(debug_level >= 1) # type: ignore
-            th.distributions.Distribution.set_default_validate_args(debug_level >= 1) # do not check distribution args validity (it leads to cuda syncs)
+                import logging
+                th._logging.set_logs(recompiles=True,
+                                     graph_breaks=True,
+                                     inductor=logging.INFO,
+                                     cudagraphs=True,
+                                     )
+                import torch._inductor.config as iconfig
+                iconfig.trace.enabled = True
+                iconfig.trace.graph_diagram = True
+            ggLog.info(f"set dbg. Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
+            th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
+            th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
             if th.cuda.is_available():
-                ggLog.info(f"CUDA AVAILABLE: device = {th.cuda.get_device_name()}")
+                ggLog.info(f"CUDA AVAILABLE: device = {get_gpu_names()}")
             else:
                 ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
                             "                  NO CUDA AVAILABLE!\n"+
                             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
                             "Will continue in 10 sec...")
                 time.sleep(10)
+            import rreal.utils.torch_patcher as torch_patcher
+            torch_patcher.torch_monkey_patch()
 
 
     def _setupLoggingForRun(self,   file : str,
@@ -137,35 +196,60 @@ class Session():
             os.makedirs(folderName, exist_ok=True)
             script_out_folder = str(Path(folderName).parent.absolute())
 
-        createSymlink(src = folderName, dst = script_out_folder+"/latest")
+        createSymlink(src = str(Path(folderName).relative_to(script_out_folder)), dst = script_out_folder+"/latest")
         shutil.copyfile(file, folderName+"/main_script.py")
         if currentframe is not None:
-            args, _, _, config = inspect.getargvalues(currentframe)
+            _, _, _, config_flocals = inspect.getargvalues(currentframe)
+            config = dict(config_flocals)
         else:
-            args, config = ([],{})
+            _, config = ([],{})
 
         has_torch = False
         cuda_available = False
-        cuda_device_name = None
         try:
             import torch as th
+            from adarl.utils.utils import get_gpu_names
             cuda_available = th.cuda.is_available() 
             if cuda_available:
-                cuda_device_name = th.cuda.get_device_name()
+                gpu_names = get_gpu_names()
+            else:
+                gpu_names = []
         except ImportError as e:
+            ggLog.error(f"Error loading torch: {exc_to_str(e)}")
             pass
         config["has_torch"] = has_torch
         config["cuda_available"] = cuda_available
-        config["cuda_device_name"] = cuda_device_name
-        config["cpu_name"] = adarl.utils.utils.cpuinfo()
+        config["cuda_device_name"] = gpu_names
+        config["cpu_name"] = cpu_info()
+        config["hostname"] = self.run_info["hostname"]
+        config["start_time"] = self.run_info["start_time"]
+        config["seed"] = self.run_info["seed"]
+        config["experiment_name"] = experiment_name
+        config["run_id"] = run_id
+        config["comment"] = comment
+        config["hosthostname"] = self.run_info["hosthostname"]
         
 
+        config = {k: dataclasses.asdict(v) if dataclasses.is_dataclass(v) else v for k,v in config.items()} # dataclasses have some issue with json serialization
+        ggLog.info(f"config = {pprint.pformat(config)}")
         # inputargs = [(i, values[i]) for i in args]
         # with open(folderName+"/input_args.txt", "w") as input_args_file:
         #     print(str(inputargs), file=input_args_file)
         args_yaml_file = folderName+"/input_args.yaml"
         with open(args_yaml_file, "w") as input_args_yamlfile:
-            yaml.dump(config,input_args_yamlfile, default_flow_style=None)
+            try:
+                yaml.dump(config,input_args_yamlfile, default_flow_style=None)
+            except TypeError as e:
+                ggLog.error(f"Failed to save input args to yaml file {args_yaml_file}: {exc_to_str(e)}")
+                # Remove non-serializable entries
+                clean_config = {}
+                for k,v in config.items():
+                    try:
+                        yaml.dump({k:v}, default_flow_style=None)
+                        clean_config[k] = v
+                    except TypeError as e2:
+                        ggLog.error(f"Could not serialize config entry {k}:{v}\n{exc_to_str(e2)}")
+                yaml.dump(clean_config,input_args_yamlfile, default_flow_style=None)
         # ggLog.info(f"values = {values}")
 
         if "modelFile" in config:
@@ -179,21 +263,20 @@ class Session():
                     ggLog.info("modelFile is not a file")
 
         if use_wandb:
-            import wandb
-            if experiment_name is None:
-                experiment_name = os.path.basename(file)
             try:
                 ggLog.info(f"Starting run with experiment name '{experiment_name}', run id {run_id}")
+                config_for_json = cleanup_config_for_json(config)
+                # config_s = "\n".join([str(t) for t in config.items()])
                 wandb_init( project=experiment_name,
-                            config = config,
+                            config = config_for_json,
                             name = f"{run_id}_{comment.strip().replace(' ','_')}",
                             monitor_gym = False, # Do not save openai gym videos
                             save_code = True, # Save run code
                             sync_tensorboard = True, # Save tensorboard stuff,
                             notes = comment
                             )
-            except wandb.sdk.wandb_manager.ManagerConnectionError as e: # type: ignore
-                ggLog.error(f"Wandb connection failed: {exc_to_str(e)}")
+            except Exception as e: # type: ignore
+                ggLog.error(f"Wandb init failed: {exc_to_str(e)}")
 
         return folderName
 
@@ -214,10 +297,11 @@ class Session():
             wandb.finish()
             ggLog.info(f"Told wandb to finish.")
             
+
         t0 = time.monotonic()
         timeout = 30
         if threading.current_thread() == threading.main_thread():
-            active_threads = [t for t in threading.enumerate() if t.name!="MainThread"]
+            active_threads = [t for t in threading.enumerate() if t.name!="MainThread" and not t.isDaemon()]
             elapsed = 0
             while len(active_threads)>0 and elapsed < timeout:
                 elapsed = time.monotonic() - t0
@@ -231,18 +315,22 @@ class Session():
         if len(active_threads)>1:
             ggLog.warn(f"Session shutting down: still have active threads {active_threads}")
 
+        if mp_helper.was_manager_created():
+            mp_helper.get_manager().shutdown()
         all_children_terminated = False
-        while not all_children_terminated:
-            t0_chterm = time.monotonic()
-            child_procs = mp_helper.get_context().active_children()
+        t0_chterm = time.monotonic()
+        while not all_children_terminated and time.monotonic() < t0_chterm+timeout:
+            child_procs : list[multiprocessing.Process] = mp_helper.get_context().active_children()
+            child_procs = [p for p in child_procs if not p.daemon and p.is_alive()] # exclude daemonic process
             all_children_terminated = len(child_procs)==0
             if not all_children_terminated:
-                sig = signal.SIGINT if timeout-(time.monotonic()-t0_chterm) > 10 else signal.SIGKILL
-                ggLog.warn(f"Session is shutting down, but still have {len(child_procs)} child processes. Sending {sig} to all")
+                sig = signal.SIGINT if time.monotonic() < timeout + t0_chterm - 10 else signal.SIGKILL
+                ggLog.warn(f"Session is shutting down, but still have {len(child_procs)} child processes. Sending signal {sig} to all")
+                ggLog.warn(f"Processess are: {child_procs}")
                 for p in child_procs:
                     os.kill(p.pid, sig)
                 for p in child_procs:
-                    p.join(timeout = max(0,5-(time.monotonic()-t0_chterm)))
+                    p.join(timeout = min(5,max(0,t0_chterm+timeout-time.monotonic())))
         # for t in threading.enumerate():
         #     if t != threading.main_thread():
         #         terminate the thread???
@@ -353,7 +441,8 @@ def runFunction_wrapper(seed,
                         run_args,
                         start_adarl,
                         launch_file_path,
-                        debug_level):
+                        debug_level,
+                        use_wandb):
     try:
         seedFolder = folderName+f"/seed_{seed}"
         experiment_name = os.path.basename(launch_file_path)
@@ -365,19 +454,22 @@ def runFunction_wrapper(seed,
                                         experiment_name = experiment_name,
                                         run_id = run_id,
                                         debug = debug_level,
-                                        run_comment=run_args["comment"])
+                                        run_comment=run_args["comment"],
+                                        use_wandb=use_wandb)
 
         ggLog.info(f"Starting run with seed {seed}:\n"
                    f"Out folder = {seedFolder}\n"
                    f"Run id = {run_id}")
         os.makedirs(folderName,exist_ok=True)
-        adarl.utils.utils.createSymlink(src = folderName, dst = str(Path(folderName).parent.absolute())+"/latest")
+        parent = Path(folderName).parent.absolute()
+        createSymlink(src = str(Path(folderName).relative_to(parent)), dst = str(parent)+"/latest")
+
         # time.sleep(seed)
         # if resumeModelFile is not None:
         #     os.makedirs(seedFolder,exist_ok=True)            
         return runFunction(seed=seed, folderName=seedFolder, resumeModelFile=resumeModelFile, run_id=run_id, args = run_args)
     except Exception as e:
-        ggLog.error(f"Run failed with exception: {adarl.utils.utils.exc_to_str(e)}")
+        ggLog.error(f"Run failed with exception: {exc_to_str(e)}")
         return None
 
 def runFunction_wrapper_arg_kwargs(args, kwargs):
@@ -447,7 +539,9 @@ def launchRun(runFunction,
             args = {},
             pkgs_to_save = ["adarl"],
             start_adarl : bool = True,
-            debug_level = 0):
+            debug_level = 0,
+            use_wandb : bool = True,
+            always_subproc :  bool = False):
     experiment_name = os.path.basename(launchFilePath)
     script_out_folder = os.getcwd()+"/lrg_exps/"+experiment_name
     done = False
@@ -467,11 +561,13 @@ def launchRun(runFunction,
             tries += 1
             if tries > 10:
                 raise e
+    os.makedirs(folderName+"/pkgs", exist_ok=True)
     for pkg in pkgs_to_save:
-        pkg_path = adarl.utils.utils.pkgutil_get_path(pkg,"")
+        pkg_path = pkgutil_get_path(pkg,"")
         if pkg_path is None:
             raise RuntimeError(f"Failed to get path for package {pkg}")
-        shutil.copytree(pkg_path, folderName+"/"+pkg)
+        shutil.copytree(pkg_path, folderName+"/pkgs/"+pkg,
+                        ignore=shutil.ignore_patterns("__pycache__","*.pyc","*.pyo","*.dist-info","*.egg-info"))
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 
@@ -489,7 +585,8 @@ def launchRun(runFunction,
                   "run_args" : args,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
-                  "debug_level" : debug_level} for seed in seeds]
+                  "debug_level" : debug_level,
+                  "use_wandb" : use_wandb} for seed in seeds]
     else:
         resumeFolder = os.path.abspath(resumeFolder)
         ggLog.info(f"Resuming run from folder {resumeFolder}")
@@ -508,13 +605,15 @@ def launchRun(runFunction,
                   "run_args" : args,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
-                  "debug_level" : debug_level} for seed in detected_args]
+                  "debug_level" : debug_level,
+                  "use_wandb" : use_wandb}
+                    for seed in detected_args]
 
     ggLog.info(f"Will launch {argss} using {num_processes} processes") 
 
     num_processes = min(num_processes, len(argss))
 
-    if len(argss) == 1 or num_processes==1:
+    if not always_subproc and (len(argss) == 1 or num_processes==1):
         run_results = []
         for args in argss:
             r = runFunction_wrapper(**args)

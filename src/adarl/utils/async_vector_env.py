@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from enum import Enum
-from typing import List, Optional, Sequence, Tuple, Union, Any, Callable, Dict
+from typing import List, Optional, Sequence, Tuple, Union, Any, Callable, Dict, Literal
 
 import numpy as np
 import cloudpickle
@@ -29,7 +29,7 @@ import os
 import setproctitle
 import cProfile
 from adarl.utils.tensor_trees import TensorTree
-
+import traceback
 __all__ = ["AsyncVectorEnv", "AsyncState"]
 
 
@@ -53,6 +53,7 @@ def _worker(
     worker_init_fn = None,
     worker_init_kwargs = {}
 ) -> None:
+    # os.environ["CUDA_VISIBLE_DEVICES"]=""
     if worker_init_fn is not None:
         worker_init_fn(**worker_init_kwargs)
     # ggLog.info(f"async_vector_env: starting worker {mp.current_process().name}, env_idx = {env_idx}, pid = {os.getpid()}")
@@ -226,7 +227,7 @@ class AsyncVectorEnvShmem(VectorEnv):
         context : Optional[str] = None,
         purely_numpy = False,
         shared_mem_device = th.device("cpu"),
-        env_action_device = "numpy",
+        env_action_device : th.device|Literal["numpy"]= "numpy",
         copy_data = False,
         worker_init_fn = None,
         worker_init_kwargs = {},

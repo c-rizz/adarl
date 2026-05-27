@@ -336,7 +336,7 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
         #ggLog.info("Got state:  "+str(state))
         return state
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         if backend == "gazebo":
             self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/launch_panda_moveit.launch"),
                                                         launch_file_args={  "gui":"false",
@@ -352,10 +352,10 @@ class PandaMoveitVarReachingEnv(ControlledEnv):
             raise NotImplementedError("Backend '"+backend+"' not supported")
 
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         return self._adapter.getEnvTimeFromStartup()
 
     def setGoalInState(self, state, goal):

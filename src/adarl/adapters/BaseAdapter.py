@@ -1,4 +1,4 @@
-"""This file implements the Envitronment controller class, whic is the superclass for all th environment controllers."""
+"""This file implements the base Adapter class, which is the superclass for all environment adapters."""
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import List, Tuple, Dict, Callable, Optional
@@ -7,7 +7,7 @@ from typing_extensions import deprecated
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
-from adarl.utils.utils import JointState, LinkState
+from adarl.utils.utils import JointState, LinkState, th_quat_rotate
 from typing import overload, Sequence
 
 JointName = Tuple[str,str]
@@ -33,8 +33,9 @@ class BaseAdapter(ABC):
         self._monitored_joints = []
         self._monitored_links = []
         self._monitored_cameras = []
+        self.__episode_start_env_time = 0
 
-    def set_monitored_joints(self, jointsToObserve : Sequence[JointName]):
+    def set_monitored_joints(self, jointsToObserve : Sequence[tuple[str,str]]):
         """Set which joints should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -46,7 +47,7 @@ class BaseAdapter(ABC):
         self._monitored_joints = list(jointsToObserve)
 
 
-    def set_monitored_links(self, linksToObserve : Sequence[LinkName]):
+    def set_monitored_links(self, linksToObserve : Sequence[tuple[str,str]]):
         """Set which links should be observed after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
@@ -57,16 +58,16 @@ class BaseAdapter(ABC):
         """
         self._monitored_links = list(linksToObserve)
 
-    def set_monitored_cameras(self, camerasToRender : Sequence[str] = []):
+    def set_monitored_cameras(self, camera_names : Sequence[str] = []):
         """Set which camera should be rendered after each simulation step. This information allows for more efficient communication with the simulator.
 
         Parameters
         ----------
-        camerasToRender : List[str]
+        camera_names : List[str]
             List of the names of the cameras
 
         """
-        self._monitored_cameras = list(camerasToRender)
+        self._monitored_cameras = list(camera_names)
 
     def get_monitored_joints(self):
         return self._monitored_joints
@@ -78,31 +79,35 @@ class BaseAdapter(ABC):
         return self._monitored_cameras
 
     def startup(self):
-        """Start up the controller."""
-        pass
-
-    def stopController(self):
+        """Start up the adapter."""
         pass
     
     @abstractmethod
     def build_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of adapter"""
         raise NotImplementedError()
     
 
     @abstractmethod
     def destroy_scenario(self, **kwargs):
-        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of controller"""
+        """Build and setup the environment scenario. Should be called by the environment. Arguments depend on the type of adapter"""
         raise NotImplementedError()
 
     @abstractmethod
+    def initialize_for_step(self):
+        raise NotImplementedError()
+    
+    @abstractmethod
     def step(self) -> float:
-        """Run a simulation step.
-
+        """Run a simulation step. This does not necessarily have a constant duration. Depending on the adapter the duration may depend
+          on something. For example if position commands are involved, the step may depend on the duration of the movement.
+          This step function always calls initialize_for_step() at the beginning, so any step-initialization logic must be placed there.
+          In this way an environment can also choose to call run() to subdivide the step manually.
+          
         Returns
         -------
         float
-            Duration of the step in simulation time (in seconds)"""
+            Duration of the step in environment time (in seconds)"""
 
         raise NotImplementedError()
 
@@ -117,8 +122,8 @@ class BaseAdapter(ABC):
 
         Returns
         -------
-        List[sensor_msgs.msg.Image]
-            List contyaining the images for the cameras specified in requestedCameras, in the same order
+        Dict[str, Tuple[th.Tensor, float]]
+            Dict containing the resulting images and the simulation time of their renderings
 
         """
         raise NotImplementedError()
@@ -165,14 +170,14 @@ class BaseAdapter(ABC):
         Returns
         -------
         th.Tensor
-            Torch tensor of size (4,len(monitored_joints),3) containing min,max,average,std of the position,velocity
+            Torch tensor of size (4,len(monitored_joints),4) containing min,max,average,std of the position,velocity, acceleration
              and effort of each monitored joint. The joints are in the order use din set_monitored_joints.
         """
         ...
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_frame : bool = False) -> Dict[LinkName,LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False) -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.
 
         Parameters
@@ -204,6 +209,50 @@ class BaseAdapter(ABC):
     def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> Dict[LinkName,LinkState] | th.Tensor:
         raise NotImplementedError()
 
+
+    def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        ls = self.getLinksState(requestedLinks=requestedLinks)
+        gdirs = {ln:th_quat_rotate(th.as_tensor([-1., 0., 0.]), state.pose.orientation_xyzw) for ln,state in ls.items()}
+        return th.stack([gdirs[ln] for ln in requestedLinks])
+
+    def get_link_relative_angular_velocity(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        """Get the relative angular velocity of the requested links.
+            This should be what an IMU would give you.
+
+        Parameters
+        ----------
+        requestedLinks : Sequence[LinkName]
+            List of links to get the angular velocity of. Each element of the list represents a link in the format [model_name, link_name]
+
+        Returns
+        -------
+        th.Tensor
+            Tensor containing the relative angular velocity of each link in the requestedLinks list.
+            The shape is (len(requestedLinks), 3) and contains the angular velocity in radians per second.
+
+        """
+        ls = self.getLinksState(requestedLinks=requestedLinks)
+        angvels = {ln:th_quat_rotate(state.ang_velocity_xyz,state.pose.orientation_xyzw) for ln,state in ls.items()}
+        return th.stack([angvels[ln] for ln in requestedLinks])
+
+    def get_local_link_linear_acceleration(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
+        """Get the local linear acceleration of the requested links.
+            This should be what an accelerometer would give you.
+
+        Parameters
+        ----------
+        requestedLinks : Sequence[LinkName]
+            List of links to get the linear acceleration of. Each element of the list represents a link in the format [model_name, link_name]
+
+        Returns
+        -------
+        th.Tensor
+            Tensor containing the local linear acceleration of each link in the requestedLinks list.
+            The shape is (len(requestedLinks), 3) and contains the linear acceleration in meters per second squared.
+
+        """
+        raise NotImplementedError()
+
     @abstractmethod
     def resetWorld(self):
         """Reset the environmnet to its start configuration.
@@ -215,22 +264,27 @@ class BaseAdapter(ABC):
 
         """
         self.__lastResetTime = self.getEnvTimeFromStartup()
+        self.initialize_for_episode()
 
+    def initialize_for_episode(self):
+        """Performs initializations steps necessary to start an episode.
+            After this you can start stepping the environment using step().
+        """
+        self.__episode_start_env_time = self.getEnvTimeFromStartup()
 
     @abstractmethod
     def getEnvTimeFromStartup(self) -> float:
         """Get the current time within the simulation."""
         raise NotImplementedError()
 
+    def getEnvTimeFromEpStart(self) -> float:
+        """Get the current time within the simulation."""
+        return self.getEnvTimeFromStartup() - self.__episode_start_env_time
+
     @abstractmethod
     def run(self, duration_sec : float):
         """Run the environment for the specified duration"""
         raise NotImplementedError()
-
-
-    def getEnvTimeFromReset(self) -> float:
-        """Get the current time within the simulation."""
-        return self.getEnvTimeFromStartup() - self.__lastResetTime
 
     def run_async_loop(self, on_finish_callback : Optional[Callable[[], None]]):
         # ggLog.info(f"run async loop")
@@ -277,6 +331,8 @@ class BaseAdapter(ABC):
                 return
             self._running_run_async = False
 
+    def get_debug_info(self) -> dict[str,th.Tensor]:
+        return {}
 
     @property
     @deprecated("Just for back compatibility, do not use",)

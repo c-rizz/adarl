@@ -187,7 +187,7 @@ class CartpoleEnv(ControlledEnv):
         return np.array(state)
 
 
-    def buildSimulation(self, backend):
+    def build(self, backend):
         # ggLog.info("Building env")
         envCtrlName = type(self._adapter).__name__
         if envCtrlName in ["GazeboAdapter", "GazeboAdapterNoPlugin"]:
@@ -224,7 +224,7 @@ class CartpoleEnv(ControlledEnv):
 
 
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
     def getInfo(self,state=None) -> Dict[Any,Any]:

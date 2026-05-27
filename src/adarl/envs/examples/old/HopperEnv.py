@@ -253,7 +253,7 @@ class HopperEnv(ControlledEnv):
         return (npArrImg,t)
 
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         # if backend == "gazebo":
         #     worldpath = "\"$(find adarl_ros)/worlds/ground_plane_world_plugin.world\""
         #     self._adapter.build_scenario(launch_file_pkg_and_path=("adarl_ros","/launch/gazebo_server.launch"),
@@ -274,7 +274,7 @@ class HopperEnv(ControlledEnv):
         else:
             raise NotImplementedError("Backend "+backend+" not supported")
 
-    def _destroySimulation(self):
+    def _destroy(self):
         self._adapter.destroy_scenario()
 
     def getInfo(self,state=None) -> Dict[Any,Any]:

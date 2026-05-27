@@ -1,5 +1,6 @@
+from __future__ import annotations
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import exc_to_str
+from adarl.utils.base_utils import exc_to_str, get_caller_info
 import time
 import torch as th
 import os
@@ -11,9 +12,44 @@ import adarl.utils.mp_helper as mp_helper
 import atexit
 import traceback
 from typing import Optional
-import adarl.utils.session as session
+from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_tensor_tree
+import numpy as np
+from typing import Callable
+from adarl.utils.async_cuda2cpu_queue import Async_cuda2cpu_queue
+import pprint
+
+
+
+def _fix_histogram_range(value):
+    """ In case there are nan/inf values in an array/tensor wandb drops the entire log, because it fails to
+        detect the range. This doesnt make much sense.
+        So I compute the range myself, excuding infs and nans, and produce a numpy histogram.
+    """
+    if isinstance(value, (th.Tensor, np.ndarray)):
+        if not isinstance(value, th.Tensor):
+            value = th.as_tensor(value)
+        if value.ndim>0 and len(value) > 1:
+            # minval = th.min(th.where(th.isfinite(value), value, th.tensor(th.inf, device=value.device)))
+            # maxval = th.max(th.where(th.isfinite(value), value, th.tensor(-th.inf, device=value.device)))
+            hist, bin_edges = th.histogram(value) #, range=(minval.item(),maxval.item()))
+            value =  wandb.Histogram(np_histogram=(
+                            hist.detach().cpu().numpy(),
+                            bin_edges.detach().cpu().numpy(),
+                        )
+                    )
+            return value
+        else:
+            return value
+    else:
+        return value
+
 
 class WandbWrapper():
+    """Wrap Weight and Biases calls:
+          - Avoding making excessive requests to the server
+          - Managing logging from different subprocesses
+          - Asynchronously transferring torch tensors from cuda to cpu for logging without introducing CUDA syncs
+    """
     def __init__(self):
         self.req_count = 0
         self.max_reqs_per_min = 40
@@ -24,17 +60,19 @@ class WandbWrapper():
 
         self.last_warn_time = 0.0
         self._running = True
-        self._queue = mp_helper.get_context().Queue()
+        self._mp_queue = mp_helper.get_context().Queue()
         self._wandb_initialized = False
         self._worker_thread : Optional[threading.Thread] = None
+        self._async_cuda2cpu_queue = Async_cuda2cpu_queue()
         atexit.register(self.close)
 
-    def start_worker(self):
+    def _start(self):
         """Starts a worker thread that can receive logs from a queue and submit them to wandb.
             Logs can be sent from other processes by sending to these processes the WandbWrapper
             object itself. When you call wandb_log from the child process it will recognize
             he is a child process and send the logs to the queue.
         """
+        self._async_cuda2cpu_queue.start_worker()
         self._worker_thread = threading.Thread(target=self._worker, name="WandbWrapper_worker")
         self._worker_thread.start()
 
@@ -42,67 +80,130 @@ class WandbWrapper():
     def _worker(self):
         import adarl.utils.session as session
         ggLog.info(f"Starting WandbWrapper worker in process {os.getpid()}")
-        while not session.default_session.is_shutting_down() or not self._running:
+        while self._running and not session.default_session.is_shutting_down():
             try:
-                log_dict, throttle_period = self._queue.get(block=True, timeout=10)
-                wandb_log(log_dict, throttle_period)
+                args, funcname = self._mp_queue.get(block=True, timeout=1)
+                if funcname == "log":
+                    log_dict, throttle_period, silent_throttling, copy = args
+                    self.wandb_log(log_dict, throttle_period, silent_throttling, copy)
+                else:
+                    raise NotImplementedError(f"Unknown wandb wrapper funcname {funcname}")
             except queue.Empty as e:
                 pass
+        ggLog.info(f"{type(self)} worker terminated.")
 
     def wandb_init(self, **kwargs):
+        self._start()
         if self._wandb_initialized:
             raise RuntimeError(f"Tried to initialize wandb wrapper twice (original pid {self._init_pid}, current pid = {os.getpid()}")
         self._init_pid = os.getpid()
-        wandb.require("core")
-        wandb.init(**kwargs)
+        self._wandb_run = wandb.init(**kwargs)
         self._wandb_initialized = True
+        ggLog.info(f"Wandb initialized in process {self._init_pid} with run id {self._wandb_run.id}")
         # self._worker_thread = threading.Thread(target=self._worker)
         # self._worker_thread.start()
+    
+    @staticmethod
+    def _safe_wandb_log(log_dict : dict[str,th.Tensor]):
+        import pprint
+        log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
+        try:
+            wandb.log(log_dict)
+        except Exception as e:
+            ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
         
 
-    def wandb_log(self, log_dict, throttle_period = 0):
-        if not self._wandb_initialized:
-            ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
-            # traceback.print_stack()
-            return
-        try:
-            if os.getpid()==self._init_pid:
-                # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
-                if callable(log_dict):            
-                    log_dict = log_dict()
+    def _async_thread_wandb_log(self, log_dict : dict[str, th.Tensor]):
+        log_dict = map_tensor_tree(log_dict, lambda l: th.as_tensor(l))
+        self._async_cuda2cpu_queue.send(log_dict, self._safe_wandb_log)
+
+    def _async_log_tensor_stats(self, tensors : dict[str, th.Tensor]):
+        def _log_tensors_stats(cpu_tensors_dict : dict[str, th.Tensor]):
+            for prefix, cpu_tensor in cpu_tensors_dict.items():
+                self._wandb_run._torch.log_tensor_stats(cpu_tensor, prefix)
+        self._async_cuda2cpu_queue.send(tensors, _log_tensors_stats)
+
+    def _throttle_check(self, keys : tuple[str, ...], throttle_period : float, silent_throttling : bool) -> bool:
+        t = time.monotonic()
+        last_logged = self.last_sent_times_by_key.get(keys,0)
+        if t-last_logged<throttle_period:
+            if not silent_throttling:
+                ggLog.info(f"wandb_log_tensors_stats throttling ({t-last_logged}<{throttle_period}) {get_caller_info(depth=3, width=2, inline=True)}")
+            return False
+        t_50reqs_ago = self.last_send_to_server_times[(self.req_count+1)%self.max_reqs_per_min]
+        if t-t_50reqs_ago<60:
+            if t-self.last_warn_time > 60:
+                ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log from {get_caller_info(depth=1, width=2, inline=True)}. Sent logs counters = {self.sent_count}")
+                self.last_warn_time = t
+            return False
+        self.last_send_to_server_times[self.req_count%self.max_reqs_per_min] = t
+        self.req_count += 1
+        self.last_sent_times_by_key[keys] = t
+        self.sent_count[keys] = self.sent_count.get(keys,0) + 1
+        return True
+
+    def wandb_log(self, log_dict : dict[str, th.Tensor], throttle_period = 0, silent_throttling : bool = False, copy : bool = True):
+        with th.no_grad():
+            if not self._wandb_initialized:
+                ggLog.warn(f"Called wandb_log, but wandb is not initialized. Skipping log.")
+                # traceback.print_stack()
+                return
+            try:
+                if copy:
+                    log_dict = map_tensor_tree(log_dict, lambda l: l.detach().clone() if isinstance(l, th.Tensor) else l)
+                # if not is_all_finite(log_dict):
+                #     ggLog.warn(f"Non-finite values in wandb log. \n"
+                #             f"Non-finite keys = {non_finite_flat_keys(log_dict)} \n"
+                #             f"Stacktrace:\n{''.join(traceback.format_stack())}")
+
+                if os.getpid()==self._init_pid:
+                    # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
+                    if callable(log_dict):            
+                        log_dict = log_dict()
+                    if not self._throttle_check(tuple(log_dict.keys()), throttle_period, silent_throttling):
+                        return
+                    import adarl.utils.session as session
+                    log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
+                    log_dict["session_collected_episodes"] = session.default_session.run_info["collected_episodes"].value
+                    log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
+                    log_dict["session_time_from_start_sec"] = time.monotonic() - session.default_session.run_info["start_time_monotonic"]
+                    self._async_thread_wandb_log(log_dict)
+                else:
+                    args = (log_dict, throttle_period, silent_throttling, copy)
+                    self._mp_queue.put((args, "log"), block=False)
+            except Exception as e:
+                ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
+        
+    def log_model_gradients(self, model, model_name : str):
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                self.wandb_log({
+                    f"{model_name}/{name}.norm": param.grad.norm().item(),
+                    f"{model_name}/{name}.mean": param.grad.mean().item()
+                })
+
+
+    def wandb_log_tensors_stats(self, log_dict : dict[str, th.Tensor], throttle_period = 0, silent_throttling : bool = False, copy : bool = False):
+        with th.no_grad():
+            if not self._wandb_initialized:
+                ggLog.warn(f"Called wandb_log_tensors_stats, but wandb is not initialized. Skipping log.")
+                # traceback.print_stack()
+                return
+            try:
+                if copy:
+                    log_dict = map_tensor_tree(log_dict, lambda l: l.detach().clone() if isinstance(l, th.Tensor) else l)
                 
-                t = time.monotonic()
-                keys = tuple(log_dict.keys())
-                last_logged = self.last_sent_times_by_key.get(keys,0)
-
-                # ggLog.info(f"[{str(keys)[:10]}]: t-last_logged = {t-last_logged}")
-                if t-last_logged<throttle_period:
-                    # ggLog.info(f"[{str(keys)[:10]}]: Throttling")
-                    return
-                # ggLog.info(f"[{str(keys)[:10]}]: Sending")
-
-                t_50reqs_ago = self.last_send_to_server_times[(self.req_count+1)%self.max_reqs_per_min]
-                if t-t_50reqs_ago<60:
-                    if t-self.last_warn_time > 60:
-                        ggLog.warn(f"Exceeding wandb rate limit, skipping wandb_log for keys {list(log_dict.keys())}. Sent logs counters = {self.sent_count}")
-                        self.last_warn_time = t
-                    return
-                self.last_send_to_server_times[self.req_count%self.max_reqs_per_min] = t
-                self.req_count += 1
-                self.last_sent_times_by_key[keys] = t
-                self.sent_count[keys] = self.sent_count.get(keys,0) + 1
-                log_dict["session_collected_steps"] = session.default_session.run_info["collected_steps"].value
-                log_dict["session_train_iterations"] = session.default_session.run_info["train_iterations"].value
-                try:
-                    wandb.log(log_dict)
-                except Exception as e:
-                    ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
-            else:
-                # ggLog.info(f"wandb_log called from non-main process")
-                # raise NotImplementedError()
-                self._queue.put((log_dict, throttle_period), block=False)
-        except Exception as e:
-            ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
+                if os.getpid()==self._init_pid:
+                    # ggLog.info(f"wandbWrapper logging directly (initpid = {self._init_pid})")
+                    if callable(log_dict):            
+                        log_dict = log_dict()
+                    if not self._throttle_check(tuple(log_dict.keys()), throttle_period, silent_throttling):
+                        return
+                    self._async_log_tensor_stats(log_dict)
+                else:
+                    self._mp_queue.put((log_dict, throttle_period, silent_throttling, "log_tensors_stats"), block=False)
+            except Exception as e:
+                ggLog.warn(f"wandb_log failed with error: {exc_to_str(e)}")
 
     def wandb_log_hists(self, d, throttle_period = 0):
         keys = tuple(d.keys())
@@ -120,10 +221,12 @@ class WandbWrapper():
         self._running = False
         if self._worker_thread is not None:
             self._worker_thread.join()
+        self._async_cuda2cpu_queue.close()
 
     def __getstate__(self):
         state = self.__dict__.copy()
         del state["_worker_thread"]
+        state["_wandb_run"] = None # We don't need the wandb run in subprocesses, and it has issues in subsubprocesses (one lavel of subprocesses works, but not more)
         return state
 
     def __setstate__(self, state):
@@ -139,14 +242,17 @@ def wandb_init(**kwargs):
     return default_wrapper.wandb_init(**kwargs)
 
 
-def wandb_log(log_dict, throttle_period = 0):
+def wandb_log(log_dict, throttle_period = 0, silent_throttling : bool = False):
     # ggLog.info(f"wandb_log called at {traceback.format_list(traceback.extract_stack(limit=2))[0]}")
-    default_wrapper.wandb_log(log_dict, throttle_period)
+    default_wrapper.wandb_log(log_dict, throttle_period, silent_throttling)
+
+def wandb_log_tensors_stats(log_dict, throttle_period = 0, silent_throttling : bool = False):
+    default_wrapper.wandb_log_tensors_stats( log_dict, throttle_period, silent_throttling)
 
 def wandb_log_hists(d, throttle_period):
     default_wrapper.wandb_log_hists( d, throttle_period)
 
-def compute_means_stds(tensors_dict):
+def compute_means_stds(tensors_dict : dict[str, th.Tensor]) -> dict[str, th.Tensor]:
     dms = {}
     for k,v in tensors_dict.items():
         dms[k+"_mean"] = v.mean()

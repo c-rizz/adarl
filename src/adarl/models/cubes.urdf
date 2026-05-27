@@ -5,7 +5,7 @@
 	<!-- * * * Link Definitions * * * -->
   	<!-- * * * Define World Link to fix the foot rail to the world * * * -->
     <link name="world"/>
-	<link name="cube_link">
+	<link name="cube_link1">
 		<visual>
 			<origin xyz="0 0 0" rpy="0 0 0"/>
 			<geometry>
@@ -18,11 +18,18 @@
 				<box size="1 1 1"/>
 			</geometry>
 	   </collision>
+		<inertial>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<mass value="1" />
+			<inertia ixx="0.2" ixy="0.0" ixz="0.0" iyy="0.2" iyz="0.0" izz="0.2"/>
+		</inertial>
 	</link>
 
-	<joint name="fixed" type="fixed">
+	<joint name="joint1" type="revolute">
+		<origin xyz="0 0 1" rpy="0 0 0"/>
         <parent link="world"/>
-        <child link="cube_link"/>
+        <child link="cube_link1"/>
+		<limit effort="30" velocity="10.0" lower="-3.14159" upper="3.14159" />
     </joint>
 
 	<link name="cube_link2">
@@ -38,11 +45,16 @@
 				<box size="1 1 1"/>
 			</geometry>
 	   </collision>
+		<inertial>
+			<origin xyz="0 0 0" rpy="0 0 0"/>
+			<mass value="1" />
+			<inertia ixx="0.2" ixy="0.0" ixz="0.0" iyy="0.2" iyz="0.0" izz="0.2"/>
+		</inertial>
 	</link>
 
 	<joint name="joint2" type="revolute">
-		<origin xyz="0 0 1" rpy="0 0 0"/>
-        <parent link="cube_link"/>
+		<origin xyz="0 0 0" rpy="0 0 0"/>
+        <parent link="world"/>
         <child link="cube_link2"/>
 		<limit effort="30" velocity="10.0" lower="-3.14159" upper="3.14159" />
     </joint>

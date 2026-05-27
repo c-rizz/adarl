@@ -1,0 +1,174 @@
+from __future__ import annotations
+import threading
+import torch as th
+from collections import deque
+import queue
+import atexit
+from typing import Callable, Optional
+import os
+import adarl.utils.dbg.ggLog as ggLog
+import time
+import atexit
+from adarl.utils.utils import exc_to_str
+
+
+class BlockingPeekQueue:
+    def __init__(self):
+        self.queue = deque()
+        self.lock = threading.Lock()
+        self.not_empty = threading.Condition(self.lock)
+
+    def put(self, item):
+        # ggLog.info(f"put...")
+        with self.not_empty:
+            self.queue.append(item)
+            self.not_empty.notify_all()
+        # ggLog.info(f"put!")
+
+    def get(self, timeout : float | None = None):
+        # ggLog.info(f"get...")
+        with self.not_empty:
+            while len(self.queue) == 0:
+                timedout = not self.not_empty.wait(timeout=timeout)
+                if timedout:
+                    raise queue.Empty()
+            r = self.queue.popleft()
+        # ggLog.info(f"get!")
+        return r
+
+    def peek(self, timeout : float | None = None):
+        # ggLog.info(f"peek...")
+        with self.not_empty:
+            while len(self.queue) == 0:
+                timedout = not self.not_empty.wait(timeout=timeout)
+                if timedout:
+                    # ggLog.info(f"peek! (empty)")
+                    raise queue.Empty()
+            r = self.queue[0]
+        # ggLog.info(f"peek!")
+        return r
+        
+    def __len__(self):
+        return len(self.queue)
+        
+class Async_cuda2cpu_queue():
+    _shutdown_sentinel = object()
+
+    def __init__(self):
+
+        self._running = True
+        self._closed = False
+        self._worker_thread : Optional[threading.Thread] = None
+        self._queue : BlockingPeekQueue | None = None
+        atexit.register(self.close)
+
+    def start_worker(self):
+        """Starts a worker thread that can receive logs from a queue and submit them to wandb.
+            Logs can be sent from other processes by sending to these processes the WandbWrapper
+            object itself. When you call wandb_log from the child process it will recognize
+            he is a child process and send the logs to the queue.
+        """
+        # ggLog.info(f"Starting Async_cuda2cpu_queue worker")
+        # traceback.print_stack()
+        self._queue = BlockingPeekQueue()
+        self._worker_thread = threading.Thread(target=self._worker, name="Async_cuda2cpu_queue")
+        self._worker_thread.start()
+
+
+    def _worker(self):
+        import adarl.utils.session as session
+        ggLog.info(f"Starting Async_cuda2cpu_queue worker in process {os.getpid()}")
+        while self._running and not session.default_session.is_shutting_down():
+            try:
+                queued_item = self._queue.peek(timeout=1.0)
+                if queued_item is self._shutdown_sentinel:
+                    self._queue.get(timeout=0)
+                    continue
+                event, cuda_tensors, cpu_tensors, callback = queued_item
+                if event.query():
+                    self._queue.get(timeout=0)
+                    callback(cpu_tensors)
+                else:
+                    time.sleep(0.01) # I believe using event.wait would block the entire python process (actually it would be nice if the wholw wandbwrapper was in a separate process from the rest)
+            except queue.Empty as e:
+                pass
+        ggLog.info(f"{type(self)} worker terminated.")
+
+        
+    def send(self, cuda_tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
+        cpu_tensors = {k:t.to(device="cpu", non_blocking=True) for k,t in cuda_tensors.items()}
+        event = th.Event()
+        event.record()
+        self._queue.put((event, cuda_tensors, cpu_tensors, callback))
+
+    def current_queue_len(self):
+        return len(self._queue)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._running = False
+        if self._queue is not None:
+            self._queue.put(self._shutdown_sentinel)
+        if self._worker_thread is not None:
+            if self._worker_thread is not threading.current_thread():
+                self._worker_thread.join()
+            self._worker_thread = None
+        if self._queue is not None and len(self._queue)>0:
+            ggLog.warn(f"Async_tensor_cuda2cpu_queue closing with {len(self._queue)} tensors in queue")
+
+
+    def __getstate__(self):
+        state = self.__dict__.copy()  # Copy the object's state
+        del state['_queue']  # Remove the attribute we don't want to pickle
+        del state['_worker_thread']  # Remove the attribute we don't want to pickle
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._queue = None
+        self._worker_thread = None
+
+__singleton_queue_pid = None
+__singleton_queue = None
+def _close_async_queue_instance(queue : Async_cuda2cpu_queue | None):
+    if queue is not None:
+        queue.close()
+
+
+def get_async_cuda2cpu_queue():
+    global __singleton_queue
+    global __singleton_queue_pid
+    if __singleton_queue is None or __singleton_queue_pid != os.getpid():
+        __singleton_queue = Async_cuda2cpu_queue()
+        __singleton_queue.start_worker()
+        atexit.register(_close_async_queue_instance, __singleton_queue)
+        __singleton_queue_pid = os.getpid()
+    return __singleton_queue
+
+
+def close_async_cuda2cpu_queue():
+    global __singleton_queue
+    global __singleton_queue_pid
+    if __singleton_queue is not None and __singleton_queue_pid == os.getpid():
+        __singleton_queue.close()
+        __singleton_queue = None
+        __singleton_queue_pid = None
+    
+def run_async_job(tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
+    get_async_cuda2cpu_queue().send(tensors, callback)
+
+
+def log_async(string : str, tensors : dict[str,th.Tensor | None], loglevel = "info"):
+    def callback(tensors : dict[str,th.Tensor]):
+        nonlocal string
+        try:
+            string = string.format(**tensors)
+        except Exception as e:
+            ggLog.warn(f"log_async: string formatting failed with {exc_to_str(e)}, tensors = {tensors}")
+        getattr(ggLog,loglevel)(string)
+    get_async_cuda2cpu_queue().send({k:v for k,v in tensors.items() if v is not None}, callback)
+    # ql = get_async_cuda2cpu_queue().current_queue_len()
+    # if(ql > 10):
+    #     ggLog.warn(f"log_async queue len = {ql}")

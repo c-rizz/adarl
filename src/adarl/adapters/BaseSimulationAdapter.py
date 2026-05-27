@@ -9,9 +9,10 @@ from dataclasses import dataclass
 class ModelSpawnDef:
     name : str
     definition_string : str | None
-    format : str | None
+    format : str
     pose : Pose | None
     kwargs : dict[Any,Any]
+    attachment_link : tuple[str,str] | None = None # (model_name, link_name)
 
 
 class BaseSimulationAdapter(BaseAdapter):
@@ -86,4 +87,8 @@ class BaseSimulationAdapter(BaseAdapter):
         model_name : str
             Name of the model to be removed
         """
+        raise NotImplementedError()
+    
+    @abstractmethod
+    def sim_step_duration(self):
         raise NotImplementedError()

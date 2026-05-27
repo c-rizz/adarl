@@ -3,38 +3,61 @@
 from __future__ import annotations
 import pinocchio
 import numpy as np
-import adarl.utils.utils
 from pathlib import Path
 from typing import Literal, Sequence
 import copy
 from typing import Iterable, TypedDict
 import itertools
 import faulthandler
-from pinocchio.visualize import GepettoVisualizer
+# from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
-from adarl.utils.utils import quat_mul_xyzw_np, th_quat_conj, quat_conjugate
+from adarl.utils.utils import quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
+import tempfile
+
+def buildModelFromMJCFString(model_string : str):
+    with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
+        f.write(model_string.encode())
+        f.flush()
+        model = pinocchio.buildModelFromMJCF(f.name)
+    return model
+
+def buildGeomFromMJCFString(model, model_string : str, geom_type : pinocchio.GeometryType):
+    with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
+        f.write(model_string.encode())
+        f.flush()
+        geom_model = pinocchio.buildGeomFromMJCF(model, f.name, geom_type)
+    return geom_model
 
 
 class JointProperties(TypedDict):
     joint_type : str
 
 class Robot():
-    JOINT_TYPES = Enum("JOINT_TYPES",["PRISMATIC",
-                                  "REVOLUTE",
-                                  "FIXED",
-                                  "FLOATING",
-                                  "CONTINUOUS"])
+    JOINT_TYPES = Enum("JOINT_TYPES",[  "PRISMATIC",
+                                        "REVOLUTE",
+                                        "FIXED",
+                                        "FLOATING",
+                                        "CONTINUOUS"])
     
-    def __init__(self, model_urdf_string : str):
-        self._urdf_string = model_urdf_string
-        self._model = pinocchio.buildModelFromXML(model_urdf_string)
-        self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
-                                                                       self._urdf_string,
-                                                                       pinocchio.GeometryType.COLLISION)
+    def __init__(self, robot_description_string : str,
+                       robot_description_format : Literal["urdf", "sdf", "mjcf"] = "urdf"):
+        self._robot_string = robot_description_string
+        self._robot_format = robot_description_format
+        if robot_description_format == "urdf":
+            self._model = pinocchio.buildModelFromXML(self._robot_string)
+            self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
+                                                                        self._robot_string,
+                                                                        pinocchio.GeometryType.COLLISION)
+        elif robot_description_format == "mjcf":
+            self._model = buildModelFromMJCFString(self._robot_string)
+            self._collision_geom_model = buildGeomFromMJCFString(self._model, self._robot_string, pinocchio.GeometryType.COLLISION)
+        else:
+            raise NotImplementedError(f"Only urdf and mjcf formats are currently supported, but got {robot_description_format}")
         self._model_data = self._model.createData()
         # self._joint_position = pinocchio.randomConfiguration(self._model)
-        self._joint_position = np.zeros(shape=(self._model.njoints-1,))
+        q_size = sum([self._model.joints[jid].nq for jid in range(1,self._model.njoints)])
+        self._joint_position = np.zeros(shape=(q_size,))
         self._collision_object_count = 0
         self._collision_objects = {}
 
@@ -46,13 +69,17 @@ class Robot():
         self._frame_names = [frame.name for frame in self._model.frames]
         self._frame_name_to_idx = {n:self._frame_names.index(n) for n in self._frame_names}
         self._frame_idx_to_name = {idx:name for name,idx in self._frame_name_to_idx.items()}
-        self._joints_to_frame_names = {}
+        self._joints_to_frame_names : dict[str,list[str]] = {}
         for i in range(len(self._joint_names)):
             jname = self._model.names[i]
             self._joints_to_frame_names[jname] = []
             for link in self._model.frames:
                 if link.parent == i:
                     self._joints_to_frame_names[jname].append(link.name)
+        self._frame_names_to_parent_joint_names : dict[str,str] = {}
+        for jn,fns in self._joints_to_frame_names.items():
+            for fn in fns:
+                self._frame_names_to_parent_joint_names[fn] = jn
         self._joint_to_geoms = {frame:[] for frame in self._joint_names}
         for geom_obj in self._collision_geom_model.geometryObjects:
             self._joint_to_geoms[self._joint_idx_to_name[geom_obj.parentJoint]].append(geom_obj.name)
@@ -61,7 +88,24 @@ class Robot():
         self._current_collision_geom_pairs = set()
         self.set_collision_pairs("all")
 
-    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal['all'] = []):
+    def __getstate__(self):
+        d = dict(self.__dict__)
+        # del d["_model"]
+        del d["_collision_geom_model"]
+        del d["_collision_geom_model_data"]
+        # print(f"pickling Robot d = {d}")
+        return d
+
+    def __setstate__(self, d):
+        # Needed because of https://github.com/stack-of-tasks/pinocchio/issues/2089
+        # d["_model"] = pinocchio.buildModelFromXML(d["_urdf_string"])
+        d["_collision_geom_model"] = pinocchio.buildGeomFromUrdfString(d["_model"],
+                                                                       d["_urdf_string"],
+                                                                       pinocchio.GeometryType.COLLISION)
+        d["_collision_geom_model_data"] = pinocchio.GeometryData(self._collision_geom_model)
+        self.__dict__.update(d)
+
+    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal["all"] = []):
         self._collision_pairs = copy.deepcopy(geom_pairs)
         geoms_num = self._collision_geom_model.ngeoms
         geom_names = [g.name for g in self._collision_geom_model.geometryObjects]
@@ -74,6 +118,9 @@ class Robot():
             collision_matrix[geom_names.index(pair[1]), geom_names.index(pair[0])] = True # just set both pairs, to be safe
         self._collision_geom_model.setCollisionPairs(collision_matrix)
         self._collision_geom_model_data = pinocchio.GeometryData(self._collision_geom_model)
+
+    def get_enabled_collision_pairs(self):
+        return copy.deepcopy(self._current_collision_geom_pairs)
 
     def add_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]]):
         geom_pairs = self._current_collision_geom_pairs.union(geom_pairs)
@@ -200,14 +247,32 @@ class Robot():
                                     geometry_data = self._collision_geom_model_data,
                                     q = self._joint_position,
                                     stop_at_first_collision = False)
-        ret = []
+        ret : list[tuple[str,str]] = []
         for k in range(len(self._collision_geom_model.collisionPairs)):
             cr = self._collision_geom_model_data.collisionResults[k]
-            cp = self._collision_geom_model.collisionPairs[k]
             if cr.isCollision():
+                cp = self._collision_geom_model.collisionPairs[k]
                 ret.append((self._collision_geom_model.geometryObjects[cp.first].name,
                             self._collision_geom_model.geometryObjects[cp.second].name))
         return ret
+    
+    def has_collisions(self):
+
+        # this computeCollisions recoputes forward kinematics and geometry object placements
+        pinocchio.computeCollisions(model = self._model,
+                                    data = self._model_data,
+                                    geometry_model = self._collision_geom_model,
+                                    geometry_data = self._collision_geom_model_data,
+                                    q = self._joint_position,
+                                    stop_at_first_collision = True)
+        for k in range(len(self._collision_geom_model.collisionPairs)):
+            cr = self._collision_geom_model_data.collisionResults[k]
+            if cr.isCollision():
+                cp = self._collision_geom_model.collisionPairs[k]
+                collision_pair = (self._collision_geom_model.geometryObjects[cp.first].name,
+                            self._collision_geom_model.geometryObjects[cp.second].name)
+                return True, collision_pair
+        return False, None
 
     def _update_forward_kinematics(self):
         if self._need_to_recompute_forward_kin:
@@ -222,18 +287,21 @@ class Robot():
         ret = {}
         ref_pose = None
         for frame in self._model.frames:
-            joint_frame_pose = self._model_data.oMi[frame.parent]
-            link_pose = joint_frame_pose*frame.placement
-            if frames is None or frame.name in frames:
-                ret[frame.name] = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
-            if reference_frame is not None and reference_frame == frame.name:
-                ref_pose = link_pose.translation.T, adarl.utils.utils.quaternion_xyzw_from_rotmat(link_pose.rotation)
+            is_reference_frame = reference_frame is not None and reference_frame == frame.name
+            is_requested_frame = frames is None or frame.name in frames
+            if is_requested_frame or is_reference_frame:
+                joint_frame_pose : pinocchio.pinocchio_pywrap_default.SE3 = self._model_data.oMi[frame.parentJoint if hasattr(frame,"parentJoint") else frame.parent]
+                link_pose = joint_frame_pose*frame.placement
+                if is_requested_frame:
+                    ret[frame.name] = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
+                if is_reference_frame:
+                    ref_pose = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
         if reference_frame is not None:
             if ref_pose is None:
                 raise RuntimeError(f"Reference frame {reference_frame} not found")
             ref_pos, ref_orient = ref_pose
-            ret = {fname: (pos-ref_pos, quat_mul_xyzw_np(orient,quat_conjugate(ref_orient))) for fname, (pos, orient) in ret.items()}
-        return {fname:np.concatenate(p_xyz,q_xyzw) for fname,(p_xyz,q_xyzw) in ret.items()}
+            ret = {fname: (pos-ref_pos, quat_mul_xyzw_np(orient,quat_conj_xyzw_np(ref_orient))) for fname, (pos, orient) in ret.items()}
+        return {fname:np.concatenate([p_xyz,q_xyzw]) for fname,(p_xyz,q_xyzw) in ret.items()}
     
 
     def get_joint_names(self) -> list[str]:
@@ -244,25 +312,47 @@ class Robot():
         if joint_names is None:
             joint_names = self._joint_names
         for jn in joint_names:
-            j = self._model.joints[self._joint_name_to_idx[jn]]
+            jid = self._joint_name_to_idx[jn]
+            j = self._model.joints[jid]
             p = {}
             if j.idx_q < 0 or j.idx_v<0:
                 p["type"] = Robot.JOINT_TYPES.FIXED # Not sure about this, but the universe joint that is added automatically apepars like this
-            elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned","JointModelRevoluteUnboundedUnaligned"]:
+            elif j.shortname() in ["JointModelRX","JointModelRY","JointModelRZ","JointModelRevoluteUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.REVOLUTE
             elif j.shortname() in ["JointModelPX","JointModelPY","JointModelPZ","JointModelPrismaticUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.PRISMATIC
             elif j.shortname() in ["JointModelFreeFlyer"]:
                 p["type"] = Robot.JOINT_TYPES.FLOATING
-            elif j.shortname() in ["JointModelRUBX","JointModelRUBY","JointModelRUBZ"]:
+            elif j.shortname() in ["JointModelRUBX","JointModelRUBY","JointModelRUBZ","JointModelRevoluteUnboundedUnaligned"]:
                 p["type"] = Robot.JOINT_TYPES.CONTINUOUS
             else:
                 raise RuntimeError(f"Unknown joint type {j.shortname()}")
+            p["nq"] = j.nq
+            p["nv"] = j.nv
+            p["parent"] = self._joint_idx_to_name[self._model.parents[jid]]
+            p["pinname"] = j.shortname()
             r[jn] = p
         return r
     
+    def get_parent_joint(self, frame_name : str):
+        return self._frame_names_to_parent_joint_names[frame_name]
+    
     def get_frame_names(self) -> list[str]:
         return self._frame_names
+    
+    def get_tree_frame_names_under_frame(self, frame_name : str):
+        joints = self.get_tree_joint_names_under_joint(self._frame_names_to_parent_joint_names[frame_name])
+        frames : list[str] = []
+        for j in joints:
+            frames.extend(self._joints_to_frame_names[j])
+        return frames
+    
+    def get_tree_frame_names_under_joint(self, joint_name : str):
+        joints = self.get_tree_joint_names_under_joint(joint_name)
+        frames : list[str] = []
+        for j in joints:
+            frames.extend(self._joints_to_frame_names[j])
+        return frames
     
     def get_geom_names(self) -> list[str]:
         return [str(geom.name) for geom in self._collision_geom_model.geometryObjects]
@@ -274,13 +364,27 @@ class Robot():
         self._need_to_recompute_forward_kin = True
         self._need_to_place_geoms = True
 
+    def get_joint_pose(self):
+        return copy.deepcopy(self._joint_position)
+
 
     def set_joint_pose_by_names(self, joints : dict[str,np.ndarray]):
+        for jn in joints:
+            if jn not in self.get_joint_names():
+                raise RuntimeError(f"Tried to move set position of joint {jn}, but it does not exist, existing joints = {self.get_joint_names()}")
         for name in self.get_joint_names():
             if name in joints:
-                self._joint_position = joints[name]
+                q_idx = self._model.joints[self._joint_name_to_idx[name]].idx_q
+                nq = self._model.joints[self._joint_name_to_idx[name]].nq
+                self._joint_position[q_idx:q_idx+nq] = joints[name]
+        self._need_to_recompute_forward_kin = True
+        self._need_to_place_geoms = True
 
-    def disable_tree_self_collisions(self, root_joint : str):
+    def disable_tree_self_collisions(self, root_joint : str | None = None, root_frame : str | None = None):
+        if root_joint is None:
+            if root_frame is None:
+                raise RuntimeError(f"You must specify either root_joint or root_link")
+            root_joint = self._frame_names_to_parent_joint_names[root_frame]
         tree_joints = self.get_tree_joint_names_under_joint(root_joint)
         leg_geoms = list(itertools.chain.from_iterable(self.get_geoms_under_joints(tree_joints)))
         self_collision_pairs = [(g1,g2) for g1 in leg_geoms for g2 in leg_geoms]
@@ -314,8 +418,8 @@ class Robot():
             joints = self.get_joint_names()
         limits_minmax_pve = {}
         p_minmax = np.stack([self._model.lowerPositionLimit,self._model.upperPositionLimit])
-        v_minmax = np.stack([-self._model.velocityLimit,self._model.velocityLimit])
-        e_minmax = np.stack([-self._model.effortLimit,self._model.effortLimit])
+        v_minmax = np.stack([-self._model.velocityLimit,    self._model.velocityLimit])
+        e_minmax = np.stack([-self._model.effortLimit,      self._model.effortLimit])
         for jn in joints:
             joint_idx = self._joint_name_to_idx[jn]
             q_idx = self._model.idx_qs[joint_idx]
@@ -323,13 +427,57 @@ class Robot():
             limits_minmax_pve[jn] = np.stack([p_minmax[:,q_idx], v_minmax[:,v_idx], e_minmax[:,v_idx]]).transpose()
         return limits_minmax_pve
 
+    def detect_always_present_collisions(self, moving_joints : Sequence[str], fixed_joints_pose : dict[str,np.ndarray], samples : int = 10000,
+                                         threshold = 1.0):
+        original_joint_pose = self.get_joint_pose()
+        original_collision_pairs = self.get_enabled_collision_pairs()
+        self.set_collision_pairs("all")
+        # always_present_collisions = set()
+        collision_counters = {}
+        self.set_joint_pose_by_names(fixed_joints_pose)
+
+        for i in range(samples):
+            rand_pos = np.random.random(size=(len(moving_joints),))*2-1
+            limits = self.get_joint_limits(moving_joints)
+            limits_minmax = np.stack([limits[jn][:,0] for jn in moving_joints], axis = 1)
+            pose = rand_pos*(limits_minmax[1]-limits_minmax[0])+limits_minmax[0]
+            
+            jpose_dict = {jn:pose[i] for i,jn in enumerate(moving_joints)}
+            self.set_joint_pose_by_names(jpose_dict)
+            collisions = self.get_all_collisions()
+            # print(f"moving_joints = {moving_joints}")
+            # print(f"jpose_dict = {jpose_dict}")
+            # pprint.pprint(self.get_frame_poses_xyzxyzw())
+            # pprint.pprint(collisions)
+            # print(f"limits = {limits}")
+            # print(f"jp = {self._joint_position}")
+            # img = self.get_dbg_image()
+            # import cv2
+            # import time
+            # print(img)
+            # cv2.imwrite(f"robot_img{time.time()}.png", img)
+            # time.sleep(1)
+            # input("Press ENTER")
+            # if i == 0:
+            #     always_present_collisions = set(collisions)
+            collision_counters.update({ln:collision_counters.get(ln,0)+1 for ln in collisions})
+            # always_present_collisions = always_present_collisions.intersection(set(collisions))
+        self.set_joint_pose(original_joint_pose)
+        self.set_collision_pairs(original_collision_pairs)
+        # print(f"collision_counters (on {samples}) = {collision_counters}")
+        return {ln for ln, count in collision_counters.items() if count>=samples*threshold}
 
 
 
 if __name__ == "__main__":
-    leg_file = adarl.utils.utils.pkgutil_get_path("jumping_leg","models/leg_rig_simple.urdf.xacro")
+    import sys
+    from adarl.utils.utils import pkgutil_get_path, compile_xacro_string
+    if len(sys.argv)==1:
+        leg_file = pkgutil_get_path("adarl_envs","models/leg_rig_simple.urdf.xacro")
+    else:
+        leg_file = sys.argv[1]
     # leg_file = adarl.utils.utils.pkgutil_get_path("adarl","models/cube.urdf")
-    model_definition_string = adarl.utils.utils.compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
+    model_definition_string = compile_xacro_string(  model_definition_string=Path(leg_file).read_text(),
                                                                         model_kwargs={})
     robot = Robot(model_definition_string)
     n = '\n'

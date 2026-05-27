@@ -86,14 +86,14 @@ class RandomEnv(BaseEnv):
         return super().getInfo()
 
 
-    def buildSimulation(self, backend : str = "gazebo"):
+    def build(self, backend : str = "gazebo"):
         pass
 
-    def _destroySimulation(self):
+    def _destroy(self):
         pass
 
-    def getSimTimeFromEpStart(self):
+    def getSimTimeSinceBuild(self):
         return self._stepCounter
 
     def close(self):
-        self._destroySimulation()
+        self._destroy()

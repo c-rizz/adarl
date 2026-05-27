@@ -1,83 +1,21 @@
 from __future__ import annotations
+import functools
+import math
 
+from adarl.utils.dbg.dbg_checks import dbg_check_size
 import numpy as np
 import time
-import cv2
-import collections
-from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, Literal, TypeVar
+from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, TypeVar, Sequence
 import os
 import quaternion
-import datetime
 import tqdm
-import random
-import multiprocessing
-import csv
-import sys
-import importlib
-import traceback
 
 import adarl.utils.dbg.ggLog as ggLog
-import traceback
-import xacro
 import torch as th
-import subprocess
-import re
-from typing import TypedDict
+from dataclasses import dataclass
+from adarl.utils.base_utils import *
+import functools
 import gymnasium as gym
-
-name_to_dtypes = {
-    "rgb8":    (np.uint8,  3),
-    "rgba8":   (np.uint8,  4),
-    "rgb16":   (np.uint16, 3),
-    "rgba16":  (np.uint16, 4),
-    "bgr8":    (np.uint8,  3),
-    "bgra8":   (np.uint8,  4),
-    "bgr16":   (np.uint16, 3),
-    "bgra16":  (np.uint16, 4),
-    "mono8":   (np.uint8,  1),
-    "mono16":  (np.uint16, 1),
-
-    # for bayer image (based on cv_bridge.cpp)
-    "bayer_rggb8":  (np.uint8,  1),
-    "bayer_bggr8":  (np.uint8,  1),
-    "bayer_gbrg8":  (np.uint8,  1),
-    "bayer_grbg8":  (np.uint8,  1),
-    "bayer_rggb16": (np.uint16, 1),
-    "bayer_bggr16": (np.uint16, 1),
-    "bayer_gbrg16": (np.uint16, 1),
-    "bayer_grbg16": (np.uint16, 1),
-
-    # OpenCV CvMat types
-    "8UC1":    (np.uint8,   1),
-    "8UC2":    (np.uint8,   2),
-    "8UC3":    (np.uint8,   3),
-    "8UC4":    (np.uint8,   4),
-    "8SC1":    (np.int8,    1),
-    "8SC2":    (np.int8,    2),
-    "8SC3":    (np.int8,    3),
-    "8SC4":    (np.int8,    4),
-    "16UC1":   (np.uint16,   1),
-    "16UC2":   (np.uint16,   2),
-    "16UC3":   (np.uint16,   3),
-    "16UC4":   (np.uint16,   4),
-    "16SC1":   (np.int16,  1),
-    "16SC2":   (np.int16,  2),
-    "16SC3":   (np.int16,  3),
-    "16SC4":   (np.int16,  4),
-    "32SC1":   (np.int32,   1),
-    "32SC2":   (np.int32,   2),
-    "32SC3":   (np.int32,   3),
-    "32SC4":   (np.int32,   4),
-    "32FC1":   (np.float32, 1),
-    "32FC2":   (np.float32, 2),
-    "32FC3":   (np.float32, 3),
-    "32FC4":   (np.float32, 4),
-    "64FC1":   (np.float64, 1),
-    "64FC2":   (np.float64, 2),
-    "64FC3":   (np.float64, 3),
-    "64FC4":   (np.float64, 4)
-}
-
 
 numpy_to_torch_dtype_dict = {
     bool          : th.bool,
@@ -96,40 +34,7 @@ numpy_to_torch_dtype_dict.update({np.dtype(npd):td for npd,td in numpy_to_torch_
 
 torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
 
-class AverageKeeper:
-    def __init__(self, bufferSize = 100):
-        self._bufferSize = bufferSize
-        self.reset()
 
-    def addValue(self, newValue):
-        self._buffer.append(newValue)
-        self._all_time_sum += newValue
-        self._all_time_count += 1
-        self._avg = float(sum(self._buffer))/len(self._buffer)
-        self._all_time_avg = self._all_time_sum/self._all_time_count
-
-    def getAverage(self, all_time : bool = False):
-        if all_time:
-            return self._all_time_avg
-        else:
-            return self._avg
-
-    def reset(self):
-        self._buffer = collections.deque(maxlen=self._bufferSize)
-        self._avg = 0.0
-        self._all_time_sum = 0.0
-        self._all_time_count = 0.0
-        self._all_time_avg = 0.0
-
-    def __enter__(self):
-        self._t0 = time.monotonic()
-    
-    def __exit__(self, exc_type, exc_val, exc_t):
-        self.addValue(time.monotonic()-self._t0)
-
-
-
-from dataclasses import dataclass
 
 
 T = TypeVar('T')
@@ -220,29 +125,11 @@ class LinkState:
 
 
 
-def createSymlink(src, dst):
-    try:
-        os.symlink(src, dst)
-    except FileExistsError:
-        try:
-            os.unlink(dst)
-            time.sleep(random.random()*10) #TODO: have a better way to avoid race conditions
-            os.symlink(src, dst)
-        except:
-            pass
 
 
 
     
 
-def puttext_cv(img, string, origin, rowheight, fontScale = 0.5, color = (255,255,255)):
-    for i, line in enumerate(string.split('\n')):
-        cv2.putText(img,
-                    text = line,
-                    org=(origin[0],int(origin[1]+rowheight*i)),
-                    fontFace=cv2.FONT_HERSHEY_PLAIN,
-                    fontScale = fontScale,
-                    color = color)
 
 
 
@@ -323,29 +210,41 @@ def evaluatePolicy(env,
                         "predict_wall_duration_std" : np.std(predictWallDurations)}
     return eval_results
 
-
+# from rreal.algorithms.rl_agent import RLAgent
 def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
-                   model,
+                   model : "RLAgent | None",
                    episodes : int,
                    on_ep_done_callback : Callable[[float, int,int],Any] | None = None,
-                   predict_func : Optional[Callable[[Any], Tuple[Any,Any]]] = None,
+                   predict_func : Optional[Callable[[Any, bool], Tuple[Any,Any]]] = None,
                    progress_bar : bool = False,
                    images_return = None,
                    obs_return = None,
                    extra_info_stats : list[str] = [],
-                   deterministic : bool = False):
+                   deterministic : bool = False) -> Dict[str, float]:
     with th.no_grad():
-        if predict_func is None:
-            predict_func_ = model.predict
-        else:
+        if model is not None:
+            is_training = model.training
+            model.eval()
+            model_device = model.input_device()
+            from adarl.utils.tensor_trees import map_tensor_tree
+            def predict_func_(obs, deterministic : bool = False):
+                obs = map_tensor_tree(obs, lambda leaf: th.as_tensor(leaf, device=model_device))
+                return model.predict(obs, deterministic=deterministic)
+        elif predict_func is not None:
             predict_func_ = predict_func
-        buffsizes = episodes+vec_env.num_envs # may collect at most num_env excess episodes
+        else:
+            raise AttributeError(f"You must set either model or predict_func")
+        num_envs  = vec_env.unwrapped.num_envs
+        buffsizes = episodes+num_envs # may collect at most num_env excess episodes
         rewards = np.empty((buffsizes,), dtype = np.float32)
         durations_steps = np.empty((buffsizes,), dtype = np.int32)
         extra_stats = {k:np.empty((buffsizes,), dtype = np.float32) for k in extra_info_stats}
-        successes = np.empty((buffsizes,), dtype = np.int32)
+        successes = np.zeros((buffsizes,), dtype = np.int32)
         collected_eps = 0
         collected_steps = 0
+        used_num_envs = math.gcd(episodes, num_envs)
+        if used_num_envs < num_envs:
+            ggLog.warn(f"evaluatePolicyVec: Using only {used_num_envs} envs out of {num_envs} to avoid bias in episode statistics (eval episodes={episodes})")
         #frames = []
         #do an average over a bunch of episodes
         if not progress_bar:
@@ -353,30 +252,43 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
         else:
             maybe_tqdm = tqdm.tqdm
 
-        running_rews = [0] * vec_env.num_envs
-        running_durations = [0] * vec_env.num_envs
+        running_rews = [0] * used_num_envs
+        running_durations = [0] * used_num_envs
         if obs_return is not None:
-            running_obss = [[] for i in range(vec_env.num_envs)]
+            running_obss = [[] for i in range(used_num_envs)]
         t0 = time.monotonic()
+        tot_step_time = 0.0
+        tot_pred_time = 0.0
+        term_count = 0
+        trunc_count = 0
         obss, infos = vec_env.reset()
         while collected_eps < episodes:
+            ts0 = time.monotonic()
             acts, _states = predict_func_(obss, deterministic = deterministic)
+            ts1 = time.monotonic()
             obss, rews, terms, truncs, infos = vec_env.step(acts)
-            collected_steps += vec_env.num_envs
-            for i in range(vec_env.num_envs):
+            ts2 = time.monotonic()
+            collected_steps += used_num_envs
+            # ggLog.info(f"Eval: collected steps = {collected_steps}, collected eps = {collected_eps}")
+            for i in range(used_num_envs):
                 running_rews[i] += rews[i]
                 running_durations[i] += 1
                 if obs_return is not None:
                     running_obss[i].append(obss[i])
                 if terms[i] or truncs[i]:
-                    rewards[collected_eps] = running_rews[i]
+                    if terms[i]:
+                        term_count+=1
+                    if truncs[i]:
+                        trunc_count+=1
+                    tot_reward = running_rews[i].sum()
+                    rewards[collected_eps] = tot_reward
                     durations_steps[collected_eps] = running_durations[i]
                     for k in extra_stats:
                         extra_stats[k][collected_eps] = infos[k][i]
                     if obs_return is not None:
                         obs_return.append(running_obss[i])
                     if on_ep_done_callback is not None:
-                        on_ep_done_callback(episodeReward=running_rews[i], steps=running_durations[i], episode=collected_eps)
+                        on_ep_done_callback(episodeReward=tot_reward, steps=running_durations[i], episode=collected_eps)
                     if "success" in infos.keys():
                         successes[collected_eps] = 1 if infos["success"][i] else 0
                     running_durations[i] = 0
@@ -384,344 +296,28 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
                     if obs_return is not None:
                         running_obss[i] = []
                     collected_eps += 1
+            ts3 = time.monotonic()
+            tot_step_time += ts2 - ts1
+            tot_pred_time += ts1 - ts0
+
         tf = time.monotonic()
         eval_results = {"reward_mean" : np.mean(rewards[:episodes]),
                         "reward_std" : np.std(rewards[:episodes]),
                         "steps_mean" : np.mean(durations_steps[:episodes]),
                         "steps_std" : np.std(durations_steps[:episodes]),
-                        "success_ratio" : sum(successes[:episodes])/episodes,
+                        "success_ratio" : np.sum(successes[:episodes])/episodes,
                         "fps" : collected_steps/(tf-t0),
                         "collected_steps" : collected_steps,
-                        "collected_episodes" : collected_eps}
+                        "collected_episodes" : collected_eps,
+                        "avg_pred_time" : tot_pred_time/(collected_steps/used_num_envs),
+                        "avg_step_time" : tot_step_time/(collected_steps/used_num_envs),
+                        "terminal_count" : term_count,
+                        "truncation_count" : trunc_count}
         eval_results.update({f"{k}_mean":np.mean(v[:episodes]) for k,v in extra_stats.items()})
         eval_results.update({f"{k}_std":np.std(v[:episodes]) for k,v in extra_stats.items()})
+        if model is not None:
+            model.train(is_training)
     return eval_results
-
-def fileGlobToList(fileGlobStr : str):
-    """Convert a file path glob (i.e. a file path ending with *) to a list of files
-
-    Parameters
-    ----------
-    fileGlobStr : str
-        a string representing a path, possibly with an asterisk at the end
-
-    Returns
-    -------
-    List
-        A list of files
-    """
-    if fileGlobStr.endswith("*"):
-        folderName = os.path.dirname(fileGlobStr)
-        fileNamePrefix = os.path.basename(fileGlobStr)[:-1]
-        files = []
-        for f in os.listdir(folderName):
-            if f.startswith(fileNamePrefix):
-                files.append(f)
-        files = sorted(files, key = lambda x: int(x.split("_")[-2]))
-        fileList = [folderName+"/"+f for f in files]
-        numEpisodes = 1
-    else:
-        fileList = [fileGlobStr]
-    return fileList
-
-
-
-def evaluateSavedModels(files : List[str], evaluator : Callable[[str],Dict[str,Union[float,int,str]]], maxProcs = int(multiprocessing.cpu_count()/2), args = []):
-    # file paths should be in the format ".../<__file__>/<run_id>/checkpoints/<model.zip>"
-    loaded_run_id = files[0].split("/")[-2]
-    run_id = "eval_of_"+loaded_run_id+"_at_"+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-    folderName = os.getcwd()+"/"+os.path.basename(__file__)+"/eval/"+run_id
-    os.makedirs(folderName)
-    csvfilename = folderName+"/evaluation.csv"
-    with open(csvfilename,"w") as csvfile:
-        csvwriter = csv.writer(csvfile, delimiter = ",")
-        neverWroteToCsv = True
-
-        processes = maxProcs
-        # print(f"Using {processes} parallel evaluators")
-        argss = [[file,*args] for file in files]
-        with multiprocessing.Pool(processes) as p:
-            eval_results = p.map(evaluator, argss)
-
-        for i in range(len(argss)):
-            eval_results[i]["file"] = argss[i][0]
-
-        if neverWroteToCsv:
-            csvwriter.writerow(eval_results[0].keys())
-            neverWroteToCsv = False
-        for eval_results in eval_results:
-            csvwriter.writerow(eval_results.values())
-            csvfile.flush()
-
-
-
-class RequestFailError(Exception):
-    def __init__(self, message, partialResult):            
-        super().__init__(message)
-        self.partialResult = partialResult
-
-
-
-def pkgutil_get_path(package, resource = None)  -> str:
-    """ Modified version from pkgutil.get_data """
-
-    spec = importlib.util.find_spec(package)
-    if spec is None:
-        raise FileNotFoundError(f"Could not spec for package for ({package}, {resource})")
-    # loader = spec.loader
-    # if loader is None or not hasattr(loader, 'get_data'):
-    #     return None # If this happens, maybe __init__.py is missing?
-    # XXX needs test
-    mod = (sys.modules.get(package) or
-           importlib._bootstrap._load(spec))
-    if mod is None or not hasattr(mod, '__file__'):
-        raise FileNotFoundError(f"Could not __file__ for package for ({package}, {resource})")
-    
-    if resource is None:
-        return os.path.dirname(mod.__file__)
-
-    # Modify the resource name to be compatible with the loader.get_data
-    # signature - an os.path format "filename" starting with the dirname of
-    # the package's __file__
-    parts = resource.split('/')
-    parts.insert(0, os.path.dirname(mod.__file__))
-    resource_name = os.path.join(*parts)
-    return resource_name.replace("//","/")
-
-def exc_to_str(exception):
-    # return '\n'.join(traceback.format_exception(etype=type(exception), value=exception, tb=exception.__traceback__))
-    return '\n'.join(traceback.format_exception(exception, value=exception, tb=exception.__traceback__))
-
-
-
-
-
-
-
-
-
-
-
-
-# # TODO: move these in adarl_ros
-
-def ros1_image_to_numpy(rosMsg) -> np.ndarray:
-    """Extracts an numpy/opencv image from a ros sensor_msgs image
-
-    Parameters
-    ----------
-    rosMsg : sensor_msgs.msg.Image
-        The ros image message
-
-    Returns
-    -------
-    np.ndarray
-        The numpy array contaning the image. Compatible with opencv
-
-    Raises
-    -------
-    TypeError
-        If the input image encoding is not supported
-
-    """
-    import sensor_msgs
-    import sensor_msgs.msg
-
-    if rosMsg.encoding not in name_to_dtypes:
-        raise TypeError('Unrecognized encoding {}'.format(rosMsg.encoding))
-
-    dtype_class, channels = name_to_dtypes[rosMsg.encoding]
-    dtype = np.dtype(dtype_class)
-    dtype = dtype.newbyteorder('>' if rosMsg.is_bigendian else '<')
-    shape = (rosMsg.height, rosMsg.width, channels)
-
-    data = np.frombuffer(rosMsg.data, dtype=dtype).reshape(shape)
-    data.strides = (
-        rosMsg.step,
-        dtype.itemsize * channels,
-        dtype.itemsize
-    )
-
-    if not np.isfinite(data).all():
-        ggLog.warn(f"ros1_image_to_numpy(): nan detected in image")
-
-
-
-    # opencv uses bgr instead of rgb
-    # probably should be done also for other encodings
-    if rosMsg.encoding == "rgb8":
-        data = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
-
-    if channels == 1:
-        data = data[...,0]
-    return data
-
-def numpyImg_to_ros1(img : np.ndarray):
-    """
-    """
-    import sensor_msgs.msg
-    if img.shape[2] == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-    rosMsg = sensor_msgs.msg.Image()
-    rosMsg.data = img.tobytes()
-    rosMsg.step = img.strides[0]
-    rosMsg.is_bigendian = (img.dtype.byteorder == '>')
-    rosMsg.height = img.shape[0]
-    rosMsg.width = img.shape[1]
-
-    if img.shape[2] == 3:
-        rosMsg.encoding = "rgb8"
-    elif img.shape[2] == 1:
-        rosMsg.encoding = "mono8"
-    else:
-        raise RuntimeError(f"unable to determine image type, shape = {img.shape}")
-    return rosMsg
-
-
-def buildRos1PoseStamped(position_xyz, orientation_xyzw, frame_id):
-    import geometry_msgs.msg
-
-    pose = geometry_msgs.msg.PoseStamped()
-    pose.header.frame_id = frame_id
-    pose.pose.position.x = position_xyz[0]
-    pose.pose.position.y = position_xyz[1]
-    pose.pose.position.z = position_xyz[2]
-    pose.pose.orientation.x = orientation_xyzw[0]
-    pose.pose.orientation.y = orientation_xyzw[1]
-    pose.pose.orientation.z = orientation_xyzw[2]
-    pose.pose.orientation.w = orientation_xyzw[3]
-    return pose
-
-
-
-class MoveFailError(Exception):
-    def __init__(self, message):            
-        super().__init__(message)
-
-def string_find(string : str, keywords : list[str], reverse = False):
-    for k in keywords:
-        if reverse:
-            pos = string.rfind(k)
-        else:
-            pos = string.find(k)
-        if pos != -1:
-            return pos
-    return -1
-
-def find_string_limits(text, pos):
-    """ Assuming pos indicates a character in a string in text (string meaning a substringh delimited by quotes),
-      this function fninds the position of the delimiters, i.e. the quotes"""
-    start = string_find(text[:pos+1], ["\"","'"], reverse=True)
-    end = string_find(text[start+1:], [text[start]])+start+1
-    return start, end
-
-
-def _fix_urdf_subst_find_paths(urdf_string : str):
-    done = False
-    pos = 0
-    while not done:
-        subst_start = urdf_string.find("$(", pos)
-        # ggLog.info(f"Got match at {subst_start} : {urdf_string[subst_start:subst_start+20]}...")
-        if subst_start != -1:
-            subst_end = urdf_string.find(")",subst_start)
-            subst_inner = urdf_string[subst_start+2:subst_end] # Get the part inside the parentheses 
-            parts = [p for p in subst_inner.split(" ") if len(p)>0]
-            # ggLog.info(f"Got parts {parts}")
-            if parts[0] == "find":
-                pkg_name = parts[1]
-                # ggLog.info(f"Found $(find {pkg_name})")
-                import rospkg
-                try:
-                    pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name)) # get ROS package
-                except rospkg.common.ResourceNotFound as e:
-                    pkg_path = pkgutil_get_path(pkg_name) # get generic python package
-                full_subst = urdf_string[subst_start:subst_end+1]
-                # ggLog.info(f"Replacing {full_subst} with {[pkg_path]}")
-                urdf_string = urdf_string.replace(full_subst,pkg_path) # could be done more efficiently...
-                pos = subst_start+len(pkg_path)
-            else:
-                pos = subst_start+1
-        else:
-            done = True
-    return urdf_string
-
-
-def _fix_urdf_package_paths(urdf_string : str):
-    done = False
-    pos = 0
-    while not done:
-        keyword = "package://"
-        keyword_start = urdf_string.find(keyword, pos)
-        # ggLog.info(f"Got match at {keyword_start} : {urdf_string[keyword_start:keyword_start+20]}...")
-        if keyword_start != -1:
-            path_start, path_end = find_string_limits(urdf_string, keyword_start)
-            original_path = urdf_string[path_start+1:path_end]
-            # ggLog.info(f"Resolving path in [{path_start},{path_end}]: '{original_path}'")
-            split_path = original_path.split("/")
-            pkg_name = split_path[2]
-            import rospkg
-            try:
-                pkg_path = os.path.abspath(rospkg.RosPack().get_path(pkg_name))
-            except rospkg.common.ResourceNotFound as e:
-                pkg_path = pkgutil_get_path(pkg_name) # get egenric python package
-            abs_path = pkg_path+"/"+"/".join(split_path[3:])
-            # ggLog.info(f"pkg_path: {pkg_path}")
-            urdf_string = urdf_string.replace(original_path,abs_path) # could be done more efficiently...
-            pos = path_start+len(abs_path)
-            # ggLog.info(f"Fixed to {urdf_string[path_start-5:path_start+len(abs_path)+5]}")
-        else:
-            done = True
-    return urdf_string
-
-def _fix_urdf_ros_paths(urdf_string):
-    urdf_string = _fix_urdf_package_paths(urdf_string)
-    urdf_string = _fix_urdf_subst_find_paths(urdf_string)
-    return urdf_string
-
-def compile_xacro_string(model_definition_string, model_kwargs = None):
-    xacro_args = {"output":None, "just_deps":False, "xacro_ns":True, "verbosity":1}
-    mappings = {}
-    if model_kwargs is not None:
-        mappings.update(model_kwargs) #mappings should be in the form {'from':'to'}
-    mappings = {k:str(v) for k,v in mappings.items()}
-    # ggLog.info(f"Xacro args = {xacro_args}")
-    # ggLog.info(f"Input xacro: \n{model_definition_string}")
-    model_definition_string = _fix_urdf_ros_paths(model_definition_string)
-    doc = xacro.parse(model_definition_string)
-    xacro.process_doc(doc, mappings = mappings, **xacro_args)
-    model_definition_string = doc.toprettyxml(indent='  ', encoding="utf-8").decode('UTF-8')
-    return model_definition_string
-
-import adarl.adapters.BaseAdapter
-def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : adarl.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
-    call_time = time.monotonic()
-    last_warn_time = call_time
-    while True:
-        gottenStuff, missingStuff = getterFunction()
-        if len(missingStuff)==0:
-            return gottenStuff
-        else:
-            t = time.monotonic()
-            if t-call_time >= blocking_timeout_sec:
-                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
-                                    partialResult=gottenStuff)
-            else:
-                if t - last_warn_time > 0.1:
-                    last_warn_time = t
-                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
-                env_controller.run(step_duration_sec)
-
-
-
-
-def isinstance_noimport(obj, class_names):
-    if isinstance(class_names, str):
-        class_names = [class_names]
-    return type(obj).__name__ in class_names
-
-
-
 
 
 def pyTorch_makeDeterministic(seed):
@@ -730,14 +326,65 @@ def pyTorch_makeDeterministic(seed):
         HARDWARE ARCHITECTURES
     """
     import torch as th
-    th.manual_seed(seed)
+    import random
+    random.seed(seed)
     np.random.seed(seed)
+    th.manual_seed(seed)
+    th.backends.cudnn.deterministic = True
+
     # print(f"Seed set to {seed}")
     # time.sleep(10)
     th.backends.cudnn.benchmark = False
     th.use_deterministic_algorithms(True)
     # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+
+
+def list_gpus():
+    import pynvml
+    pynvml.nvmlInit()
+    count = pynvml.nvmlDeviceGetCount()
+    gpus = []
+
+    for i in range(count):
+        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+
+        name = pynvml.nvmlDeviceGetName(handle)
+        uuid = pynvml.nvmlDeviceGetUUID(handle)
+
+        # CUDA support
+        try:
+            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+            cuda_supported = True
+            compute_capability = f"{major}.{minor}"
+        except pynvml.NVMLError:
+            cuda_supported = False
+            compute_capability = None
+
+        # VRAM
+        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        total_vram = mem.total          # bytes
+        free_vram = mem.free            # bytes
+        used_vram = mem.used            # bytes
+        pci_bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
+
+        gpus.append({
+            "index": i,
+            "name": name,
+            "uuid": uuid,
+            "cuda_supported": cuda_supported,
+            "compute_capability": compute_capability,
+            "total_vram": total_vram,
+            "free_vram": free_vram,
+            "used_vram": used_vram,
+            "pci_bus_id": pci_bus_id
+        })
+
+    return gpus
+
+def get_gpu_names():
+    return [gpu['name'] for gpu in list_gpus()]
 
 def getBestGpu(seed ):
     import torch as th
@@ -748,22 +395,21 @@ def getBestGpu(seed ):
         gpus_mem_info.append(th.cuda.mem_get_info()) #Returns [free, total]
         th.cuda.set_device(prevDev)
         # print(f"Got {gpus_mem_info[-1]}")
+    gpu_infos = list_gpus()
 
     bestRatio = 0
-    bestGpu = None
-    ratios = [0.0]*len(gpus_mem_info)
-    for i in range(len(gpus_mem_info)):
-        tot = gpus_mem_info[i][1]
-        free = gpus_mem_info[i][0]
+    ratios = [0.0]*len(gpu_infos)
+    for i in range(len(gpu_infos)):
+        tot = gpu_infos[i]['total_vram']
+        free = gpu_infos[i]['free_vram']
         ratio = free/tot
         ratios[i] = ratio
         if ratio > bestRatio:
             bestRatio = ratio
-            bestGpu = i
 
     # Look for the gpus that are within 10% of the best one
     candidates = []
-    for i in range(len(gpus_mem_info)):
+    for i in range(len(gpu_infos)):
         if ratios[i] - bestRatio < 0.1:
             candidates.append(i)
     
@@ -785,14 +431,252 @@ def obs_to_tensor(obs) -> Union[th.Tensor, Dict[Any, th.Tensor]]:
         return {k:obs_to_tensor(v) for k,v in obs.items()}
     else:
         return th.as_tensor(obs)
+
+
+
+def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_val = 1) -> np.ndarray:
+    if isinstance(img_chw_rgb, np.ndarray):
+        imgTorch = th.as_tensor(img_chw_rgb)
+    else:
+        imgTorch = img_chw_rgb
+    if len(imgTorch.size())==2:
+        imgTorch = imgTorch.unsqueeze(0)
+    if imgTorch.size()[0] not in [1,3,4]:
+        imgTorch = imgTorch.permute(2,0,1) # hwc to chw
+
+    channels = imgTorch.size()[0]
+    if channels == 1:
+        imgTorch = imgTorch.repeat((3,1,1))
+    elif channels == 3:
+        imgTorch = imgTorch
+    else:
+        raise AttributeError(f"Unsupported image shape {imgTorch.size()}")
     
+    if imgTorch.dtype in (th.float32, th.float64):
+        imgTorch = (imgTorch + (-min_val))/(max_val-min_val) * 255
+        imgTorch = imgTorch.to(dtype=th.uint8)
+    elif imgTorch.dtype == th.uint8:
+        pass
+    else:
+        raise AttributeError(f"Unsupported image dtype {imgTorch.dtype}")
+
+    imgTorch = imgTorch[[2,1,0]] # rgb to bgr
+    imgTorch = imgTorch.permute(1,2,0)
+    imgCv = imgTorch.cpu().numpy()
+    return imgCv
+
+
+
+def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.Generator):
+    return th.randn(size=t.size(),
+                    generator=generator,
+                    dtype=t.dtype,
+                    device=t.device)*std + mu
+
+def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator | None,
+                     squash_sigma : float = -1.0,
+                     size : Sequence[int] | None = None):    
+    if th.compiler.is_compiling():
+        generator = None
+    if size is None:
+        size = mu_std[0].size()
+    noise =  th.randn(size=size,
+                    generator=generator,
+                    dtype=mu_std.dtype,
+                    device=mu_std.device)
+    if squash_sigma > 0:
+        if squash_sigma < 1.5:
+            ggLog.warn(f"Using randn squashing with squash_sigma={squash_sigma}. This may lead to a non-concave distribution!")
+        noise = th.tanh(noise/(squash_sigma))*squash_sigma
+    return noise*mu_std[1] + mu_std[0]
+
+def to_string_tensor(strings : list[str] | np.ndarray, max_string_len : int = 32):
+    return th.as_tensor([list(n.encode("utf-8").ljust(max_string_len)[:max_string_len]) for n in strings], dtype=th.uint8) # ugly, but simple
+
+
+def pretty_print_tensor_map(thmap : Mapping[str,th.Tensor]):
+    n = "\n"
+    return n.join([f"{k}:{v.cpu().tolist() if v.numel()<100 else v}" for k,v in thmap.items()])
+
+
+def hash_tensor(tensor):
+    return hash(tuple(tensor.reshape(-1).tolist()))
+
+def conditioned_assign(original : th.Tensor, do_copy : th.Tensor, newvalues : th.Tensor | float | int):
+    """Copy newvalues into original only if do_copy is True
+
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    do_copy : th.Tensor
+        _description_
+    newvalues : th.Tensor | float | int
+        _description_
+    """
+    masked_assign(original.unsqueeze(0), do_copy.view(-1), newvalues)
+
+def expand_tensor_into_lower_dims(tensor : th.Tensor, target_size : th.Size) -> th.Tensor:
+    # Expand the tensor in the (reversed) upper dimensions
+    tensor = tensor.expand(target_size[::-1])
+    # Permute the dimensions to restore the required order
+    tensor = tensor.permute(*list(range(tensor.ndim - 1, -1, -1))) # using torch arange brings a tensor-list conversion and dynamo is not happy with it
+    return tensor
+
+def masked_assign(original : th.Tensor, row_mask : th.Tensor, newvalues : th.Tensor | float | int | bool, inplace : bool = True):
+    """Inplace assign values to the original tensor, in locations defined by mask.
+        newvalues must have the same shape as original.
+        Should equivalent to:
+            original[row_mask] = newvalues[row_mask]
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    mask : th.Tensor
+        _description_
+    newvalues : th.Tensor
+        _description_
+    """
+    if not isinstance(newvalues, th.Tensor):
+        newvalues = th.as_tensor(newvalues)
+    # ggLog.info(f"mask.size() = {row_mask.size()}")
+    # ggLog.info(f"newvalues.size() = {newvalues.size()}")
+    # ggLog.info(f"moriginalask.size() = {original.size()}")
+    if len(row_mask.size()) != 1 or row_mask.size()[0] != original.size()[0]:
+        raise RuntimeError(f"row_mask must be of size ({(original.size()[0],)}), but it is {row_mask.size()}")
+    # mask = row_mask.expand(original.size()[::-1]).T # expand the row mask into lower dimension (like a reverse broadcast)
+    mask = expand_tensor_into_lower_dims(row_mask, original.size())
+    if inplace:
+        th.where(mask,
+                newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"), # nonblocking is unsafe for transfers to cpu
+                original,
+                out=original)
+        return original
+    else:
+        return th.where(mask, newvalues, original)
+
+def masked_assign_sc(original : th.Tensor, mask : th.Tensor, newvalues : th.Tensor | float | int):
+    """Inplace assign values to the original tensor, in locations defined by mask.
+        At the first dimension newvalues must have the same size as thee are True values in mask,
+         so it must be that newvalues.size()=(mask.count_nonzero(),)+original.size()[1:]. Or it
+        must be broadcastable to it.
+        Should equivalent to:
+            original[mask] = newvalues
+    Parameters
+    ----------
+    original : th.Tensor
+        _description_
+    mask : th.Tensor
+        _description_
+    newvalues : th.Tensor
+        _description_
+    """
+    if not isinstance(newvalues, th.Tensor):
+        newvalues = th.as_tensor(newvalues)
+    original.masked_scatter_(mask, 
+                             newvalues.to(device=original.device, non_blocking=original.device.type == "cuda"))
+
+
+def move_masked_to_start(tensor : th.Tensor, row_mask : th.Tensor, out : th.Tensor | None = None):
+    """Make a tensor where the rows of tensor where row_mask is True are moved to the start.
+        This does not incur in CUDA syncs.
+
+    Parameters
+    ----------
+    tensor : th.Tensor
+        tensor to take the rows from
+    row_mask : th.Tensor
+        Mask defining which rows to move
+
+    Raises
+    ------
+    RuntimeError
+        _description_
+    """
+    # We create and indexing tensor that says where to place each element of tensor into out
+    # So each index 3 of i says in what row of out the row 3 of tensor must go
+    # In all the places where row_mask is False, we put -1, so that all those rows are placed in the last element of out,
+    # in this way we always put the last element of tensor in the last element of out, which is always correct.
+    i = th.where(row_mask, row_mask.cumsum(0)-1, -1)
+    if out is None:
+        out = th.zeros_like(tensor)
+    out.index_put_((i,), tensor)
+    return out
+
+def masked_to_masked_assign(dest_tensor : th.Tensor, dest_row_mask : th.Tensor, src_tensor : th.Tensor, src_row_mask : th.Tensor):
+    """Inplace assign values from src_tensor to dest_tensor, in locations defined by src_mask and dest_mask.
+        The result is the same as doing:
+            dest_tensor[dest_mask] = src_tensor[src_mask]
+        However this does not incur in CUDA syncs.
+        If the number of True values in src_mask is different from the number of True values in dest_mask,
+        the extra elements are ignored, following their order along the zero dimension.
+
+    Parameters
+    ----------
+    dest_tensor : th.Tensor
+        _description_
+    dest_mask : th.Tensor
+        _description_
+    src_tensor : th.Tensor
+        _description_
+    src_mask : th.Tensor
+        _description_
+
+    Returns
+    -------
+    th.Tensor
+        The mask indicating which elements where actually set
+    """
+    dbg_check_size(dest_row_mask, (dest_tensor.size()[0],), "dest_mask must be 1D and have the same size as dest_tensor first dimension")
+    dbg_check_size(src_row_mask, (src_tensor.size()[0],),   "src_mask must be 1D and have the same size as src_tensor first dimension")
+    reordered_src = move_masked_to_start(src_tensor, src_row_mask) # move the selected rows to the start
+    src_elements_count = th.count_nonzero(src_row_mask)
+    clamped_dest_mask = th.logical_and(dest_row_mask, dest_row_mask.cumsum(0)<=src_elements_count) # clamp the dest mask to the number of available elements in src
+    mask = expand_tensor_into_lower_dims(clamped_dest_mask, dest_tensor.size())
+    dest_tensor.masked_scatter_(mask, reordered_src) # Move the selected rows to the destination
+    return clamped_dest_mask
+
+_T = TypeVar('_T', float, th.Tensor)
+
+def unnormalize(v : _T, min : _T, max : _T) -> _T:
+    return min+(v+1)/2*(max-min)
+
+def normalize(value : _T, min : _T, max : _T):
+    return (value + (-min))/(max-min)*2-1
+
+
+
+
+# -----------------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------------
+#                                                     GEOMETRY
+# -----------------------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
 @th.jit.script
-def vector_projection(v1,v2):
+def vector_projection(v1 : th.Tensor, v2 : th.Tensor, eps : float = 1e-8):
     """Project v1 onto the direction of v2
     """
-    return th.dot(v1,v2/v2.norm())*v2/v2.norm()
+    # print(f"v1.size() = {v1.size()}")
+    # print(f"v2.size() = {v2.size()}")
+    # print(f"th.linalg.norm(v2, dim = -1, keepdim=True).size() = {th.linalg.norm(v2, dim = -1, keepdim=True).size()}")
+    v2_norm = v2/th.linalg.norm(v2, dim = -1, keepdim=True)
+    # print(f"v2_norm.size() = {v2_norm.size()}")
+    # print(f"th.linalg.vecdot(v1,v2_norm, dim=-1).size() = {th.linalg.vecdot(v1,v2_norm, dim=-1).size()}")
+    return th.linalg.vecdot(v1,v2_norm, dim=-1).unsqueeze(-1)*(v2_norm + eps)
 
-
+def vectors_angle(v1 : th.Tensor, v2 : th.Tensor, eps : float = 1e-8):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+        angle = arccos( dot(v1, v2) / (||v1||*||v2||) )
+    """
+    v1_u = v1 / (th.linalg.norm(v1, dim=-1, keepdim=True) + eps)
+    v2_u = v2 / (th.linalg.norm(v2, dim=-1, keepdim=True) + eps)
+    return th.acos(th.clamp(th.linalg.vecdot(v1_u, v2_u, dim=-1), -1.0, 1.0))
 
 
 def quaternionDistance(q1 : quaternion.quaternion, q2 : quaternion.quaternion ):
@@ -818,20 +702,26 @@ def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
     else:
         return quat_xyzw
 
-def ros_rpy_to_quaternion_xyzw(rpy):
-    roll  = quaternion.from_rotation_vector([rpy[0], 0,      0])
-    pitch = quaternion.from_rotation_vector([0,      rpy[1], 0])
-    yaw   = quaternion.from_rotation_vector([0,      0,      rpy[2 ]])
+def ros_rpy_to_quaternion_xyzw_th(rpy):
+    rpy = th.as_tensor(rpy)
+    zero = th.zeros_like(rpy[...,0])
+    roll   = th.stack([th.sin(rpy[...,0]/2),    zero,                   zero,                   th.cos(rpy[...,0]/2)], dim=-1)
+    pitch  = th.stack([zero,                    th.sin(rpy[...,1]/2),   zero,                   th.cos(rpy[...,1]/2)], dim=-1)
+    yaw    = th.stack([zero,                    zero,                   th.sin(rpy[...,2]/2),   th.cos(rpy[...,2]/2)], dim=-1)
     # On fixed axes:
     # First rotate around x (roll)
     # Then rotate around y (pitch)
     # Then rotate around z (yaw)
-    q = yaw*pitch*roll
-    return q.x, q.y, q.z, q.w
+    r = quat_mul_xyzw(yaw, quat_mul_xyzw(pitch, roll))
+    return r
+
+def ros_rpy_to_quaternion_xyzw(rpy):
+    q = ros_rpy_to_quaternion_xyzw_th(rpy)
+    return q[0].item(), q[1].item(), q[2].item(), q[3].item()
 
 
 
-def quat_conjugate(quaternion_xyzw : np.ndarray | th.Tensor):
+def quat_conj_xyzw_np(quaternion_xyzw : np.ndarray | th.Tensor):
     if isinstance(quaternion_xyzw, th.Tensor):
         quaternion_xyzw = quaternion_xyzw.cpu()
     q = quaternion.from_float_array(quaternion_xyzw[...,[3,0,1,2]])
@@ -862,29 +752,49 @@ def th_quat_combine(q_applied_first_xyzw : th.Tensor, q_applied_second_xyzw : th
     return quat_mul_xyzw(q_applied_second_xyzw,q_applied_first_xyzw)
 
 def quat_mul_xyzw_np(q1_xyzw : np.ndarray, q2_xyzw : np.ndarray):
-    quat_mul_xyzw(th.as_tensor(q1_xyzw),
+    return quat_mul_xyzw(th.as_tensor(q1_xyzw),
                     th_quat_conj(th.as_tensor(q2_xyzw))).cpu().numpy()
-@th.jit.script
+# @th.jit.script
 def quat_mul_xyzw(q1_xyzw : th.Tensor, q2_xyzw : th.Tensor):
-    r1 = q1_xyzw[...,3]
+    """Performs a quaternion multiplication, computing, q1*q2, which is equivalent to rotating by q2 and then by q1
+
+    Parameters
+    ----------
+    q1_xyzw : th.Tensor
+        Quaternoin q1
+    q2_xyzw : th.Tensor
+        Quaternoin q2
+
+    Returns
+    -------
+    th.Tensor
+        Quaternoin q1*q2
+    """
+    r1 = q1_xyzw[...,3].unsqueeze(-1)
     v1 = q1_xyzw[...,0:3]
-    r2 = q2_xyzw[...,3]
+    r2 = q2_xyzw[...,3].unsqueeze(-1)
     v2 = q2_xyzw[...,0:3]
     q = th.empty_like(q1_xyzw)
-    q[...,3] = r1*r2 - th.dot(v1,v2)
-    q[...,0:3] = r1*v2 + r2*v1 + th.cross(v1,v2)
+    q[...,3] = r1[...,0]*r2[...,0] - th.linalg.vecdot(v1,v2)
+    q[...,0:3] = r1*v2 + r2*v1 + th.linalg.cross(v1,v2, dim=-1)
     return q
+
 
 @th.jit.script
 def th_quat_conj(q_xyzw : th.Tensor) -> th.Tensor:
     """Gives the inverse rotation of q, usually denoted q^-1 or q'. Note that q*q' = 1
     """
-    return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0], device=q_xyzw.device)
+    return q_xyzw*th.tensor([-1.0,-1.0,-1.0,1.0]).to(device=q_xyzw.device, non_blocking=q_xyzw.device.type=="cuda")
+
+
+def th_quat_rotate_py(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
+    vector_xyzw = th.cat([vector_xyz, th.zeros_like(vector_xyz[...,0].unsqueeze(-1))], dim=-1)
+    return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
 
 @th.jit.script
-def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor):
-    vector_xyzw = th.cat([vector_xyz, th.zeros(vector_xyz.size()[:-1]+(1,))], dim=-1)
-    return quat_mul_xyzw(quaternion_xyzw, quat_mul_xyzw(vector_xyzw, th_quat_conj(quaternion_xyzw)))[...,0:3]
+def th_quat_rotate(vector_xyz : th.Tensor, quaternion_xyzw : th.Tensor) -> th.Tensor:
+    return th_quat_rotate_py(vector_xyz=vector_xyz, quaternion_xyzw=quaternion_xyzw)
+
 
 @th.jit.script
 def quat_swing_twist_decomposition_xyzw(quat_xyzw : th.Tensor, axis_xyz : th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
@@ -926,195 +836,175 @@ def quat_angle_xyzw(q_xyzw : th.Tensor) -> th.Tensor:
     th.Tensor
         _description_
     """
-    return 2*th.atan2(th.norm(q_xyzw[0:3]),q_xyzw[3])
+    return 2*th.atan2(th.norm(q_xyzw[...,0:3], dim=-1),q_xyzw[...,3])
 
+def orthogonal_vec(v : th.Tensor):
+    minvals = th.amin(v, dim = -1)
+    # print(f"v.size() = {v.size()}")
+    # print(f"minvals.size() = {minvals.size()}")
+    minvals_expanded = minvals.unsqueeze(-1).expand_as(v)
+    # print(f"minvals_expanded = {minvals_expanded}")
+    minvals_locations = v==minvals_expanded
+    # print(f"minvals_locations = {minvals_locations}")
+    first_minvals_locations = th.logical_and(minvals_locations.cumsum(dim=-1)==1, minvals_locations)
+    # print(f"first_minvals = {first_minvals_locations}")
+    shortest_axis = first_minvals_locations.to(dtype=v.dtype)
+    # shortest_axis[v==minvals.unsqueeze(-1).expand_as(v)] = 1
+    # print(f"shortest_axis = {shortest_axis}")
+    # print(f"th.min(v, dim = -1) = {minvals}")
+    return th.linalg.cross(v,shortest_axis)
 
-def imgToCvIntRgb(img_chw_rgb : Union[th.Tensor, np.ndarray], min_val = -1, max_val = 1) -> np.ndarray:
-    if isinstance(img_chw_rgb, np.ndarray):
-        imgTorch = th.as_tensor(img_chw_rgb)
+def quat_xyzw_between_vecs_py(v1 : th.Tensor, v2 : th.Tensor):
+    """Get the quaternion rotation that brings v1 to v2.
+        e.g.: th_quat_rotate_py(unit_x, quat_xyzw_between_vecs_py(unit_x, th.as_tensor([-1.0,0,0]))) == tensor([-1.0,0.0,0.0]))
+    Parameters
+    ----------
+    v1 : th.Tensor
+        _description_
+    v2 : th.Tensor
+        _description_
+    """
+    quats_xyzw = th.zeros(size=v1.size()[:-1]+(4,), device=v1.device, dtype=v1.dtype)
+    vdot = th.linalg.vecdot(v1, v2)
+    k = th.linalg.norm(v1, dim = -1) * th.linalg.norm(v2, dim = -1)
+    if th.compiler.is_compiling():
+        quats_xyzw[...,:3] = th.linalg.cross(v1,v2) # th.compile does not like non-contiguous out tensors :(
     else:
-        imgTorch = img_chw_rgb
-    if len(imgTorch.size())==2:
-        imgTorch = imgTorch.unsqueeze(0)
-    if imgTorch.size()[0] not in [1,3,4]:
-        imgTorch = imgTorch.permute(2,0,1) # hwc to chw
+        th.linalg.cross(v1,v2, out=quats_xyzw[...,:3])
+    quats_xyzw[...,3] = k + vdot
+    flipped_vecs = vdot/k==-1
+    ortho_quats = th.zeros_like(quats_xyzw)
+    ortho_quats[...,:3] = orthogonal_vec(v1) # make quats that are orthogonal to v1 in the xyz components and zero in w
+    masked_assign(quats_xyzw.view(-1,4),
+                  flipped_vecs.view(-1),
+                  ortho_quats.view(-1,4))
+    # quats_xyzw[vdot/k==-1,:3] = orthogonal_vec(v1)[vdot/k==-1]
+    # quats_xyzw[vdot/k==-1,3] = 0
+    # print(f"vdot = {vdot}")
+    # print(f"k = {k}")
+    # print(f"vdot/k==-1 = {vdot/k==-1}")
+    # print(f"quats_xyzw = {quats_xyzw}")
+    # print(f"th.norm(quats_xyzw, dim=-1) = {th.norm(quats_xyzw, dim=-1)}")
+    # print(f"orthogonal_vec(v1) = {orthogonal_vec(v1)}")
+    return quats_xyzw/th.norm(quats_xyzw, dim=-1).unsqueeze(-1)
 
-    channels = imgTorch.size()[0]
-    if channels == 1:
-        imgTorch = imgTorch.repeat((3,1,1))
-    elif channels == 3:
-        imgTorch = imgTorch
-    else:
-        raise AttributeError(f"Unsupported image shape {imgTorch.size()}")
-    
-    if imgTorch.dtype in (th.float32, th.float64):
-        imgTorch = (imgTorch + (-min_val))/(max_val-min_val) * 255
-        imgTorch = imgTorch.to(dtype=th.uint8)
-    elif imgTorch.dtype == th.uint8:
-        pass
-    else:
-        raise AttributeError(f"Unsupported image dtype {imgTorch.dtype}")
-
-    imgTorch = imgTorch[[2,1,0]] # rgb to bgr
-    imgTorch = imgTorch.permute(1,2,0)
-    imgCv = imgTorch.cpu().numpy()
-    return imgCv
-
-def cpuinfo():
-    command = "cat /proc/cpuinfo"
-    all_info = subprocess.check_output(command, shell=True).decode().strip()
-    for line in all_info.split("\n"):
-        if "model name" in line:
-            return re.sub( ".*model name.*:", "", line,1)
-    return None
+# @th.jit.script
+# def quat_xyzw_between_vecs(v1 : th.Tensor, v2 : th.Tensor):
+#     return quat_xyzw_between_vecs_py(v1,v2)
 
 
-def quintic_pos(t, duration, pos_range, offset):
-    t = t/duration
-    # nicely shaped quintic curve goes from 0 to 1 for x going from 0 to 1
-    # zero first and second derivativeat 0 and 1
-    # max derivative at 0.5
-    # max second derivative at 0.5 +- (sqrt(3)/6)
-    pos = pos_range*t*t*t*(6*t*t - 15*t +10) + offset
-    return pos
 
-def quintic_vel(t, duration, pos_range):
-    b = 1/duration
-    vel = 30*pos_range*b*b*b*t*t*(b*b*t*t-2*b*t+1)
-    return vel
-
-def quintic_acc(t, duration, pos_range):
-    b = 1/duration
-    vel = 30*pos_range*b*b*b*t*t*(b*b*t*t-2*b*t+1)
-    return vel
-
-def quintic_tpva(t, duration, pos_range, offset):
-    s = (t,
-         quintic_pos(t, duration, pos_range, offset),
-         quintic_vel(t, duration, pos_range),
-         quintic_acc(t, duration, pos_range))
-    return s
-
-def compute_quintic(p0 : float, pf : float, max_vel : float, max_acc : float):
-    offset = p0
-    pos_range = pf-p0
-    duration_vel_lim = 15*pos_range/(max_vel*8)
-    duration_acc_lim = np.sqrt(10*pos_range)/(np.power(3,0.25)*np.sqrt(max_acc))
-    duration = max(duration_vel_lim, duration_acc_lim)
-    return duration, pos_range, offset
-
-def build_quintic_trajectory(p0 : float, v0 : float, pf : float, ctrl_freq_hz : float, max_vel : float, max_acc : float):
-    # TODO: implement v0 usage, maybe somehow scaling a shifting the quintic
-    duration, pos_range, offset = compute_quintic(p0 = p0, pf=pf, max_vel=max_vel, max_acc=max_acc)
-    samples_num = int(duration*ctrl_freq_hz+1)
-    traj_tpva = np.zeros(shape=(samples_num, 4), dtype=np.float32)
-    for i in range(samples_num):
-        t = i*1/ctrl_freq_hz
-        traj_tpva[i] = quintic_tpva(t, duration, pos_range, offset)
-    traj_tpva[-1] = duration, pf, 0, 0
-    return traj_tpva
+import adarl.adapters.BaseAdapter
+def getBlocking(getterFunction : Callable, blocking_timeout_sec : float, env_controller : adarl.adapters.BaseAdapter.BaseAdapter, step_duration_sec : float = 0.1) -> Dict[Tuple[str,str],Any]:
+    call_time = time.monotonic()
+    last_warn_time = call_time
+    while True:
+        gottenStuff, missingStuff = getterFunction()
+        if len(missingStuff)==0:
+            return gottenStuff
+        else:
+            t = time.monotonic()
+            if t-call_time >= blocking_timeout_sec:
+                raise RequestFailError(message=f"Failed to get data {missingStuff}. Got {gottenStuff}",
+                                    partialResult=gottenStuff)
+            else:
+                if t - last_warn_time > 0.1:
+                    last_warn_time = t
+                    ggLog.warn(f"Waiting for {missingStuff} since {t-call_time:.2f}s got {gottenStuff.keys()}")
+                env_controller.run(step_duration_sec)
 
 
-def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ctrl_freq_hz : float, max_vel : float, max_acc : float) -> np.ndarray:
-    """Generate a 1-dimensional trajectory, using a quintic (6x^51-15x^4+10x^3) position trajectory
-    and determining velocity and acceleration consequently. The trajectory will be scaled to respect 
-    the max_vel and max_acc arguments.
-    Usage of the v0 initial velocity is not implemented yet.
+def th_compile_ext(copy_outs : bool = False,
+                   just_graphit : bool = False,
+                   skip_eval_unsafe_warmup : int = 0,
+                   skip_eval_unsafe_manual_arg_guard : int = -1,
+                   *compile_args, **compile_kwargs):
+    """A wrapper for torch.compile that can automatically copy outputs, useful for problematic cudagraphs
 
     Parameters
     ----------
-    t0 : float
-        Start time
-    p0 : float
-        Start position
-    v0 : float
-        Start velocity (currently unused)
-    pf : float
-        End position
-    ctrl_freq_hz : float
-        Determines how many samples to generate.
-    max_vel : float
-        Maximum velocity to plan for.
-    max_acc : float
-        Maximum acceleration to plan for.
+    copy_outs : bool, optional
+        Whether to copy outputs, by default False
+    just_graphit : bool, optional
+        Use the graphit wrapper instead of torch.compile, which only does graph tracing and does not try to apply any optimization, 
+        it's however quite limited. By default False
+    skip_eval_unsafe_warmup : int, optional
+        If >0, the returned function will be wrapped with skip_eval_unsafe, and the 
+        guards will be skipped after skip_eval_unsafe_warmup calls, by default 0
 
     Returns
     -------
-    np.ndarray
-        Numpy array containing the trajectory samples in the form (time, position, velocity, acceleration)
-
+    Callable
+        A wrapped version of the original function that is compiled with torch.compile.
     """
-    # ggLog.info(f"build_1D_vramp_traj_samples("+ f"t0 = {t0}\n"
-    #                                             f"p0 = {p0}\n"
-    #                                             f"v0 = {v0}\n"
-    #                                             f"pf = {pf}\n"
-    #                                             f"ctrl_freq_hz = {ctrl_freq_hz}\n"
-    #                                             f"max_vel = {max_vel}\n"
-    #                                             f"max_acc = {max_acc}\n"
-    #                                             ")")
+    from adarl.utils.tensor_trees import clone_tensor_tree
+    # th._dynamo.utils.cmp_log()
+    # ggLog.info(f"th.compiler.is_compiling()={th.compiler.is_compiling()}, stacktrace={''.join(traceback.format_stack())}")
+    if just_graphit:
+        from adarl.utils.torch_graphing import graphit
+        disable = compile_kwargs.pop("disable", False)
+        return graphit(disable=disable)
+    else:
+        def compiling_decorator(func):
+            if th.compiler.is_compiling():
+                # If already compiling, do nothing
+                return func
+            else:
+                compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
+                if skip_eval_unsafe_warmup > 0:
+                    compiled_func = wrap_skip_eval_unsafe(compiled_func, warmup_runs=skip_eval_unsafe_warmup, manual_arg_guard=skip_eval_unsafe_manual_arg_guard)
+                if copy_outs:
+                    def compile_and_clone(*args, **kwargs):
+                        outs = compiled_func(*args, **kwargs)
+                        return clone_tensor_tree(outs, detach=False)
+                    return compile_and_clone
+                else:
+                    def compile(*args, **kwargs):
+                        return compiled_func(*args, **kwargs)                
+                    return compile
+    return compiling_decorator
 
-    d = abs(pf-p0)
-    if pf<p0:
-        v0 = -v0 # direction was flipped, so flip the velocity
-    trajectory_tpva = build_quintic_trajectory(0,v0,d,ctrl_freq_hz,max_vel, max_acc)
-    if pf < p0:
-        trajectory_tpva = [(t,-p,-v,-a) for t,p,v,a in trajectory_tpva]
-    trajectory_tpva = [(t+t0,p+p0,v,a) for t,p,v,a in trajectory_tpva]
-    trajectory_tpva = np.array(trajectory_tpva, dtype = np.float64)
 
-    traj_max_vel = np.max(np.abs(trajectory_tpva[:,2]))
-    if traj_max_vel > max_vel:
-        raise RuntimeError(f"Error computing trajectory, max_vel exceeded. traj_max_vel = {traj_max_vel} > {max_vel}")    
-    traj_max_acc = np.max(np.abs(trajectory_tpva[:,3]))
-    if traj_max_acc > max_acc:
-        raise RuntimeError(f"Error computing trajectory, max_acc exceeded. traj_max_acc = {traj_max_acc} > {max_acc}")
+_func_calls_counts : dict[tuple[Callable,Any], int] = {}
+def wrap_skip_eval_unsafe(func, warmup_runs : int, manual_arg_guard : int = -1):
+    """ Wraps the function with skip_eval_unsafe, so that after warmup_runs,
+        torch compile guards are skipped.
 
-    return trajectory_tpva
+    Parameters
+    ----------
+    func : Callable
+        function containing the torch compiled call
+    warmup_runs : int
+        How many times to run the function beforestrating to skip the guards.
+    manual_arg_guard : int, optional
+        If >=0, the argument at this position will be used as a guard key, so 
+        that the calls count will be tracked separately for each different value of this argument. This is useful if
+        the function is called with different argument values that should be treated independently (for example self
+        when it's a class method).
 
+    Returns
+    -------
+    Callable
+        The wrapped function
+    """
+    def wrapped(*args, **kwargs):
+        if manual_arg_guard >= 0:
+            guard_arg = args[manual_arg_guard]
+        else:
+            guard_arg = None
+        calls_count = _func_calls_counts.get((func, guard_arg), 0)
+        _func_calls_counts[(func, guard_arg)] = calls_count + 1         
+        if calls_count < warmup_runs:
+            return func(*args, **kwargs)
+        else:
+            # print(f"Skipping eval unsafe guards for {func} with guard_arg={guard_arg} after {calls_count} calls")
+            with th.compiler.set_stance(skip_guard_eval_unsafe=True):
+                return func(*args, **kwargs)
+    return wrapped
 
-def randn_like(t : th.Tensor, mu : th.Tensor, std : th.Tensor, generator  : th.Generator):
-    return th.randn(size=t.size(),
-                    generator=generator,
-                    dtype=t.dtype,
-                    device=t.device)*std + mu
-
-def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator,
-                     squash_sigma = -1):
-    noise =  th.randn(size=mu_std[0].size(),
-                    generator=generator,
-                    dtype=mu_std.dtype,
-                    device=mu_std.device)
-    if squash_sigma > 0:
-        noise = th.tanh(noise/(squash_sigma))*squash_sigma
-    return noise*mu_std[1] + mu_std[0]
-
-def to_string_tensor(strings : list[str] | np.ndarray, max_string_len : int = 32):
-    return th.as_tensor([list(n.encode("utf-8").ljust(max_string_len)[:max_string_len]) for n in strings], dtype=th.uint8) # ugly, but simple
-
-_T = TypeVar('_T', float, th.Tensor)
-
-def unnormalize(v : _T, min : _T, max : _T) -> _T:
-    return min+(v+1)/2*(max-min)
-
-def normalize(value : _T, min : _T, max : _T):
-    return (value + (-min))/(max-min)*2-1
-
-printed_dbg_check_msg = False
-def dbg_check(is_check_passed : Callable[[],bool], build_msg : Callable[[],str]):
-    from adarl.utils.session import default_session
-    if default_session.debug_level>0:
-        global printed_dbg_check_msg
-        if not printed_dbg_check_msg:
-            ggLog.warn(f"dbg_check is enabled")
-            printed_dbg_check_msg = True
-        if not is_check_passed():
-            raise RuntimeError(build_msg())
-    
-def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf")):
-    from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite
-    dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
-              build_msg=lambda: f"Non-finite values in tensor tree: isfinite = {map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite)}")
-    if min != float("-inf") or max != float("+inf"):
-        dbg_check(is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
-              build_msg=lambda: f"out of bounds values in tensor tree: {tensor_tree}")
-        
+def get_func_input_args(exclude : list[str] = []) -> dict:
+    _, _, _, values_flocals = inspect.getargvalues(inspect.currentframe().f_back) #type: ignore
+    values = dict(values_flocals)
+    for name in exclude:
+        values.pop(name, None)
+    return values

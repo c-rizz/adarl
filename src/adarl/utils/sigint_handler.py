@@ -1,3 +1,4 @@
+from __future__ import annotations
 import signal
 import traceback
 import adarl.utils.dbg.ggLog as ggLog
@@ -21,30 +22,34 @@ shared_memory_list = None
 
 
 def destroy_shm():
-    ggLog.info(f"destroying shm")
+    # ggLog.info(f"destroying shm")
     shared_memory_list.shm.close()
     shared_memory_list.shm.unlink()
 
 def close_shm():
-    ggLog.info(f"closing shm")
+    # ggLog.info(f"closing shm")
     shared_memory_list.shm.close()
+
+last_printed_st : str | None = None
 
 def sigint_handler(signal_num, stackframe):
     global sigint_received
     global sigint_counter
     global sigint_max
     global original_sigint_handler
+    global last_printed_st
     sigint_received = True
     sigint_counter += 1
     print(f"\n"+
             f"-----------------------------------------------------------------------------------------------------\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
             f"Received sigint, will halt at first opportunity. ({sigint_max-sigint_counter} presses to hard SIGINT, pid = {os.getpid()})\n"+
-            f"-----------------------------------------------------------------------------------------------------\n"+
             f"-----------------------------------------------------------------------------------------------------\n\n")
     # print(f"current handler = {signal.getsignal(signal.SIGINT)}")
     # print(f"stackframe = {stackframe}")
-    traceback.print_stack()
+    st = ''.join(traceback.format_stack())
+    if st != last_printed_st:
+        print(st)
+    last_printed_st = st
     if sigint_counter>sigint_max:
         session.default_session.mark_shutting_down()
         shared_memory_list[0] = "shutdown"
@@ -92,8 +97,8 @@ import sys
 def check_stdin_halt():
     if sys.__stdin__.closed or not sys.__stdin__.isatty():
         return False
-    if select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
-        instring = input()
+    while select.select([sys.stdin],[],[],0)[0]: #If stdin has data (enter has to have been pressed)
+        instring = input().strip()
         if instring.lower() == "pause":
             return True
         else:
@@ -118,7 +123,7 @@ def run_on_sigint_received(func) -> bool:
     else:
         status = shared_memory_list[0]
         if status == "wait":
-            ggLog.info(f"SIGINT received, halting and waiting for main process...")
+            ggLog.info(f"Pause request received, halting and waiting for main process...")
             while status == "wait":
                 time.sleep(1)
                 status = shared_memory_list[0]
@@ -134,7 +139,9 @@ def run_on_sigint_received(func) -> bool:
 def haltOnSigintReceived() -> bool:
     def prompt():
         while True:
-                answer = input(f"SIGINT received. Enter 'c' to resume or type 'quit' to terminate:\n> ")
+                print("Pause request received:")
+                print(f"{session.default_session.run_info['experiment_name']} : {session.default_session.run_info['run_id']} : {session.default_session.run_info['comment']}")
+                answer = input(f"  Enter 'c' to resume or type 'quit' to terminate:\n> ")
                 if answer == "quit":
                     session.default_session.mark_shutting_down()
                     shared_memory_list[0] = "shutdown"

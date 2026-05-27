@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 from typing import List, Tuple, Dict, Any, Optional, Sequence, overload
+import adarl.utils.dbg.dbg_checks
 from typing_extensions import override
 
 import pybullet
@@ -9,11 +10,12 @@ from adarl.utils.utils import JointState, LinkState, Pose, build_pose, buildQuat
 import adarl.utils.sigint_handler
 from adarl.adapters.BaseAdapter import BaseAdapter
 from adarl.adapters.BaseJointEffortAdapter import BaseJointEffortAdapter
-from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter
+from adarl.adapters.BaseSimulationAdapter import BaseSimulationAdapter, ModelSpawnDef
 from adarl.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
 from adarl.adapters.BaseJointVelocityAdapter import BaseJointVelocityAdapter
 import numpy as np
 import adarl.utils.dbg.ggLog as ggLog
+import adarl.utils.dbg
 import quaternion
 import xmltodict
 import adarl.utils.utils
@@ -25,6 +27,7 @@ import pkgutil
 egl = pkgutil.get_loader('eglRenderer')
 import pybullet_data
 import torch as th
+import dataclasses
 
 
 
@@ -186,7 +189,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         joints_max_acceleration_position_control : Dict[Tuple[str,str],float] = {},
                         simulation_step = 1/960,
                         enable_redering = True,
-                        verbose : bool = False):
+                        verbose : bool = False,
+                        th_device : th.device = th.device("cpu")):
         """Initialize the Simulator controller.
 
 
@@ -195,6 +199,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._stepLength_sec = stepLength_sec
         self._simulation_step = simulation_step
         self._enable_rendering = enable_redering
+        self._th_device = th_device
         if self._stepLength_sec % self._simulation_step != 0:
             ggLog.warn(f"{__class__}: stepLength_sec {self._stepLength_sec} is not a multiple of "
                        f"simulation_step {self._simulation_step}, will not be able to sep of exactly stepLength_sec.")
@@ -242,6 +247,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             lightSpecularCoeff = 0.1)
 
         self.clear_commands()
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
         self._sent_motor_torque_commands_by_bid_jid = {}
 
@@ -257,7 +264,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._linkName_to_bodyLinkIds = {}
         dynamics_infos = ["mass","lat_frict","loc_inertia_diag","loc_inertial_pos","loc_inertial_orn","restitution","roll_friction","spin_friction","contact_damping","contact_stiffness","body_type","collision_margin"]
         for bodyId in bodyIds:
-            base_link_name, _ = pybullet.getBodyInfo(bodyId)
+            base_link_name, body_name = pybullet.getBodyInfo(bodyId)
+            # ggLog.info(f"bodyId {bodyId} has base link name {base_link_name} and body name {body_name}")
             model_name = self._bodyId_to_modelName[bodyId]
             base_link_name = (model_name, base_link_name.decode("utf-8"))
             base_body_and_link_id = (bodyId, -1)
@@ -295,6 +303,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._startStateId = pybullet.saveState()
         self._simTime = 0
 
+
     def set_monitored_joints(self, jointsToObserve: Sequence[Tuple[str,str]]):
         self._default_joint_state_requests = self._build_joint_state_requests(jointsToObserve)
         req_joint_names = []
@@ -302,6 +311,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             req_joint_names.extend([self._getJointName(body_id,jid) for jid in joint_ids])
         self._default_joint_state_request_ordering = np.array([req_joint_names.index(jn) for jn in jointsToObserve])
         super().set_monitored_joints(jointsToObserve)
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
 
 
@@ -330,9 +341,15 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._simTime = 0
         self._prev_step_end_wall_time = time.monotonic()
         super().resetWorld()
+        self._current_joint_state_pve_th = self.getJointsState()
+        self._prev_joint_state_pve_th = self._current_joint_state_pve_th
         self._reset_joint_state_step_stats()
         if self._verbose:
             ggLog.info(f"tot_step_stime = {self._simTime}s, tot_step_wtime = {self._sim_stepping_wtime_since_build}s, tot_wtime = {time.monotonic()-self._build_time}s, tot_run_wtime = {self._run_wtime_since_build}s")
+
+    def initialize_for_step(self):
+        self._reset_joint_state_step_stats()
+        self._reset_detected_contacts()
 
     def step(self) -> float:
         """Run the simulation for the specified time.
@@ -351,8 +368,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             Why the exception is raised.
 
         """
-        self._reset_joint_state_step_stats()
-        self._reset_detected_contacts()
+        self.initialize_for_step()
         stepLength = self.run(self._stepLength_sec)
         # self.clear_commands() Do not clear commands, if we clear them, action delaying doesn't work properly anymore as he doesn't know what to do
         return stepLength
@@ -369,7 +385,9 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         while self._simTime-t0 < duration_sec:
             self._apply_controls()
             wtps = time.monotonic()
+            self._prev_joint_state_pve_th = self._current_joint_state_pve_th
             pybullet.stepSimulation()
+            self._current_joint_state_pve_th = self.getJointsState()
             self._sim_step_count_since_build += 1
             stepping_wtime += time.monotonic()-wtps
             self._read_new_contacts()
@@ -401,7 +419,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         ret = {}
         for cam_name in requestedCameras:
             camera = self._cameras[cam_name]
-            linkstate = self.getLinksState([camera.link_name], use_com_frame=True)[camera.link_name]
+            linkstate = self.getLinksState([camera.link_name], use_com_pose=True)[camera.link_name]
             camera.set_pose(linkstate.pose)
             camera.setup_light( lightDirection = self._lightDirection,
                                 lightColor = self._lightColor,
@@ -410,7 +428,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                                 lightAmbientCoeff = self._lightAmbientCoeff,
                                 lightDiffuseCoeff = self._lightDiffuseCoeff,
                                 lightSpecularCoeff = self._lightSpecularCoeff)
-            ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromReset()))
+            ret[cam_name] = ((camera.get_rendering(), self.getEnvTimeFromEpStart()))
         return ret
 
     def _apply_controls(self):
@@ -599,6 +617,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         responses_pve = [np.array([[jr[0],jr[1],jr[3]] for jr in r]) for r in responses]
         
         if requestedJoints is None:
+            if len(responses_pve) == 0:
+                return th.empty(size=(0,3), device = self._th_device)
             state_pve = np.concatenate(responses_pve,axis=0)
             # we have to correct the torque value for the joints that are commanded in torque, pybullet returns zero for those,
             # instead we use the commanded torque
@@ -610,7 +630,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                         effort = self._last_sent_torques_by_name[joint_name]
                         state_pve[row,2] = effort
                     row += 1
-            return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32)
+            return th.as_tensor(state_pve[self._default_joint_state_request_ordering], dtype = th.float32, device = self._th_device)
         else:
             allStates = {}
             pos = 0
@@ -630,23 +650,13 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
-        """Returns the stats in a tensor of size (4,len(monitored_joints),3)
-        The four elements of the first dimension are (min,max,avg,std)
-        The second dimensin iterateson the monitored joints.
-        The last dimension contains position,velocity and effort.
-
-        Returns
-        -------
-        th.Tensor
-            The stats tensor
-        """
         return self._monitored_joints_stats[:4]
 
 
     def _build_joint_state_step_stats(self):
         self._joint_stats_sample_count = 0
-        jstate_pve_size = (len(self._monitored_joints),3)
-        self._monitored_joints_stats = th.zeros((6,)+jstate_pve_size, dtype=th.float32)
+        jstate_pvae_size = (len(self._monitored_joints),4)
+        self._monitored_joints_stats = th.zeros((6,)+jstate_pvae_size, dtype=th.float32, device = self._th_device)
         self._monitored_joints_min = self._monitored_joints_stats[0]
         self._monitored_joints_max = self._monitored_joints_stats[1]
         self._monitored_joints_avg = self._monitored_joints_stats[2]
@@ -654,24 +664,24 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._monitored_joints_sum = self._monitored_joints_stats[4]
         self._monitored_joints_sum_of_squares = self._monitored_joints_stats[5]
 
-        self._monitored_joints_min[:] = th.tensor(float("+inf"))
-        self._monitored_joints_max[:] = th.tensor(float("-inf"))
-        self._monitored_joints_avg[:] = th.tensor(float("nan"))
-        self._monitored_joints_std[:] = th.tensor(float("nan"))
-        self._monitored_joints_sum[:] = th.tensor(0)
-        self._monitored_joints_sum_of_squares[:] = th.tensor(0)
+        self._monitored_joints_min[:] = th.tensor(float("+inf"), device = self._th_device)
+        self._monitored_joints_max[:] = th.tensor(float("-inf"), device = self._th_device)
+        self._monitored_joints_avg[:] = th.tensor(float("nan"), device = self._th_device)
+        self._monitored_joints_std[:] = th.tensor(float("nan"), device = self._th_device)
+        self._monitored_joints_sum[:] = th.tensor(0, device = self._th_device)
+        self._monitored_joints_sum_of_squares[:] = th.tensor(0, device = self._th_device)
 
     def _reset_joint_state_step_stats(self):
         # ggLog.info(f"resetting stats")
         self._joint_stats_sample_count = 0 # set to zero so the update rebuilds the stats
         self._update_joint_state_step_stats() # rebuild and populate with current state
-        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because these actually belong to the previous step)
+        self._joint_stats_sample_count = 0 # so that at the next update these values get canceled (because the value we just wrote actually belong to the previous step)
 
-    def _update_stat_tensors(self, joint_states_t : th.Tensor):
-        th.min(self._monitored_joints_min, joint_states_t, out=self._monitored_joints_min[:])
-        th.max(self._monitored_joints_max, joint_states_t, out=self._monitored_joints_max[:])
-        th.add(self._monitored_joints_sum, joint_states_t, out=self._monitored_joints_sum[:])
-        th.add(self._monitored_joints_sum_of_squares, joint_states_t.pow_(2), out=self._monitored_joints_sum_of_squares[:])
+    def _update_stat_tensors(self, joint_states_pvae_t : th.Tensor):
+        th.min(self._monitored_joints_min, joint_states_pvae_t, out=self._monitored_joints_min[:])
+        th.max(self._monitored_joints_max, joint_states_pvae_t, out=self._monitored_joints_max[:])
+        th.add(self._monitored_joints_sum, joint_states_pvae_t, out=self._monitored_joints_sum[:])
+        th.add(self._monitored_joints_sum_of_squares, joint_states_pvae_t.pow_(2), out=self._monitored_joints_sum_of_squares[:])
         th.div(self._monitored_joints_sum, self._joint_stats_sample_count, out=self._monitored_joints_avg[:])
         self._monitored_joints_std[:] = th.sqrt(th.clamp(self._monitored_joints_sum_of_squares/self._joint_stats_sample_count - self._monitored_joints_avg**2,
                                                           min=th.zeros_like(self._monitored_joints_avg)))
@@ -682,12 +692,12 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             self._build_joint_state_step_stats()
         if len(self._monitored_joints) == 0:
             return
-        joint_states_t = self.getJointsState()
-        adarl.utils.utils.dbg_check_finite(joint_states_t)
         self._joint_stats_sample_count += 1
-
-        self._update_stat_tensors(joint_states_t)
-        adarl.utils.utils.dbg_check_finite(self._monitored_joints_stats)
+        joint_states_pvae_th = th.cat([self._current_joint_state_pve_th[:,:2], # pos,vel
+                                       (self._current_joint_state_pve_th[:,[1]]-self._prev_joint_state_pve_th[:,[1]])/self._simulation_step, # acc
+                                       self._current_joint_state_pve_th[:,[2]]], dim=1) # eff
+        self._update_stat_tensors(joint_states_pvae_th)
+        adarl.utils.dbg.dbg_checks.dbg_check_finite(self._monitored_joints_stats)
 
 
     def setJointsStateDirect(self, jointStates : Dict[Tuple[str,str],JointState]):
@@ -728,7 +738,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
 
 
-    def getLinksState(self, requestedLinks : List[Tuple[str,str]], use_com_frame : bool = False) -> Dict[Tuple[str,str],LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose : bool = False) -> Dict[Tuple[str,str],LinkState]:
         # ggLog.info(f"Getting link states for {requestedLinks}")
         #For each bodyId I submit a request for joint state
         requests = {} #for each body id we will have a list of joints
@@ -748,7 +758,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             for i in range(len(requests[bodyId])):#put the responses of this bodyId in allStates
                 #print("bodyStates["+str(i)+"] = "+str(bodyStates[i]))
                 linkId = requests[bodyId][i]
-                if use_com_frame:
+                if use_com_pose:
                     linkState = LinkState(  position_xyz =     bodyStates[i][0][:3],
                                             orientation_xyzw = bodyStates[i][1][:4],
                                             pos_com_velocity_xyz = bodyStates[i][6][:3],
@@ -764,16 +774,24 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
             # ggLog.info(f"Getting pose of body {bodyId}")
             bodyPose = pybullet.getBasePositionAndOrientation(bodyId)
             bodyVelocity = pybullet.getBaseVelocity(bodyId)
-            if use_com_frame:
+            if use_com_pose:
                 linkState = LinkState(  position_xyz = bodyPose[0][:3],
                                         orientation_xyzw = bodyPose[1][:4],
                                         pos_com_velocity_xyz = bodyVelocity[0][:3],
                                         ang_velocity_xyz = bodyVelocity[1][:3])
             else:
-                # These are expressed in the center-of-mass frame, we need to convert them to use the urdf frame
+                # The pose is expressed in the center-of-mass frame, we need to convert it to use the urdf frame
                 local_inertia_pos, local_inertia_orient = pybullet.getDynamicsInfo(bodyId,-1)[3:5]
-                # pybullet.multiplyTransform
-                raise NotImplementedError()
+                local_inertia_pos, local_inertia_orient = pybullet.invertTransform(local_inertia_pos, local_inertia_orient)
+                # urdfLinkFrame = comLinkFrame * localInertialFrame.inverse()
+                pos, orient = pybullet.multiplyTransforms(positionA = bodyPose[0][:3],
+                                           orientationA = bodyPose[1][:4],
+                                           positionB = local_inertia_pos,
+                                           orientationB = local_inertia_orient)
+                linkState = LinkState(  position_xyz = pos,
+                                        orientation_xyzw = orient,
+                                        pos_com_velocity_xyz = bodyVelocity[0][:3],
+                                        ang_velocity_xyz = bodyVelocity[1][:3])
         
             allStates[self._getLinkName(bodyId,-1)] = linkState
 
@@ -783,23 +801,39 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         return allStates
 
     def setLinksStateDirect(self, linksStates: Dict[Tuple[str, str], LinkState]):
-        requests = {}
+        base_requests = {}
         for ln, ls in linksStates.items():
             bodyId, linkId = self._getBodyAndLinkId(ln)
-            if bodyId not in requests: #If we haven't created a request for this body yet
-                requests[bodyId] = []
-            if linkId != -1: # could also check if the base joint is a free-floating one, and use the joint to move the first link
-                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln} (base link is {self._getLinkName(bodyId,-1)})")
-            requests[bodyId].append(ls)
+            if bodyId not in base_requests: #If we haven't created a request for this body yet
+                base_requests[bodyId] = []
+            if linkId == -1: # if it is the root of a body
+                base_requests[bodyId].append(ls)
+            else:
+                parent_jointId = linkId
+                parent_jinfo = pybullet.getJointInfo(bodyId,parent_jointId)
+                if parent_jinfo[2] == pybullet.JOINT_FIXED:
+                    # Pybullet replaced root floating joints with fixed joints (see https://github.com/bulletphysics/bullet3/issues/1148)
+                    parent_linkId = parent_jinfo[16]
+                    parent_transform_pos = np.array(parent_jinfo[14])
+                    parent_transform_orient = np.array(parent_jinfo[15])
+                    if parent_linkId == -1 and (parent_transform_pos == 0).all() and (parent_transform_orient == np.array([0.,0,0,1])).all():
+                        base_requests[bodyId].append(ls) # then just move the parent
+                        parent_parent_jointId = parent_linkId
+                        # print(f"parent_jinfo = {parent_jinfo}")
+                        # parent_parent_jinfo = pybullet.getJointInfo(bodyId,parent_parent_jointId)
+                        # print(f"parent_parent_jinfo = {parent_parent_jinfo}")
+                        continue                        
+                raise RuntimeError(f"Can only set pose for base links, but requested to move link {ln} (base link is {self._getLinkName(bodyId,-1)}), parent jointinfo={pybullet.getJointInfo(bodyId,parent_jointId)}")
 
-        for bodyId, states in requests.items():
+
+        for bodyId, states in base_requests.items():
             for state in states:
                 pybullet.resetBasePositionAndOrientation(bodyId, state.pose.position, state.pose.orientation_xyzw)
 
     def getEnvTimeFromStartup(self) -> float:
         return self._simTime
 
-    def build_scenario(self, file_path = None, format = "urdf"):
+    def build_scenario(self, models : Sequence[ModelSpawnDef] = [], file_path = None, format = "urdf"):
         if self._debug_gui:
             self._client_id = pybullet.connect(pybullet.GUI)
             pybullet.configureDebugVisualizer(pybullet.COV_ENABLE_GUI, 1)
@@ -827,6 +861,12 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         adarl.utils.sigint_handler.setupSigintHandler()
         if file_path is not None:
             self.spawn_model(model_file = file_path, model_format=format, model_name = "scenario")
+        for m in models:
+            self.spawn_model(model_name=m.name,
+                             model_definition_string=m.definition_string,
+                             model_format=m.format,
+                             model_kwargs=m.kwargs,
+                             pose=m.pose)
         self._bullet_stepLength_sec = pybullet.getPhysicsEngineParameters()["fixedTimeStep"]
 
 
@@ -846,6 +886,36 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._cameras[camera.camera_name] = camera
         ggLog.info(f"Registered camera with name {camera.camera_name} at link {camera.link_name}")
 
+    def _remove_floating_joint_from_urdf(self, urdf_string : str):
+        parsed_urdf = xmltodict.parse(urdf_string)
+        top_elems = parsed_urdf["robot"]
+        joints_to_remove = []
+        if "joint" in top_elems: # if it has joints
+            print(f"top_elems = {top_elems.keys()}")
+            joints = top_elems["joint"] # get joint or joints
+            if not isinstance(joints, list): # if there's only one make a list anyway
+                joints = [joints]
+            for i,joint in enumerate(joints):
+                if joint["parent"]["@link"] =="world" and joint["@type"] == "floating":
+                    joints_to_remove.append(i)
+                    ggLog.warn(f"Removing joint {joint['@name']} from pybullet urdf")
+            for idx in reversed(joints_to_remove):
+                joints.pop(idx)
+            top_elems["joint"] = joints
+            if len(joints_to_remove) > 0:
+                # also remove the world link
+                links = top_elems["link"]
+                if not isinstance(links, list): # if there's only one make a list anyway
+                    links = [links]
+                for i,link in enumerate(links):
+                    if link["@name"] == "world":
+                        links.pop(i)
+                        break
+                top_elems["link"] = links
+            urdf_string = xmltodict.unparse(parsed_urdf, pretty = True)
+        return urdf_string, len(joints_to_remove) > 0
+
+
     def _loadModel(self, model_definition_string : str | None = None,
                          model_file_path : str | None = None,
                          format : str = "urdf",
@@ -857,6 +927,15 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         compiled_file_path = None
         if model_definition_string is None and model_file_path is None or (model_definition_string is not None and model_file_path is not None):
             raise RuntimeError(f"One and only one of model_definition_string and model_file_path must be None, but they are {model_definition_string} and {model_file_path}")
+        
+        if format == "urdf.xacro" or format=="urdf":
+            if model_file_path is not None:
+                model_definition_string = Path(model_file_path).read_text()
+            fixed_string, did_fix = self._remove_floating_joint_from_urdf(model_definition_string)
+            if did_fix:
+                model_definition_string = fixed_string
+                model_file_path = None
+
         if format.split(".")[-1] == "xacro":
             if model_file_path is not None and model_definition_string is None:
                 model_definition_string = Path(model_file_path).read_text()
@@ -875,7 +954,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         if format == "urdf":
             bodyId = pybullet.loadURDF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION|pybullet.URDF_PRINT_URDF_INFO,
                                        basePosition = spawn_pose_xyzxyzw[:3],
-                                       baseOrientation = spawn_pose_xyzxyzw[3:7])
+                                       baseOrientation = spawn_pose_xyzxyzw[3:7],
+                                       useFixedBase=0)
         elif format == "mjcf":
             bodyId = pybullet.loadMJCF(model_file_path, flags=pybullet.URDF_USE_SELF_COLLISION | pybullet.URDF_USE_SELF_COLLISION_EXCLUDE_ALL_PARENTS)[0]
         elif format == "sdf":
@@ -902,7 +982,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
         if format == "sdf":
             parsed_sdf = xmltodict.parse(Path(model_file_path).read_text())
-            ggLog.info(f"{parsed_sdf}")
+            # ggLog.info(f"{parsed_sdf}")
             if "world" in parsed_sdf["sdf"]:
                 world = parsed_sdf["sdf"]["world"]
             else:
@@ -946,6 +1026,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                             model_kwargs: Dict[Any, Any] = {}) -> str:
         if model_name in self._modelName_to_bodyId:
             raise AttributeError(f"model name {model_name} is already present")
+        ggLog.info(f"PyBullet adapter: loading model {model_name}...")
         body_id = self._loadModel(model_definition_string=model_definition_string,
                                   model_file_path=model_file,
                                   format=model_format,
@@ -955,7 +1036,7 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
         self._modelName_to_bodyId[model_name] = body_id
         self._bodyId_to_modelName[body_id] = model_name
         self._refresh_entities_ids(print_info=self._verbose)
-        # ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
+        ggLog.info(f"Spawned model '{model_name}' with body_id {body_id} and info {pybullet.getBodyInfo(self._modelName_to_bodyId[model_name])}")
         if pose is not None:
             pybullet.resetBasePositionAndOrientation(self._modelName_to_bodyId[model_name],
                                                     pose.position, pose.orientation_xyzw)
@@ -1090,3 +1171,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
                 "run_wtime_since_build" : self._run_wtime_since_build,
                 "run_overhead_ratio" : self._run_wtime_since_build/self._sim_stepping_wtime_since_build,
                 "pure_sim_rt_factor" : self._simTime/self._sim_stepping_wtime_since_build}
+    
+
+    @override
+    def sim_step_duration(self):
+        return self._simulation_step

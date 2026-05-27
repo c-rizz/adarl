@@ -8,9 +8,10 @@ import psutil
 import warnings
 import time
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer
-from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree
+from adarl.utils.buffers import numpy_to_torch_dtype, TransitionBatch, BaseValidatingBuffer, BaseBuffer
+from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree, flatten_tensor_tree
 from typing_extensions import override
+from adarl.utils.dbg.dbg_checks import dbg_check_finite
 
 def take_frames(buff, episodes, frames):
     # ggLog.info(f"episodes.size() = {episodes.size()}")
@@ -29,10 +30,10 @@ def take_frames(buff, episodes, frames):
 
 
 class EpisodeStorage():
-    def __init__(self, episodes_num, max_episode_duration, buffer, min_ep_length):
+    def __init__(self, episodes_num, max_episode_duration, buffer : BaseBuffer, min_ep_length):
         self._max_episodes = episodes_num
         self._storage_torch_device = buffer._storage_torch_device
-        self._output_device = th.device(buffer.device)
+        self._output_device = th.device(buffer.out_device)
         self._min_ep_length = min_ep_length
         self._max_episode_duration = max_episode_duration
         self._buffer = buffer
@@ -42,6 +43,7 @@ class EpisodeStorage():
         self._stored_episodes = 0
         self._current_ep_frame_count = 0
         self.full = False
+        self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
 
         #TODO: Make more efficient by using only one observation buffer
         self.observations = {
@@ -78,7 +80,7 @@ class EpisodeStorage():
                                     dtype=th.int32,
                                     device = self._storage_torch_device)
         
-        if self._storage_torch_device.type == "cpu":
+        if self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds:
             for k in self.observations.keys():
                 self.observations[k] = self.observations[k].pin_memory()
                 self.next_observations[k] = self.next_observations[k].pin_memory()
@@ -116,20 +118,21 @@ class EpisodeStorage():
         ep_idx = self._added_episodes%self._max_episodes
         frame_idx = self._current_ep_frame_count
 
-        if not is_all_finite(observation):
-            raise RuntimeError(f"nonfinite values in added observation "
-                               f"isnan_count = {map_tensor_tree(observation, lambda t: th.sum(th.isnan(t)))} "
-                               f"isinf_count = {map_tensor_tree(observation, lambda t: th.sum(th.isinf(t)))} "
-                               f"{observation} ")
-        if not is_all_finite(next_observation):
-            raise RuntimeError(f"nonfinite values in added next_observation "
-                               f"isnan_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isnan(t)))} "
-                               f"isinf_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isinf(t)))} "
-                               f"{next_observation}")
-        if not is_all_finite(action):
-            raise RuntimeError(f"nonfinite values in added action isnan_count = {th.sum(th.isnan(action))} {action}")
-        if not is_all_finite(reward):
-            raise RuntimeError(f"nonfinite values in added reward isnan_count = {th.sum(th.isnan(reward))} {reward}")
+        dbg_check_finite((observation, next_observation, action, reward))
+        # if not is_all_finite(observation):
+        #     raise RuntimeError(f"nonfinite values in added observation "
+        #                        f"isnan_count = {map_tensor_tree(observation, lambda t: th.sum(th.isnan(t)))} "
+        #                        f"isinf_count = {map_tensor_tree(observation, lambda t: th.sum(th.isinf(t)))} "
+        #                        f"{observation} ")
+        # if not is_all_finite(next_observation):
+        #     raise RuntimeError(f"nonfinite values in added next_observation "
+        #                        f"isnan_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isnan(t)))} "
+        #                        f"isinf_count = {map_tensor_tree(next_observation, lambda t: th.sum(th.isinf(t)))} "
+        #                        f"{next_observation}")
+        # if not is_all_finite(action):
+        #     raise RuntimeError(f"nonfinite values in added action isnan_count = {th.sum(th.isnan(action))} {action}")
+        # if not is_all_finite(reward):
+        #     raise RuntimeError(f"nonfinite values in added reward isnan_count = {th.sum(th.isnan(reward))} {reward}")
 
 
         if self._current_ep_frame_count == 0:
@@ -137,7 +140,7 @@ class EpisodeStorage():
             if self._added_episodes < self._max_episodes:
                 self._stored_episodes += 1
             self.episode_durations[ep_idx] = 0    
-        nb = True
+        nb = self._use_nonblocking_adds
         for key in self.observations.keys():
             self.observations[key][ep_idx,frame_idx].copy_(th.as_tensor(observation[key]), non_blocking=nb)
             self.next_observations[key][ep_idx,frame_idx].copy_(th.as_tensor(next_observation[key]), non_blocking=nb)
@@ -236,13 +239,13 @@ class EpisodeStorage():
 
         # ggLog.info(f"EpisodeStorage{id(self)}: sampled {list(zip(sampled_episodes,sampled_frames))}")
 
-        trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
+        trajs_obs_ =        {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") 
                                     for key, b in self.observations.items()} 
-        trajs_next_obs_ =   {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device) 
+        trajs_next_obs_ =   {key:take_frames(b, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") 
                                     for key, b in self.next_observations.items()} 
-        trajs_terminateds = take_frames(self.terminated, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
-        trajs_actions = take_frames(self.actions, sampled_episodes, sampled_frames).to(self._output_device) #.view(trajs_num,trajs_len,-1)
-        trajs_rewards = take_frames(self.rewards, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device)
+        trajs_terminateds = take_frames(self.terminated, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device, non_blocking=self._output_device.type=="cuda")
+        trajs_actions = take_frames(self.actions, sampled_episodes, sampled_frames).to(self._output_device, non_blocking=self._output_device.type=="cuda") #.view(trajs_num,trajs_len,-1)
+        trajs_rewards = take_frames(self.rewards, sampled_episodes, sampled_frames).view(trajs_num,trajs_len,1).to(self._output_device, non_blocking=self._output_device.type=="cuda")
 
         for key in self.observations:
             obs_shape = trajs_obs_[key].size()[2:]
@@ -280,21 +283,22 @@ class EpisodeStorage():
         
 
         # ggLog.info(f"actions.device = {actions.device}")
+        dbg_check_finite((observations, next_observations, actions, rewards))
 
-        if not is_all_finite(observations):
-            raise RuntimeError(f"nonfinite values in sampled observation "
-                               f"isnan_count = {map_tensor_tree(observations, lambda t: th.sum(th.isnan(t)))}"
-                               f"isinf_count = {map_tensor_tree(observations, lambda t: th.sum(th.isinf(t)))}"
-                               f"{observations} ")
-        if not is_all_finite(next_observations):
-            raise RuntimeError(f"nonfinite values in sampled next_observation "
-                               f"isnan_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isnan(t)))}"
-                               f"isinf_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isinf(t)))}"
-                               f"{next_observations}")
-        if not is_all_finite(actions):
-            raise RuntimeError(f"nonfinite values in sampled action isnan_count = {th.sum(th.isnan(actions))} {actions}")
-        if not is_all_finite(rewards):
-            raise RuntimeError(f"nonfinite values in sampled reward isnan_count = {th.sum(th.isnan(rewards))} {rewards}")
+        # if not is_all_finite(observations):
+        #     raise RuntimeError(f"nonfinite values in sampled observation "
+        #                        f"isnan_count = {map_tensor_tree(observations, lambda t: th.sum(th.isnan(t)))}"
+        #                        f"isinf_count = {map_tensor_tree(observations, lambda t: th.sum(th.isinf(t)))}"
+        #                        f"{observations} ")
+        # if not is_all_finite(next_observations):
+        #     raise RuntimeError(f"nonfinite values in sampled next_observation "
+        #                        f"isnan_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isnan(t)))}"
+        #                        f"isinf_count = {map_tensor_tree(next_observations, lambda t: th.sum(th.isinf(t)))}"
+        #                        f"{next_observations}")
+        # if not is_all_finite(actions):
+        #     raise RuntimeError(f"nonfinite values in sampled action isnan_count = {th.sum(th.isnan(actions))} {actions}")
+        # if not is_all_finite(rewards):
+        #     raise RuntimeError(f"nonfinite values in sampled reward isnan_count = {th.sum(th.isnan(rewards))} {rewards}")
 
         return TransitionBatch(
             observations=observations,
@@ -367,10 +371,13 @@ class EpisodeStorage():
                 
 
 class ThDictEpReplayBuffer(BaseValidatingBuffer):
+    """A Replay buffer that handles dict observation spaces and manages experience in episodes,
+        allowing to sample trajectories and not just single transition samples.
+    """
     def __init__(
         self,
         buffer_size: int,
-        observation_space: spaces.Space,
+        observation_space: spaces.Dict,
         action_space: spaces.Space,
         max_episode_duration : int | float,
         device: th.device = th.device("cpu"),
@@ -378,20 +385,20 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         optimize_memory_usage: bool = False,
         storage_torch_device: th.device = th.device("cpu"),
         fallback_to_cpu_storage: bool = True,
-        validation_buffer_size = 0,
-        validation_holdout_ratio = 0,
-        min_episode_duration = 0,
-        disable_validation_set = True,
-        fill_val_buffer_to_min_at_ep = float("+inf"),
-        fill_val_buffer_to_min_at_step = float("+inf"),
-        val_buffer_min_size = 0
+        validation_buffer_size : int = 0,
+        validation_holdout_ratio : float = 0.0,
+        min_episode_duration : int = 0,
+        disable_validation_set : bool = True,
+        fill_val_buffer_to_min_at_ep : float = float("+inf"),
+        fill_val_buffer_to_min_at_step : float = float("+inf"),
+        val_buffer_min_size : int = 0
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
         assert isinstance(self.obs_shape, dict), "DictReplayBuffer must be used with Dict obs space only"
         self.max_frames = buffer_size
         self.buffer_size = max(buffer_size // n_envs, 1)
-        self._observation_space = observation_space
+        self._observation_space : spaces.Dict = observation_space
         self._action_space = action_space
         storage_torch_device = th.device(storage_torch_device)
         self._storage_torch_device = storage_torch_device
@@ -412,11 +419,16 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         else:
             assert validation_buffer_size%max_episode_duration == 0, f"validation_buffer_size must be a multiple of max_episode_duration bit they are respectively {buffer_size} and {max_episode_duration}"
         
+        example_obs = self._observation_space.sample()
+        obs_size = sum([th.as_tensor(o).nelement()*th.as_tensor(o).element_size() for o in flatten_tensor_tree(example_obs).values()])
+
+
 
         if self._storage_torch_device.type == "cuda" and fallback_to_cpu_storage:
-            pred_avail = self.predict_memory_consumption()
-            consumptionRatio = pred_avail[0]/pred_avail[1]
-            if consumptionRatio>0.6:
+            pred_usage,tot = self.predict_memory_consumption()
+            consumptionRatio = pred_usage/tot
+            if consumptionRatio>1.0:
+                ggLog.warn(f"Observations are of size {obs_size} bytes, total buffer size is {self.buffer_size*n_envs} transitions")
                 warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                                 f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB)\n"
                                  "Falling back to CPU memory\n"
@@ -426,10 +438,13 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
         pred_avail = self.predict_memory_consumption()
         consumptionRatio = pred_avail[0]/pred_avail[1]
         if consumptionRatio>0.6:
+            ggLog.warn(f"Observations are of size {obs_size} bytes, total buffer size is {self.buffer_size*n_envs} transitions")
             warnings.warn(   "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                             f"Replay buffer will use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory on device {self._storage_torch_device}\n"
                              "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
             time.sleep(3)
+        if consumptionRatio > 1.0:
+            raise RuntimeError(f"Not enough memory on device {self.storage_torch_device()}, would use {consumptionRatio*100:.0f}% ({pred_avail[0]/1024/1024/1024:.3f} GiB) of available memory")
         # ggLog.info(f"Buffer will consume {consumptionRatio*100:.0f}% = {pred_avail[0]/1024/1024/1024:.3f} GiB")
 
         self._allocate_buffers(self._max_episodes, self._max_val_episodes)
@@ -470,12 +485,12 @@ class ThDictEpReplayBuffer(BaseValidatingBuffer):
 
     @override
     def add(self,
-            obs: Dict[str, np.ndarray],
-            next_obs: Dict[str, np.ndarray],
-            action: np.ndarray,
-            reward: np.ndarray,
-            terminated: np.ndarray,
-            truncated: np.ndarray) -> None:
+            obs: Dict[str, th.Tensor],
+            next_obs: Dict[str, th.Tensor],
+            action: th.Tensor,
+            reward: th.Tensor,
+            terminated: th.Tensor,
+            truncated: th.Tensor) -> None:
         # All inputs are batches of size n_envs
         # All should be copied to avoid modification by reference
 
