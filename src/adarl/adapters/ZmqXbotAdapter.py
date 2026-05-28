@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import time
+import yaml
+import zmq
 from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
@@ -59,7 +61,12 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         ipc_pub_path : str ="/tmp/xbot2_zmq_pub.ipc",
                         ipc_cmd_path : str ="/tmp/xbot2_zmq_cmd.ipc",
                         ipc_service_path : str ="/tmp/xbot2_zmq_rep.ipc",
-                        robot_urdf : str | None = None):
+                        robot_urdf : str | None = None,
+                        base_link : str = "base_link",
+                        time_source : Literal["wall", "xbot", "sim"] = "wall",
+                        sense_timeout_s : float = 0.2,
+                        health_check_timeout_s : float = 0.05,
+                        health_check_period_s : float = 0.5):
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
         self._model_name = model_name
@@ -70,11 +77,9 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._sense_always = True
         self._sense_needed = True
         # self._joint_cmd_fallback_by_jid = {}
-        # self._fallback_cmd_stiffness = fallback_cmd_stiffness
-        # self._fallback_cmd_damping = fallback_cmd_damping
+        self._fallback_cmd_stiffness = fallback_cmd_stiffness
+        self._fallback_cmd_damping = fallback_cmd_damping
         self._allow_fallback = allow_fallback
-        if self._allow_fallback:
-            raise RuntimeError("Fallback is not yet implemented")
         
         self._is_safety_triggered = False
         self._position_command_stiffness = position_commands_stiffness
@@ -100,6 +105,28 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._jimpedance_controlled_joints : list[tuple[str,str]] = [] # The joints that this adapter exposes to its users
         self._is_simulated = is_simulated if is_simulated is not None else detect_simulated()
         self._control_dt = 0.001 # can I get this from somewhere?
+        self._base_link = base_link
+        self._time_source = "xbot" if time_source == "sim" else time_source
+        self._zmq_remote_ip = remote_ip
+        self._zmq_comm_protocol = comm_protocol
+        self._zmq_tcp_service_port = tcp_service_port
+        self._zmq_ipc_service_path = ipc_service_path
+        self._sense_timeout_s = sense_timeout_s
+        self._health_check_timeout_s = health_check_timeout_s
+        self._health_check_period_s = health_check_period_s
+        self._last_successful_sense_wall_time = 0.0
+        self._health_cache_until = 0.0
+        self._last_health_ok = False
+        self._startup_xbot_time = 0.0
+        self._reset_xbot_time = 0.0
+        self.position_ramp_time = 4.0
+        self.impedance_ramp_time = 1.0
+        self._position_ramp_tinysleep = 0.01
+        self._impedance_ramp_tinysleep = 0.01
+        self._base_q_last = np.zeros((1, 4), dtype=np.float64)
+        self._base_q_last[:, 0] = 1.0
+        self._base_omega_last = np.zeros((1, 3), dtype=np.float64)
+        self._base_linacc_last = np.zeros((1, 3), dtype=np.float64)
 
         self._xbot_zmq_client = XbotZmqClient(  remote_ip = remote_ip,
                                                 protocol = comm_protocol,
@@ -135,12 +162,90 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._xbotjname_to_jid = {jname : jid for jid, jname in enumerate(detected_joint_names)}
         self._jid_to_xbotjname = {jid : jname for jname, jid in self._xbotjname_to_jid.items()}
         ggLog.info(f"ZmqXBotAdapter: found joints: {list(self._xbotjname_to_jid.keys())}")
-        # self._robot_urdf = self._xbot_zmq_client.get_urdf()
-        # self._robot_urdf = _fix_urdf_package_paths(self._robot_urdf)
+        if self._robot_urdf is None:
+            self._robot_urdf = _fix_urdf_package_paths(self._xbot_zmq_client.get_urdf())
         self._robot_helper = Robot(robot_description_string=self._robot_urdf)
 
         self._jimpedance_controlled_joints_jids = np.array([self._xbotjname_to_jid[jn] for model_name,jn in self._jimpedance_controlled_joints])
         self._started = True
+        self._sense_if_needed()
+        self._startup_xbot_time = self._last_xbot_time()
+        self._reset_xbot_time = self._startup_xbot_time
+
+    def _last_xbot_time(self) -> float:
+        return float(getattr(self._xbot_zmq_client, "_last_msg_stamp", 0.0))
+
+    def _service_url(self) -> str:
+        if self._zmq_comm_protocol == "tcp":
+            return f"tcp://{self._zmq_remote_ip}:{self._zmq_tcp_service_port}"
+        return f"ipc://{self._zmq_ipc_service_path}"
+
+    def _request_zmq_service(self, request: dict, timeout_s: float) -> dict:
+        socket = zmq.Context.instance().socket(zmq.REQ)
+        timeout_ms = max(1, int(timeout_s * 1000))
+        socket.setsockopt(zmq.LINGER, 0)
+        socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
+        socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+        try:
+            socket.connect(self._service_url())
+            socket.send_string(yaml.dump(request))
+            return yaml.safe_load(socket.recv_string()) or {}
+        finally:
+            socket.close()
+
+    def _check_zmq_plugin(self, timeout_s: float | None = None) -> bool:
+        try:
+            response = self._request_zmq_service(
+                {"type": "joint_names"},
+                timeout_s=self._health_check_timeout_s if timeout_s is None else timeout_s,
+            )
+            if not isinstance(response, dict):
+                return False
+            return bool(response.get("success", True) and "data" in response)
+        except (zmq.Again, zmq.ZMQError, yaml.YAMLError, OSError):
+            return False
+
+    def _cached_health_check(self, force: bool = False) -> bool:
+        if not self._started:
+            return False
+
+        now = time.monotonic()
+        if not force and now < self._health_cache_until:
+            return self._last_health_ok
+
+        self._last_health_ok = self._check_zmq_plugin()
+        self._health_cache_until = now + self._health_check_period_s
+        return self._last_health_ok
+
+    @override
+    def resetWorld(self):
+        super().resetWorld()
+        if self._time_source == "xbot" and self._started:
+            self._sense_if_needed()
+            self._reset_xbot_time = self._last_xbot_time()
+
+    @override
+    def getEnvTimeFromStartup(self) -> float:
+        if self._time_source == "xbot" and self._started:
+            return self._last_xbot_time() - self._startup_xbot_time
+        return super().getEnvTimeFromStartup()
+
+    def getEnvTimeFromReset(self) -> float:
+        if self._time_source == "xbot" and self._started:
+            return self._last_xbot_time() - self._reset_xbot_time
+        return self.getEnvTimeFromStartup()
+
+    def is_xbot_running(self):
+        return self._cached_health_check()
+
+    def is_xbot_control_running(self):
+        return self.is_xbot_running()
+
+    def fallback_striffness(self):
+        return self._fallback_cmd_stiffness
+
+    def fallback_damping(self):
+        return self._fallback_cmd_damping
 
     def get_xbot_controlled_joints(self) -> list[tuple[str,str]]:
         """Get the names of the joint that XBot is controlling
@@ -235,13 +340,15 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             if model_name != self._model_name:
                 raise RuntimeError(f"Commanded joint impedance for model different from the controleld one (asked '{model_name, jname}', but have '{self._model_name}')")
             jid = self._xbotjname_to_jid[jname]
-            commanded_joint_impedances_by_jid[jid] = jcmd.numpy()
+            commanded_joint_impedances_by_jid[jid] = th.as_tensor(jcmd).detach().cpu().numpy()
         
         prefs, vrefs, erefs, pgains, vgains = (np.zeros(shape=(self._joints_num,), dtype=np.float64) 
                                                for _ in range(5))
 
         commanded_joint_names = [self._jid_to_xbotjname[jid] for jid in commanded_joint_impedances_by_jid.keys()]
         commanded_pvesd = np.stack([np.array(pvesd) for pvesd in commanded_joint_impedances_by_jid.values()], axis = 0)
+        for jid, cmd in commanded_joint_impedances_by_jid.items():
+            prefs[jid], vrefs[jid], erefs[jid], pgains[jid], vgains[jid] = cmd
         # curr_pos = self._xbot_zmq_client.getJointPosition()
         # used_fallback = False
         # for jid in range(self._joints_num):
@@ -318,7 +425,15 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
     def _sense_if_needed(self):
         if self._sense_needed or self._sense_always:
-            self._xbot_zmq_client.sense(timeout_s=60.0)
+            try:
+                self._xbot_zmq_client.sense(timeout_s=self._sense_timeout_s)
+            except Exception:
+                self._last_health_ok = False
+                self._health_cache_until = 0.0
+                raise
+            self._last_successful_sense_wall_time = time.monotonic()
+            self._last_health_ok = True
+            self._health_cache_until = self._last_successful_sense_wall_time + self._health_check_period_s
             self._sense_needed = False
     @override
     def step(self) -> float:
@@ -386,7 +501,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             vs = joint_velocity_scaling.get(jn, velocity_scaling)
             traj_tpva = build_1D_vramp_trajectory(  t0 = 0.0,
                                                     p0 = last_refs_dict[jn][0].item(),
-                                                    v0 = js_dict[jn][0].item(),
+                                                    v0 = js_dict[jn][1].item(),
                                                     pf = p_ref,
                                                     ctrl_freq_hz = 1000.0,
                                                     max_vel=self._jpos_cmd_max_vel.get(jn, self._jpos_cmd_max_vel_default)*vs,
@@ -431,6 +546,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         while not (reached_position or (stopped and elapsed_env_time>=max_traj_duration)):
             self.run(self._stepLength_sec)
             js = self.getJointsState(list(jointPositions.keys()))
+            js_dict = {jn : pve for jn, pve in zip(joints, js)}
             errors = [jpve[0].item() - jointPositions[jn] for jn,jpve in js_dict.items()]
             reached_position = all([abs(e) < joint_position_tolerance for e in errors])
             stopped = all([abs(jpve[1].item())<joint_velocity_termination_threshold for jpve in js_dict.values()])
@@ -451,8 +567,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
 
     def is_safety_triggered(self):
-        return False
-        raise NotImplementedError()
+        # The current xbot2_zmq service API does not expose XBot2 safety state.
+        # Keep the state local so a future service query can update it without
+        # changing the public adapter API.
+        return self._is_safety_triggered
     
     def _get_current_refs_pvesd(self) -> np.ndarray:
         self._sense_if_needed()
@@ -465,6 +583,88 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         ref_j_pvesd = self._get_current_refs_pvesd()
         # pvesd_by_name = {(mn,jn):ref_j_pvesd[self._xbotjname_to_jid[jn]] for mn,jn in self._jimpedance_controlled_joints}
         return th.as_tensor(ref_j_pvesd, device=self._torch_device, dtype=th.float32)
+
+    @override
+    def apply_joint_ref_with_ramp(self, joint_impedances_pvesd: th.Tensor, ramp_time=None, tolerance=-1.0):
+        if not isinstance(joint_impedances_pvesd, th.Tensor):
+            raise TypeError("joint_impedances_pvesd must be a torch.Tensor")
+        if ramp_time is None:
+            ramp_time = self.position_ramp_time
+
+        curr_pvesd = self.get_current_joint_impedance_command()
+        curr_pvesd[:, 1] = 0.0
+        curr_pvesd[:, 2] = 0.0
+        target_pos_ref = joint_impedances_pvesd[:, 0].clone()
+        start_pos_ref = curr_pvesd[:, 0].clone()
+
+        if tolerance >= 0.0 and not (th.abs(target_pos_ref - curr_pvesd[:, 0]) > tolerance).any().item():
+            return
+
+        start_time = self.getEnvTimeFromStartup()
+        while True:
+            elapsed = self.getEnvTimeFromStartup() - start_time
+            frac = min(1.0, max(0.0, elapsed / ramp_time))
+            curr_pvesd[:, 0] = start_pos_ref + frac * (target_pos_ref - start_pos_ref)
+            self.setJointsImpedanceCommand(curr_pvesd)
+            self.run(self._position_ramp_tinysleep)
+            self._sense_needed = True
+            self._sense_if_needed()
+            if frac >= 1.0:
+                break
+
+    @override
+    def apply_joint_impedances_with_ramp(self, joint_impedances_pvesd: th.Tensor, ramp_time=None, tolerance=-1.0):
+        if not isinstance(joint_impedances_pvesd, th.Tensor):
+            raise TypeError("joint_impedances_pvesd must be a torch.Tensor")
+        if ramp_time is None:
+            ramp_time = self.impedance_ramp_time
+
+        curr_pvesd = self.get_current_joint_impedance_command()
+        curr_pvesd[:, 1] = 0.0
+        curr_pvesd[:, 2] = 0.0
+        target_stiffness = joint_impedances_pvesd[:, 3].clone()
+        start_stiffness = curr_pvesd[:, 3].clone()
+        target_damping = joint_impedances_pvesd[:, 4].clone()
+        start_damping = curr_pvesd[:, 4].clone()
+
+        if tolerance >= 0.0:
+            stiffness_ok = th.abs(target_stiffness - curr_pvesd[:, 3]) <= tolerance
+            damping_ok = th.abs(target_damping - curr_pvesd[:, 4]) <= tolerance
+            if (stiffness_ok & damping_ok).all().item():
+                return
+
+        start_time = self.getEnvTimeFromStartup()
+        while True:
+            elapsed = self.getEnvTimeFromStartup() - start_time
+            frac = min(1.0, max(0.0, elapsed / ramp_time))
+            curr_pvesd[:, 3] = start_stiffness + frac * (target_stiffness - start_stiffness)
+            curr_pvesd[:, 4] = start_damping + frac * (target_damping - start_damping)
+            self.setJointsImpedanceCommand(curr_pvesd)
+            self.run(self._impedance_ramp_tinysleep)
+            self._sense_needed = True
+            self._sense_if_needed()
+            if frac >= 1.0:
+                break
+
+    def set_filters(self, set_enabled: bool, profile_name="safe"):
+        profile_cutoff_hz = {
+            "safe": 5.0,
+            "medium": 15.0,
+            "fast": 25.0,
+        }
+        cutoff_hz = profile_cutoff_hz.get(profile_name, 0.0)
+        self.set_reference_filter(th.tensor(cutoff_hz if set_enabled else 0.0))
+
+    def read_imu_data(self):
+        self._sense_if_needed()
+        imu_name = self._xbot_zmq_client.get_imu_names()[0]
+        q_xyzw = self._xbot_zmq_client.getImuOrientation([imu_name])[0]
+        self._base_q_last[:, :] = np.array([[q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]]], dtype=np.float64)
+        self._base_omega_last[:, :] = self._xbot_zmq_client.getImuAngularVelocity([imu_name]).reshape(1, 3)
+        self._base_linacc_last[:, :] = self._xbot_zmq_client.getImuLinearAcceleration([imu_name]).reshape(1, 3)
+
+    def get_base_link_state(self):
+        return self._base_link, self._base_q_last, self._base_omega_last, self._base_linacc_last
     
     def _get_imus_for_links(self, requestedLinks : Sequence[tuple[str,str]]) -> dict[str, str]:
         imus = self._xbot_zmq_client.get_imu_names()
@@ -551,4 +751,3 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
         self._xbot_zmq_client.set_filter_frequency_hz(reference_filter_cutoff_frequency.item(),
                                                       enabled=reference_filter_cutoff_frequency.item()>0.0 and self._enable_filters)
-
