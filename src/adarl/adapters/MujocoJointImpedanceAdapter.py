@@ -69,7 +69,9 @@ class SecondOrderFilter:
 
 
 class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
-    """Joint impedance controller built on top of the MujocoAdapter (classic mujoco, vec_size=1)."""
+    """Joint impedance controller built on top of the MujocoAdapter (mujoco classic, only vec_size=1).
+    
+    WARNING: This adapter should still be considered as a Work In Progress."""
 
     def __init__(self,
                  vec_size: int = 1,

@@ -57,16 +57,10 @@ class AlteredClock():
 
 
 class StandaloneRealAdapter(BaseAdapter):
+    """Real-world adapter, in which the stepping is done simply by waiting for time to pass.
+    """
     def __init__(   self,   stepLength_sec : float = 0.001,
                             walltime_factor : float = 1.0):
-        """Initialize the Simulator controller.
-
-        Raises
-        -------
-        ROSException
-            If it fails to find the gazebo services
-
-        """
         super().__init__()
         self._stepLength_sec = stepLength_sec
 

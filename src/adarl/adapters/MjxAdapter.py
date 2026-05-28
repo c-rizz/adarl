@@ -1544,6 +1544,9 @@ class SimElementsState:
 
 
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
+    """ Adapter that uses Mujoco MJX as the underlying simulation engine, and provides a vectorized interface to it. 
+    This is the most mature and feature-complete adapter in the ADARL suite.
+    """
 
     @dataclass
     class DebugInfo():

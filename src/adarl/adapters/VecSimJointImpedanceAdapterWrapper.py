@@ -11,7 +11,7 @@ from adarl.utils.utils import Pose, build_pose, JointState, LinkState
 import torch as th
 
 class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointImpedanceAdapter):
-    
+    """Vectorizing wrapper for simulated joint impedance adapters implementing BaseVecJointImpedanceAdapter."""
     def __init__(self,  th_device : th.device,
                         adapters):
         vec_size = len(adapters)

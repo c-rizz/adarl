@@ -173,8 +173,11 @@ class BulletCamera:
 
 
 class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPositionAdapter, BaseJointVelocityAdapter):
-    """This class allows to control the execution of a PyBullet simulation.
+    """Basic adapter that uses PyBullet as the simulation backend. Implements joint effort, position and 
+    velocity control (through pybullet's implementations), but not full impedance control.
+    For impedance control in PyBullet, use PyBulletJointImpedanceAdapter.
 
+    WARNING: This adapter is old, it is not actively maintained.
     """
 
     def __init__(self, stepLength_sec : float = 1/240,

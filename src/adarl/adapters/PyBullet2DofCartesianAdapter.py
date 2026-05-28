@@ -14,6 +14,9 @@ import time
 
 
 class PyBullet2DofCartesianAdapter(PyBulletAdapter, BaseCartesianPositionAdapter):
+    """An adapter custom-made to control a 2-DoF planar arm in PyBullet by specifying the desired end-effector position in the plane.
+    
+    WARNING: This adapter is old, it is not actively maintained."""
     def __init__(self,  end_effector_link : Tuple[str,str],
                         xjoint : Tuple[str,str],
                         yjoint : Tuple[str,str],

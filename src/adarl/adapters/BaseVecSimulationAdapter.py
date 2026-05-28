@@ -9,6 +9,7 @@ import torch as th
 
 
 class BaseVecSimulationAdapter(BaseVecAdapter):
+    """ Interface for implementing vectorized simulation-backed adapters. """
 
     def setJointsAndLinksStateDirect(self,
                                      joint_names : Sequence[tuple[str,str]] | None = None,

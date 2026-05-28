@@ -33,7 +33,7 @@ def detect_simulated():
     return False
 
 class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJointPositionAdapter):
-
+    """Adapter for controlling a real robot through XBot using ZMQ communication."""
     def __init__(self,  model_name : str,
                         stepLength_sec : float,
                         is_floating_base : bool = True,

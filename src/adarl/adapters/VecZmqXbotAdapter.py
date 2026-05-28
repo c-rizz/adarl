@@ -10,7 +10,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import torch as th
 
 class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapter):
-    
+    """ Vectorized wrapper for ZmqXbotAdapter. Currently only supports vec_size=1."""
     def __init__(self,  vec_size : int,
                         th_device : th.device,
                         adapter : ZmqXbotAdapter):

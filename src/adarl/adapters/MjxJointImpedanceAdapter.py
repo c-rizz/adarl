@@ -251,7 +251,8 @@ class _InternalSetCurrentJointImpedanceCommand(_InternalCommand):
         return sim_state
 
 class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
-    
+    """ Adapter that implements joint impedance control on top of the MjxAdapter.
+    Together with MjxAdapter, this is the most mature and feature-complete adapter in the ADARL suite."""
     def __init__(self, vec_size : int,
                         enable_rendering : bool,
                         jax_device : jax.Device,

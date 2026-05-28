@@ -10,7 +10,9 @@ import copy
 import adarl.utils.dbg.ggLog as ggLog
 
 class PyBulletJointImpedanceAdapter(PyBulletAdapter, BaseJointImpedanceAdapter):
-
+    """Simulation adapter for PyBullet that implements BaseJointImpedanceAdapter.
+    
+    WARNING: This adapter is old, it is not actively maintained."""
     def __init__(self,  stepLength_sec : float = 0.004166666666,
                         restore_on_reset = True,
                         debug_gui : bool = False,

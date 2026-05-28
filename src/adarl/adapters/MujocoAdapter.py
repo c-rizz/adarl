@@ -33,8 +33,9 @@ def add_compiler_options(urdf_def: str,
 
 class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     """Single-simulation adapter for Mujoco classic.
+    This adapter implements the BaseVecSimulationAdapter interface but only supports vec_size == 1.
 
-    This adapter keeps the BaseVecSimulationAdapter interface but only supports vec_size == 1.
+    WARNING: This adapter should still be considered as a Work In Progress.
     """
 
     def __init__(self,
