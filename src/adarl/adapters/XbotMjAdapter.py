@@ -117,6 +117,7 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
         self._xbot2_core_log = None
         self._xbot2_core_log_thread = None
         self._skip_next_reset_world = False
+        self._warned_live_xmj_reset_skip = False
         self._sim_time = 0.0
         self._base_q_last = np.zeros((1, 4), dtype=np.float64)
         self._base_q_last[:, 0] = 1.0
@@ -298,7 +299,14 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
 
     def _raise_for_xbot2_zmq_log_errors(self):
         tail = self._xbot2_core_log_tail()
-        if "zmq_io" in tail and ("Address already in use" in tail or "initialization failed" in tail):
+        if "Address already in use" in tail and "zmq_io" in tail:
+            raise RuntimeError(
+                "xbot2_zmq plugin failed during startup: a ZMQ endpoint is already in use. "
+                "The XMJ world interface starts its own xbot2-core, so stop any external xbot2-core "
+                "using the same config before launching XMJ. Use the external xbot2-core tab for "
+                f"rt_deploy_world_interface instead.\n{tail}"
+            )
+        if "initialization failed" in tail and "zmq_io" in tail:
             raise RuntimeError(f"xbot2_zmq plugin failed during startup\n{tail}")
 
     def _wait_for_zmq_plugin(self, timeout_s: float = 60.0):
@@ -459,8 +467,15 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
     def resetWorld(self):
         if self._skip_next_reset_world:
             self._skip_next_reset_world = False
-        elif not self._xmj_sim.reset():
-            raise RuntimeError("Failed to reset XBot-MuJoCo simulation")
+        elif not getattr(self, "_started", False):
+            if not self._xmj_sim.reset():
+                raise RuntimeError("Failed to reset XBot-MuJoCo simulation")
+        elif not self._warned_live_xmj_reset_skip:
+            ggLog.warn(
+                "Skipping live XBot-MuJoCo hard reset while xbot2-core/ZMQ is running. "
+                "Use a full adapter restart for simulation reset until xbot2_mujoco reset is made safe."
+            )
+            self._warned_live_xmj_reset_skip = True
         self._sim_time = 0.0
         self._sense_needed = True
         self._health_cache_until = 0.0
