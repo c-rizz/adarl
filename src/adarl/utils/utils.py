@@ -8,7 +8,15 @@ import time
 from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, TypeVar, Sequence
 import os
 import quaternion
-import tqdm
+try:
+    import tqdm
+except ImportError:
+    class _TqdmFallback:
+        @staticmethod
+        def tqdm(iterable, *args, **kwargs):
+            return iterable
+
+    tqdm = _TqdmFallback()
 
 import adarl.utils.dbg.ggLog as ggLog
 import torch as th

@@ -2,13 +2,28 @@ from __future__ import annotations
 
 import numpy as np
 import time
-import cv2
+try:
+    import cv2
+except ImportError:
+    class _Cv2Missing:
+        def __getattr__(self, name):
+            raise ImportError("OpenCV is required for this adarl image utility") from None
+
+    cv2 = _Cv2Missing()
 import collections
 from typing import List, Tuple, Callable, Dict, Union, Optional, Any, Optional, Literal, TypeVar, Sequence
 import os
 import quaternion
 import datetime
-import tqdm
+try:
+    import tqdm
+except ImportError:
+    class _TqdmFallback:
+        @staticmethod
+        def tqdm(iterable, *args, **kwargs):
+            return iterable
+
+    tqdm = _TqdmFallback()
 import random
 import multiprocessing
 import csv
