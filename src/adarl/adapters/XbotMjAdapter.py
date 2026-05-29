@@ -111,6 +111,7 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
         self._base_link = base_link
         self._render_to_file = render_to_file
         self._render_fps = render_fps
+        self._xmj_control_health_period_s = 0.5
         self._closed = False
         self._xmj_sim = None
         self._xbot2_core_proc = None
@@ -333,9 +334,10 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
             socket.setsockopt(zmq.SNDTIMEO, 500)
             try:
                 socket.connect(request_url)
-                socket.send_string(yaml.dump({"type": "joint_names"}))
+                socket.send_string(yaml.dump({"type": "plugin_status", "plugin": "zmq_io"}))
                 response = yaml.safe_load(socket.recv_string()) or {}
-                if response.get("success", True) and "data" in response:
+                state = response.get("data", {}).get("state")
+                if response.get("success", False) and state == "Running":
                     return
                 last_error = response.get("message", response)
             except (zmq.Again, zmq.ZMQError, yaml.YAMLError) as exc:
@@ -364,6 +366,7 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
 
             try:
                 self._xbot_zmq_client.sense(timeout_s=0.001)
+                self._mark_successful_sense()
                 return
             except TimeoutError as exc:
                 last_error = exc
@@ -423,11 +426,43 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
         return self._xmj_sim.is_running()
 
     def is_xbot_running(self):
-        xbot2_core_running = self._xbot2_core_proc is not None and self._xbot2_core_proc.poll() is None
-        return xbot2_core_running and ZmqXbotAdapter.is_xbot_running(self)
+        # In the embedded XMJ setup this adapter owns xbot2-core and the sim clock.
+        # During remote stepping the interface can legitimately sit idle waiting for
+        # the cluster, so stale ZMQ state alone must not make the launcher tear down
+        # a healthy simulator. Actual ZMQ failures are still raised by reads/commands.
+        return self._xbot2_core_proc is not None and self._xbot2_core_proc.poll() is None
+
+    def _poll_xmj_control_health(self, force: bool = False) -> bool:
+        if not self.is_xbot_running():
+            self._last_health_ok = False
+            self._health_cache_until = 0.0
+            return False
+
+        now = time.monotonic()
+        if not force and now < self._health_cache_until:
+            return self._last_health_ok
+
+        try:
+            health = self._xbot_zmq_client.get_health(timeout_s=self._health_check_timeout_s)
+        except Exception:
+            # XMJ owns the simulator clock and xbot2-core can legitimately be
+            # blocked waiting for manual stepping. A health-service timeout is
+            # not enough to kill the world interface; reads/commands still raise
+            # hard ZMQ errors, and safety is latched when the plugin responds.
+            self._health_cache_until = now + self._xmj_control_health_period_s
+            return self._last_health_ok
+
+        self._is_safety_triggered = bool(health.get("safety_triggered", True))
+        plugin_running = bool(health.get("zmq_io_state_ok", False)) and health.get("zmq_io_state") == "Running"
+        self._last_health_ok = plugin_running and not self._is_safety_triggered
+        self._health_cache_until = now + self._xmj_control_health_period_s
+        return self._last_health_ok
 
     def is_xbot_control_running(self):
-        return self.is_xbot_running()
+        return self.is_xbot_running() and not self._is_safety_triggered
+
+    def _mark_successful_sense(self):
+        self._last_successful_sense_wall_time = time.monotonic()
 
     def xmj_env(self):
         return self._xmj_sim
@@ -459,6 +494,7 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
     def step(self) -> float:
         stime_before = self._sim_time
         self.run(duration_sec=self._stepLength_sec)
+        self._poll_xmj_control_health()
         self.clear_commands()
         self._sense_needed = True
         return self._sim_time - stime_before
@@ -487,8 +523,8 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
             "medium": 15.0,
             "fast": 25.0,
         }
-        cutoff_hz = profile_cutoff_hz.get(profile_name, 0.0)
-        self.set_reference_filter(th.tensor(cutoff_hz if set_enabled else 0.0))
+        cutoff_hz = float(profile_cutoff_hz.get(profile_name, 0.0)) if set_enabled else 0.0
+        self._xbot_zmq_client.set_filter_frequency_hz(cutoff_hz, enabled=cutoff_hz > 0.0 and self._enable_filters)
 
     def read_imu_data(self):
         self._sense_with_sim_stepping(timeout_s=self._sense_timeout_s)
@@ -504,9 +540,7 @@ class XbotMjAdapter(ZmqXbotAdapter, BaseSimulationAdapter):
     def _sense_if_needed(self):
         if self._sense_needed or self._sense_always:
             self._sense_with_sim_stepping(timeout_s=self._sense_timeout_s)
-            self._last_successful_sense_wall_time = time.monotonic()
-            self._last_health_ok = True
-            self._health_cache_until = self._last_successful_sense_wall_time + self._health_check_period_s
+            self._mark_successful_sense()
             self._sense_needed = False
 
     @override

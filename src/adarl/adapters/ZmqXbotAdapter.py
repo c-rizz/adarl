@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import time
-import yaml
-import zmq
 from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
@@ -28,6 +26,10 @@ import numpy as np
 # ------------------------------------------------------------------------------------------
 # XBOT helper functions
 # ------------------------------------------------------------------------------------------
+
+
+class XbotSafetyError(RuntimeError):
+    pass
 
 
 def detect_simulated():
@@ -65,8 +67,9 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         base_link : str = "base_link",
                         time_source : Literal["wall", "xbot", "sim"] = "wall",
                         sense_timeout_s : float = 0.2,
-                        health_check_timeout_s : float = 0.05,
-                        health_check_period_s : float = 0.5):
+                        health_check_timeout_s : float = 0.2,
+                        health_check_period_s : float = 1.0,
+                        health_stale_after_s : float = 5.0):
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
         self._model_name = model_name
@@ -107,13 +110,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._control_dt = 0.001 # can I get this from somewhere?
         self._base_link = base_link
         self._time_source = "xbot" if time_source == "sim" else time_source
-        self._zmq_remote_ip = remote_ip
-        self._zmq_comm_protocol = comm_protocol
-        self._zmq_tcp_service_port = tcp_service_port
-        self._zmq_ipc_service_path = ipc_service_path
         self._sense_timeout_s = sense_timeout_s
         self._health_check_timeout_s = health_check_timeout_s
         self._health_check_period_s = health_check_period_s
+        self._health_stale_after_s = health_stale_after_s
         self._last_successful_sense_wall_time = 0.0
         self._health_cache_until = 0.0
         self._last_health_ok = False
@@ -175,35 +175,43 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def _last_xbot_time(self) -> float:
         return float(getattr(self._xbot_zmq_client, "_last_msg_stamp", 0.0))
 
-    def _service_url(self) -> str:
-        if self._zmq_comm_protocol == "tcp":
-            return f"tcp://{self._zmq_remote_ip}:{self._zmq_tcp_service_port}"
-        return f"ipc://{self._zmq_ipc_service_path}"
-
-    def _request_zmq_service(self, request: dict, timeout_s: float) -> dict:
-        socket = zmq.Context.instance().socket(zmq.REQ)
-        timeout_ms = max(1, int(timeout_s * 1000))
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
-        socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
-        try:
-            socket.connect(self._service_url())
-            socket.send_string(yaml.dump(request))
-            return yaml.safe_load(socket.recv_string()) or {}
-        finally:
-            socket.close()
-
     def _check_zmq_plugin(self, timeout_s: float | None = None) -> bool:
         try:
-            response = self._request_zmq_service(
-                {"type": "joint_names"},
-                timeout_s=self._health_check_timeout_s if timeout_s is None else timeout_s,
+            health = self._xbot_zmq_client.get_health(
+                timeout_s=self._health_check_timeout_s if timeout_s is None else timeout_s
             )
-            if not isinstance(response, dict):
-                return False
-            return bool(response.get("success", True) and "data" in response)
-        except (zmq.Again, zmq.ZMQError, yaml.YAMLError, OSError):
+        except Exception:
             return False
+
+        self._is_safety_triggered = bool(health.get("safety_triggered", True))
+        plugin_running = bool(health.get("zmq_io_state_ok", False)) and health.get("zmq_io_state") == "Running"
+        state_age = float(health.get("state_last_publish_age_s", float("inf")))
+        state_fresh = 0.0 <= state_age <= self._health_stale_after_s
+        return plugin_running and not self._is_safety_triggered and state_fresh
+
+    def _update_safety_status(self, timeout_s: float | None = None) -> bool:
+        try:
+            status = self._xbot_zmq_client.get_safety_status(
+                timeout_s=self._health_check_timeout_s if timeout_s is None else timeout_s
+            )
+        except Exception:
+            return self._is_safety_triggered
+        self._is_safety_triggered = bool(status.get("safety_triggered", True))
+        return self._is_safety_triggered
+
+    def _raise_if_safety_triggered(self, context: str):
+        if self._update_safety_status():
+            raise XbotSafetyError(f"XBot2 safety is triggered while {context}; stopping interface cleanly")
+
+    def _mark_successful_sense(self):
+        self._last_successful_sense_wall_time = time.monotonic()
+        self._last_health_ok = True
+        self._health_cache_until = self._last_successful_sense_wall_time + self._health_check_period_s
+
+    def _has_recent_successful_sense(self) -> bool:
+        if self._last_successful_sense_wall_time <= 0.0:
+            return False
+        return time.monotonic() - self._last_successful_sense_wall_time <= self._health_stale_after_s
 
     def _cached_health_check(self, force: bool = False) -> bool:
         if not self._started:
@@ -236,10 +244,14 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         return self.getEnvTimeFromStartup()
 
     def is_xbot_running(self):
+        if not self._started:
+            return False
+        if self._has_recent_successful_sense():
+            return True
         return self._cached_health_check()
 
     def is_xbot_control_running(self):
-        return self.is_xbot_running()
+        return self._cached_health_check()
 
     def fallback_striffness(self):
         return self._fallback_cmd_stiffness
@@ -312,7 +324,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             joint_impedances_pvesd_dict = joint_impedances_pvesd
 
         if self.is_safety_triggered():
-            ggLog.warn(f"Commanding impedance, but safety is triggered")
+            raise XbotSafetyError("XBot2 safety is triggered while queueing impedance commands; stopping interface cleanly")
         
         for full_jname, jcmd in joint_impedances_pvesd_dict.items():
             model_name, jname = full_jname
@@ -328,6 +340,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         # ggLog.info(f"applying joint impedances {joint_impedances_pvesd}")
         if len (joint_impedances_pvesd)==0:
             return
+        if self.is_safety_triggered():
+            raise XbotSafetyError("XBot2 safety is triggered while applying impedance commands; stopping interface cleanly")
         
         if isinstance(joint_impedances_pvesd, th.Tensor):
             joint_impedances_pvesd_dict = dict(zip(self._jimpedance_controlled_joints, joint_impedances_pvesd))
@@ -427,13 +441,16 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         if self._sense_needed or self._sense_always:
             try:
                 self._xbot_zmq_client.sense(timeout_s=self._sense_timeout_s)
+            except TimeoutError:
+                self._last_health_ok = False
+                self._health_cache_until = 0.0
+                self._raise_if_safety_triggered("waiting for the XBot2/ZMQ state stream")
+                raise
             except Exception:
                 self._last_health_ok = False
                 self._health_cache_until = 0.0
                 raise
-            self._last_successful_sense_wall_time = time.monotonic()
-            self._last_health_ok = True
-            self._health_cache_until = self._last_successful_sense_wall_time + self._health_check_period_s
+            self._mark_successful_sense()
             self._sense_needed = False
     @override
     def step(self) -> float:
@@ -567,9 +584,6 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
 
     def is_safety_triggered(self):
-        # The current xbot2_zmq service API does not expose XBot2 safety state.
-        # Keep the state local so a future service query can update it without
-        # changing the public adapter API.
         return self._is_safety_triggered
     
     def _get_current_refs_pvesd(self) -> np.ndarray:
@@ -652,8 +666,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             "medium": 15.0,
             "fast": 25.0,
         }
-        cutoff_hz = profile_cutoff_hz.get(profile_name, 0.0)
-        self.set_reference_filter(th.tensor(cutoff_hz if set_enabled else 0.0))
+        cutoff_hz = float(profile_cutoff_hz.get(profile_name, 0.0)) if set_enabled else 0.0
+        self._xbot_zmq_client.set_filter_frequency_hz(cutoff_hz, enabled=cutoff_hz > 0.0 and self._enable_filters)
 
     def read_imu_data(self):
         self._sense_if_needed()
