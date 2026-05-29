@@ -296,6 +296,8 @@ class Robot():
                     ret[frame.name] = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
                 if is_reference_frame:
                     ref_pose = link_pose.translation.T, quaternion_xyzw_from_rotmat(link_pose.rotation)
+        if len(ret) != len(frames if frames is not None else self._frame_names):
+            raise RuntimeError(f"Requested frames {frames} but only found poses for {list(ret.keys())}")
         if reference_frame is not None:
             if ref_pose is None:
                 raise RuntimeError(f"Reference frame {reference_frame} not found")
