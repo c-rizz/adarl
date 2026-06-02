@@ -3,9 +3,9 @@
 ADARL's core feature is a collection of interfaces (i.e. Adapters) that sit between Reinforcement Learning
 environments and simulations or real world robotics frameworks.
 
-The goal is to write an environment **once** against a backend-agnostic adapter interface, and then run it
-unchanged on different simulators (or on real hardware) — switching backend is just a matter of swapping the
-adapter. This makes it easy to, for example, train in a fast GPU-batched simulator and deploy the same
+ADARL allows you to write an environment **once** against a backend-agnostic adapter interface, and then run
+it unchanged on different simulators (or on real hardware) — switching backend is just a matter of swapping 
+the adapter. This makes it easy to, for example, train in a fast GPU-batched simulator and deploy the same
 environment on a CPU simulator or a physical robot.
 
 ## Adapters
@@ -34,10 +34,7 @@ so single-sim backends can be used where a batched adapter is expected.
 
 ## Environment structure
 
-Environments are **vectorized**: they operate on a batch of robots at once (a batch of size 1 is just the
-degenerate case), which is what lets a single environment scale from one CPU simulation up to thousands of
-GPU-batched ones. The framework lives in [`adarl/envs/vec`](src/adarl/envs/vec) and follows a runner-based
-design:
+Environments are **vectorized**: they operate on a batch of robot systems at once. The environment definition framework lives in [`adarl/envs/vec`](src/adarl/envs/vec):
 
 - **Env logic** — `BaseVecEnv` → `ControlledVecEnv` define how observations, rewards and resets are computed
   for the batch, driving the simulation through an adapter.
