@@ -54,7 +54,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         remote_ip : str ='localhost',
                         comm_protocol : Literal["tcp", "ipc"] ='ipc', # or 'ipc'
                         tcp_service_port : int =5557,
-                        tcp_state_port : int =5556,
+                        tcp_state_port : int =5559,
                         tcp_cmd_port : int =5558,
                         ipc_pub_path : str ="/tmp/xbot2_zmq_pub.ipc",
                         ipc_cmd_path : str ="/tmp/xbot2_zmq_cmd.ipc",
@@ -108,7 +108,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                                 tcp_cmd_port = tcp_cmd_port,
                                                 ipc_pub_path = ipc_pub_path,
                                                 ipc_cmd_path = ipc_cmd_path,
-                                                ipc_service_path = ipc_service_path)
+                                                ipc_service_path = ipc_service_path,
+                                                verbose = True)
 
     def is_simulated(self):
         return self._is_simulated
