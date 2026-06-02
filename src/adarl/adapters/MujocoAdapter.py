@@ -77,7 +77,13 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  output_th_device: th.device = th.device("cpu"),
                  log_folder: str = "./",
                  show_gui: bool = False,
-                 gui_frequency: float = 25.0):
+                 gui_frequency: float = 25.0,
+                 opt_preset: str = "mujoco_default",
+                 opt_override: dict | None = None,
+                 safe_revolute_dof_armature: float = 0.01,
+                 revolute_dof_armature_override: float | None = None,
+                 revolute_dof_damping_override: float | None = None,
+                 revolute_dof_frictionloss_override: float | None = None):
         if vec_size != 1:
             raise ValueError("MujocoAdapter only supports vec_size=1")
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
@@ -95,8 +101,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._add_sky = True
         self._uneven_ground = False
         self._discardvisual = False
-        self._opt_preset = "mujoco_default"
-        self._opt_override = None
+        self._opt_preset = opt_preset
+        self._opt_override = opt_override
+        self._safe_revolute_dof_armature = safe_revolute_dof_armature
+        self._revolute_dof_armature_override = revolute_dof_armature_override
+        self._revolute_dof_damping_override = revolute_dof_damping_override
+        self._revolute_dof_frictionloss_override = revolute_dof_frictionloss_override
         self._enable_rendering = True
         self._stepping = False
         self._step_length_sec = step_length_sec
@@ -133,6 +143,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         self._mj_model.opt.timestep = self._sim_step_dt
+        self._apply_revolute_dof_overrides()
         self._mj_data = mujoco_MjData(self._mj_model)
         self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
         mujoco_mj_forward(self._mj_model, self._mj_data)
@@ -150,6 +161,27 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Cameras:\n{pprint.pformat(self._cname2cid)}")
 
         self._launch_gui_if_needed()
+
+    def _apply_revolute_dof_overrides(self):
+        """Ensure revolute DOFs have nonzero armature/damping/frictionloss and apply the
+        configured overrides, matching MjxAdapter so the two backends share the same joint dynamics."""
+        safe_damping = 1.0
+        safe_frictionloss = 0.2
+        for dof_id in range(self._mj_model.nv):
+            if self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]] != mujoco_mjtJoint.mjJNT_HINGE:
+                continue
+            if self._mj_model.dof_armature[dof_id] == 0:
+                self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
+            if self._revolute_dof_armature_override is not None:
+                self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
+            if self._mj_model.dof_frictionloss[dof_id] == 0:
+                self._mj_model.dof_frictionloss[dof_id] = safe_frictionloss
+            if self._revolute_dof_frictionloss_override is not None:
+                self._mj_model.dof_frictionloss[dof_id] = self._revolute_dof_frictionloss_override
+            if self._mj_model.dof_damping[dof_id] == 0:
+                self._mj_model.dof_damping[dof_id] = safe_damping
+            if self._revolute_dof_damping_override is not None:
+                self._mj_model.dof_damping[dof_id] = self._revolute_dof_damping_override
 
     def _build_renderers(self):
         self._camera_sizes_wh :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
@@ -342,6 +374,23 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         eff = self._mj_data.qfrc_smooth[qvel_adrs] + self._mj_data.qfrc_constraint[qvel_adrs]
         return np.stack([pos, vel, acc, eff], axis=-1)
 
+    def _read_joints_pvaeep(self, jids: np.ndarray) -> np.ndarray:
+        """Per-substep joint quantities for the extended step stats, ordered
+        [position, velocity, acceleration, commanded_effort, sensed_effort, power]
+        (matching MjxAdapter.get_joints_state_step_stats_extended)."""
+        qpos_adrs = self._mj_model.jnt_qposadr[jids]
+        qvel_adrs = self._mj_model.jnt_dofadr[jids]
+        jtypes = self._mj_model.jnt_type[jids]
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
+            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
+        pos = self._mj_data.qpos[qpos_adrs]
+        vel = self._mj_data.qvel[qvel_adrs]
+        acc = self._mj_data.qacc[qvel_adrs]
+        commanded_effort = self._mj_data.qfrc_applied[qvel_adrs] + self._mj_data.qfrc_actuator[qvel_adrs]
+        sensed_effort = commanded_effort + self._mj_data.qfrc_passive[qvel_adrs] + self._mj_data.qfrc_constraint[qvel_adrs]
+        power = np.clip(vel * commanded_effort, 0.0, 1e6)
+        return np.stack([pos, vel, acc, commanded_effort, sensed_effort, power], axis=-1)
+
     def _read_joints_pveae(self, jids: np.ndarray) -> np.ndarray:
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
@@ -367,7 +416,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
-        return th.as_tensor(self._joint_step_stats_mmas_j_pvea, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_joints),4)
+        stats = th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_joints),6)
+        return stats[:, :, :, :4]
+
+    @override
+    def get_joints_state_step_stats_extended(self) -> th.Tensor:
+        return th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_joints),6)
 
     @override
     def get_links_state_step_stats(self) -> th.Tensor:
@@ -403,7 +457,6 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             requestedLinks = self._monitored_links
         if len(requestedLinks) == 0:
             return th.empty((1, 0, 13), device=self._out_th_device, dtype=self._out_th_float_dtype)
-        ggLog.info(f"Getting link states for links: {requestedLinks}")
         if isinstance(requestedLinks, np.ndarray):
             lids = requestedLinks
         else:
@@ -603,9 +656,103 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def delete_model(self, model_name: str):
         raise NotImplementedError("Deleting models at runtime is not implemented for MujocoAdapter")
 
+    def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
+                                        explicit_groups : list[tuple[tuple[str,str],...]] = []) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Compute geom/body contype-conaffinity bitmasks from a link->colliding-links specification.
+
+        Mirrors MjxAdapter._compute_collision_masks: links are reorganized into a small set of
+        collision groups (each a bit position, max 32), each link gets a contype mask (the groups
+        it belongs to) and a conaffinity mask (the groups it collides with). Visual geoms
+        (contype==0 and conaffinity==0) are left untouched.
+        """
+        input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
+
+        # Reorganize the links into a small set of groups of links that always collide together
+        best_collision_groups : list[set[tuple[str,str]]] = []
+        while len(input_collision_groups)>0:
+            biggest_common_subgroup = set(input_collision_groups[0])
+            for g in input_collision_groups:
+                prev_biggest_common_subgroup = biggest_common_subgroup
+                biggest_common_subgroup = biggest_common_subgroup.intersection(g)
+                if len(biggest_common_subgroup)==0:
+                    biggest_common_subgroup = prev_biggest_common_subgroup
+            best_collision_groups.append(biggest_common_subgroup)
+            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups]
+            input_collision_groups = [g for g in input_collision_groups if len(g)>0]
+
+        best_collision_groups_set = {tuple(g) for g in best_collision_groups}
+        best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
+        link_to_group_ids = {} # Which groups each link is part of
+        self._linkgroup_to_id : dict[tuple[tuple[str,str],...], int] = {}
+        for i,g in enumerate(best_collision_groups):
+            g_t = tuple(g)
+            self._linkgroup_to_id[g_t] = i
+            for l in g:
+                link_to_group_ids.setdefault(l, []).append(i)
+
+        link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
+        for link,colliding_links in link_group_collisions:
+            colliding_links = set(colliding_links)
+            for i,g in enumerate(best_collision_groups):
+                if g.issubset(colliding_links):
+                    link_colliding_groups.setdefault(link, []).append(i)
+
+        if len(best_collision_groups) > 32:
+            raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")
+
+        nbody = self._mj_model.nbody
+        all_links = list(self._lname2lid.keys())
+        for l in all_links:
+            link_to_group_ids.setdefault(l, [])
+            link_colliding_groups.setdefault(l, [])
+        for l in list(link_to_group_ids.keys())+list(link_colliding_groups.keys()):
+            if l not in all_links:
+                raise RuntimeError(f"Link {l} specified in link_group_collisions is not present in the model")
+
+        link_contypes = {}
+        link_conaffinity = {}
+        for l in all_links:
+            if self._lname2lid[l] >= nbody:
+                continue  # skip non-body elements
+            contype_mask = 0
+            for gid in link_to_group_ids[l]:
+                contype_mask |= 1<<gid
+            link_contypes[l] = contype_mask
+            conaffinity_mask = 0
+            for gid in link_colliding_groups[l]:
+                conaffinity_mask |= 1<<gid
+            link_conaffinity[l] = conaffinity_mask
+
+        body_contype : np.ndarray = self._mj_model.body_contype.copy()
+        body_conaffinity : np.ndarray = self._mj_model.body_conaffinity.copy()
+        geom_contype : np.ndarray = self._mj_model.geom_contype.copy()
+        geom_conaffinity : np.ndarray = self._mj_model.geom_conaffinity.copy()
+        for lname in all_links:
+            body_id = self._lname2lid[lname]
+            if body_id >= nbody:
+                continue
+            aff = link_conaffinity[lname]
+            typ = link_contypes[lname]
+            body_conaffinity[body_id] = aff
+            body_contype[body_id] = typ
+            for geom_id in range(self._mj_model.body_geomadr[body_id],
+                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
+                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
+                if not visual:
+                    geom_conaffinity[geom_id] = aff
+                    geom_contype[geom_id] = typ
+        return geom_contype, geom_conaffinity, body_contype, body_conaffinity
+
     @override
-    def set_body_collisions(self, link_group_collisions: list[tuple[tuple[str, str], list[tuple[str, str]]]]):
-        raise NotImplementedError("Setting body collisions is not implemented for MujocoAdapter")
+    def set_body_collisions(self, link_group_collisions: list[tuple[tuple[str, str], list[tuple[str, str]]]],
+                            explicit_groups: list[tuple[tuple[str, str], ...]] = []):
+        self._ensure_ready()
+        geom_contype, geom_conaffinity, body_contype, body_conaffinity = self._compute_collision_masks(link_group_collisions, explicit_groups)
+        self._mj_model.geom_contype[:] = geom_contype
+        self._mj_model.geom_conaffinity[:] = geom_conaffinity
+        self._mj_model.body_contype[:] = body_contype
+        self._mj_model.body_conaffinity[:] = body_conaffinity
+        self._forward_needed = True
 
     @override
     def set_link_impulses(self, link_ids: Sequence[Any],
@@ -635,9 +782,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"max_substeps_count {max_substeps_count} is less than expected number of substeps per step "
                           f"{int(self._step_length_sec/self._sim_step_dt)}; step stats would be incomplete.")
         self._step_stats_buff_len = max_substeps_count
-        self._joint_pvea_step_history = np.zeros((max_substeps_count, len(self._monitored_joints), 4), dtype=np.float32)
+        self._joint_pvaeep_step_history = np.zeros((max_substeps_count, len(self._monitored_joints), 6), dtype=np.float32)
         self._link_vels_step_history = np.zeros((max_substeps_count, len(self._monitored_links), 6), dtype=np.float32)
-        self._joint_step_stats_mmas_j_pvea = np.zeros((4, len(self._monitored_joints), 4), dtype=np.float32)
+        self._joint_step_stats_mmas_j_pvaeep = np.zeros((4, len(self._monitored_joints), 6), dtype=np.float32)
         self._link_step_stats_mmas_l_vels = np.zeros((4, len(self._monitored_links), 6), dtype=np.float32)
 
 
@@ -645,20 +792,22 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if not self._stepping:
             return
         if len(self._monitored_joints) > 0:
-            joint_pvea = self._read_joints_pvae(np.array([self._jname2jid[jn] for jn in self._monitored_joints], dtype=int))
-            self._joint_pvea_step_history[self._recorded_stats_substeps%self._step_stats_buff_len] = joint_pvea
+            joint_pvaeep = self._read_joints_pvaeep(np.array([self._jname2jid[jn] for jn in self._monitored_joints], dtype=int))
+            self._joint_pvaeep_step_history[self._recorded_stats_substeps%self._step_stats_buff_len] = joint_pvaeep
         if len(self._monitored_links) > 0:
             link_vels = self._read_link_velocities(self._monitored_links)
             self._link_vels_step_history[self._recorded_stats_substeps%self._step_stats_buff_len] = link_vels
         self._recorded_stats_substeps += 1
 
-    def _compute_stats(self) -> np.ndarray:
+    def _compute_stats(self) -> None:
         l = min(self._recorded_stats_substeps, self._step_stats_buff_len)
-        jmins = self._joint_pvea_step_history[:l].min(axis=0)
-        jmaxs = self._joint_pvea_step_history[:l].max(axis=0)
-        javg = self._joint_pvea_step_history[:l].mean(axis=0)
-        jstd = self._joint_pvea_step_history[:l].std(axis=0)
-        self._joint_step_stats_mmas_j_pvea = np.stack([jmins, jmaxs, javg, jstd], axis=0)
+        if l == 0:
+            return
+        jmins = self._joint_pvaeep_step_history[:l].min(axis=0)
+        jmaxs = self._joint_pvaeep_step_history[:l].max(axis=0)
+        javg = self._joint_pvaeep_step_history[:l].mean(axis=0)
+        jstd = self._joint_pvaeep_step_history[:l].std(axis=0)
+        self._joint_step_stats_mmas_j_pvaeep = np.stack([jmins, jmaxs, javg, jstd], axis=0)
         lmins = self._link_vels_step_history[:l].min(axis=0)
         lmaxs = self._link_vels_step_history[:l].max(axis=0)
         lavg = self._link_vels_step_history[:l].mean(axis=0)
