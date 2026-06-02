@@ -5,6 +5,8 @@ os.environ["MUJOCO_GL"] = "egl"
 import numpy as np
 import torch as th
 import mujoco
+import mujoco.viewer
+import time
 
 from typing import Sequence, Any
 from typing_extensions import override
@@ -17,6 +19,36 @@ from adarl.adapters.MjxAdapter import aggregate_models, apply_opt_preset, add_ar
 import copy
 import adarl.utils.dbg.ggLog as ggLog
 import pprint
+
+
+from typing import TypeAlias 
+mujoco_mjtGeom :            TypeAlias = mujoco.mjtGeom # type: ignore
+mujoco_mju_quat2Mat :       TypeAlias = mujoco.mju_quat2Mat # type: ignore
+mujoco_mju_mat2Quat :       TypeAlias = mujoco.mju_mat2Quat # type: ignore
+mujoco_mjv_initGeom :       TypeAlias = mujoco.mjv_initGeom # type: ignore
+mujoco_mjtCatBit :          TypeAlias = mujoco.mjtCatBit # type: ignore
+mujoco_mjv_connector :      TypeAlias = mujoco.mjv_connector # type: ignore
+mujoco_MjData :             TypeAlias = mujoco.MjData # type: ignore
+mujoco__functions :         TypeAlias = mujoco._functions # type: ignore
+mujoco_mju_dense2sparse :   TypeAlias = mujoco.mju_dense2sparse # type: ignore
+mujoco_MjModel :            TypeAlias = mujoco.MjModel # type: ignore
+mujoco_MjSpec :             TypeAlias = mujoco.MjSpec # type: ignore
+mujoco_mjtInertiaFromGeom : TypeAlias = mujoco.mjtInertiaFromGeom # type: ignore
+mujoco_MjsBody :            TypeAlias = mujoco.MjsBody # type: ignore
+mujoco_mjtSensor :          TypeAlias = mujoco.mjtSensor # type: ignore
+mujoco_mjtObj :             TypeAlias = mujoco.mjtObj # type: ignore
+mujoco_mj_id2name :         TypeAlias = mujoco.mj_id2name # type: ignore
+mujoco_mjtTrn :             TypeAlias = mujoco.mjtTrn # type: ignore
+mujoco_mj_printModel :      TypeAlias = mujoco.mj_printModel # type: ignore
+mujoco_mjtJoint :           TypeAlias = mujoco.mjtJoint # type: ignore
+mujoco_mjtIntegrator :      TypeAlias = mujoco.mjtIntegrator # type: ignore
+mujoco_mjtDisableBit :      TypeAlias = mujoco.mjtDisableBit # type: ignore
+mujoco_mj_resetData :       TypeAlias = mujoco.mj_resetData # type: ignore
+mujoco_mj_name2id :         TypeAlias = mujoco.mj_name2id # type: ignore
+mujoco_MjvOption :          TypeAlias = mujoco.MjvOption # type: ignore
+mujoco_mjtVisFlag :         TypeAlias = mujoco.mjtVisFlag # type: ignore
+mujoco_mj_camlight :        TypeAlias = mujoco.mj_camlight # type: ignore
+mujoco_mj_forward :         TypeAlias = mujoco.mj_forward # type: ignore
 
 model_element_separator = "#"
 
@@ -42,14 +74,17 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  vec_size: int = 1,
                  sim_step_dt: float = 1/1024,
                  step_length_sec: float = 48/1024,
-                 output_th_device: th.device = th.device("cpu")):
+                 output_th_device: th.device = th.device("cpu"),
+                 log_folder: str = "./",
+                 show_gui: bool = False,
+                 gui_frequency: float = 25.0):
         if vec_size != 1:
             raise ValueError("MujocoAdapter only supports vec_size=1")
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
         self._sim_step_dt = float(sim_step_dt)
         self._sim_step_dt_th = th.as_tensor(self._sim_step_dt, device=output_th_device)
-        self._mj_model: mujoco.MjModel = None
-        self._mj_data: mujoco.MjData | None = None
+        self._mj_model: mujoco_MjModel = None
+        self._mj_data: mujoco_MjData | None = None
         self._requested_qfrc_applied = np.zeros((0,), dtype=np.float64)
         self._renderer_cache: dict[str, mujoco.Renderer] = {}
         self._jname2jid: dict[tuple[str, str], int] = {}
@@ -68,6 +103,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_needed = True
         self._time_since_startup = 0.0
         self._step_stats_len = 1000
+        self._log_folder = log_folder
+        self._show_gui = show_gui
+        self._gui_freq = gui_frequency
+        self._viewer = None
+        self._viewer_mj_data : mujoco_MjData | None = None
+        self._last_gui_update_wtime = 0.0
 
     def _ensure_ready(self):
         if self._mj_model is None or self._mj_data is None:
@@ -81,18 +122,20 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         models = list(models)
         if len(models) == 0:
             raise RuntimeError("No models provided to build_scenario")
+        scenario_logs_folder = self._log_folder+"/MjxAdapter/scenario_logs"
 
         self._mj_model, spec = aggregate_models(models,
                                           add_ground=self._add_ground,
                                           add_sky=self._add_sky,
                                           uneven_ground=self._uneven_ground,
-                                          discardvisual=self._discardvisual)
+                                          discardvisual=self._discardvisual,
+                                          log_folder=scenario_logs_folder)
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         self._mj_model.opt.timestep = self._sim_step_dt
-        self._mj_data = mujoco.MjData(self._mj_model)
+        self._mj_data = mujoco_MjData(self._mj_model)
         self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
-        mujoco.mj_forward(self._mj_model, self._mj_data)
+        mujoco_mj_forward(self._mj_model, self._mj_data)
 
         self._renderer_cache.clear()
         self._build_name_maps()
@@ -106,13 +149,15 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Links:\n{pprint.pformat(self._lname2lid)}")
         ggLog.info(f"Cameras:\n{pprint.pformat(self._cname2cid)}")
 
+        self._launch_gui_if_needed()
+
     def _build_renderers(self):
         self._camera_sizes_wh :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         if self._enable_rendering:
-            self._render_scene_option = mujoco.MjvOption()
-            self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 1
-            # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
-            # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
+            self._render_scene_option = mujoco_MjvOption()
+            self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+            # self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_COM] = 1
+            # self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_TRANSPARENT] = 1
             ggLog.info(f"Making rederer for resolutions: {set(self._camera_sizes_wh.values())}, MUJOCO_GL={os.environ.get('MUJOCO_GL','<not set>')}")
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution: mujoco.Renderer(self._mj_model,resolution[0],resolution[1])
                                                                         for resolution in set(self._camera_sizes_wh.values())}
@@ -121,19 +166,73 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def destroy_scenario(self, **kwargs):
+        self._close_gui()
         self._mj_model = None
         self._mj_data = None
         self._renderers = {}
         self._renderers_mj_data = []
 
+    def _launch_gui_if_needed(self):
+        """Open the interactive passive viewer window, if show_gui is enabled."""
+        if not self._show_gui or self._viewer is not None:
+            return
+        try:
+            # The viewer keeps its own data object: resetWorld() reallocates self._mj_data,
+            # so we copy the live state into this stable buffer on each _update_gui().
+            self._viewer_mj_data = mujoco_MjData(self._mj_model)
+            mujoco_mj_forward(self._mj_model, self._viewer_mj_data)
+            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
+            self._last_gui_update_wtime = 0.0
+        except Exception as e:
+            ggLog.warn(f"MujocoAdapter: could not open interactive gui ({type(e).__name__}: {e}); disabling show_gui.")
+            self._viewer = None
+            self._viewer_mj_data = None
+            self._show_gui = False
+
+    def _update_gui(self, force: bool = False):
+        """Push the current simulation state to the viewer window, throttled to gui_frequency."""
+        if not self._show_gui or self._viewer is None:
+            return
+        if not self._viewer.is_running():
+            self._close_gui()
+            self._show_gui = False
+            return
+        if force or (time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq):
+            self._forward_if_needed()
+            vd = self._viewer_mj_data
+            vd.qpos[:] = self._mj_data.qpos
+            vd.qvel[:] = self._mj_data.qvel
+            if self._mj_model.na > 0:
+                vd.act[:] = self._mj_data.act
+            if self._mj_model.nmocap > 0:
+                vd.mocap_pos[:] = self._mj_data.mocap_pos
+                vd.mocap_quat[:] = self._mj_data.mocap_quat
+            if self._mj_model.nu > 0:
+                vd.ctrl[:] = self._mj_data.ctrl
+            vd.xfrc_applied[:] = self._mj_data.xfrc_applied
+            vd.qfrc_applied[:] = self._mj_data.qfrc_applied
+            vd.time = self._mj_data.time
+            mujoco_mj_forward(self._mj_model, vd)
+            self._last_gui_update_wtime = time.monotonic()
+            self._viewer.sync()
+
+    def _close_gui(self):
+        if self._viewer is not None:
+            try:
+                self._viewer.close()
+            except Exception:
+                pass
+        self._viewer = None
+        self._viewer_mj_data = None
+
     def _build_name_maps(self):
-        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
+        self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(mujoco_mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid))
                            for jid in range(self._mj_model.njnt)}
         self._jname2jid = {jn:jid for jid,jn in self._jid2jname.items()}
-        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
+        self._lid2lname : dict[int, tuple[str,str]] = {lid:self._mj_name_to_pair(mujoco_mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_BODY, lid))
                            for lid in range(self._mj_model.nbody)}
         self._lname2lid = {ln:lid for lid,ln in self._lid2lname.items()}
-        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco.mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
+        self._cid2cname : dict[int, str] = {jid:self._mj_name_to_pair(mujoco_mj_id2name(self._mj_model, mujoco.mjtObj.mjOBJ_CAMERA, jid))[1]
                            for jid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
 
@@ -190,12 +289,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 renderer = self._renderers[width, height]
                 cam_id = self._cname2cid[cam]
                 renderer.update_scene(self._mj_data, camera=cam_id, scene_option=self._render_scene_option)
-                if self._visualize_xfrc_applied:
-                    for body_id in range(0,self._mj_model.nbody):
-                        if np.linalg.norm(self._mj_data.xfrc_applied[body_id]) != 0.0:
-                            force_vec = self._mj_data.xfrc_applied[body_id,:3]
-                            body_pos = self._mj_data.xipos[body_id]
-                            add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
+                # if self._visualize_xfrc_applied:
+                #     for body_id in range(0,self._mj_model.nbody):
+                #         if np.linalg.norm(self._mj_data.xfrc_applied[body_id]) != 0.0:
+                #             force_vec = self._mj_data.xfrc_applied[body_id,:3]
+                #             body_pos = self._mj_data.xipos[body_id]
+                #             add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
                 img = renderer.render()
                 images.append(th.as_tensor(img, device=self._out_th_device).unsqueeze(0))
         times = th.full((1, len(requestedCameras)), fill_value=float(self._mj_data.time), device=self._out_th_device, dtype=self._out_th_float_dtype)
@@ -203,7 +302,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _forward_if_needed(self):
         if self._forward_needed:
-            mujoco.mj_forward(self._mj_model, self._mj_data)
+            mujoco_mj_forward(self._mj_model, self._mj_data)
 
     @override
     def getJointsState(self, requestedJoints: Sequence[tuple[str, str]] | np.ndarray | None = None) -> th.Tensor:
@@ -224,7 +323,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco.mjtJoint.mjJNT_HINGE) | (jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
         pos = self._mj_data.qpos[qpos_adrs]
         vel = self._mj_data.qvel[qvel_adrs]
@@ -235,7 +334,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco.mjtJoint.mjJNT_HINGE) | (jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
         pos = self._mj_data.qpos[qpos_adrs]
         vel = self._mj_data.qvel[qvel_adrs]
@@ -247,7 +346,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco.mjtJoint.mjJNT_HINGE) | (jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
         pos = self._mj_data.qpos[qpos_adrs]
         vel = self._mj_data.qvel[qvel_adrs]
@@ -280,7 +379,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if efforts.shape[1] != len(jids):
             raise ValueError(f"efforts has wrong shape {tuple(efforts.shape)}, expected (1,{len(jids)})")
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco.mjtJoint.mjJNT_HINGE) | (jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
         if isinstance(efforts, th.Tensor):
@@ -344,8 +443,32 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _mat_to_quat_xyzw(rotmat: np.ndarray) -> np.ndarray:
         # if rotmat.shape == (9,):
         #     rotmat = rotmat.reshape(3, 3)
-        quat = mujoco.mju_mat2Quat(rotmat.flatten())
+        quat = mujoco_mju_mat2Quat(rotmat.flatten())
         return quat[[1,2,3,0]]
+
+    @override
+    def get_local_link_linear_acceleration(self, requestedLinks: Sequence[tuple[str, str]] | np.ndarray | None = None) -> th.Tensor:
+        if requestedLinks is None:
+            requestedLinks = self._monitored_links
+        if len(requestedLinks) == 0:
+            return th.empty((1, 0, 3), device=self._out_th_device, dtype=self._out_th_float_dtype)
+        self._ensure_ready()
+        if isinstance(requestedLinks, np.ndarray):
+            lids = requestedLinks
+        else:
+            lids = np.array([self._lname2lid[l] for l in requestedLinks], dtype=int)
+        self._forward_if_needed()
+        # mj_objectAcceleration reads mjData.cacc, which is only filled by mj_rnePostConstraint.
+        # cacc is the com-based spatial acceleration with the world acceleration initialized to
+        # -gravity, so the result is the proper (accelerometer-style) acceleration of the link.
+        mujoco.mj_rnePostConstraint(self._mj_model, self._mj_data)
+        accs = np.empty((len(lids), 3), dtype=np.float64)
+        res = np.zeros(6, dtype=np.float64)  # [angular_xyz, linear_xyz]
+        for i, lid in enumerate(lids):
+            # flg_local=1 -> express the 6D acceleration in the link's local frame
+            mujoco.mj_objectAcceleration(self._mj_model, self._mj_data, mujoco.mjtObj.mjOBJ_BODY, int(lid), res, 1)
+            accs[i] = res[3:6]
+        return th.as_tensor(accs, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0)
 
     @override
     def setJointsStateDirect(self, joint_names: Sequence[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
@@ -357,7 +480,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if joint_states_pve.shape[1] != len(jids) or joint_states_pve.shape[2] != 3:
             raise ValueError(f"joint_states_pve has wrong shape {tuple(joint_states_pve.shape)}, expected (1,{len(jids)},3)")
         jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco.mjtJoint.mjJNT_HINGE) | (jtypes == mujoco.mjtJoint.mjJNT_SLIDE)):
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
             raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
@@ -365,12 +488,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data.qpos[qpos_adrs] = states_np[:, 0]
         self._mj_data.qvel[qvel_adrs] = states_np[:, 1]
         self._mj_data.qfrc_applied[qvel_adrs] = states_np[:, 2]
-        mujoco.mj_forward(self._mj_model, self._mj_data)
+        mujoco_mj_forward(self._mj_model, self._mj_data)
 
     def _move_free_links(self, lids: np.ndarray, link_states_pose_vel: np.ndarray):
         jnt_ids = self._mj_model.body_jntadr[lids]
         jtypes = self._mj_model.jnt_type[jnt_ids]
-        if not np.all(jtypes == mujoco.mjtJoint.mjJNT_FREE):
+        if not np.all(jtypes == mujoco_mjtJoint.mjJNT_FREE):
             raise NotImplementedError(f"Only free joints are supported; got joint types {jtypes}")
 
         qpos_adrs = self._mj_model.jnt_qposadr[jnt_ids]
@@ -458,7 +581,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._move_fixed_links(fixed_bodies, link_states_pose_vel_np[fixed_bodies_mask])
         self._move_free_links(floating_bodies, link_states_pose_vel_np[floating_bodies_mask])
         
-        mujoco.mj_forward(self._mj_model, self._mj_data)
+        mujoco_mj_forward(self._mj_model, self._mj_data)
             
 
     @override
@@ -497,8 +620,8 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def resetWorld(self):
-        self._mj_data = mujoco.MjData(self._mj_model)
-        mujoco.mj_forward(self._mj_model, self._mj_data)
+        self._mj_data = mujoco_MjData(self._mj_model)
+        mujoco_mj_forward(self._mj_model, self._mj_data)
         self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
         self.initialize_for_episode()
 
@@ -553,6 +676,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ran_time = float(self._mj_data.time - start_time)
         self._time_since_startup += ran_time
         self._forward_needed = True
+        self._update_gui()
         return ran_time
 
     @override

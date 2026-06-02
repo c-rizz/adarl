@@ -1012,7 +1012,7 @@ class DictStateHelper(StateHelper):
 
 
 
-class RobotStateHelper(ThBoxStateHelper):
+class JointStateHelper(ThBoxStateHelper):
     def __init__(self,  joint_limit_minmax_pveae : Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         stiffness_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
                         damping_minmax : tuple[float,float] | Mapping[tuple[str,str],np.ndarray | th.Tensor],
@@ -1158,7 +1158,8 @@ class JointImpedanceActionHelper:
                                                 "PVESD",
                                                 "PVE",
                                                 "PT",
-                                                "PS"], start=0)
+                                                "PS",
+                                                "POSITION_DELTA"], start=0)
     
     action_lengths = {
         CONTROL_MODES.PVESD: 5 ,
@@ -1168,6 +1169,7 @@ class JointImpedanceActionHelper:
         CONTROL_MODES.TORQUE: 1,
         CONTROL_MODES.VELOCITY: 1,
         CONTROL_MODES.POSITION: 1,
+        CONTROL_MODES.POSITION_DELTA: 1
         }
     
     def __init__(self, control_mode : CONTROL_MODES,
@@ -1178,7 +1180,8 @@ class JointImpedanceActionHelper:
                         th_device : th.device,
                         generator : th.Generator | None,
                         vec_size : int,
-                        center_position : th.Tensor | dict[tuple[str,str], th.Tensor]):
+                        center_position : th.Tensor | dict[tuple[str,str], th.Tensor],
+                        position_delta_max : float | None = False):
         """
 
         Parameters
@@ -1221,6 +1224,12 @@ class JointImpedanceActionHelper:
         self._th_device = th_device
         self._vec_size = vec_size
         self._dtype = th.float32
+        if self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
+            if position_delta_max is None:
+                raise RuntimeError("position_delta_max should be specified when using POSITION_DELTA control mode")
+            self._position_delta_max = position_delta_max
+        else:
+            self._position_delta_max = None
 
         pvesd_shape = (self._vec_size, self._joints_num, 5)
         s = normalize(self._safe_stiffness, min=self._minmax_joints_pvesd[0,:,3],max=self._minmax_joints_pvesd[1,:,3])
@@ -1229,7 +1238,7 @@ class JointImpedanceActionHelper:
             act_to_pvesd =  [1]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, -1.0, float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,4] = d
-        elif self._control_mode == self.CONTROL_MODES.POSITION:
+        elif self._control_mode == self.CONTROL_MODES.POSITION or self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
             act_to_pvesd =  [0]
             self._base_v_j_pvesd = th.as_tensor([0.0, 0.0, 0.0, float("nan"), float("nan")], dtype=self._dtype, device=self._th_device).expand(pvesd_shape).clone()
             self._base_v_j_pvesd[:,:,3] = s
@@ -1277,7 +1286,7 @@ class JointImpedanceActionHelper:
                                 f" All joints = {self._joints}")
         zero_cmd = th.zeros(size=(1, self._joints_num, 5), dtype=self._dtype, device=self._th_device)
         zero_cmd[:,:,0] = center_position
-        zero_action = self.pvesd_to_action(zero_cmd).view(self.single_action_len())
+        zero_action = self.pvesd_to_action(zero_cmd, zero_cmd[:,:,0]).view(self.single_action_len())
         high = th.ones(self.single_action_len())
         self._single_action_space = spaces.ThBox(low  = -high,
                                                  high = high,
@@ -1300,7 +1309,7 @@ class JointImpedanceActionHelper:
     def get_vec_action_space(self):
         return self._vec_action_space
 
-    def pvesd_to_action(self, cmds_pvesd : th.Tensor) -> th.Tensor:
+    def pvesd_to_action(self, cmds_pvesd : th.Tensor, prev_posref : th.Tensor | None = None) -> th.Tensor:
         """Converts a joint impedance command (pvesd) to its respective action.
 
         Parameters
@@ -1319,10 +1328,18 @@ class JointImpedanceActionHelper:
             cmd_vec_joints_pvesd = cmds_pvesd
         else:
             cmd_vec_joints_pvesd = th.stack([th.as_tensor(cmds_pvesd[j], device=self._th_device) for j in self._joints]).unsqueeze(0).expand(self._vec_size, len(self._joints), 5)
-        cmd_vec_joints_pvesd = normalize(cmd_vec_joints_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
-        return cmd_vec_joints_pvesd[:,:,self._act_to_pvesd_idx].flatten(start_dim=1)
+        if self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
+            posref = cmd_vec_joints_pvesd[:,:,0]
+            delta = posref - prev_posref #type: ignore
+            dbg_check(lambda: th.logical_and(th.all(delta <= self._position_delta_max), 
+                                             th.all(delta >= -self._position_delta_max)), build_msg=lambda: f"Position delta exceeds maximum! delta = {delta}, max = {self._position_delta_max}")
+            delta = th.clamp(delta, -self._position_delta_max, self._position_delta_max)
+            return delta/self._position_delta_max
+        else:
+            cmd_vec_joints_pvesd = normalize(cmd_vec_joints_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
+            return cmd_vec_joints_pvesd[:,:,self._act_to_pvesd_idx].flatten(start_dim=1)
 
-    def action_to_pvesd(self, action: th.Tensor) -> th.Tensor:
+    def action_to_pvesd(self, action: th.Tensor, prev_posref: th.Tensor | None = None) -> th.Tensor:
         """Converts an action to its respective joint impedance command (pvesd)
 
         Parameters
@@ -1337,8 +1354,16 @@ class JointImpedanceActionHelper:
         """
 
         cmd_vec_joint_pvesd = self._base_v_j_pvesd.detach().clone()
-        cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action.view(self._vec_size, self._joints_num, self.action_lengths[self._control_mode])
-        cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
+        action = action.view(self._vec_size, self._joints_num, self.action_lengths[self._control_mode])
+        if self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
+            cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
+            prev_posref = prev_posref.view(self._vec_size, self._joints_num, 1)
+            posref = action * self._position_delta_max + prev_posref #type: ignore
+            cmd_vec_joint_pvesd[:,:,0] = posref.view(self._vec_size, self._joints_num)
+        else:
+            cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action
+            cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
+        th.clamp_(cmd_vec_joint_pvesd[:,:,0], self._minmax_joints_pvesd[0,:,0], self._minmax_joints_pvesd[1,:,0])
         dbg_check(lambda: typing.cast(bool, th.all(cmd_vec_joint_pvesd[:,:,3:5] >=0 )), build_msg=lambda: f"Negative stiffness or damping!! {cmd_vec_joint_pvesd}",
                   async_assert=True)
         return cmd_vec_joint_pvesd

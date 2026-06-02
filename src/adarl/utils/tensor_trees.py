@@ -251,7 +251,7 @@ def space_from_tree(tensor_tree, labels = None):
             try:
                 subspaces[k] = space_from_tree(tensor_tree[k], labels.get(k,None) if labels is not None else None)
             except RuntimeError as e:
-                raise RuntimeError(f"{k}.{e}")    
+                raise RuntimeError(f"error at subspace {k}: {e}")    
         return gym_spaces.Dict(subspaces)
     if isinstance(tensor_tree, np.ndarray):
         tensor_tree = th.as_tensor(tensor_tree)
