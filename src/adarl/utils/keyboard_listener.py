@@ -6,14 +6,13 @@ import copy
 
 class KeyboardListener():
     def __init__(self):
+        self._dict_lock = threading.RLock()
+        self._currently_pressed_keys = set()
+        self._key_press_counter : dict[str,int] = {}
         self._listener_thread = threading.Thread(target=self._listener, name="KeyboardListener")
         self._listener_thread.start()
         self._started = True
         atexit.register(self.close)
-
-        self._dict_lock = threading.RLock()
-        self._currently_pressed_keys = set()
-        self._key_press_counter : dict[str,int] = {}
         
     def _on_press(self, key):
         with self._dict_lock:

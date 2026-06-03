@@ -217,12 +217,28 @@ def reconstruct_poisson(mesh, depth, n_views, rays_per_view, density_quantile,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clean a CAD mesh by voxelizing or Poisson-reconstructing the outer surface."
+        description="Clean a CAD mesh by voxelizing or Poisson-reconstructing the outer surface." \
+        "Example usage:" \
+        "python3 mesh_repairer.py --target-faces 1000 --input-scale 01000 --input-dir ./input_folder --output-dir ./output_folder"
     )
-    parser.add_argument("input", help="Input STL file")
+    parser.add_argument(
+        "input", nargs="?", default=None,
+        help="Input STL file (single-file mode). Omit when using --input-dir."
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=str, default=None,
+        help="Batch mode: process every .stl file in this folder. Requires --output-dir."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str, default=None,
+        help="Batch mode: write each processed mesh to this folder under the same filename. "
+             "Used together with --input-dir; all files get the same processing options."
+    )
     parser.add_argument(
         "-m", "--method",
-        choices=["voxel", "poisson"], default="voxel",
+        choices=["voxel", "poisson"], default="poisson",
         help="Reconstruction method. 'poisson' uses raycasting + open3d Poisson "
              "and preserves original face orientations. Default: voxel"
     )
@@ -339,85 +355,111 @@ def main():
 
     args = parser.parse_args()
 
-    print(f"Loading {args.input}...")
-    mesh = trimesh.load(args.input, process=False, force='mesh')
-    print(f"Loaded {len(mesh.faces)} faces, {len(mesh.vertices)} vertices")
-    if args.input_scale != 1.0:
-        print(f"Input scaling by {args.input_scale}...")
-        mesh.apply_scale(args.input_scale)
-    print(f"Bounds: {mesh.bounds}")
-    print(f"Extents: {mesh.extents}")
+    import os
+    import glob
 
-    if args.info:
-        components = mesh.split(only_watertight=False)
-        print(f"\nSplit into {len(components)} components:")
-        for i, c in enumerate(components):
-            print(f"  Component {i}: {len(c.faces)} faces, volume: {c.volume:.4f}")
-        return
+    def process_one(in_path, out_path, args):
+        print(f"Loading {in_path}...")
+        mesh = trimesh.load(in_path, process=False, force='mesh')
+        print(f"Loaded {len(mesh.faces)} faces, {len(mesh.vertices)} vertices")
+        print(f"Bounds: {mesh.bounds}")
+        print(f"Extents: {mesh.extents}")
+        if args.input_scale != 1.0:
+            print(f"Input scaling by {args.input_scale}...")
+            mesh.apply_scale(args.input_scale)
 
-    if args.method == "voxel":
-        outer = reconstruct_voxel(mesh, args.pitch)
-    else:
-        outer = reconstruct_poisson(
-            mesh,
-            depth=args.poisson_depth,
-            n_views=args.poisson_views,
-            rays_per_view=args.poisson_rays_per_view,
-            density_quantile=args.poisson_density_quantile,
-            scale=args.poisson_scale,
-            linear_fit=args.poisson_linear_fit,
-            dedup_voxel=args.poisson_dedup_voxel,
-            bbox_margin=args.poisson_bbox_margin,
-            outlier_std=args.poisson_outlier_std,
-            outlier_neighbors=args.poisson_outlier_neighbors,
-        )
+        if args.info:
+            components = mesh.split(only_watertight=False)
+            print(f"\nSplit into {len(components)} components:")
+            for i, c in enumerate(components):
+                print(f"  Component {i}: {len(c.faces)} faces, volume: {c.volume:.4f}")
+            return
 
-    if args.cleanup_needles > 0:
-        outer = cleanup_needles(outer, args.cleanup_needles)
-
-    if args.smooth_iterations > 0:
-        print(f"Smoothing (iterations={args.smooth_iterations}, lambda={args.lamb})...")
-        trimesh.smoothing.filter_laplacian(outer, lamb=args.lamb, iterations=args.smooth_iterations)
-
-    if args.target_faces > 0:
-        outer = decimate(outer, args.target_faces)
-
-    if args.fill_holes > 0:
-        outer = fill_holes(outer, args.fill_holes)
-
-    if args.scale != 1.0:
-        print(f"Scaling by {args.scale}...")
-        outer.apply_scale(args.scale)
-
-    if args.output:
-        out_path = args.output
-    else:
-        base = args.input.rsplit('.', 1)[0]
         if args.method == "voxel":
-            out_path = f"{base}_voxel_p{args.pitch}_s{args.smooth_iterations}_l{args.lamb}.stl"
+            outer = reconstruct_voxel(mesh, args.pitch)
         else:
-            out_path = (f"{base}_poisson_d{args.poisson_depth}"
-                        f"_v{args.poisson_views}_r{args.poisson_rays_per_view}"
-                        f"_s{args.smooth_iterations}_l{args.lamb}.stl")
+            outer = reconstruct_poisson(
+                mesh,
+                depth=args.poisson_depth,
+                n_views=args.poisson_views,
+                rays_per_view=args.poisson_rays_per_view,
+                density_quantile=args.poisson_density_quantile,
+                scale=args.poisson_scale,
+                linear_fit=args.poisson_linear_fit,
+                dedup_voxel=args.poisson_dedup_voxel,
+                bbox_margin=args.poisson_bbox_margin,
+                outlier_std=args.poisson_outlier_std,
+                outlier_neighbors=args.poisson_outlier_neighbors,
+            )
 
-    print(f"\nSaving to {out_path}...")
-    outer.export(out_path)
-    print(f"Done. Final mesh: {len(outer.faces)} faces, {len(outer.vertices)} vertices")
+        if args.cleanup_needles > 0:
+            outer = cleanup_needles(outer, args.cleanup_needles)
 
-    edge_counts = np.bincount(outer.edges_unique_inverse)
-    boundary_edges = int(np.sum(edge_counts == 1))
-    nonmanifold_edges = int(np.sum(edge_counts > 2))
+        if args.smooth_iterations > 0:
+            print(f"Smoothing (iterations={args.smooth_iterations}, lambda={args.lamb})...")
+            trimesh.smoothing.filter_laplacian(outer, lamb=args.lamb, iterations=args.smooth_iterations)
 
-    print("\nWatertightness check:")
-    print(f"  is_watertight:         {outer.is_watertight}")
-    print(f"  is_winding_consistent: {outer.is_winding_consistent}")
-    print(f"  euler_number:          {outer.euler_number}  (closed sphere-topology = 2)")
-    print(f"  boundary edges:        {boundary_edges}  (open holes; should be 0)")
-    print(f"  non-manifold edges:    {nonmanifold_edges}  (3+ faces share an edge; should be 0)")
-    print(f"  components:            {len(outer.split(only_watertight=False))}")
-    if not outer.is_watertight:
-        broken = trimesh.repair.broken_faces(outer)
-        print(f"  broken faces:          {len(broken)} (touching a boundary edge)")
+        if args.target_faces > 0:
+            outer = decimate(outer, args.target_faces)
+
+        if args.fill_holes > 0:
+            outer = fill_holes(outer, args.fill_holes)
+
+        if args.scale != 1.0:
+            print(f"Scaling by {args.scale}...")
+            outer.apply_scale(args.scale)
+
+        print(f"Final bounds: {outer.bounds}")
+
+        if out_path is None:
+            base = in_path.rsplit('.', 1)[0]
+            if args.method == "voxel":
+                out_path = f"{base}_voxel_p{args.pitch}_s{args.smooth_iterations}_l{args.lamb}.stl"
+            else:
+                out_path = (f"{base}_poisson_d{args.poisson_depth}"
+                            f"_v{args.poisson_views}_r{args.poisson_rays_per_view}"
+                            f"_s{args.smooth_iterations}_l{args.lamb}.stl")
+
+        print(f"\nSaving to {out_path}...")
+        outer.export(out_path)
+        print(f"Done. Final mesh: {len(outer.faces)} faces, {len(outer.vertices)} vertices")
+
+        edge_counts = np.bincount(outer.edges_unique_inverse)
+        boundary_edges = int(np.sum(edge_counts == 1))
+        nonmanifold_edges = int(np.sum(edge_counts > 2))
+
+        print("\nWatertightness check:")
+        print(f"  is_watertight:         {outer.is_watertight}")
+        print(f"  is_winding_consistent: {outer.is_winding_consistent}")
+        print(f"  euler_number:          {outer.euler_number}  (closed sphere-topology = 2)")
+        print(f"  boundary edges:        {boundary_edges}  (open holes; should be 0)")
+        print(f"  non-manifold edges:    {nonmanifold_edges}  (3+ faces share an edge; should be 0)")
+        print(f"  components:            {len(outer.split(only_watertight=False))}")
+        if not outer.is_watertight:
+            broken = trimesh.repair.broken_faces(outer)
+            print(f"  broken faces:          {len(broken)} (touching a boundary edge)")
+
+    if args.input_dir is not None:
+        if args.output_dir is None:
+            parser.error("--output-dir is required when --input-dir is given")
+        os.makedirs(args.output_dir, exist_ok=True)
+        stl_files = sorted(f for f in glob.glob(os.path.join(args.input_dir, "*"))
+                           if f.lower().endswith(".stl"))
+        if not stl_files:
+            print(f"No .stl files found in {args.input_dir}")
+            return
+        print(f"Found {len(stl_files)} .stl file(s) in {args.input_dir}")
+        for i, in_path in enumerate(stl_files):
+            out_path = os.path.join(args.output_dir, os.path.basename(in_path))
+            print(f"\n{'='*70}\n[{i+1}/{len(stl_files)}] {os.path.basename(in_path)} -> {out_path}\n{'='*70}")
+            try:
+                process_one(in_path, out_path, args)
+            except Exception as e:
+                print(f"ERROR processing {in_path}: {type(e).__name__}: {e}")
+    else:
+        if args.input is None:
+            parser.error("provide an input STL file, or use --input-dir together with --output-dir for batch processing")
+        process_one(args.input, args.output, args)
 
 
 if __name__ == "__main__":

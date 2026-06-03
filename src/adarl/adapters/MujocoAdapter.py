@@ -1,5 +1,7 @@
 from __future__ import annotations
 import os
+
+from adarl.utils.base_utils import record_region_end, record_region_start, record_time
 os.environ["MUJOCO_GL"] = "egl"
 
 import numpy as np
@@ -209,44 +211,30 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if not self._show_gui or self._viewer is not None:
             return
         try:
-            # The viewer keeps its own data object: resetWorld() reallocates self._mj_data,
-            # so we copy the live state into this stable buffer on each _update_gui().
-            self._viewer_mj_data = mujoco_MjData(self._mj_model)
-            mujoco_mj_forward(self._mj_model, self._viewer_mj_data)
-            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
+            # Bind the viewer directly to the live data. resetWorld() resets it in place
+            # (rather than reallocating) so this reference stays valid across episodes.
+            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._mj_data)
             self._last_gui_update_wtime = 0.0
         except Exception as e:
             ggLog.warn(f"MujocoAdapter: could not open interactive gui ({type(e).__name__}: {e}); disabling show_gui.")
             self._viewer = None
-            self._viewer_mj_data = None
             self._show_gui = False
 
     def _update_gui(self, force: bool = False):
-        """Push the current simulation state to the viewer window, throttled to gui_frequency."""
+        """Refresh the viewer window, throttled to gui_frequency."""
         if not self._show_gui or self._viewer is None:
             return
         if not self._viewer.is_running():
             self._close_gui()
             self._show_gui = False
             return
+        record_region_start("MujocoAdapter.update_gui()")
         if force or (time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq):
             self._forward_if_needed()
-            vd = self._viewer_mj_data
-            vd.qpos[:] = self._mj_data.qpos
-            vd.qvel[:] = self._mj_data.qvel
-            if self._mj_model.na > 0:
-                vd.act[:] = self._mj_data.act
-            if self._mj_model.nmocap > 0:
-                vd.mocap_pos[:] = self._mj_data.mocap_pos
-                vd.mocap_quat[:] = self._mj_data.mocap_quat
-            if self._mj_model.nu > 0:
-                vd.ctrl[:] = self._mj_data.ctrl
-            vd.xfrc_applied[:] = self._mj_data.xfrc_applied
-            vd.qfrc_applied[:] = self._mj_data.qfrc_applied
-            vd.time = self._mj_data.time
-            mujoco_mj_forward(self._mj_model, vd)
+            record_time("MujocoAdapter.update_gui() forward done")
             self._last_gui_update_wtime = time.monotonic()
-            self._viewer.sync()
+            self._viewer.sync(state_only=True)
+        record_region_end("MujocoAdapter.update_gui()")
 
     def _close_gui(self):
         if self._viewer is not None:
@@ -335,6 +323,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _forward_if_needed(self):
         if self._forward_needed:
             mujoco_mj_forward(self._mj_model, self._mj_data)
+            self._forward_needed = False
 
     @override
     def getJointsState(self, requestedJoints: Sequence[tuple[str, str]] | np.ndarray | None = None) -> th.Tensor:
@@ -767,8 +756,14 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def resetWorld(self):
-        self._mj_data = mujoco_MjData(self._mj_model)
+        # Reset in place rather than reallocating, so a gui viewer bound to this MjData keeps
+        # following the simulation across episodes (and to avoid a per-episode allocation).
+        if self._mj_data is None:
+            self._mj_data = mujoco_MjData(self._mj_model)
+        else:
+            mujoco_mj_resetData(self._mj_model, self._mj_data)
         mujoco_mj_forward(self._mj_model, self._mj_data)
+        self._forward_needed = False
         self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
         self.initialize_for_episode()
 
