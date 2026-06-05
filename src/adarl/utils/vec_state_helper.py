@@ -306,6 +306,8 @@ class ThBoxStateHelper(StateHelper):
                 raise RuntimeError(f"Field {n} has size {minmax.size()}, should be {(2,)+self.field_shape}")
             new_minmax[n]=minmax
         fields_minmax = new_minmax
+        if len(self.field_names) == 0:
+            return th.empty((2, 0) + self.field_shape, dtype=self._dtype, device=self._th_device)
         return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:

@@ -140,6 +140,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         # self._robot_urdf = _fix_urdf_package_paths(self._robot_urdf)
         self._robot_helper = Robot(robot_description_string=self._robot_urdf)
 
+        self._xbot_zmq_client.sense(blocking=True, timeout_s=60.0) # get initial state and update model
+
         self._jimpedance_controlled_joints_jids = np.array([self._xbotjname_to_jid[jn] for model_name,jn in self._jimpedance_controlled_joints])
         self._started = True
 
@@ -319,8 +321,11 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
     def _sense_if_needed(self):
         if self._sense_needed or self._sense_always:
-            self._xbot_zmq_client.sense(timeout_s=60.0)
+            self._xbot_zmq_client.sense(blocking=False)
+            if self._xbot_zmq_client.get_last_state_age() > 1.0:
+                raise RuntimeError(f"Havent received robot state for {self._xbot_zmq_client.get_last_state_age()} seconds. Stopping") 
             self._sense_needed = False
+
     @override
     def step(self) -> float:
         step_duration = super().step()

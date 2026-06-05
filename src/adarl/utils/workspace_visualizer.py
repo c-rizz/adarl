@@ -53,6 +53,141 @@ from adarl.utils.robot_helpers import Robot
 # Sampling
 # ---------------------------------------------------------------------------
 
+# Per-process state for the parallel sampling workers.  Populated once by the
+# pool initializer so the Robot (whose collision model isn't safely shareable
+# across processes) is rebuilt locally in each worker rather than shipped from
+# the parent.
+_WORKER: dict = {}
+
+
+def _init_sampling_worker(
+    urdf_string: str,
+    urdf_format: str,
+    fixed_dict: dict[str, np.ndarray],
+    controlled_joints: list[str],
+    ee_frame: str,
+    check_collisions: bool,
+    collision_pairs_to_remove: list,
+) -> None:
+    """Build a Robot once per worker process and stash everything the chunk loop needs."""
+    robot = Robot(urdf_string, robot_description_format=urdf_format)
+    robot.set_joint_pose_by_names(fixed_dict)
+    if check_collisions and collision_pairs_to_remove:
+        robot.remove_collision_pairs(collision_pairs_to_remove)
+        robot.set_joint_pose_by_names(fixed_dict)   # restore pose after pair edits
+    _WORKER.update(
+        robot=robot,
+        controlled_joints=controlled_joints,
+        ee_frame=ee_frame,
+        check_collisions=check_collisions,
+    )
+
+
+def _sample_chunk(joint_chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+    """Run FK (and optional collision filtering) over one chunk of configs in a worker."""
+    robot             = _WORKER["robot"]
+    controlled_joints = _WORKER["controlled_joints"]
+    ee_frame          = _WORKER["ee_frame"]
+    check_collisions  = _WORKER["check_collisions"]
+
+    poses: list[np.ndarray] = []
+    configs: list[np.ndarray] = []
+    for q in joint_chunk:
+        jdict = {jn: np.array([float(q[k])]) for k, jn in enumerate(controlled_joints)}
+        robot.set_joint_pose_by_names(jdict)
+        if check_collisions and robot.has_collisions()[0]:
+            continue
+        poses.append(robot.get_frame_poses_xyzxyzw(frames=[ee_frame])[ee_frame])
+        configs.append(q.copy())
+
+    d = len(controlled_joints)
+    if poses:
+        return (np.asarray(poses, dtype=np.float64),
+                np.asarray(configs, dtype=np.float64),
+                len(joint_chunk))
+    return (np.zeros((0, 7), dtype=np.float64),
+            np.zeros((0, d), dtype=np.float64),
+            len(joint_chunk))
+
+
+def _sample_serial(
+    robot: Robot,
+    joint_samples: np.ndarray,
+    controlled_joints: list[str],
+    ee_frame: str,
+    check_collisions: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Single-process sampling loop (also the fallback for small sample counts)."""
+    results: list[np.ndarray] = []
+    configs: list[np.ndarray] = []
+    n = len(joint_samples)
+    report_step = 5000
+    for i, q in enumerate(joint_samples):
+        if i % report_step == 0:
+            print(f"  {i}/{n}  valid: {len(results)}", end="\r", flush=True)
+        jdict = {jn: np.array([float(q[k])]) for k, jn in enumerate(controlled_joints)}
+        robot.set_joint_pose_by_names(jdict)
+        if check_collisions and robot.has_collisions()[0]:
+            continue
+        results.append(robot.get_frame_poses_xyzxyzw(frames=[ee_frame])[ee_frame])
+        configs.append(q.copy())
+    print()
+
+    d = len(controlled_joints)
+    if results:
+        return np.asarray(results, dtype=np.float64), np.asarray(configs, dtype=np.float64)
+    return np.zeros((0, 7), dtype=np.float64), np.zeros((0, d), dtype=np.float64)
+
+
+def _sample_parallel(
+    urdf_string: str,
+    urdf_format: str,
+    joint_samples: np.ndarray,
+    controlled_joints: list[str],
+    fixed_dict: dict[str, np.ndarray],
+    ee_frame: str,
+    check_collisions: bool,
+    collision_pairs_to_remove: list,
+    n_workers: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Multi-process sampling: each worker rebuilds the Robot and chews through chunks."""
+    import multiprocessing as mp
+
+    n = len(joint_samples)
+    # Many small chunks (vs one per worker) keeps the load balanced — collision
+    # filtering makes per-config cost uneven — and gives smooth progress.
+    n_chunks = min(n, n_workers * 16)
+    chunks = [c for c in np.array_split(joint_samples, n_chunks) if len(c)]
+
+    init_args = (urdf_string, urdf_format, fixed_dict, controlled_joints,
+                 ee_frame, check_collisions, collision_pairs_to_remove)
+
+    # fork (POSIX) inherits the already-imported modules cheaply; no QApplication
+    # exists yet at sampling time, so forking is safe here.  spawn elsewhere.
+    ctx = mp.get_context("fork" if sys.platform != "win32" else "spawn")
+
+    print(f"  Sampling with {n_workers} workers over {len(chunks)} chunks...")
+    poses_parts: list[np.ndarray] = []
+    configs_parts: list[np.ndarray] = []
+    done = 0
+    with ctx.Pool(processes=n_workers,
+                  initializer=_init_sampling_worker,
+                  initargs=init_args) as pool:
+        for poses_chunk, configs_chunk, n_in_chunk in pool.imap_unordered(_sample_chunk, chunks):
+            done += n_in_chunk
+            if len(poses_chunk):
+                poses_parts.append(poses_chunk)
+                configs_parts.append(configs_chunk)
+            valid = sum(len(p) for p in poses_parts)
+            print(f"  {done}/{n}  valid: {valid}", end="\r", flush=True)
+    print()
+
+    d = len(controlled_joints)
+    if poses_parts:
+        return np.concatenate(poses_parts, axis=0), np.concatenate(configs_parts, axis=0)
+    return np.zeros((0, 7), dtype=np.float64), np.zeros((0, d), dtype=np.float64)
+
+
 def sample_workspace(
     robot: Robot,
     controlled_joints: list[str],
@@ -60,9 +195,28 @@ def sample_workspace(
     ee_frame: str,
     n_samples: int,
     check_collisions: bool,
+    urdf_string: str | None = None,
+    urdf_format: str = "urdf",
+    n_workers: int | None = None,
+    parallel_threshold: int = 5000,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Sample the joint space and return valid EE poses and their joint configs.
+
+    Sampling is embarrassingly parallel (each config is independent), so when
+    ``n_workers != 1`` and ``n_samples >= parallel_threshold`` the FK loop runs
+    across a process pool.  Each worker rebuilds its own ``Robot`` from
+    ``urdf_string`` (the Robot's collision model isn't safely shareable across
+    processes), so ``urdf_string`` must be provided for the parallel path —
+    otherwise it falls back to the serial loop on the passed-in ``robot``.
+
+    Parameters
+    ----------
+    n_workers : int or None
+        Number of worker processes.  None -> os.cpu_count() (auto).
+        1 -> force the serial loop.
+    parallel_threshold : int
+        Below this many samples the serial loop is used (pool startup isn't worth it).
 
     Returns
     -------
@@ -89,40 +243,58 @@ def sample_workspace(
     fixed_dict = {k: np.asarray([float(v)]) for k, v in fixed_joints.items() if k in known_joints}
     robot.set_joint_pose_by_names(fixed_dict)
 
+    always_colliding: list = []
     if check_collisions:
         print("  Pre-sampling to detect always-colliding pairs...")
-        always_colliding = robot.detect_always_present_collisions(
+        always_colliding = list(robot.detect_always_present_collisions(
             moving_joints=controlled_joints,
             fixed_joints_pose=fixed_dict,
             samples=2000,
             threshold=1.0,
-        )
+        ))
         if always_colliding:
             print(f"  Removing {len(always_colliding)} always-colliding pairs: {always_colliding}")
             robot.remove_collision_pairs(always_colliding)
         robot.set_joint_pose_by_names(fixed_dict)  # restore pose after pre-sampling
 
-    results: list[np.ndarray] = []
-    configs: list[np.ndarray] = []
-    report_step = 5000
-    for i, q in enumerate(joint_samples):
-        if i % report_step == 0:
-            print(f"  {i}/{n_samples}  valid: {len(results)}", end="\r", flush=True)
-        jdict = {jn: np.array([float(q[k])]) for k, jn in enumerate(controlled_joints)}
-        robot.set_joint_pose_by_names(jdict)
-        if check_collisions and robot.has_collisions()[0]:
-            continue
-        results.append(robot.get_frame_poses_xyzxyzw(frames=[ee_frame])[ee_frame])
-        configs.append(q.copy())
+    # Decide serial vs parallel
+    if n_workers is None:
+        n_workers = os.cpu_count() or 1
+    use_parallel = n_workers != 1 and n_samples >= parallel_threshold
+    if use_parallel and urdf_string is None:
+        print("  Note: urdf_string not provided, falling back to serial sampling.")
+        use_parallel = False
 
-    coll_note = f" ({100*len(results)//n_samples}% non-colliding)" if check_collisions else ""
-    print(f"\n  Done: {len(results)}/{n_samples} poses kept{coll_note}")
+    if use_parallel:
+        poses, configs = _sample_parallel(
+            urdf_string=urdf_string,
+            urdf_format=urdf_format,
+            joint_samples=joint_samples,
+            controlled_joints=controlled_joints,
+            fixed_dict=fixed_dict,
+            ee_frame=ee_frame,
+            check_collisions=check_collisions,
+            collision_pairs_to_remove=always_colliding,
+            n_workers=n_workers,
+        )
+    else:
+        poses, configs = _sample_serial(
+            robot=robot,
+            joint_samples=joint_samples,
+            controlled_joints=controlled_joints,
+            ee_frame=ee_frame,
+            check_collisions=check_collisions,
+        )
 
-    if not results:
+    n_kept = len(poses)
+    coll_note = f" ({100 * n_kept // n_samples}% non-colliding)" if check_collisions else ""
+    print(f"  Done: {n_kept}/{n_samples} poses kept{coll_note}")
+
+    if n_kept == 0:
         raise RuntimeError(
             "No valid poses found. Check controlled_joints limits and fixed_joints values."
         )
-    return np.array(results, dtype=np.float64), np.array(configs, dtype=np.float64)
+    return poses, configs
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +464,40 @@ class _LiveRobotMesh:
 
 
 # ---------------------------------------------------------------------------
+# Voxelization
+# ---------------------------------------------------------------------------
+
+def voxelize_counts(pts: np.ndarray, voxel_size: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Bin points into a regular voxel grid and count how many fall in each voxel.
+
+    Parameters
+    ----------
+    pts : ndarray, shape (N, 3)
+        Point coordinates.
+    voxel_size : float
+        Edge length of a (cubic) voxel, in the same units as ``pts``.
+
+    Returns
+    -------
+    centers : ndarray, shape (K, 3)
+        World-space centers of the occupied voxels.
+    density : ndarray, shape (K,)
+        Point count per occupied voxel, normalized so the densest voxel is 1.0.
+        Empty input yields empty arrays.
+    """
+    if len(pts) == 0 or voxel_size <= 0.0:
+        return np.zeros((0, 3)), np.zeros(0, dtype=np.float32)
+
+    mins = pts.min(axis=0)
+    idx = np.floor((pts - mins) / voxel_size).astype(np.int64)         # (N, 3) voxel indices
+    uniq, counts = np.unique(idx, axis=0, return_counts=True)          # occupied voxels + counts
+    centers = mins + (uniq.astype(np.float64) + 0.5) * voxel_size      # voxel centers
+    density = (counts / counts.max()).astype(np.float32)
+    return centers, density
+
+
+# ---------------------------------------------------------------------------
 # UI helpers
 # ---------------------------------------------------------------------------
 
@@ -350,6 +556,13 @@ class WorkspaceViewer(QtWidgets.QMainWindow):
         self._syncing           = False
         self.setWindowTitle(f"Workspace Viewer — EE: {ee_frame}  ({len(poses):,} poses)")
 
+        # Spatial extent of the point cloud — used to map the section-cut
+        # percentage sliders to real-world coordinates.
+        xyz = self._poses[:, :3]
+        self._bounds_min  = xyz.min(axis=0)
+        self._bounds_span = xyz.max(axis=0) - self._bounds_min
+        self._bounds_span[self._bounds_span == 0.0] = 1.0   # avoid div-by-zero on flat axes
+
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
@@ -396,6 +609,33 @@ class WorkspaceViewer(QtWidgets.QMainWindow):
         self._robot_cb.setEnabled(has_robot)
         self._robot_cb.stateChanged.connect(self._update_robot_visibility)
         pv_layout.addWidget(self._robot_cb)
+
+        pv_layout.addSpacing(8)
+        pv_layout.addWidget(QtWidgets.QLabel("<b>Voxelization</b>"))
+
+        self._voxel_cb = QtWidgets.QCheckBox("Voxelize (color = point density)")
+        self._voxel_cb.setChecked(False)
+        self._voxel_cb.stateChanged.connect(self._on_changed)
+        pv_layout.addWidget(self._voxel_cb)
+
+        self._voxel_size = _LabeledSlider("Voxel", 1, 50, 5, "cm")
+        self._voxel_size.valueChanged.connect(self._on_changed)
+        pv_layout.addWidget(self._voxel_size)
+
+        pv_layout.addSpacing(8)
+        pv_layout.addWidget(QtWidgets.QLabel("<b>Section cut</b> (keep min–max slab per axis)"))
+
+        # Two sliders per axis (min/max), expressed as % of the data extent.
+        # Defaults span the full range, so nothing is cut until they're moved.
+        self._cut: dict[str, tuple[_LabeledSlider, _LabeledSlider]] = {}
+        for axis in ("X", "Y", "Z"):
+            lo_s = _LabeledSlider(f"{axis} lo", 0, 100, 0, "%")
+            hi_s = _LabeledSlider(f"{axis} hi", 0, 100, 100, "%")
+            lo_s.valueChanged.connect(self._on_changed)
+            hi_s.valueChanged.connect(self._on_changed)
+            pv_layout.addWidget(lo_s)
+            pv_layout.addWidget(hi_s)
+            self._cut[axis] = (lo_s, hi_s)
 
         pv_layout.addStretch()
 
@@ -483,6 +723,14 @@ class WorkspaceViewer(QtWidgets.QMainWindow):
         # then roll in yawed+pitched frame — each slider acts on the local axis.
         return Rotation.from_euler("ZYX", [y, p, r], degrees=True)
 
+    def _section_mask(self, pts: np.ndarray) -> np.ndarray:
+        """Boolean mask of points inside the [lo, hi] slab set by the cut sliders."""
+        lo_pct = np.array([self._cut[a][0].value for a in ("X", "Y", "Z")], dtype=np.float64) / 100.0
+        hi_pct = np.array([self._cut[a][1].value for a in ("X", "Y", "Z")], dtype=np.float64) / 100.0
+        lo = self._bounds_min + self._bounds_span * lo_pct
+        hi = self._bounds_min + self._bounds_span * hi_pct
+        return np.all((pts >= lo) & (pts <= hi), axis=1)
+
     # ── update callbacks ─────────────────────────────────────────────────
 
     def _update_robot_visibility(self):
@@ -504,20 +752,49 @@ class WorkspaceViewer(QtWidgets.QMainWindow):
         if self._hide_cb.isChecked():
             mask = dist_norm < 1.0
             pts, scal = self._poses[mask, :3], dist_norm[mask]
-            if len(pts) == 0:
-                pts, scal = np.zeros((1, 3)), np.zeros(1, np.float32)
         else:
             pts, scal = self._poses[:, :3], dist_norm
 
-        cloud = pv.PolyData(pts.astype(np.float64))
-        cloud["dist"] = scal.astype(np.float32)
-        self._main_plot.add_mesh(
-            cloud, scalars="dist", cmap="coolwarm", clim=[0.0, 1.0],
-            point_size=3, render_points_as_spheres=False,
-            show_scalar_bar=True,
-            scalar_bar_args={"title": "Orient. dist\n(0=match, 1=tol.)"},
-            name="workspace",
-        )
+        # Section cut: keep only the slab selected by the per-axis sliders.
+        if len(pts):
+            cmask = self._section_mask(pts)
+            pts, scal = pts[cmask], scal[cmask]
+        if len(pts) == 0:
+            pts, scal = np.zeros((1, 3)), np.zeros(1, np.float32)
+
+        # Drop the previous mode's scalar bar so it doesn't linger when toggling.
+        for _title in ("Orient. dist\n(0=match, 1=tol.)",
+                       "Point density\n(0=sparse, 1=densest)"):
+            try:
+                self._main_plot.remove_scalar_bar(_title, render=False)
+            except Exception:
+                pass
+
+        if self._voxel_cb.isChecked():
+            voxel_m = self._voxel_size.value / 100.0          # cm slider → meters
+            centers, density = voxelize_counts(pts, voxel_m)
+            if len(centers) == 0:
+                centers, density = np.zeros((1, 3)), np.zeros(1, np.float32)
+            grid = pv.PolyData(centers.astype(np.float64))
+            grid["density"] = density
+            # One cube per occupied voxel, sized to the voxel, colored by density.
+            voxels = grid.glyph(geom=pv.Cube(), scale=False, orient=False, factor=voxel_m)
+            self._main_plot.add_mesh(
+                voxels, scalars="density", cmap="viridis", clim=[0.0, 1.0],
+                opacity=0.6, show_scalar_bar=True,
+                scalar_bar_args={"title": "Point density\n(0=sparse, 1=densest)"},
+                name="workspace",
+            )
+        else:
+            cloud = pv.PolyData(pts.astype(np.float64))
+            cloud["dist"] = scal.astype(np.float32)
+            self._main_plot.add_mesh(
+                cloud, scalars="dist", cmap="coolwarm", clim=[0.0, 1.0],
+                point_size=3, render_points_as_spheres=False,
+                show_scalar_bar=True,
+                scalar_bar_args={"title": "Orient. dist\n(0=match, 1=tol.)"},
+                name="workspace",
+            )
 
         closest_q = None
         if self._joint_configs is not None and len(self._joint_configs) > 0:
@@ -566,6 +843,7 @@ def run_visualizer(
     n_samples: int = 50_000,
     check_collisions: bool = False,
     urdf_format: str = "urdf",
+    n_workers: int | None = None,
 ) -> int:
     """
     Parameters
@@ -577,6 +855,8 @@ def run_visualizer(
     n_samples         : Number of configurations to sample.
     check_collisions  : If True, discard self-colliding configurations.
     urdf_format       : "urdf" or "mjcf".
+    n_workers         : Sampling worker processes.  None = os.cpu_count() (auto),
+                        1 = serial.
     """
     from adarl.utils.utils import compile_xacro_string
 
@@ -593,6 +873,9 @@ def run_visualizer(
         ee_frame=ee_frame,
         n_samples=n_samples,
         check_collisions=check_collisions,
+        urdf_string=text,
+        urdf_format=urdf_format,
+        n_workers=n_workers,
     )
 
     known = set(robot.get_joint_names())
@@ -660,7 +943,7 @@ if __name__ == "__main__":
                             "j_arm1_6",
                             "dagana_1_claw_joint"],
         # All other joints, fixed at these values (radians for revolute/prismatic)
-        fixed_joints = {  
+        fixed_joints = {
                 "hip_yaw_1" :      -hip_yaw,
                 "hip_pitch_1" :    -hip_pitch,
                 "knee_pitch_1" :   -knee_pitch,
@@ -703,8 +986,9 @@ if __name__ == "__main__":
                 "dagana_1_claw_joint" : 0.3
                 },
         # Frame name to use as end-effector — check robot.get_frame_names()
-        ee_frame="dagana_1_top_link",
+        ee_frame="dagana_1_fixed_palm_center",
 
-        n_samples=500_000,
-        check_collisions=False,   # True = skip self-colliding configs (slower)
+        n_samples=1_000_000,
+        check_collisions=True,   # True = skip self-colliding configs (slower)
+        n_workers=None,          # None = use all CPU cores; 1 = serial
     ))

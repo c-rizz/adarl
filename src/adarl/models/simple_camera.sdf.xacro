@@ -6,14 +6,17 @@
   <xacro:arg name="frame_rate" default="30"/>
   <xacro:arg name="camera_name"  default="simple_camera"/>
   <xacro:arg name="camera_topic" default="$(arg camera_name)"/>
+  <xacro:arg name="pose" default="0 0 0 0 0 0"/>
   <xacro:property name="camera_width" value="$(arg camera_width)" />
   <xacro:property name="camera_height" value="$(arg camera_height)" />
   <xacro:property name="frame_rate" value="$(arg frame_rate)" />
   <xacro:property name="camera_topic" value="$(arg camera_topic)" />
   <xacro:property name="camera_name" value="$(arg camera_name)" />
+  <xacro:property name="pose" value="$(arg pose)" />
   <model name="${camera_name}">
     <static>true</static>
     <link name="simple_camera_link">
+        <pose>${pose}</pose>
         <sensor type="camera" name="${camera_name}">
           <camera>
             <horizontal_fov>${69.4*3.14159/180}</horizontal_fov>
@@ -43,12 +46,5 @@
           <mass>0.0</mass>
         </inertial>
     </link>
-
-    <!-- <link name="world"/>
-    <joint name="fixed" type="fixed">
-      <parent link="world"/>
-      <child link="simple_camera_link"/>
-    </joint> -->
-
   </model>
 </sdf>

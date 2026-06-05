@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 
+from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models
 from adarl.utils.base_utils import record_region_end, record_region_start, record_time
 os.environ["MUJOCO_GL"] = "egl"
 
@@ -17,7 +18,7 @@ from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import compile_xacro_string
-from adarl.adapters.MjxAdapter import aggregate_models, apply_opt_preset, add_arrow_to_renderer
+from adarl.adapters.mujoco_utils import apply_opt_preset
 import copy
 import adarl.utils.dbg.ggLog as ggLog
 import pprint
