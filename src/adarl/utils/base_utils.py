@@ -754,7 +754,8 @@ import resource
 # gc.set_debug(gc.DEBUG_COLLECTABLE | gc.DEBUG_UNCOLLECTABLE)
 
 class GcMonitor:
-    def __init__(self, track_collected_types: bool = False, track_type_growth: bool = False):
+    def __init__(self, track_collected_types: bool = False, track_type_growth: bool = False,
+                 log_prefix : str = ""):
         self._registered = False
         self.call_counter = 0
         self.call_start = float("-inf")
@@ -768,6 +769,7 @@ class GcMonitor:
         self._prev_type_counts: dict[str, int] = {}
         self._snapshot_taken = False
         self._disabled = False
+        self._log_prefix = log_prefix
 
     @staticmethod
     def _describe(o) -> str:
@@ -825,7 +827,7 @@ class GcMonitor:
                     self._prev_type_counts = cur_counts
                 self._snapshot_taken = False
             if dt > 0.01:
-                print(f"GC gen{info['generation']} took {dt*1000:.1f}ms. Collected {info['collected']} objects. Uncollectable {info['uncollectable']} objects.\n"
+                print(f"{self._log_prefix}GC gen{info['generation']} took {dt*1000:.1f}ms. Collected {info['collected']} objects. Uncollectable {info['uncollectable']} objects.\n"
                       f"      Total collected: {self.collected_num} objects. Collected types: {self.collected_types}. Type growth: {self.type_growth}")
 
     def reset_counters(self):
@@ -863,7 +865,8 @@ class DelayStats:
         self._start_time = None
         use_slow_gc_checks = False
         self._gc_registered = False
-        self._gc_monitor = GcMonitor(track_collected_types=use_slow_gc_checks, track_type_growth=False)
+        self._gc_monitor = GcMonitor(track_collected_types=use_slow_gc_checks, track_type_growth=False,
+                                     log_prefix="[DelayStats] ")
 
     def mark_start(self):
         if not self._gc_registered:

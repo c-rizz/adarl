@@ -3283,20 +3283,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if apply_link_masses:
             if body_masses_ratio_change is None or link_masses_body_ids is None:
                 raise ValueError("To apply link mass changes, both body_masses_ratio_change and link_masses_body_ids must be provided")
-            new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change + 1)
+            new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change)
             new_body_mass = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
             replacements["body_mass"] = jnp.clip(new_body_mass, min=0.0001)
 
         if apply_link_frictions:
             frictions_body_ids_mask = jnp.zeros_like(mjx_model.geom_bodyid, shape=(mjx_model.nbody,), dtype=jnp.bool)
             frictions_body_ids_mask = frictions_body_ids_mask.at[frictions_body_ids].set(True)
-            frictions_geoms_ids_mask = frictions_body_ids_mask[geom_bodyid]
-            full_body_frictions_ratio_change = jnp.ones_like(mjx_model.body_mass, shape=(vec_size, mjx_model.nbody, 3), dtype=jnp.float32)
-            full_body_frictions_ratio_change = full_body_frictions_ratio_change.at[:, frictions_body_ids].set(
-                body_frictions_ratio_change
-            )
-            geom_friction_ratios = full_body_frictions_ratio_change[:, geom_bodyid]
-            new_allsim_allgeom_frictions = mjx_model.geom_friction + mjx_model.geom_friction * geom_friction_ratios
+            frictions_geoms_ids_mask = frictions_body_ids_mask[geom_bodyid] # which geoms to alter, geom_bodyid is shape (ngeom,), so frictions_geoms_ids_mask is shape (ngeom,)
+            all_body_frictions_ratio_change = jnp.ones_like(mjx_model.body_mass, shape=(vec_size, mjx_model.nbody, 3), dtype=jnp.float32)
+            all_body_frictions_ratio_change = all_body_frictions_ratio_change.at[:, frictions_body_ids].set(
+                                                        body_frictions_ratio_change)
+            all_geom_friction_ratios = all_body_frictions_ratio_change[:, geom_bodyid] # ratio for each geom
+            new_allsim_allgeom_frictions = mjx_model.geom_friction * all_geom_friction_ratios
             new_allsim_allgeom_frictions = jnp.clip(new_allsim_allgeom_frictions, min=0.0)
             new_allsim_geom_frictions = jnp.where(
                 jnp.expand_dims(frictions_geoms_ids_mask, 1).repeat(repeats=3, axis=1),
@@ -3310,21 +3309,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if apply_dof_armature_ratios:
             if dof_armatures_ratio_change is None or dof_armatures_dof_ids is None:
                 raise ValueError("To apply joint armature changes, both dof_armatures_ratio_change and dof_armatures_dof_ids must be provided")
-            new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].mul(dof_armatures_ratio_change + 1)
+            new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].mul(dof_armatures_ratio_change)
             new_armatures = jnp.clip(new_armatures, min=0.0001)
             replacements["dof_armature"] = jnp.where(vec_mask[:, None], new_armatures, mjx_model.dof_armature)
 
         if apply_dof_damping_ratios:
             if dof_dampings_ratio_change is None or dof_dampings_dof_ids is None:
                 raise ValueError("To apply joint damping changes, both dof_dampings_ratio_change and dof_dampings_dof_ids must be provided")
-            new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].mul(dof_dampings_ratio_change + 1)
+            new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].mul(dof_dampings_ratio_change)
             new_dampings = jnp.clip(new_dampings, min=0.0001)
             replacements["dof_damping"] = jnp.where(vec_mask[:, None], new_dampings, mjx_model.dof_damping)
 
         if apply_dof_frictionloss_ratios:
             if dof_frictionloss_ratio_change is None or dof_frictionloss_dof_ids is None:
                 raise ValueError("To apply joint frictionloss changes, both dof_frictionloss_ratio_change and dof_frictionloss_dof_ids must be provided")
-            new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].mul(dof_frictionloss_ratio_change + 1)
+            new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].mul(dof_frictionloss_ratio_change)
             new_frictionloss = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
             replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min=0.0001)
 

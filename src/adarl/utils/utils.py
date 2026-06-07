@@ -1008,3 +1008,136 @@ def get_func_input_args(exclude : list[str] = []) -> dict:
     for name in exclude:
         values.pop(name, None)
     return values
+
+
+def sample_distr(size, distribution : DistributionDefTh, device : th.device, dtype : th.dtype, generator : th.Generator) -> th.Tensor:
+    if isinstance(distribution, th.Tensor):
+        return distribution.expand(size).clone()
+    elif distribution[0] == "uniform":
+        low, high = distribution[1] #type: ignore
+        return th.rand(size, device=device, dtype=dtype, generator=generator)*(high-low)+low
+    elif distribution[0] == "loguniform":
+        low, high = distribution[1] #type: ignore
+        lowlog = th.log(low)
+        highlog = th.log(high)
+        return th.exp(th.rand(size, device=device, dtype=dtype, generator=generator)*(highlog-lowlog)+lowlog)
+    elif distribution[0] == "normal":
+        if len(distribution[1]) == 2:
+            mean, std = distribution[1]
+            clamp_width = th.tensor(5.0, device=device, dtype=dtype)
+        else:
+            mean, std, clamp_width = distribution[1] #type: ignore
+        return th.clamp(th.randn(size, device=device, dtype=dtype, generator=generator), -clamp_width, clamp_width)*std+mean
+    else:
+        raise NotImplementedError(f"Unsupported distribution type {distribution[0]}")
+    
+
+
+TensorLike = Union[th.Tensor, float, List[float]]
+DistributionDef = Union[Tuple[str,Tuple[TensorLike, ...]], TensorLike]
+DistributionDefTh = Union[Tuple[str,Tuple[th.Tensor, ...]], th.Tensor]
+
+class DistributionTh:
+    DistributionDef = Union[Tuple[str,Tuple[TensorLike, ...]], TensorLike]
+
+    def __init__(self,  distribution_def : DistributionTh.DistributionDef,
+                        device : th.device,
+                        dtype : th.dtype,
+                        generator : th.Generator | None = None):
+        if isinstance(distribution_def, (float,th.Tensor, np.ndarray)) or not isinstance(distribution_def[0], str):
+            distribution_def = ("constant", distribution_def) #type: ignore
+        distrtype : str = distribution_def[0]
+        distrparams : Sequence = distribution_def[1]
+        self._device = device
+        self._dtype = dtype
+        self._type = distrtype
+        self._params = tuple(th.as_tensor(p, device=device, dtype=dtype) for p in distrparams)
+        self._rng = generator
+
+    def sample(self,    size, 
+                        device : th.device | None = None, 
+                        dtype : th.dtype | None = None, 
+                        generator : th.Generator | None = None) -> th.Tensor:
+        if device is None:
+            device = self._device
+        if dtype is None:
+            dtype = self._dtype
+        if generator is None:
+            generator = self._rng
+        if self._type == "constant":
+            return self._params[0].expand(size).clone()
+        elif self._type == "uniform":
+            low, high = self._params
+            return th.rand(size, device=device, dtype=dtype, generator=generator)*(high-low)+low
+        elif self._type == "loguniform":
+            low, high = self._params
+            lowlog = th.log(low)
+            highlog = th.log(high)
+            return th.exp(th.rand(size, device=device, dtype=dtype, generator=generator)*(highlog-lowlog)+lowlog)
+        elif self._type == "normal":
+            if len(self._params) == 2:
+                mean, std = self._params
+                clamp_width = th.tensor(5.0, device=device, dtype=dtype)
+            else:
+                mean, std, clamp_width = self._params #type: ignore
+            return th.clamp(th.randn(size, device=device, dtype=dtype, generator=generator), -clamp_width, clamp_width)*std+mean
+        else:
+            raise NotImplementedError(f"Unsupported distribution type {self._type}")
+        
+def distr_is_constant(distr : DistributionDef) -> bool:
+    if isinstance(distr, (th.Tensor, float, int)):
+        return True
+    else:
+        distr_type = distr[0]
+        if isinstance(distr_type, (float, int)):
+            return True # Then it must be a list of numbers, thus a constant distribution
+        else:
+            if distr_type == "uniform" or distr_type == "loguniform":
+                low, high = distr[1]
+                return th.all(th.as_tensor(low) == th.as_tensor(high)).item()
+            elif distr_type == "normal":
+                if len(distr[1]) == 2:
+                    mean, std = distr[1]
+                else:
+                    mean, std, _ = distr[1]
+                return th.all(th.as_tensor(std) == 0).item()
+            else:
+                raise NotImplementedError(f"Unsupported distribution type {distr_type}")
+    
+    
+def distr_to_tensor(distr : DistributionDef, size : tuple[int,...] | None = None, device : th.device | None = None,
+                    dtype : th.dtype | None = None) -> DistributionDefTh:
+    if isinstance(distr, (float, int, th.Tensor)):
+        return th.as_tensor(distr, device=device, dtype=dtype)
+    else:
+        distr_type = distr[0]
+        if isinstance(distr_type, str):
+            if size is not None:
+                distr_params = tuple(th.as_tensor(t, device=device, dtype=dtype).expand(size) for t in distr[1])
+            else:
+                distr_params = tuple(th.as_tensor(t, device=device, dtype=dtype) for t in distr[1])            
+            return distr_type, distr_params
+        else:
+            return th.as_tensor(distr, device=device, dtype=dtype)
+
+@staticmethod
+def sample_distr(size, distribution : DistributionDefTh, device : th.device, dtype : th.dtype, generator : th.Generator) -> th.Tensor:
+    if isinstance(distribution, th.Tensor):
+        return distribution.expand(size).clone()
+    elif distribution[0] == "uniform":
+        low, high = distribution[1] #type: ignore
+        return th.rand(size, device=device, dtype=dtype, generator=generator)*(high-low)+low
+    elif distribution[0] == "loguniform":
+        low, high = distribution[1] #type: ignore
+        lowlog = th.log(low)
+        highlog = th.log(high)
+        return th.exp(th.rand(size, device=device, dtype=dtype, generator=generator)*(highlog-lowlog)+lowlog)
+    elif distribution[0] == "normal":
+        if len(distribution[1]) == 2:
+            mean, std = distribution[1]
+            clamp_width = th.tensor(5.0, device=device, dtype=dtype)
+        else:
+            mean, std, clamp_width = distribution[1] #type: ignore
+        return th.clamp(th.randn(size, device=device, dtype=dtype, generator=generator), -clamp_width, clamp_width)*std+mean
+    else:
+        raise NotImplementedError(f"Unsupported distribution type {distribution[0]}")
