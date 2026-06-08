@@ -322,8 +322,9 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def _sense_if_needed(self):
         if self._sense_needed or self._sense_always:
             self._xbot_zmq_client.sense(blocking=False)
-            if self._xbot_zmq_client.get_last_state_age() > 1.0:
-                raise RuntimeError(f"Havent received robot state for {self._xbot_zmq_client.get_last_state_age()} seconds. Stopping") 
+            state_age_estimate = self._xbot_zmq_client.get_state_age_estimate()
+            if state_age_estimate > 0.1:
+                raise RuntimeError(f"Havent received robot state for {state_age_estimate} seconds. Stopping")
             self._sense_needed = False
 
     @override
