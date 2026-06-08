@@ -1,7 +1,9 @@
 from __future__ import annotations
 import os
 
-from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models, apply_opt_preset, get_renderdata_into, log_largest_dataclass_fields, model_element_separator, print_mj_model
+from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
+                                         get_renderdata_into, log_largest_dataclass_fields,
+                                         model_element_separator, print_mj_model, apply_dof_overrides)
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
@@ -927,6 +929,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._last_log_iters = -log_freq 
         self._opt_preset = opt_preset
         self._safe_revolute_dof_armature = safe_revolute_dof_armature
+        self._safe_revolute_dof_damping = 1.0
+        self._safe_revolute_dof_frictionloss = 0.2
         self._revolute_dof_armature_override = revolute_dof_armature_override #0.5
         self._revolute_dof_damping_override = revolute_dof_damping_override
         self._revolute_dof_frictionloss_override = revolute_dof_frictionloss_override
@@ -1158,33 +1162,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             text_file.write(big_speck.to_xml())
         with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
             text_file.write(str(self._mj_model.opt))
-
-        self._safe_revolute_dof_damping = 1.0
-        self._safe_revolute_dof_frictionloss = 0.2
-        for dof_id in range(self._mj_model.nv):
-            joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
-            if joint_type == mjutils._mjtJoint.mjJNT_HINGE:
-                if self._mj_model.dof_armature[dof_id] == 0:
-                    ggLog.warn(f"Revolute dof {dof_id} has zero armature. Setting it to {self._safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
-                    self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
-                if self._revolute_dof_armature_override is not None:
-                    ggLog.info(f"Overriding revolute dof {dof_id} armature to {self._revolute_dof_armature_override} (was {self._mj_model.dof_armature[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
-                    self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
-                
-                if self._mj_model.dof_frictionloss[dof_id] == 0:
-                    ggLog.warn(f"Revolute dof {dof_id} has zero frictionloss. Setting it to {self._safe_revolute_dof_frictionloss}.")
-                    self._mj_model.dof_frictionloss[dof_id] = self._safe_revolute_dof_frictionloss
-                if self._revolute_dof_frictionloss_override is not None:
-                    ggLog.info(f"Overriding revolute dof {dof_id} frictionloss to {self._revolute_dof_frictionloss_override} (was {self._mj_model.dof_frictionloss[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
-                    self._mj_model.dof_frictionloss[dof_id] = self._revolute_dof_frictionloss_override
-
-                if self._mj_model.dof_damping[dof_id] == 0:
-                    ggLog.warn(f"Revolute dof {dof_id} has zero damping. Setting it to {self._safe_revolute_dof_damping}.")
-                    self._mj_model.dof_damping[dof_id] = self._safe_revolute_dof_damping
-                if self._revolute_dof_damping_override is not None:
-                    ggLog.info(f"Overriding revolute dof {dof_id} damping to {self._revolute_dof_damping_override} (was {self._mj_model.dof_damping[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
-                    self._mj_model.dof_damping[dof_id] = self._revolute_dof_damping_override
-
+        
+        self._mj_model = apply_dof_overrides(
+                            self._mj_model, 
+                            revolute_dof_armature_override=self._revolute_dof_armature_override,
+                            revolute_dof_damping_override=self._revolute_dof_damping_override,
+                            revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
+                            safe_revolute_dof_armature=self._safe_revolute_dof_armature,
+                            safe_revolute_dof_damping=self._safe_revolute_dof_damping,
+                            safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
+        
         # model = models[0]
         # if model.format == "urdf.xacro":
         #     urdf_string = compile_xacro_string( model_definition_string=model.definition_string,

@@ -548,6 +548,37 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
     mj_model = big_speck.compile()
     return mj_model, big_speck
 
+def apply_dof_overrides(mj_model : mjutils._MjModel,
+                        revolute_dof_armature_override : float | None = None,
+                        revolute_dof_damping_override : float | None = None,
+                        revolute_dof_frictionloss_override : float | None = None,
+                        safe_revolute_dof_armature = 0.01,
+                        safe_revolute_dof_damping = 1.0,
+                        safe_revolute_dof_frictionloss = 0.2):
+    for dof_id in range(mj_model.nv):
+        joint_type = mj_model.jnt_type[mj_model.dof_jntid[dof_id]]
+        if joint_type == mjutils._mjtJoint.mjJNT_HINGE:
+            if mj_model.dof_armature[dof_id] == 0:
+                ggLog.warn(f"Revolute dof {dof_id} has zero armature. Setting it to {safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                mj_model.dof_armature[dof_id] = safe_revolute_dof_armature
+            if revolute_dof_armature_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} armature to {revolute_dof_armature_override} (was {mj_model.dof_armature[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                mj_model.dof_armature[dof_id] = revolute_dof_armature_override
+
+            if mj_model.dof_frictionloss[dof_id] == 0:
+                ggLog.warn(f"Revolute dof {dof_id} has zero frictionloss. Setting it to {safe_revolute_dof_frictionloss}.")
+                mj_model.dof_frictionloss[dof_id] = safe_revolute_dof_frictionloss
+            if revolute_dof_frictionloss_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} frictionloss to {revolute_dof_frictionloss_override} (was {mj_model.dof_frictionloss[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
+                mj_model.dof_frictionloss[dof_id] = revolute_dof_frictionloss_override
+
+            if mj_model.dof_damping[dof_id] == 0:
+                ggLog.warn(f"Revolute dof {dof_id} has zero damping. Setting it to {safe_revolute_dof_damping}.")
+                mj_model.dof_damping[dof_id] = safe_revolute_dof_damping
+            if revolute_dof_damping_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} damping to {revolute_dof_damping_override} (was {mj_model.dof_damping[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                mj_model.dof_damping[dof_id] = revolute_dof_damping_override
+    return mj_model
 
 def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[str,Any] | None,
                              opt_override_enableflags : dict[str,bool] | None = None) -> None:

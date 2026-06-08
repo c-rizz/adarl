@@ -915,7 +915,7 @@ if __name__ == "__main__":
                                         model_kwargs={  "realsense":"false",
                                                         "velodyne" :"false",
                                                         "floating_joint":f"false",
-                                                        "sphere_wheel_collision":"true",
+                                                        "sphere_or_ellipsoid_wheel_collision":"true",
                                                         "end_effector_left":"dagana",
                                                         "fixed_base_joint":"true",
                                                         "legs":f"false",
