@@ -1341,7 +1341,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
                     return mujoco.Renderer(self._mj_model,height=h,width=w)
                 self._render_scene_option = mjutils._MjvOption()
-                self._render_scene_option.flags[mjutils._mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                # self._render_scene_option.flags[mjutils._mjtVisFlag.mjVIS_CONTACTPOINT] = 1
                 # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
                 # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
                 self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])

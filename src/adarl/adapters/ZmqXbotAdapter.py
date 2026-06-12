@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import time
+import xml.etree.ElementTree as ET
 from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate
+from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate, expand_default_dict
 from adarl.utils.robot_helpers import Robot
 import numpy as np
 
@@ -47,8 +48,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         jpos_cmd_max_acc = {},
                         jpos_cmd_max_acc_default = 0.0,
                         enable_filters = True,
-                        position_commands_stiffness : float = 100.0,
-                        position_commands_damping : float = 10.0,
+                        position_commands_stiffness : float | dict[tuple[str,str] | str, float]= 100.0,
+                        position_commands_damping : float | dict[tuple[str,str] | str, float]= 10.0,
                         is_simulated : bool | None = False,
                         walltime_factor : float = 1.0,
                         remote_ip : str ='localhost',
@@ -59,6 +60,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         ipc_pub_path : str ="/tmp/xbot2_zmq_pub.ipc",
                         ipc_cmd_path : str ="/tmp/xbot2_zmq_cmd.ipc",
                         ipc_service_path : str ="/tmp/xbot2_zmq_rep.ipc",
+                        lock_continuous_joints : bool = False,
                         robot_urdf : str | None = None):
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
@@ -75,7 +77,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._allow_fallback = allow_fallback
         if self._allow_fallback:
             raise RuntimeError("Fallback is not yet implemented")
-        
+
         self._is_safety_triggered = False
         self._position_command_stiffness = position_commands_stiffness
         self._position_command_damping = position_commands_damping
@@ -83,6 +85,14 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._next_commanded_joint_positions : Dict[Tuple[str,str],Tuple[float,float,float]] = {}
         # joint trajectories are ndarrays listing waypoints of format (time, position, velocuty, acceleration)
         self._commanded_joint_trajs_tpva : Dict[Tuple[str,str],np.ndarray]= {}
+
+        # Opt-in feature: keep continuous joints (as declared in the robot URDF) at a
+        # constant position reference, equal to the reference seen at startup time.
+        # Velocity references are still forwarded, but position goals do not generate
+        # a velocity reference for these joints (see _apply_commanded_joint_positions
+        # and _apply_commanded_joint_trajectories).
+        self._lock_continuous_joints = lock_continuous_joints
+        self._locked_continuous_joint_positions : Dict[str, float] = {}
 
 
         self._jpos_cmd_vel_scaling : Dict[Tuple[str,str],float]= {}
@@ -117,11 +127,11 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     @override
     def control_period(self):
         return self._control_dt
-        
+
     def _thtens(self, arr: np.ndarray) -> th.Tensor:
         """Convert a numpy array to a torch tensor on the configured device."""
         return th.as_tensor(arr, device=self._torch_device)
-    
+
     @override
     def set_monitored_joints(self, jointsToObserve: Sequence[Tuple[str, str]]):
         self._xbot_joints_to_monitor = jointsToObserve # keep empty the normal jointsToObserve and use this instead
@@ -142,8 +152,38 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
         self._xbot_zmq_client.sense(blocking=True, timeout_s=60.0) # get initial state and update model
 
+        if self._lock_continuous_joints:
+            self._setup_continuous_joint_locks()
+
         self._jimpedance_controlled_joints_jids = np.array([self._xbotjname_to_jid[jn] for model_name,jn in self._jimpedance_controlled_joints])
         self._started = True
+
+    @staticmethod
+    def _detect_continuous_joints(urdf_str : str) -> list[str]:
+        """Parse a URDF string and return the names of all continuous joints."""
+        root = ET.fromstring(urdf_str)
+        return [j.get("name") for j in root.findall("joint")
+                if j.get("type") == "continuous" and j.get("name") is not None]
+
+    def _setup_continuous_joint_locks(self):
+        """Detect continuous joints from the robot URDF (received from the XBot ZMQ
+        server) and record their current position references, so that the control
+        loop can keep those position references constant."""
+        urdf_str = self._xbot_zmq_client.get_urdf()
+        continuous_jnames = self._detect_continuous_joints(urdf_str)
+        # Only lock joints that this adapter actually knows about
+        continuous_jnames = [jn for jn in continuous_jnames if jn in self._xbotjname_to_jid]
+        if len(continuous_jnames) == 0:
+            ggLog.info("ZmqXBotAdapter: continuous joint locking enabled, but no continuous joints were found in the URDF")
+            return
+        refs_pvesd = np.asarray(self._xbot_zmq_client.get_joints_state(continuous_jnames).pvesd_refs()).reshape(-1, 5)
+        self._locked_continuous_joint_positions = {jn: float(refs_pvesd[i, 0]) for i, jn in enumerate(continuous_jnames)}
+        ggLog.info(f"ZmqXBotAdapter: locking continuous joints to their startup position references: "
+                   f"{self._locked_continuous_joint_positions}")
+
+    def _is_locked_continuous_joint(self, full_jname : Tuple[str,str]) -> bool:
+        """Whether the given joint is a continuous joint whose position reference is locked."""
+        return self._lock_continuous_joints and full_jname[1] in self._locked_continuous_joint_positions
 
     def get_xbot_controlled_joints(self) -> list[tuple[str,str]]:
         """Get the names of the joint that XBot is controlling
@@ -166,7 +206,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
     def getRenderings(self, requestedCameras: Sequence[str]) -> Dict[str, Tuple[th.Tensor | float]]:
         raise NotImplementedError("getRenderings not implemented for ZmqXbotAdapter")
-    
+
     @override
     def getJointsState(self, requestedJoints : Sequence[Tuple[str,str]] | None = None) -> th.Tensor:
         if not self._started:
@@ -189,7 +229,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         # while obsDelay > self._maxObsAge:
         #     self.run(0.001)
         #     self._robot_interface.sense(update_model=False)
-        #     obsDelay = self._robot_interface.getTime() - self._robot_interface.getTimestampRx()            
+        #     obsDelay = self._robot_interface.getTime() - self._robot_interface.getTimestampRx()
         # self._jointStateMsgAgeAvg.addValue(obsDelay)
 
         return th.as_tensor(joints_pve).view(size=(len(requestedJoints),3)).to(device=self._torch_device, dtype=th.float32)
@@ -203,7 +243,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                         delay_sec : float = 0) -> None:
         if delay_sec!=0.0:
             raise NotImplementedError("Impedance command delay is not supported")
-        
+
         if isinstance(joint_impedances_pvesd, th.Tensor):
             joint_impedances_pvesd_dict = dict(zip(self._jimpedance_controlled_joints, joint_impedances_pvesd))
         elif isinstance(joint_impedances_pvesd, Mapping):
@@ -211,7 +251,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
         if self.is_safety_triggered():
             ggLog.warn(f"Commanding impedance, but safety is triggered")
-        
+
         for full_jname, jcmd in joint_impedances_pvesd_dict.items():
             model_name, jname = full_jname
             if model_name != self._model_name:
@@ -221,16 +261,35 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def _apply_commanded_joint_impedances(self):
         self.apply_joint_impedances(self._next_commanded_joint_impedances_by_name)
 
+    def _lock_continuous_joint_references(self, joint_impedances_pvesd_dict : Mapping[Tuple[str,str], th.Tensor]) -> Dict[Tuple[str,str], th.Tensor]:
+        """Force the position reference of locked continuous joints to their startup
+        value, keeping it constant regardless of the commanded position reference.
+
+        The velocity reference is left untouched, so explicitly commanded velocity
+        references are still forwarded. Returns a new dict; the input commands are
+        left untouched."""
+        locked_dict : Dict[Tuple[str,str], th.Tensor] = {}
+        for full_jname, jcmd in joint_impedances_pvesd_dict.items():
+            if self._is_locked_continuous_joint(full_jname):
+                jcmd = th.as_tensor(jcmd).clone()
+                jcmd[0] = self._locked_continuous_joint_positions[full_jname[1]] # position reference held constant
+            locked_dict[full_jname] = jcmd
+        return locked_dict
+
     @override
     def apply_joint_impedances(self, joint_impedances_pvesd : Dict[Tuple[str,str], th.Tensor] | th.Tensor):
         # ggLog.info(f"applying joint impedances {joint_impedances_pvesd}")
         if len (joint_impedances_pvesd)==0:
             return
-        
+
         if isinstance(joint_impedances_pvesd, th.Tensor):
             joint_impedances_pvesd_dict = dict(zip(self._jimpedance_controlled_joints, joint_impedances_pvesd))
         elif isinstance(joint_impedances_pvesd, Mapping):
             joint_impedances_pvesd_dict = joint_impedances_pvesd
+
+        # Opt-in: clamp the position reference of continuous joints to their startup value
+        if self._lock_continuous_joints and len(self._locked_continuous_joint_positions) > 0:
+            joint_impedances_pvesd_dict = self._lock_continuous_joint_references(joint_impedances_pvesd_dict)
 
         commanded_joint_impedances_by_jid : dict[int,np.ndarray] = {}
         for full_jname, jcmd in joint_impedances_pvesd_dict.items():
@@ -239,8 +298,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                 raise RuntimeError(f"Commanded joint impedance for model different from the controleld one (asked '{model_name, jname}', but have '{self._model_name}')")
             jid = self._xbotjname_to_jid[jname]
             commanded_joint_impedances_by_jid[jid] = jcmd.numpy()
-        
-        prefs, vrefs, erefs, pgains, vgains = (np.zeros(shape=(self._joints_num,), dtype=np.float64) 
+
+        prefs, vrefs, erefs, pgains, vgains = (np.zeros(shape=(self._joints_num,), dtype=np.float64)
                                                for _ in range(5))
 
         commanded_joint_names = [self._jid_to_xbotjname[jid] for jid in commanded_joint_impedances_by_jid.keys()]
@@ -271,21 +330,30 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def _apply_commanded_joint_trajectories(self):
         jimp_cmds_pvesd : Dict[Tuple[str,str],Tuple[float,float,float,float,float]] = {}
         t = self.getEnvTimeFromStartup()
-        for jn,traj_tpva in self._commanded_joint_trajs_tpva.items():
+        joints = list(self._commanded_joint_trajs_tpva.keys())
+        stiffnesses = expand_default_dict(self._position_command_stiffness, keys=joints, default_key="default")
+        dampings = expand_default_dict(self._position_command_damping, keys=joints, default_key="default")
+        for jn in joints:
+            traj_tpva = self._commanded_joint_trajs_tpva[jn]
             sample_idx = np.searchsorted(traj_tpva[:,0], t) # index of the next trajectory sample (the first with time higher of t)
             if sample_idx>=traj_tpva.shape[0]:
                 sample_idx = traj_tpva.shape[0]-1
             time, pos, vel, acc = traj_tpva[sample_idx]
-            jimp_cmds_pvesd[jn] = (pos, vel, 0, self._position_command_stiffness, self._position_command_damping)
+            if self._is_locked_continuous_joint(jn):
+                # locked continuous joint: hold the reference, do not generate a velocity from the position goal
+                vel = 0.0
+            jimp_cmds_pvesd[jn] = (pos, vel, 0, stiffnesses[jn], dampings[jn])
         self.setJointsImpedanceCommand(joint_impedances_pvesd = jimp_cmds_pvesd)
 
     def _apply_commanded_joint_positions(self):
         if len(self._next_commanded_joint_positions)>0:
             jimp_pvesd_cmds : Dict[Tuple[str,str],Tuple[float,float,float,float,float]] = {}
             joints = list(self._next_commanded_joint_positions.keys())
-            js_pve : th.Tensor = self.getJointsState(joints)
-            js_dict = joints_state_dict = {jn : pve for jn, pve in zip(joints, js_pve)}
-            for jn,p_ref_velsc_accsc in self._next_commanded_joint_positions.items():
+            js_dict = {jn : pve for jn, pve in zip(joints, self.getJointsState(joints))}
+            stiffnesses = expand_default_dict(self._position_command_stiffness, keys=joints, default_key="default")
+            dampings = expand_default_dict(self._position_command_damping, keys=joints, default_key="default")
+            for jn in joints:
+                p_ref_velsc_accsc = self._next_commanded_joint_positions[jn]
                 # just to compute the duration
                 p_ref, velocity_scaling, acceleration_scaling = p_ref_velsc_accsc
                 traj_tpva = build_1D_vramp_trajectory(t0 = 0.0,
@@ -296,7 +364,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                                     max_vel=self._jpos_cmd_max_vel.get(jn, self._jpos_cmd_max_vel_default)*velocity_scaling,
                                                     max_acc=self._jpos_cmd_max_acc.get(jn, self._jpos_cmd_max_acc_default)*acceleration_scaling)
                 t, pos, vel, a = traj_tpva[0]
-                jimp_pvesd_cmds[jn] = (pos, vel, 0.0, self._position_command_stiffness, self._position_command_damping)
+                if self._is_locked_continuous_joint(jn):
+                    # locked continuous joint: hold the reference, do not generate a velocity from the position goal
+                    vel = 0.0
+                jimp_pvesd_cmds[jn] = (pos, vel, 0.0, stiffnesses[jn], dampings[jn])
             self.setJointsImpedanceCommand(jimp_pvesd_cmds)
 
     def clear_commands(self):
@@ -307,7 +378,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def _apply_controls(self):
         self._apply_commanded_joint_trajectories() # trajectories override positions by setting position commands
         self._apply_commanded_joint_positions() # positions override impedances by setting impedance commands
-        self._apply_commanded_joint_impedances() 
+        self._apply_commanded_joint_impedances()
 
     @override
     def run(self, duration_sec: float):
@@ -382,8 +453,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         if acceleration_scaling is None:
             acceleration_scaling = 1.0
         joints = list(jointPositions.keys())
-        js_pve = self.getJointsState(joints)
-        js_dict = {jn : pve for jn, pve in zip(joints, js_pve)}
+        js_dict = {jn : pve for jn, pve in zip(joints, self.getJointsState(joints))}
         last_refs = self.get_current_joint_impedance_command()
         last_refs_dict = {self._jimpedance_controlled_joints[i]:last_refs[i] for i in range(len(self._jimpedance_controlled_joints))}
         max_traj_duration = 0
@@ -429,7 +499,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         # self.setJointsPositionCommand(jointPositions=jointPositions)
         t0_env = self.getEnvTimeFromStartup()
         t0_wall = time.monotonic()
-        js = self.getJointsState(list(jointPositions.keys()))
+        js_dict = {jn : pve for jn, pve in zip(joints, self.getJointsState(joints))}
         errors = [jpve[0].item() - jointPositions[jn] for jn,jpve in js_dict.items()]
         reached_position = all([abs(e) < joint_position_tolerance for e in errors])
         elapsed_env_time = 0.0
@@ -437,7 +507,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         stopped = False
         while not (reached_position or (stopped and elapsed_env_time>=max_traj_duration)):
             self.run(self._stepLength_sec)
-            js = self.getJointsState(list(jointPositions.keys()))
+            js_dict = {jn : pve for jn, pve in zip(joints, self.getJointsState(joints))}
             errors = [jpve[0].item() - jointPositions[jn] for jn,jpve in js_dict.items()]
             reached_position = all([abs(e) < joint_position_tolerance for e in errors])
             stopped = all([abs(jpve[1].item())<joint_velocity_termination_threshold for jpve in js_dict.values()])
@@ -460,7 +530,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
     def is_safety_triggered(self):
         return False
         raise NotImplementedError()
-    
+
     def _get_current_refs_pvesd(self) -> np.ndarray:
         self._sense_if_needed()
         js : pyxbot.zmq_client.JointState = self._xbot_zmq_client.get_joints_state([jn[1] for jn in self._jimpedance_controlled_joints])
@@ -472,7 +542,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         ref_j_pvesd = self._get_current_refs_pvesd()
         # pvesd_by_name = {(mn,jn):ref_j_pvesd[self._xbotjname_to_jid[jn]] for mn,jn in self._jimpedance_controlled_joints}
         return th.as_tensor(ref_j_pvesd, device=self._torch_device, dtype=th.float32)
-    
+
     def _get_imus_for_links(self, requestedLinks : Sequence[tuple[str,str]]) -> dict[str, str]:
         imus = self._xbot_zmq_client.get_imu_names()
         # print(f"imus = {imus}")
@@ -496,18 +566,18 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         # for model_name,link_name in requestedLinks:
         #     pose_link2imu = self._robot_helper.get_frame_poses_xyzxyzw(frames=[link_name], reference_frame=ref_imus[link_name])
         #     quat_link2imu  = pose_link2imu[link_name][3:7]
-        
+
         linksnum = len(requestedLinks)
         requested_linknames = [ln[1] for ln in requestedLinks] # Remove the model name
         imu_name = self._xbot_zmq_client.get_imu_names()[0] # use imu 0 for all links
         poses_link2imu = self._robot_helper.get_frame_poses_xyzxyzw(frames=requested_linknames, reference_frame=imu_name)
         quats_link2imu = th.stack([th.as_tensor(poses_link2imu[ln][3:7]) for ln in requested_linknames])
-        
+
         quat_imu2world = th.as_tensor(self._xbot_zmq_client.getImuOrientation([imu_name])[0])
         quats_link2world = quat_mul_xyzw(quat_imu2world.expand(linksnum, 4), quats_link2imu)
         gdirs = th_quat_rotate(th.as_tensor([0,0,-1.0]).expand(linksnum, 3), quats_link2world.to(dtype=th.float32))
         return gdirs
-    
+
     @override
     def get_link_relative_angular_velocity(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
         linksnum = len(requestedLinks)
@@ -515,12 +585,12 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         imu_name = self._xbot_zmq_client.get_imu_names()[0] # use imu 0 for all links
         poses_link2imu = self._robot_helper.get_frame_poses_xyzxyzw(frames=requested_linknames, reference_frame=imu_name)
         quats_link2imu = th.stack([th.as_tensor(poses_link2imu[ln][3:7]) for ln in requested_linknames])
-        
+
         imulocal_angvel = th.as_tensor(self._xbot_zmq_client.getImuAngularVelocity([imu_name])[0])
         linklocal_angvel = th_quat_rotate(imulocal_angvel.expand(linksnum, 3).to(dtype=th.float32), quats_link2imu.to(dtype=th.float32))
         return linklocal_angvel
-    
-    
+
+
     def get_local_link_linear_acceleration(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:
         raise NotImplementedError("get_local_link_linear_acceleration not yet implemented for ZmqXbotAdapter")
         imus = self._robot_interface.getImu()
@@ -553,9 +623,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                 acceeleration = acc + correction
             accelerations.append(self._thtens(acceleration))
         return th.stack(accelerations)
-    
+
     @override
     def set_reference_filter(self, reference_filter_cutoff_frequency : th.Tensor):
         self._xbot_zmq_client.set_filter_frequency_hz(reference_filter_cutoff_frequency.item(),
                                                       enabled=reference_filter_cutoff_frequency.item()>0.0 and self._enable_filters)
-

@@ -122,9 +122,19 @@ class ThBox(gym.spaces.Box):
         if isinstance(self.labels,np.ndarray):
             state["labels"] = self.labels.tolist()
         state.pop("dtype", None)
+
+        rng_state = self._th_rng.get_state().tolist()
+        rng_device = self._th_rng.device
+        state.pop("_th_rng", None)
+        state["_th_rng_state"] = rng_state
+        state["_th_rng_device"] = rng_device
+
         return state
     
     def __setstate__(self, state):
+        if "_th_rng" not in state:
+            state["_th_rng"] = th.Generator(device=state["_th_rng_device"])
+            state["_th_rng"].set_state(th.as_tensor(state["_th_rng_state"], dtype=th.uint8))
         self.__dict__.update(state)
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
         if isinstance(self.high,list):
@@ -143,6 +153,7 @@ class ThBox(gym.spaces.Box):
             self.low = th.as_tensor(self.low).cpu().numpy()
         if isinstance(self.labels,list):
             self.labels = np.array(self.labels, dtype=object)
+
 
 def get_space_labels(space : gym_spaces.Dict | ThBox):
     if isinstance(space, ThBox):
