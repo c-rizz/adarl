@@ -10,9 +10,15 @@ from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check_bounded
 import copy
 import adarl.utils.session as session
 import time
+from packaging.version import Version
+
+if Version(gym.__version__) < Version("1.0.0"):
+    VectorWrapper = gym.vector.VectorEnvWrapper
+else:
+    VectorWrapper = gym.vector.VectorWrapper
 
 class VectorEnvChecker(
-    gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
+    VectorWrapper, gym.utils.RecordConstructorArgs
 ):
     def __init__(self,  env: VectorEnv,
                         just_warn : bool = False,

@@ -13,8 +13,15 @@ from adarl.utils.spaces import get_1d_space_size
 import pprint
 from adarl.utils.async_cuda2cpu_queue import log_async
 
+from packaging.version import Version
+
+if Version(gym.__version__) < Version("1.0.0"):
+    VectorWrapper = gym.vector.VectorEnvWrapper
+else:
+    VectorWrapper = gym.vector.VectorWrapper
+
 class VectorEnvLogger(
-    gym.vector.VectorEnvWrapper, gym.utils.RecordConstructorArgs
+    VectorWrapper, gym.utils.RecordConstructorArgs
 ):
     """ Logs metrics from a vector_env """
 

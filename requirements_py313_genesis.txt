@@ -1,0 +1,44 @@
+# Dependencies for the Genesis backend (GenesisAdapter / GenesisJointImpedanceAdapter).
+#
+# These are meant to be installed into a dedicated environment (Python >=3.10,<3.14),
+# separate from the main adarl/mjx environment. Example:
+#
+#   uv venv ~/venvgenesis --python 3.13
+#   uv pip install --python ~/venvgenesis/bin/python \
+#       --index-strategy unsafe-best-match -r requirements_py313_genesis.txt
+#   uv pip install --python ~/venvgenesis/bin/python --no-deps -e .
+#
+# IMPORTANT: --index-strategy unsafe-best-match is required. The torch cu128 index below
+# only mirrors a cut-down set of common packages (tqdm, setuptools, ...) at fixed versions.
+# With uv's default first-match strategy those get pinned to the torch-index copies, which
+# conflicts with PyPI deps (e.g. quadrants needs setuptools>=77, the torch index only has 70).
+# unsafe-best-match lets uv consider every index and pick a compatible version. Both indexes
+# here (PyPI and the official torch index) are public and trusted, so the dependency-confusion
+# concern the "unsafe" name refers to does not apply.
+#
+# Notes:
+# - torch must be the cu128 build: the default PyPI wheel targets CUDA 13 and fails on
+#   drivers limited to CUDA 12.8. The extra index below provides the +cu128 wheels.
+# - genesis-world pulls in a stock 'xacro' that lacks the extra_find_pkgs argument adarl
+#   needs, so the c-rizz fork is pinned here to override it.
+# - mujoco is used by GenesisAdapter to parse cameras out of mjcf models (it is also a
+#   genesis-world dependency, listed here to make the requirement explicit).
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.10.0+cu128
+
+genesis-world==1.1.1
+
+# quadrants (a genesis-world dep) needs setuptools>=77; pin it above the version the torch
+# index mirrors so the resolution does not get stuck on the old one.
+setuptools>=77.0.0
+
+# adarl core runtime deps (adarl is installed with --no-deps, so list them explicitly)
+numpy-quaternion==2024.0.13
+gymnasium==1.3.0
+
+mujoco==3.9.0
+
+# adarl requires the c-rizz xacro fork (adds the extra_find_pkgs argument)
+xacro @ git+https://github.com/c-rizz/xacro_standalone@extra_find_pkg_path

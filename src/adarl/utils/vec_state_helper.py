@@ -1286,9 +1286,12 @@ class JointImpedanceActionHelper:
                                 f" Joints {[self._joints[i] for i in th.nonzero(bad_min).cpu().numpy().flatten().tolist()]} exceed minimum\n"
                                 f" Joints {[self._joints[i] for i in th.nonzero(bad_max).cpu().numpy().flatten().tolist()]} exceed maximum\n"
                                 f" All joints = {self._joints}")
-        zero_cmd = th.zeros(size=(1, self._joints_num, 5), dtype=self._dtype, device=self._th_device)
-        zero_cmd[:,:,0] = center_position
-        zero_action = self.pvesd_to_action(zero_cmd, zero_cmd[:,:,0]).view(self.single_action_len())
+        if self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
+            zero_action = th.zeros(size=(self._joints_num,), dtype=self._dtype, device=self._th_device)
+        else:
+            zero_cmd = th.zeros(size=(1, self._joints_num, 5), dtype=self._dtype, device=self._th_device)
+            zero_cmd[:,:,0] = center_position
+            zero_action = self.pvesd_to_action(zero_cmd, zero_cmd[:,:,0]).view(self.single_action_len())
         high = th.ones(self.single_action_len())
         self._single_action_space = spaces.ThBox(low  = -high,
                                                  high = high,

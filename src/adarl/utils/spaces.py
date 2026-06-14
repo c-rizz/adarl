@@ -7,7 +7,7 @@ import numpy as np
 import torch as th
 gym_spaces = gym.spaces
 from copy import deepcopy
-from gymnasium.vector.utils.spaces import batch_space
+from gymnasium.vector.utils import batch_space
 from adarl.utils.utils import torch_to_numpy_dtype_dict, numpy_to_torch_dtype_dict
 import adarl.utils.dbg.ggLog as ggLog
 from collections import OrderedDict

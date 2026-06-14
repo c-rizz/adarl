@@ -273,6 +273,18 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return pair[0] + model_element_separator + pair[1]
 
     @override
+    def get_detected_joints(self):
+        return list(self._jname2jid.keys())
+
+    @override
+    def get_detected_links(self):
+        return list(self._lname2lid.keys())
+
+    @override
+    def get_detected_cameras(self):
+        return list(getattr(self, "_cname2cid", {}).keys())
+
+    @override
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str, str]]):
         super().set_monitored_joints(jointsToObserve)
         self._reset_step_stats(self._step_stats_len)
@@ -549,8 +561,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         pos_idx  = qpos_adrs[:, None] + np.arange(3)
         quat_idx = qpos_adrs[:, None] + 3 + np.arange(4)
-        ang_vel_idx = qvel_adrs[:, None] + np.arange(3)
-        lin_vel_idx = qvel_adrs[:, None] + 3 + np.arange(3)
+        # mujoco free-joint qvel layout is [linear_xyz, angular_xyz]
+        lin_vel_idx = qvel_adrs[:, None] + np.arange(3)
+        ang_vel_idx = qvel_adrs[:, None] + 3 + np.arange(3)
 
         self._mj_data.qpos[pos_idx] = pos
         self._mj_data.qpos[quat_idx] = quat_wxyz

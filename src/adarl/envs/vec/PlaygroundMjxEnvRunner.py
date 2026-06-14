@@ -11,7 +11,7 @@ import gymnasium as gym
 import jax
 import numpy as np
 import torch as th
-from gymnasium.vector.utils.spaces import batch_space
+from gymnasium.vector.utils import batch_space
 from typing_extensions import override
 
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
