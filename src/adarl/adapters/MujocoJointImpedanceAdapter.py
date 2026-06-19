@@ -4,7 +4,7 @@ from adarl.adapters.MujocoAdapter import MujocoAdapter
 import heapq
 import numpy as np
 import torch as th
-from typing import Sequence
+from typing import Sequence, Any
 from typing_extensions import override
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 
@@ -95,7 +95,8 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
                  joint_state_filter_decimation_time: float | None = None,
                  gains_exp_filter_decimation_time: float = 0.05,
                  gains_filter_cutoff_frequency: float = 20.0,
-                 use_gains_filter: bool = False):
+                 use_gains_filter: bool = False,
+                 geom_overrides : dict[str,Any] | None = None):
         super().__init__(vec_size=vec_size,
                          sim_step_dt=sim_step_dt,
                          step_length_sec=step_length_sec,
@@ -108,7 +109,8 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
                          safe_revolute_dof_armature=safe_revolute_dof_armature,
                          revolute_dof_armature_override=revolute_dof_armature_override,
                          revolute_dof_damping_override=revolute_dof_damping_override,
-                         revolute_dof_frictionloss_override=revolute_dof_frictionloss_override)
+                         revolute_dof_frictionloss_override=revolute_dof_frictionloss_override,
+                         geom_overrides=geom_overrides)
         self._max_torque_default = default_max_joint_impedance_ctrl_torque
         self._max_torque_overrides = max_joint_impedance_ctrl_torques or {}
         self._imp_ctrl_joints: list[tuple[str, str]] = []

@@ -85,6 +85,7 @@ class VecEpisodeStorage():
         self._added_vframes : int = 0
         self.full = False
         self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
+        self._nonblocking_out = self._output_device.type == "cuda"
 
         magic_value = 42
         self.observations = {
@@ -329,11 +330,11 @@ class VecEpisodeStorage():
             next_observations = {}
             for key in self.observations:
                 obs_shape = trajs_obs[key].size()[2:]
-                observations[key]      = trajs_obs[key].view((batch_size,)+obs_shape)
-                next_observations[key] = trajs_next_obs[key].view((batch_size,)+obs_shape)
-            actions     = trajs_actions.view((batch_size,)+trajs_actions.size()[2:])
-            terminateds = trajs_terminateds.view(batch_size,1)
-            rewards     = trajs_rewards.view(batch_size,self._rewards_num)
+                observations[key]      = trajs_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out)
+                next_observations[key] = trajs_next_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out)
+            actions     = trajs_actions.view((batch_size,)+trajs_actions.size()[2:]).to(self._output_device, non_blocking=self._nonblocking_out)
+            terminateds = trajs_terminateds.view(batch_size,1).to(self._output_device, non_blocking=self._nonblocking_out)
+            rewards     = trajs_rewards.view(batch_size,self._rewards_num).to(self._output_device, non_blocking=self._nonblocking_out)
 
         dbg_check_finite((observations, next_observations, actions, rewards), async_assert=True, assert_msg="Nonfinite values in sampled transition")
         return TransitionBatch(

@@ -1183,7 +1183,7 @@ class JointImpedanceActionHelper:
                         generator : th.Generator | None,
                         vec_size : int,
                         center_position : th.Tensor | dict[tuple[str,str], th.Tensor],
-                        position_delta_max : float | None = False):
+                        position_delta_max : th.Tensor | float | None = None):
         """
 
         Parameters
@@ -1363,7 +1363,8 @@ class JointImpedanceActionHelper:
         if self._control_mode == self.CONTROL_MODES.POSITION_DELTA:
             cmd_vec_joint_pvesd = unnormalize(cmd_vec_joint_pvesd, min=self._minmax_joints_pvesd[0], max=self._minmax_joints_pvesd[1])
             prev_posref = prev_posref.view(self._vec_size, self._joints_num, 1)
-            posref = action * self._position_delta_max + prev_posref #type: ignore
+            position_delta_max = self._position_delta_max.view(1, self._joints_num, 1) if isinstance(self._position_delta_max, th.Tensor) else self._position_delta_max
+            posref = action * position_delta_max + prev_posref #type: ignore
             cmd_vec_joint_pvesd[:,:,0] = posref.view(self._vec_size, self._joints_num)
         else:
             cmd_vec_joint_pvesd[:, :, self._act_to_pvesd_idx] = action

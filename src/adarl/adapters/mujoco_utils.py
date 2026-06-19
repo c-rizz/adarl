@@ -235,7 +235,7 @@ def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6,
 @jax.jit
 def get_renderdata_dict(jax_data : mjx.Data):
     """ Copy the position and orientation data from a jax mjx.Data into a dict. Just to avoid copying all fields when only these are needed."""
-    return {
+    d = {
         'xpos' : jax_data.xpos,
         'xquat' : jax_data.xquat,
         'geom_xpos' : jax_data.geom_xpos,
@@ -245,8 +245,14 @@ def get_renderdata_dict(jax_data : mjx.Data):
         'xipos' : jax_data.xipos,
         'ximat' : jax_data.ximat,
         'xfrc_applied' : jax_data.xfrc_applied,
-        'contact' : jax_data.contact,
     }
+    # The native contact struct only exists on the JAX/C backends. The warp backend stores
+    # contacts as flattened contact__* fields and mjx itself does not extract them into MjData
+    # (mjx._src.io._get_data_into_warp skips 'contact'), so there is nothing to copy for rendering.
+    # hasattr is evaluated at trace time on the static pytree type, so this branch is static.
+    if hasattr(jax_data._impl, "contact"):
+        d['contact'] = jax_data._impl.contact
+    return d
 
 
 def get_renderdata_into(
@@ -256,7 +262,8 @@ def get_renderdata_into(
     """ Copy the data needed for rendering from a jax mjx.Data into a list of mujoco_MjData.
         Just to avoid copying all fields when only these are needed."""
     poses = jax.device_get(get_renderdata_dict(jax_data))
-    contact = poses['contact']
+    # contact is absent on the warp backend (see get_renderdata_dict); skip contact rendering there.
+    contact = poses.get('contact')
     for i in range(len(cpu_data)):
         cdata = cpu_data[i]
         cdata.xpos = poses['xpos'][i]
@@ -269,16 +276,17 @@ def get_renderdata_into(
         cdata.ximat = poses['ximat'][i].reshape((-1,9))
         cdata.xfrc_applied = poses['xfrc_applied'][i]
 
-        # Copy active contacts so that mjVIS_CONTACTPOINT etc. can be rendered.
-        # Active contacts are those with dist <= 0, same criterion as mjx.get_data_into.
-        contact_i = jax.tree_util.tree_map(lambda x, i=i: x[i], contact)
-        ncon = int((contact_i.dist <= 0).sum())
-        if ncon != cdata.ncon or cdata.nefc != 0:
-            mjutils._functions._realloc_con_efc(cdata, ncon=ncon, nefc=0)  # pylint: disable=protected-access
-        _get_contact(cdata.contact, contact_i)
-        # efc_address would index into an efc array we don't populate; invalidate it.
-        if cdata.contact.efc_address.size:
-            cdata.contact.efc_address[:] = -1
+        if contact is not None:
+            # Copy active contacts so that mjVIS_CONTACTPOINT etc. can be rendered.
+            # Active contacts are those with dist <= 0, same criterion as mjx.get_data_into.
+            contact_i = jax.tree_util.tree_map(lambda x, i=i: x[i], contact)
+            ncon = int((contact_i.dist <= 0).sum())
+            if ncon != cdata.ncon or cdata.nefc != 0:
+                mjutils._functions._realloc_con_efc(cdata, ncon=ncon, nefc=0)  # pylint: disable=protected-access
+            _get_contact(cdata.contact, contact_i)
+            # efc_address would index into an efc array we don't populate; invalidate it.
+            if cdata.contact.efc_address.size:
+                cdata.contact.efc_address[:] = -1
 
 
 def get_data_into(
@@ -480,6 +488,7 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
     big_speck.compiler.inertiafromgeom = mjutils._mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
     # big_speck.compiler.discardvisual = False
     for mname, spec, attachment_link in specs:
+        ggLog.info(f"Attaching model '{mname}' to '{attachment_link}'")
         if model_element_separator in mname:
             raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
         # add all th bodies that are direct childern of worldbody
@@ -546,6 +555,9 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
     mj_model = big_speck.compile()
+    if log_folder is not None:
+        with open(log_folder+"/aggregated_model.xml", "w") as text_file:
+                text_file.write(big_speck.to_xml())
     return mj_model, big_speck
 
 def apply_dof_overrides(mj_model : mjutils._MjModel,
@@ -635,6 +647,7 @@ def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[
         opt.impratio = good_impratio # see comment above
     else:
         raise RuntimeError(f"Unknown opt preset '{preset_name}'")
+    ggLog.info(f"opt_override = {opt_override}, opt_override_enableflags = {opt_override_enableflags}")
     if opt_override is not None:
         for k,v in opt_override.items():
             setattr(opt,k,v)

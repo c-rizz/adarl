@@ -121,3 +121,48 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
     @abstractmethod
     def sim_step_duration(self) -> th.Tensor:
         raise NotImplementedError()
+
+    # @abstractmethod
+    def alter_model(self,   link_masses : tuple[Any, th.Tensor] | None = None,
+                            link_frictions : tuple[Any, th.Tensor] | None = None,
+                            joint_armature_ratios : tuple[Any, th.Tensor] | None = None,
+                            joint_damping_ratios : tuple[Any, th.Tensor] | None = None,
+                            joint_frictionloss_ratios : tuple[Any, th.Tensor] | None = None,
+                            com_position_diffs : tuple[Any, th.Tensor] | None = None,
+                            com_quatxyzw_diffs : tuple[Any, th.Tensor] | None = None,
+                            vec_mask : th.Tensor | None = None,
+                            reset_first : bool = True):
+        """_summary_
+
+        Parameters
+        ----------
+        link_masses : tuple[Any, th.Tensor]
+            tuple containing  alist of link ids (from get_link_id) and corresponding
+            body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
+            body mass will be set to old_mass*(1+ratio)
+        link_frictions : tuple[Any, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            body friction ratios, where the new friction will be computed as old_friction*(1+ratio).
+        joint_armature_ratios : tuple[Any, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint armature ratios, where the new armature will be computed as old_armature*(1+ratio).
+        joint_damping_ratios : tuple[Any, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint damping ratios, where the new damping will be computed as old_damping*(1+ratio).
+        joint_frictionloss_ratios : tuple[Any, th.Tensor]
+            tuple containing a list of joint ids (from get_joint_id) and corresponding
+            joint frictionloss ratios, where the new frictionloss will be computed as old_frictionloss*(1+ratio).
+        com_position_diffs : tuple[Any, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            COM position differences, where the new COM position will be computed as old_COM_position + diff
+        com_quatxyzw_diffs : tuple[Any, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding
+            COM orientation differences in quatxyzw format, where the new COM orientation will be computed as old_COM_orientation + diff 
+        vec_mask : th.Tensor
+            Mask of shape (vec_size,) indicating which environments to update, if None all environments will be updated
+        reset_first : bool
+            Whether to reset the previous alterations before applying the new ones. If False, new alterations will
+            be applied on top of the current model parameters, which might lead to compounding effects if
+            the same parameters are altered multiple times.
+        """
+        raise NotImplementedError()

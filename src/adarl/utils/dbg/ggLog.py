@@ -2,6 +2,7 @@
 
 import os
 import sys
+import select
 import logging
 import datetime
 
@@ -95,10 +96,45 @@ class _StreamToLogger:
                 continue
             handler.handle(record)
 
+    def _flush_blocking(self):
+        # See _passthrough_write: the fd may be in non-blocking mode, so a
+        # flush can fail with EAGAIN. Wait for it to drain and retry instead
+        # of dropping the buffered output.
+        try:
+            fd = self._passthrough_stream.fileno()
+        except (OSError, ValueError, AttributeError):
+            fd = None
+        while True:
+            try:
+                self._passthrough_stream.flush()
+                return
+            except BlockingIOError:
+                if fd is None:
+                    return
+                try:
+                    select.select([], [fd], [], 1.0)
+                except (OSError, ValueError):
+                    return
+
+    def _passthrough_write(self, data):
+        # The keyboard listener (sshkeyboard) puts stdin into non-blocking
+        # mode while it runs. Because the controlling terminal's open file
+        # description is shared between stdin/stdout/stderr, stdout/stderr
+        # become non-blocking too, so writes here can fail with
+        # BlockingIOError ([Errno 11] EAGAIN) when the terminal can't accept
+        # the output immediately. By the time write() raises, the stream has
+        # already buffered the data, so we just wait for the fd to drain and
+        # finish flushing rather than re-writing it (which would duplicate
+        # the output).
+        try:
+            self._passthrough_stream.write(data)
+        except BlockingIOError:
+            self._flush_blocking()
+
     def write(self, data):
         if not data:
             return 0
-        self._passthrough_stream.write(data)
+        self._passthrough_write(data)
         self._buffer += data
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
@@ -106,7 +142,7 @@ class _StreamToLogger:
         return len(data)
 
     def flush(self):
-        self._passthrough_stream.flush()
+        self._flush_blocking()
         if self._buffer:
             self._save_line(self._buffer.rstrip("\r"))
             self._buffer = ""

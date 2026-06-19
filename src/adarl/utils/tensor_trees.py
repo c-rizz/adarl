@@ -80,16 +80,77 @@ def map_tensor_tree(src_tree : TensorTree[U], func : Callable[[U],T], _key = "")
             return func(src_tree)
         except Exception as e:
             raise RuntimeError(f"Exception at element {_key}: {e}")
+        
+_no_key = object()
+def map_tensor_tree_withkey(src_tree : TensorTree[U],
+                            func : Callable[[Any, U],T],
+                            _full_key = "",
+                            _last_key : Any = _no_key) -> TensorTree[T]:
+    if isinstance(src_tree, dict):
+        return {k: map_tensor_tree_withkey(v, func = func, _full_key = _full_key+f".{k}", _last_key=k)
+                for k,v in src_tree.items()}
+    elif isinstance(src_tree, tuple):
+        r = tuple([map_tensor_tree_withkey(e, func = func, _full_key = _full_key+f".T{i}", _last_key=i) for i,e in enumerate(src_tree)])
+        return r
+    elif isinstance(src_tree, list):
+        return [map_tensor_tree_withkey(e, func = func, _full_key = _full_key+f".L{i}", _last_key=i) for i,e in enumerate(src_tree)]
+    elif dataclasses.is_dataclass(src_tree):
+        mapped_fields = {field.name: map_tensor_tree_withkey(getattr(src_tree, field.name), func = func, _full_key = _full_key+f"{field.name}")
+                          for field in dataclasses.fields(src_tree)}
+        return src_tree.__class__(**mapped_fields)
+    else:
+        try:
+            print(f"Applying func at key {_full_key} with last key {_last_key} and value {src_tree}")
+            return func(_last_key, src_tree)
+        except Exception as e:
+            raise RuntimeError(f"Exception at element {_full_key}: {e}")
 
 
 _discarded = object()
 def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _already_filtered : dict = {}) -> TensorTree[U]:
+    # if isinstance(src_tree, dict):
+    #     if id(src_tree) in _already_filtered:
+    #         return _already_filtered[id(src_tree)]
+    #     filtered = {}
+    #     _already_filtered[id(src_tree)] = filtered
+    #     _filtered = {k:filter_tensor_tree(v, keep=keep) for k,v in src_tree.items()}
+    #     _filtered = {k:v for k,v in filtered.items() if v is not _discarded}
+    #     filtered.update(_filtered)
+    #     return filtered
+    # elif isinstance(src_tree, tuple):
+    #     if id(src_tree) in _already_filtered:
+    #         return tuple(_already_filtered[id(src_tree)])
+    #     filtered = []
+    #     _already_filtered[id(src_tree)] = filtered
+    #     _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+    #     _filtered = [v for v in filtered if v is not _discarded]
+    #     filtered.extend(filtered)
+    #     return tuple(filtered)
+    # elif isinstance(src_tree, list):
+    #     if id(src_tree) in _already_filtered:
+    #         return _already_filtered[id(src_tree)]
+    #     filtered = []
+    #     _already_filtered[id(src_tree)] = filtered
+    #     _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+    #     _filtered = [v for v in filtered if v is not _discarded]
+    #     filtered.extend(_filtered)
+    #     return filtered
+    # elif dataclasses.is_dataclass(src_tree):
+    #     raise RuntimeError(f"Cannot filter dataclasses")
+    # else:
+    #     return src_tree if keep(src_tree) else _discarded
+    filter_by_key_tensor_tree(src_tree, lambda k,v: keep(v))
+
+
+_discarded = object()
+_no_key = object()
+def filter_by_key_tensor_tree(src_tree : TensorTree[U], keep : Callable[[Any,U],bool], _already_filtered : dict = {}, _key : Any =_no_key) -> TensorTree[U]:
     if isinstance(src_tree, dict):
         if id(src_tree) in _already_filtered:
             return _already_filtered[id(src_tree)]
         filtered = {}
         _already_filtered[id(src_tree)] = filtered
-        _filtered = {k:filter_tensor_tree(v, keep=keep) for k,v in src_tree.items()}
+        _filtered = {k:filter_by_key_tensor_tree(v, keep=keep, _key=k) for k,v in src_tree.items()}
         _filtered = {k:v for k,v in filtered.items() if v is not _discarded}
         filtered.update(_filtered)
         return filtered
@@ -98,7 +159,7 @@ def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _alr
             return tuple(_already_filtered[id(src_tree)])
         filtered = []
         _already_filtered[id(src_tree)] = filtered
-        _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i) for i,v in enumerate(src_tree)]
         _filtered = [v for v in filtered if v is not _discarded]
         filtered.extend(filtered)
         return tuple(filtered)
@@ -107,14 +168,14 @@ def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _alr
             return _already_filtered[id(src_tree)]
         filtered = []
         _already_filtered[id(src_tree)] = filtered
-        _filtered = [filter_tensor_tree(v, keep=keep) for v in src_tree]
+        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i) for i,v in enumerate(src_tree)]
         _filtered = [v for v in filtered if v is not _discarded]
         filtered.extend(_filtered)
         return filtered
     elif dataclasses.is_dataclass(src_tree):
         raise RuntimeError(f"Cannot filter dataclasses")
     else:
-        return src_tree if keep(src_tree) else _discarded
+        return src_tree if keep(_key, src_tree) else _discarded
 
 T = TypeVar('T')
 U = TypeVar('U')

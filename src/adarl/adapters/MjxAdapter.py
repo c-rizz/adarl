@@ -81,6 +81,60 @@ from packaging.version import Version
 
 import adarl.adapters.mujoco_utils as mjutils
 
+
+def _patch_mjx_warp_tileset_pytree_metadata():
+    """Make mjx's warp-backend ``TileSet`` safe to use as JAX pytree metadata.
+
+    With the warp backend, ``Model._impl`` is a ``ModelWarp`` whose field
+    ``qM_tiles: Tuple[TileSet, ...]`` is NOT a jax.Array-bearing type, so mjx's
+    pytree registration places it in the *static metadata* (aux_data) partition.
+    mjx only content-hash-wraps bare ``np.ndarray`` / ``Tuple[np.ndarray, ...]``
+    metadata, so the ``TileSet`` instances are stored raw. ``TileSet`` is a
+    frozen dataclass holding ``adr: np.ndarray``, so its auto-generated
+    ``__eq__``/``__hash__`` operate on numpy arrays: when JAX compares two Model
+    treedefs for a jit cache lookup it hits ``np.ndarray == np.ndarray`` and
+    raises "The truth value of an array with more than one element is
+    ambiguous". This patches ``TileSet`` with array-safe equality/hashing.
+
+    This is backend-specific (only the warp Model triggers it) and version
+    independent. No-op if the warp types aren't importable, or if a mujoco build
+    that already fixes this upstream is installed (see
+    https://github.com/google-deepmind/mujoco/pull/3299).
+    """
+    try:
+        from mujoco.mjx.warp import types as _mjxw_types  # type: ignore
+    except Exception:
+        return
+    TileSet = getattr(_mjxw_types, "TileSet", None)
+    if TileSet is None or getattr(TileSet, "_adarl_array_safe", False):
+        return
+
+    # Skip if TileSet already has array-safe eq/hash (e.g. mujoco PR #3299 landed).
+    try:
+        _probe_a = TileSet(adr=np.array([1, 2, 3]), size=4)
+        _probe_b = TileSet(adr=np.array([1, 2, 3]), size=4)
+        if (_probe_a == _probe_b) is True and hash(_probe_a) == hash(_probe_b):
+            return
+    except Exception:
+        pass  # current methods are broken (the bug we're fixing) -> patch below
+
+    def _eq(self, other):
+        if type(self) is not type(other):
+            return NotImplemented
+        return self.size == other.size and np.array_equal(self.adr, other.adr)
+
+    def _hash(self):
+        a = np.ascontiguousarray(self.adr)
+        return hash((self.size, a.shape, a.dtype.str, a.tobytes()))
+
+    TileSet.__eq__ = _eq
+    TileSet.__hash__ = _hash
+    TileSet._adarl_array_safe = True
+
+
+_patch_mjx_warp_tileset_pytree_metadata()
+
+
 if Version(jax.__version__) < Version("0.8.0"):
     def th2jax(tensor : th.Tensor, jax_device : mjutils.jax_Device):
         # apparently there are issues with non-contiguous tensors, should be fixed in 0.8.0 (https://github.com/jax-ml/jax/issues/7657)
@@ -315,8 +369,8 @@ def get_rows_cols(array : jnp.ndarray,
 from mujoco.mjx._src.io import mjwp, types
 
 from typing import Optional, Dict, Union
-from mujoco.mjx._src.io import types, _resolve_impl_and_device, _put_data_jax, _put_data_c, _put_data_cpp, _check_warp_installed, _wp_to_np_type, _put_data_public_fields, _get_nested_attr
-import warnings
+from mujoco.mjx._src.io import types, _resolve_impl_and_device, _put_data_jax, _put_data_cpp, _check_warp_installed, _wp_to_np_type, _put_data_public_fields, _get_nested_attr
+
 def _put_data_warp(
     m: mjutils._MjModel,
     d: mjutils.MjData,
@@ -358,13 +412,11 @@ def _put_data_warp(
   data = jax.device_put(data, device=device)
   return data
 
-
 def put_data(
     m: mjutils._MjModel,
     d: mjutils.MjData,
     device: Optional[mjutils.jax_Device] = None,
     impl: Optional[Union[str, types.Impl]] = None,
-    nconmax: Optional[int] = None,
     naconmax: Optional[int] = None,
     naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
@@ -391,20 +443,11 @@ def put_data(
 
   Returns:
     an mjx.Data placed on device
-    DeprecationWarning: if nconmax is used
   """
-  if nconmax is not None:
-    warnings.warn(
-        'nconmax will be deprecated in mujoco-mjx>=3.5. Use naconmax instead.',
-        DeprecationWarning,
-        stacklevel=2,
-    )
 
   impl, device = _resolve_impl_and_device(impl, device)
   if impl == types.Impl.JAX:
     return _put_data_jax(m, d, device)
-  elif impl == types.Impl.C:
-    return _put_data_c(m, d, device)
   elif impl == types.Impl.CPP:
     return _put_data_cpp(
         m,
@@ -421,6 +464,7 @@ def put_data(
   raise NotImplementedError(
       f'put_data for implementation "{impl}" not implemented yet.'
   )
+
 
 
 
@@ -1156,12 +1200,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
-        # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
-        os.makedirs(scenario_logs_folder, exist_ok=True)
-        with open(scenario_logs_folder+"/mujoco_model.xml", "w") as text_file:
-            text_file.write(big_speck.to_xml())
-        with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
-            text_file.write(str(self._mj_model.opt))
         
         self._mj_model = apply_dof_overrides(
                             self._mj_model, 
@@ -1171,6 +1209,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             safe_revolute_dof_armature=self._safe_revolute_dof_armature,
                             safe_revolute_dof_damping=self._safe_revolute_dof_damping,
                             safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
+        # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
+        os.makedirs(scenario_logs_folder, exist_ok=True)
+        with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
+            text_file.write(str(self._mj_model.opt))
         
         # model = models[0]
         # if model.format == "urdf.xacro":

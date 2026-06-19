@@ -134,7 +134,7 @@ class ThBox(gym.spaces.Box):
     def __setstate__(self, state):
         if "_th_rng" not in state:
             state["_th_rng"] = th.Generator(device=state["_th_rng_device"])
-            state["_th_rng"].set_state(th.as_tensor(state["_th_rng_state"], dtype=th.uint8))
+            state["_th_rng"].set_state(th.ByteTensor(state["_th_rng_state"]))
         self.__dict__.update(state)
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
         if isinstance(self.high,list):
@@ -153,6 +153,12 @@ class ThBox(gym.spaces.Box):
             self.low = th.as_tensor(self.low).cpu().numpy()
         if isinstance(self.labels,list):
             self.labels = np.array(self.labels, dtype=object)
+
+    def seed(self, seed: int | None = None) -> list[int]:
+        """Seed the PRNG of this space and possibly the PRNGs of subspaces."""
+        if seed is not None:
+            self._th_rng.manual_seed(seed)
+        return super().seed(seed)
 
 
 def get_space_labels(space : gym_spaces.Dict | ThBox):
@@ -194,7 +200,8 @@ class ThDict(gym_spaces.Dict):
         if isinstance(seed, int):
             seeds = [seed]
             self._th_rng.manual_seed(seed)
-            subseeds = th.randint(0, np.iinfo(np.int32).max, (len(self.spaces),), generator=self._th_rng).tolist()
+            subseeds = th.randint(0, np.iinfo(np.int32).max, (len(self.spaces),), generator=self._th_rng,
+                                  device=th.device("cpu")).tolist()
             for subspace, subseed in zip(self.spaces.values(), subseeds):
                 seeds += subspace.seed(int(subseed))
             return seeds

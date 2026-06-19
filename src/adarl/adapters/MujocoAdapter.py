@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 
-from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models
+from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models, print_mj_model
 from adarl.utils.base_utils import record_region_end, record_region_start, record_time
 os.environ["MUJOCO_GL"] = "egl"
 
@@ -86,7 +86,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  safe_revolute_dof_armature: float = 0.01,
                  revolute_dof_armature_override: float | None = None,
                  revolute_dof_damping_override: float | None = None,
-                 revolute_dof_frictionloss_override: float | None = None):
+                 revolute_dof_frictionloss_override: float | None = None,
+                 disable_builtin_actuators: bool = True,
+                 geom_overrides : dict[str,Any] | None = None):
         if vec_size != 1:
             raise ValueError("MujocoAdapter only supports vec_size=1")
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
@@ -110,6 +112,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._revolute_dof_armature_override = revolute_dof_armature_override
         self._revolute_dof_damping_override = revolute_dof_damping_override
         self._revolute_dof_frictionloss_override = revolute_dof_frictionloss_override
+        self._disable_builtin_actuators = disable_builtin_actuators
         self._enable_rendering = True
         self._stepping = False
         self._step_length_sec = step_length_sec
@@ -122,6 +125,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._viewer = None
         self._viewer_mj_data : mujoco_MjData | None = None
         self._last_gui_update_wtime = 0.0
+        self._geom_overrides = geom_overrides
 
     def _ensure_ready(self):
         if self._mj_model is None or self._mj_data is None:
@@ -135,18 +139,32 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         models = list(models)
         if len(models) == 0:
             raise RuntimeError("No models provided to build_scenario")
-        scenario_logs_folder = self._log_folder+"/MjxAdapter/scenario_logs"
+        scenario_logs_folder = self._log_folder+"/MujocoAdapter/scenario_logs"
 
         self._mj_model, spec = aggregate_models(models,
                                           add_ground=self._add_ground,
                                           add_sky=self._add_sky,
                                           uneven_ground=self._uneven_ground,
                                           discardvisual=self._discardvisual,
-                                          log_folder=scenario_logs_folder)
+                                          log_folder=scenario_logs_folder,
+                                          geom_overrides=self._geom_overrides)
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         self._mj_model.opt.timestep = self._sim_step_dt
+        if self._disable_builtin_actuators:
+            # Disable all built-in actuators; we apply forces/torques directly to the joints in the control step.
+            # This matches MjxAdapter: leaving actuators active lets them (e.g. position servos at ctrl=0)
+            # fight the impedance effort and pull controlled joints toward their default targets.
+            self._mj_model.opt.disableactuator = -1
+            self._mj_model.opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_ACTUATION
         self._apply_revolute_dof_overrides()
+
+
+        os.makedirs(scenario_logs_folder, exist_ok=True)
+        with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
+            text_file.write(str(self._mj_model.opt))
+        print_mj_model(self._mj_model, full_dump=True, file=scenario_logs_folder+"/mj_model_full.txt")
+
         self._mj_data = mujoco_MjData(self._mj_model)
         self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
         mujoco_mj_forward(self._mj_model, self._mj_data)

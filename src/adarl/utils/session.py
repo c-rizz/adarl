@@ -80,7 +80,8 @@ class Session():
                         run_id : Optional[str] = None,
                         debug : Union[bool, int]  = False,
                         run_comment = "",
-                        use_wandb = True):
+                        use_wandb = True,
+                        reference_data_folder : Optional[str] = None):
         
         self._initialized = True
         self._is_wandb_enabled = use_wandb
@@ -109,6 +110,7 @@ class Session():
         self.run_info["hostname"] = socket.gethostname()
         self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
         self.run_info["gpu"] = ""
+        self.run_info["reference_data_folder"] = reference_data_folder
         self._logFolder = self._setupLoggingForRun(main_file_path,
                                                    currentframe,
                                                    folderName=folderName,
@@ -401,7 +403,8 @@ def adarl_startup( main_file_path : str,
                     run_id : Optional[str] = None,
                     debug : Union[bool, int]  = False,
                     run_comment = "",
-                    use_wandb = True) -> Tuple[str, Session]:
+                    use_wandb = True,
+                    reference_data_folder : Optional[str] = None) -> Tuple[str, Session]:
     global default_session
     # default_session = Session()
     default_session.initialize( main_file_path = main_file_path,
@@ -413,7 +416,8 @@ def adarl_startup( main_file_path : str,
                                 run_id = run_id,
                                 debug = debug,
                                 run_comment = run_comment,
-                                use_wandb = use_wandb)
+                                use_wandb = use_wandb,
+                                reference_data_folder = reference_data_folder)
     return default_session.log_folder(), default_session
 
 
@@ -442,7 +446,8 @@ def runFunction_wrapper(seed,
                         start_adarl,
                         launch_file_path,
                         debug_level,
-                        use_wandb):
+                        use_wandb,
+                        saved_pkgs_folder):
     try:
         seedFolder = folderName+f"/seed_{seed}"
         experiment_name = os.path.basename(launch_file_path)
@@ -455,7 +460,8 @@ def runFunction_wrapper(seed,
                                         run_id = run_id,
                                         debug = debug_level,
                                         run_comment=run_args["comment"],
-                                        use_wandb=use_wandb)
+                                        use_wandb=use_wandb,
+                                        reference_data_folder=saved_pkgs_folder)
 
         ggLog.info(f"Starting run with seed {seed}:\n"
                    f"Out folder = {seedFolder}\n"
@@ -561,12 +567,13 @@ def launchRun(runFunction,
             tries += 1
             if tries > 10:
                 raise e
-    os.makedirs(folderName+"/pkgs", exist_ok=True)
+    saved_pkgs_folder = folderName+"/pkgs"
+    os.makedirs(saved_pkgs_folder, exist_ok=True)
     for pkg in pkgs_to_save:
         pkg_path = pkgutil_get_path(pkg,"")
         if pkg_path is None:
             raise RuntimeError(f"Failed to get path for package {pkg}")
-        shutil.copytree(pkg_path, folderName+"/pkgs/"+pkg,
+        shutil.copytree(pkg_path, saved_pkgs_folder+"/"+pkg,
                         ignore=shutil.ignore_patterns("__pycache__","*.pyc","*.pyo","*.dist-info","*.egg-info"))
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
@@ -586,7 +593,9 @@ def launchRun(runFunction,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
                   "debug_level" : debug_level,
-                  "use_wandb" : use_wandb} for seed in seeds]
+                  "use_wandb" : use_wandb,
+                  "saved_pkgs_folder" : saved_pkgs_folder
+                  } for seed in seeds]
     else:
         resumeFolder = os.path.abspath(resumeFolder)
         ggLog.info(f"Resuming run from folder {resumeFolder}")
@@ -606,7 +615,8 @@ def launchRun(runFunction,
                   "start_adarl" : start_adarl,
                   "launch_file_path" : launchFilePath,
                   "debug_level" : debug_level,
-                  "use_wandb" : use_wandb}
+                  "use_wandb" : use_wandb,
+                  "saved_pkgs_folder" : saved_pkgs_folder}
                     for seed in detected_args]
 
     ggLog.info(f"Will launch {argss} using {num_processes} processes") 

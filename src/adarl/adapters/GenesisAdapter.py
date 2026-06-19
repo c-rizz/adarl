@@ -20,10 +20,15 @@ from adarl.utils.utils import th_quat_rotate, th_quat_conj
 import adarl.utils.dbg.ggLog as ggLog
 
 
-def ensure_genesis_initialized(th_device: th.device, logging_level: str = "warning"):
+def ensure_genesis_initialized(th_device: th.device, logging_level: str = "info"):
     """Initialize genesis if it was not initialized yet. Genesis only supports being initialized once per process."""
     if getattr(gs, "_initialized", False):
         return
+    # Genesis reads QD_NUM_THREADS to set the number of kernel-compilation (and CPU) threads. Default it to
+    # half the available cores to speed up the one-time kernel compilation, without monopolizing the machine.
+    # An explicit QD_NUM_THREADS set by the user is respected.
+    if os.environ.get("QD_NUM_THREADS") is None:
+        os.environ["QD_NUM_THREADS"] = str(max(1, (os.cpu_count() or 2) // 2))
     gs.init(backend=gs.gpu if th_device.type == "cuda" else gs.cpu, logging_level=logging_level)
 
 
@@ -178,19 +183,25 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  enable_rendering: bool = False,
                  use_raytracer: bool = False,
                  cameras: Sequence[GenesisCameraDef] = (),
+                 render_envs_idx: Sequence[int] | None = None,
                  add_ground: bool = True,
                  show_gui: bool = False,
                  sim_options_override: dict[str, Any] | None = None,
                  rigid_options_override: dict[str, Any] | None = None,
-                 genesis_logging_level: str = "warning",
-                 log_folder: str = "./"):
+                 genesis_logging_level: str = "info",
+                 enable_model_randomization: bool = True,
+                 log_folder: str = "./",
+                 use_batch_renderer: bool = False):
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
         ensure_genesis_initialized(output_th_device, genesis_logging_level)
         self._sim_step_dt = float(sim_step_dt)
         self._step_length_sec = float(step_length_sec)
         self._enable_rendering = enable_rendering
+        self._use_batch_renderer = use_batch_renderer
         self._use_raytracer = use_raytracer
         self._camera_defs = list(cameras)
+        self._render_envs_idx_arg = render_envs_idx
+        self._rendered_envs_idx: list[int] = [0]
         self._add_ground = add_ground
         self._show_gui = show_gui
         self._sim_options_override = dict(sim_options_override) if sim_options_override else {}
@@ -222,6 +233,14 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._prev_dofs_vel: th.Tensor | None = None
         self._dofs_acc: th.Tensor | None = None
         self._impulses: _ImpulsesSpec | None = None
+        self._warned_nonbatched_render = False
+        self._enable_model_randomization = enable_model_randomization
+        self._orig_link_mass: th.Tensor | None = None
+        self._orig_dof_armature: th.Tensor | None = None
+        self._orig_dof_damping: th.Tensor | None = None
+        self._orig_dof_frictionloss: th.Tensor | None = None
+        self._link_geoms_idx: dict[int, list[int]] = {}
+        self._alter_applied: dict[str, list[int]] = {}
         self._reset_step_stats()
 
     def _rigid_solver(self):
@@ -241,13 +260,25 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if camera_defs is not None:
             self._camera_defs = list(camera_defs)
         if self._enable_rendering:
-            renderer = gs.options.renderers.BatchRenderer(use_rasterizer=not self._use_raytracer)
+            if self._use_batch_renderer:
+                ggLog.info(f"GenesisAdapter: using BatchRenderer with use_rasterizer={not self._use_raytracer}")
+                renderer = gs.options.renderers.BatchRenderer(use_rasterizer=not self._use_raytracer)
+            else:
+                ggLog.info("GenesisAdapter: using Rasterizer")
+                renderer = gs.options.renderers.Rasterizer()
         else:
-            renderer = gs.options.renderers.Rasterizer()
+            renderer = None
+        if self._render_envs_idx_arg is not None:
+            self._rendered_envs_idx = [int(i) for i in self._render_envs_idx_arg if 0 <= int(i) < self._vec_size]
+            if len(self._rendered_envs_idx) == 0:
+                self._rendered_envs_idx = [0]
+        else:
+            self._rendered_envs_idx = [0]
         self._scene = gs.Scene(sim_options=gs.options.SimOptions(dt=self._sim_step_dt,
                                                                  substeps=1,
                                                                  **self._sim_options_override),
-                               rigid_options=gs.options.RigidOptions(**self._rigid_options_override),
+                               rigid_options=gs.options.RigidOptions(**self._build_rigid_options()),
+                               vis_options=self._build_vis_options(),
                                renderer=renderer,
                                show_viewer=self._show_gui,
                                show_FPS=False)
@@ -326,6 +357,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._dofs_acc = th.zeros_like(all_vels)
         self._gravity_vec_w = self._gravity_vec_w.to(device=self._sim_dev)
 
+        self._cache_original_model_params()
+
         self._camera_links = {}
         for src, entry in cams_to_finalize:
             self._finalize_camera(src, entry)
@@ -375,8 +408,12 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             entry.offset_T = th.as_tensor(spec.T_body_cam, device=self._sim_dev, dtype=th.float32)
             entry.link_pose_xyz_xyzw = _T_np_to_pose7_th(spec.T_world_body, self._sim_dev).expand(self._vec_size, 7).clone()
             if entry.cam is not None:
+                # Pass a single (4,4): genesis broadcasts it to all rendered envs when the camera is
+                # batched, and assigns it directly when it is not (e.g. rasterizer / non-batched
+                # fallback). A (vec_size,4,4) breaks the non-batched case and the batched-subset case,
+                # where the expected count is len(rendered_envs_idx), not vec_size.
                 T_world_cam = th.as_tensor(spec.T_world_body @ spec.T_body_cam, device=self._sim_dev, dtype=th.float32)
-                entry.cam.set_pose(transform=T_world_cam.expand(self._vec_size, 4, 4).contiguous())
+                entry.cam.set_pose(transform=T_world_cam.contiguous())
                 entry.dirty = True
         if entry.virtual_link is not None:
             self._camera_links[entry.virtual_link] = entry
@@ -719,8 +756,15 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         envs_idx = vec_mask.nonzero().flatten()
         return envs_idx, values[envs_idx.to(values.device)]
 
+    @staticmethod
+    def _mask_selects_none(vec_mask: th.Tensor | None) -> bool:
+        """True if vec_mask is given but selects no environment, so a masked write should be a no-op."""
+        return vec_mask is not None and not bool(vec_mask.any())
+
     @override
     def setJointsStateDirect(self, joint_names, joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
+        if self._mask_selects_none(vec_mask):
+            return
         ids = self._to_joint_ids(joint_names)
         if joint_states_pve.dim() != 3 or joint_states_pve.shape[0] != self._vec_size or \
            joint_states_pve.shape[1] != ids.shape[0] or joint_states_pve.shape[2] != 3:
@@ -775,12 +819,17 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             else:
                 entry.link_pose_xyz_xyzw[mask] = pose[mask]
             if entry.cam is not None:
-                T_link = _pose7_to_T_th(entry.link_pose_xyz_xyzw)
+                # The ui/eval camera pose is shared across envs, so set a single (4,4) from env 0:
+                # genesis broadcasts it to the rendered envs when batched, or assigns it directly when
+                # not. Passing (vec_size,4,4) would mismatch the rendered-env count.
+                T_link = _pose7_to_T_th(entry.link_pose_xyz_xyzw[0])
                 entry.cam.set_pose(transform=(T_link @ entry.offset_T).contiguous())
                 entry.dirty = True
 
     @override
     def setLinksStateDirect(self, link_names, link_states_pose_vel: th.Tensor, vec_mask: th.Tensor | None = None):
+        if self._mask_selects_none(vec_mask):
+            return
         if isinstance(link_names, (th.Tensor, np.ndarray)):
             link_names = [self._linkidx2lname[int(i)] for i in link_names]
         names, cam_pos, phys_pos = self._split_camera_links(link_names)
@@ -812,7 +861,7 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         rs.set_base_links_quat(vals[:, :, 3:7][:, :, [3, 0, 1, 2]], links_idx=info.links_idx, envs_idx=envs_idx)
         if len(info.free_pos) > 0:
             free_vels = vals[:, info.free_pos, 7:13]  # (sel, n_free, 6), [lin,ang] matching genesis free-joint dof order
-            rs.set_dofs_velocity(free_vels.reshape(free_vels.shape[0], -1), dofs_idx=info.free_dofs_idx, envs_idx=envs_idx)
+            rs.set_dofs_velocity(free_vels.reshape(free_vels.shape[0], len(info.free_dofs_idx)), dofs_idx=info.free_dofs_idx, envs_idx=envs_idx)
 
     # =================================================================================
     #                                     control
@@ -820,6 +869,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def setJointsEffortCommand(self, joint_names, efforts: th.Tensor, vec_mask: th.Tensor | None = None) -> None:
+        if self._mask_selects_none(vec_mask):
+            return
         ids = self._to_joint_ids(joint_names)
         if efforts.dim() != 2 or efforts.shape[0] != self._vec_size or efforts.shape[1] != ids.shape[0]:
             raise ValueError(f"efforts has shape {tuple(efforts.shape)}, expected ({self._vec_size},{ids.shape[0]})")
@@ -865,6 +916,200 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         active_f = active.unsqueeze(-1)
         rs.apply_links_external_force(spec.force_torque_xyzxyz[:, :, 0:3] * active_f, links_idx=spec.links_idx, ref="link_com")
         rs.apply_links_external_torque(spec.force_torque_xyzxyz[:, :, 3:6] * active_f, links_idx=spec.links_idx, ref="link_com")
+
+    # =================================================================================
+    #                       model alteration (domain randomization)
+    # =================================================================================
+
+    def _build_rigid_options(self) -> dict:
+        """Rigid options for the scene, enabling per-environment batched model info when model
+        randomization is on (required for alter_model). Explicit overrides win."""
+        opts = dict(self._rigid_options_override)
+        if self._enable_model_randomization:
+            opts.setdefault("batch_links_info", True)
+            opts.setdefault("batch_dofs_info", True)
+        return opts
+
+    def _build_vis_options(self):
+        """Visualization options. When rendering, env_separate_rigid makes each environment render in
+        isolation: otherwise the renderer draws every env into a single image and, with the default zero
+        env spacing, they overlap into a pile of stacked robots. rendered_envs_idx limits how many envs
+        are rendered (separating every env is expensive), defaulting to env 0 (what the ui/eval camera uses)."""
+        if self._enable_rendering:
+            return gs.options.vis.VisOptions(env_separate_rigid=True, rendered_envs_idx=self._rendered_envs_idx)
+        return gs.options.vis.VisOptions()
+
+    def _cache_original_model_params(self):
+        """Cache the nominal per-link / per-dof model parameters right after build, so model
+        alterations can be expressed relative to them and reverted."""
+        rs = self._rigid_solver()
+        def baseline(t: th.Tensor) -> th.Tensor:
+            return (t[0] if t.dim() > 1 else t).to(self._sim_dev).clone()
+        self._orig_link_mass = baseline(rs.get_links_inertial_mass())
+        self._orig_dof_armature = baseline(rs.get_dofs_armature())
+        self._orig_dof_damping = baseline(rs.get_dofs_damping())
+        self._orig_dof_frictionloss = baseline(rs.get_dofs_frictionloss())
+        self._link_geoms_idx = {int(l.idx): [int(g.idx) for g in l.geoms] for l in self._links.values()}
+        self._alter_applied = {}
+
+    @staticmethod
+    def _ids_to_list(ids) -> list[int]:
+        if isinstance(ids, th.Tensor):
+            return ids.flatten().tolist()
+        return [int(i) for i in ids]
+
+    @staticmethod
+    def _joint_ids_to_dofs(ids) -> list[int]:
+        t = ids if isinstance(ids, th.Tensor) else th.as_tensor(ids)
+        if t.dim() == 2:  # (n,2) -> columns are (dof_idx, q_idx)
+            return t[:, 0].flatten().tolist()
+        return t.flatten().tolist()
+
+    def _link_cols_to_geoms(self, link_ids: list[int]) -> tuple[list[int], list[int]]:
+        """Expand a list of link ids into the flat list of their geom ids, plus, for each geom, the
+        index of the link it came from (so a per-link value can be broadcast to its geoms)."""
+        geom_ids: list[int] = []
+        cols: list[int] = []
+        for col, lid in enumerate(link_ids):
+            for g in self._link_geoms_idx.get(int(lid), []):
+                geom_ids.append(g)
+                cols.append(col)
+        return geom_ids, cols
+
+    def _alter_ratio_rows(self, ratios: th.Tensor, envs_idx: th.Tensor | None) -> th.Tensor:
+        r = ratios.to(device=self._sim_dev, dtype=th.float32)
+        return r if envs_idx is None else r[envs_idx]
+
+    def _revert_alterations(self, envs_idx: th.Tensor | None, n_sel: int, keep: dict[str, list[int]] | None = None):
+        """Revert the previously-applied alterations (for the selected environments) back to the
+        nominal model parameters. Ids listed in keep[category] are skipped: the caller is about to
+        overwrite them with fresh absolute values anyway (alterations are always computed from the
+        cached originals, not compounded), so reverting them first is redundant. This matters a lot
+        for armature, whose setter triggers an expensive mass-matrix recompute in genesis."""
+        if not self._alter_applied:
+            return
+        rs = self._rigid_solver()
+        prev = self._alter_applied
+        keep = keep or {}
+        def leftover(category: str) -> list[int]:
+            kept = set(keep.get(category, ()))
+            return [i for i in prev.get(category, ()) if i not in kept]
+        ids = leftover("mass")
+        if ids:
+            orig = self._orig_link_mass[th.as_tensor(ids, device=self._sim_dev)]
+            rs.set_links_inertial_mass(orig.view(1, -1).expand(n_sel, -1).contiguous(), links_idx=ids, envs_idx=envs_idx)
+        ids = leftover("friction")
+        if ids:
+            geom_ids, _ = self._link_cols_to_geoms(ids)
+            if len(geom_ids) > 0:
+                rs.set_geoms_friction_ratio(th.ones((n_sel, len(geom_ids)), device=self._sim_dev), geoms_idx=geom_ids, envs_idx=envs_idx)
+        for key, orig_arr, setter in (("armature", self._orig_dof_armature, rs.set_dofs_armature),
+                                      ("damping", self._orig_dof_damping, rs.set_dofs_damping),
+                                      ("frictionloss", self._orig_dof_frictionloss, rs.set_dofs_frictionloss)):
+            ids = leftover(key)
+            if ids:
+                orig = orig_arr[th.as_tensor(ids, device=self._sim_dev)]
+                setter(orig.view(1, -1).expand(n_sel, -1).contiguous(), dofs_idx=ids, envs_idx=envs_idx)
+        ids = leftover("com")
+        if ids:
+            rs.set_links_COM_shift(th.zeros((n_sel, len(ids), 3), device=self._sim_dev), links_idx=ids, envs_idx=envs_idx)
+        self._alter_applied = {}
+
+    def alter_model(self,
+                    link_masses: tuple[Any, th.Tensor] | None = None,
+                    link_frictions: tuple[Any, th.Tensor] | None = None,
+                    joint_armature_ratios: tuple[Any, th.Tensor] | None = None,
+                    joint_damping_ratios: tuple[Any, th.Tensor] | None = None,
+                    joint_frictionloss_ratios: tuple[Any, th.Tensor] | None = None,
+                    com_position_diffs: tuple[Any, th.Tensor] | None = None,
+                    com_quatxyzw_diffs: tuple[Any, th.Tensor] | None = None,
+                    vec_mask: th.Tensor | None = None,
+                    reset_first: bool = True):
+        """Per-environment domain randomization of model parameters, mirroring MjxAdapter.alter_model.
+
+        Each argument is a tuple (ids, values):
+        - link_masses: (link_ids, ratios of shape (vec_size, n)) -> new mass = original_mass * (1 + ratio)
+        - link_frictions: (link_ids, ratios (vec_size, n)) -> new friction = base_friction * (1 + ratio)
+        - joint_armature_ratios / joint_damping_ratios / joint_frictionloss_ratios:
+            (joint_ids, ratios (vec_size, n)) -> new = original * (1 + ratio)
+        - com_position_diffs: (link_ids, diffs (vec_size, n, 3)) -> CoM shifted by diff (meters)
+        link_ids come from get_links_ids(), joint_ids from get_joints_ids().
+        vec_mask (vec_size,) selects which environments to alter (None = all). reset_first reverts the
+        previous alteration before applying the new one, so repeated calls do not compound.
+
+        com_quatxyzw_diffs (CoM orientation) is not supported by genesis and must be None.
+        Requires the adapter to have been created with enable_model_randomization=True.
+        """
+        if com_quatxyzw_diffs is not None:
+            raise NotImplementedError("GenesisAdapter.alter_model does not support com_quatxyzw_diffs "
+                                      "(genesis exposes no inertial-frame orientation setter).")
+        if not self._enable_model_randomization:
+            raise RuntimeError("alter_model requires enable_model_randomization=True at adapter construction "
+                               "(it enables genesis per-environment batched model info).")
+        if self._scene is None:
+            raise RuntimeError("Scenario is not built. Call build_scenario() first.")
+        rs = self._rigid_solver()
+        envs_idx = None
+        if vec_mask is not None and not bool(vec_mask.all()):
+            envs_idx = vec_mask.to(self._sim_dev).nonzero().flatten()
+        n_sel = self._vec_size if envs_idx is None else int(envs_idx.shape[0])
+        if n_sel == 0:
+            return
+
+        # Resolve all target ids up front so the revert can skip the ids being re-applied this call.
+        new_ids: dict[str, list[int]] = {}
+        if link_masses is not None:
+            new_ids["mass"] = self._ids_to_list(link_masses[0])
+        if link_frictions is not None:
+            new_ids["friction"] = self._ids_to_list(link_frictions[0])
+        if joint_armature_ratios is not None:
+            new_ids["armature"] = self._joint_ids_to_dofs(joint_armature_ratios[0])
+        if joint_damping_ratios is not None:
+            new_ids["damping"] = self._joint_ids_to_dofs(joint_damping_ratios[0])
+        if joint_frictionloss_ratios is not None:
+            new_ids["frictionloss"] = self._joint_ids_to_dofs(joint_frictionloss_ratios[0])
+        if com_position_diffs is not None:
+            new_ids["com"] = self._ids_to_list(com_position_diffs[0])
+
+        if reset_first:
+            self._revert_alterations(envs_idx, n_sel, keep=new_ids)
+
+        if link_masses is not None:
+            link_ids = new_ids["mass"]
+            ratio = self._alter_ratio_rows(link_masses[1], envs_idx)
+            orig = self._orig_link_mass[th.as_tensor(link_ids, device=self._sim_dev)]
+            new_mass = (orig.view(1, -1) * (1.0 + ratio)).clamp(min=1e-4)
+            rs.set_links_inertial_mass(new_mass.contiguous(), links_idx=link_ids, envs_idx=envs_idx)
+
+        if link_frictions is not None:
+            link_ids = new_ids["friction"]
+            ratio = self._alter_ratio_rows(link_frictions[1], envs_idx)
+            if ratio.dim() == 3:
+                # (n_sel, n_links, 3) slide/spin/roll ratios (mujoco-style); genesis friction is a
+                # single Coulomb coefficient, so only the sliding-friction ratio is applied.
+                ratio = ratio[:, :, 0]
+            geom_ids, cols = self._link_cols_to_geoms(link_ids)
+            if len(geom_ids) > 0:
+                friction_ratio = (1.0 + ratio)[:, cols].clamp(min=0.0)
+                rs.set_geoms_friction_ratio(friction_ratio.contiguous(), geoms_idx=geom_ids, envs_idx=envs_idx)
+
+        for key, arg, orig_arr, setter in (("armature", joint_armature_ratios, self._orig_dof_armature, rs.set_dofs_armature),
+                                           ("damping", joint_damping_ratios, self._orig_dof_damping, rs.set_dofs_damping),
+                                           ("frictionloss", joint_frictionloss_ratios, self._orig_dof_frictionloss, rs.set_dofs_frictionloss)):
+            if arg is not None:
+                dof_ids = new_ids[key]
+                ratio = self._alter_ratio_rows(arg[1], envs_idx)
+                orig = orig_arr[th.as_tensor(dof_ids, device=self._sim_dev)]
+                new_vals = (orig.view(1, -1) * (1.0 + ratio)).clamp(min=1e-4)
+                setter(new_vals.contiguous(), dofs_idx=dof_ids, envs_idx=envs_idx)
+
+        if com_position_diffs is not None:
+            link_ids = new_ids["com"]
+            diff = com_position_diffs[1].to(device=self._sim_dev, dtype=th.float32)
+            diff = diff if envs_idx is None else diff[envs_idx]
+            rs.set_links_COM_shift(diff.contiguous(), links_idx=link_ids, envs_idx=envs_idx)
+
+        self._alter_applied = new_ids
 
     def _apply_commands(self):
         """Hook called before every simulation substep. Genesis control targets are persistent,
@@ -1025,10 +1270,35 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 entry.cam.move_to_attach()
             rgb_img, depth_img, _, _ = entry.cam.render(rgb=not depth, depth=depth, force_render=entry.dirty)
             entry.dirty = False
-            img = depth_img.unsqueeze(-1) if depth else rgb_img  # (vec_size, h, w, c)
-            if sel_idx is not None:
-                img = img[sel_idx.to(img.device)]
-            img = img.to(device=out_th_device, non_blocking=out_th_device.type == "cuda")
+            # cam.render returns one image per rendered env: a batched torch tensor, or a single-env numpy
+            # image (h,w,c)/(h,w) when only one env is rendered. Its rows correspond to self._rendered_envs_idx.
+            raw = depth_img if depth else rgb_img
+            if isinstance(raw, np.ndarray):
+                raw = np.ascontiguousarray(raw)  # genesis rasterizer returns flipped buffers (negative strides)
+            img = th.as_tensor(raw, device=out_th_device)
+            if depth and img.shape[-1] != 1:
+                img = img.unsqueeze(-1)        # (...,h,w) -> (...,h,w,1)
+            if img.dim() == 3:
+                img = img.unsqueeze(0)         # single image (h,w,c) -> (1,h,w,c)
+            # Map each rendered env's image to its requested-env slot; fill envs that are not rendered with
+            # NaN (float) / 0 (uint8 can't hold NaN) rather than duplicating another env's frame as theirs.
+            rendered = th.as_tensor(self._rendered_envs_idx, device=img.device, dtype=th.long)
+            n_have = min(img.shape[0], rendered.shape[0])
+            selected = th.arange(self._vec_size, device=img.device) if sel_idx is None else sel_idx.to(img.device)
+            row_of_env = th.full((self._vec_size,), -1, dtype=th.long, device=img.device)
+            row_of_env[rendered[:n_have]] = th.arange(n_have, device=img.device)
+            rows = row_of_env[selected]
+            valid = rows >= 0
+            fill = float("nan") if img.dtype.is_floating_point else 0
+            full = th.full((selected.shape[0], *img.shape[1:]), fill, dtype=img.dtype, device=img.device)
+            if bool(valid.any()):
+                full[valid] = img[rows[valid]]
+            if (not bool(valid.all())) and not self._warned_nonbatched_render:
+                self._warned_nonbatched_render = True
+                ggLog.warn(f"GenesisAdapter: camera '{cam_name}' renders only envs {self._rendered_envs_idx}; other "
+                           f"requested envs are filled with {'NaN' if img.dtype.is_floating_point else '0 (uint8 cannot hold NaN)'}. "
+                           f"Pass render_envs_idx to render more (separating every env is expensive).")
+            img = full.contiguous().to(device=out_th_device, non_blocking=out_th_device.type == "cuda")
             if out is not None:
                 out[i].copy_(img)
                 img = out[i]
