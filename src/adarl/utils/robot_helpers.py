@@ -10,11 +10,15 @@ import copy
 from typing import Iterable, TypedDict
 import itertools
 import faulthandler
+import torch as th
+import scipy
+import time
 # from pinocchio.visualize import GepettoVisualizer
 faulthandler.enable()
 from enum import Enum
-from adarl.utils.utils import quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
+from adarl.utils.utils import expand_default_dict, quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
 import tempfile
+import time
 
 def buildModelFromMJCFString(model_string : str):
     with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
@@ -546,3 +550,125 @@ if __name__ == "__main__":
     import cv2
     import time
     cv2.imwrite(f"robot_img{time.time()}.png", img)
+
+
+def find_pose_np(  root_joint : str,
+                homing_body_pose_xyzxyzw : np.ndarray,
+                controlled_joints : Sequence[tuple[str,str]],
+                initial_pose_randomization_ranges : dict[tuple[str,str], float],
+                initial_height_randomization_range : float,
+                limits_minmax : np.ndarray,
+                homing_pos : np.ndarray,
+                noncontrolled_jointpos : dict[tuple[str,str], np.ndarray],
+                robot_model : Robot | str,
+                is_floating_base : bool,
+                rng_seed,
+                excluded_collision_pairs):
+    t = time.monotonic()
+    if isinstance(robot_model, str):
+        robot_model = Robot(robot_model)
+        robot_model.set_collision_pairs("all")
+        robot_model.remove_collision_pairs(excluded_collision_pairs)
+    t1 = time.monotonic()
+    found = False
+    coll_counter = {}
+    samples = 1000
+    jp_dict = noncontrolled_jointpos
+    rng = np.random.default_rng(seed=rng_seed)
+    truncnorm = scipy.stats.truncnorm(-1, 1, loc=0, scale=1/3)
+    seen_collision_pairs = {}
+    ranges = np.array([initial_pose_randomization_ranges[jn] for jn in controlled_joints], dtype=np.float32)
+    for i in range(samples):
+        norm_jpos = truncnorm.rvs(size=(len(controlled_joints),), random_state=rng).astype(np.float32)*ranges
+        # norm_jpos = (rng.random(size=(len(controlled_joints),), dtype=np.float32)*2-1)*initial_pose_randomization_range
+        # initial_joint_pose = unnormalize(((npos)),limits_minmax[0],limits_minmax[1])                
+        initial_joint_pose = ((norm_jpos>=0)*((limits_minmax[1]-homing_pos)*norm_jpos + homing_pos) +
+                                (norm_jpos< 0)*((homing_pos-limits_minmax[0])*norm_jpos + homing_pos))
+        jp_dict.update({jn:initial_joint_pose[i] for i,jn in enumerate(controlled_joints)})
+        robot_model.set_joint_pose_by_names({jn[1]:jp for jn,jp in jp_dict.items()})
+        if is_floating_base:
+            norm_height = (rng.random(size=(1,), dtype=np.float32)*2-1)*initial_height_randomization_range
+            initial_body_pose_xyzxyzw = homing_body_pose_xyzxyzw.copy()
+            initial_body_pose_xyzxyzw[2] += norm_height[0]
+            robot_model.set_joint_pose_by_names({root_joint:initial_body_pose_xyzxyzw})
+        has_collision, collision_pair = robot_model.has_collisions() # Returns True if there is any collision, and the first collision pair found (or None if no collision)
+        if not has_collision:
+            found = True
+            initial_jpose = initial_joint_pose
+            break
+        seen_collision_pairs[collision_pair] = seen_collision_pairs.get(collision_pair, 0) + 1
+        # collisions = robot_model.get_all_collisions()
+        # # all_link_poses = self._robot_model.get_frame_poses_xyzxyzw() #frames=self._robot_model.get_tree_frame_names_under_joint(self._configuration.robot_root_joint))
+        # # pprint.pprint(all_link_poses)
+        # # all_links_z = np.stack([pose[2] for pose in all_link_poses.values()])
+        # coll_counter.update({ln:coll_counter.get(ln,0)+1 for ln in collisions})                    
+        # if len(collisions) == 0: # and np.all(all_links_z>0):
+        #     # ggLog.info(f"joint_pose = {self._robot_model.get_joint_pose()}")
+        #     # ggLog.info(f"selected all_link_poses = {all_link_poses}")
+        #     found = True
+        #     initial_jpose = initial_joint_pose
+        #     break
+    t2 = time.monotonic()
+    if not found:
+        initial_jpose = homing_pos
+        seen_collision_pairs = {k:v/samples for k,v in seen_collision_pairs.items()}
+        print(  f"Failed to find initial joint configuration."
+                f" last collision seen = {collision_pair}\n"
+                f" filtered collisions = {excluded_collision_pairs}\n"
+                f" coll_ratio={seen_collision_pairs}")
+    # ggLog.info(f"Model creation took {t1-t}s, pose search {t2-t1}s")
+    return initial_jpose
+
+
+def find_poses(root_joint : str,
+                homing_body_pose_xyzxyzw : np.ndarray,
+                controlled_joints : Sequence[tuple[str,str]],
+                initial_pose_randomization_range : float | dict[tuple[str,str] | str, float],
+                initial_height_randomization_range : float,
+                limits_minmax : np.ndarray,
+                homing_pos : np.ndarray,
+                noncontrolled_jointpos : dict[tuple[str,str], np.ndarray],
+                robot_model : Robot,
+                is_floating_base : bool,
+                seed : int,
+                excluded_collision_pairs : set[tuple[str,str]],
+                num_envs : int,
+                ):
+    seeds = np.random.default_rng(seed).integers(0, 1_000_000_000_000, size=(num_envs,))
+    # seeds = [int(th.randint(low=0, high=1_000_000_000_000, size=(1,), generator=rng, device=homing_pos.device).item()) for _ in range(num_envs)]
+    # with adarl.utils.mp_helper.get_context().Pool() as p:
+    #     r = p.starmap(find_pose_np, [[ root_joint,
+    #                             homing_body_pose_xyzxyzw,
+    #                             controlled_joints,
+    #                             initial_pose_randomization_range,
+    #                             limits_np,
+    #                             homing_np,
+    #                             noncontrolled_jointpos_np,
+    #                             robot_model._urdf_string,
+    #                             is_floating_base,
+    #                             seeds[i],
+    #                             excluded_collision_pairs]
+    #                          for i in range(num_envs)])
+    #     return th.as_tensor(np.stack(r))
+
+    original_collision_pairs = robot_model.get_enabled_collision_pairs()
+    robot_model.set_collision_pairs("all")
+    robot_model.remove_collision_pairs(excluded_collision_pairs)
+    joint_ranges = expand_default_dict(initial_pose_randomization_range, controlled_joints)
+    r = np.zeros(shape=(num_envs, len(controlled_joints)), dtype=np.float32)
+    for v in range(num_envs): # TODO: this may be sloooooow, can I parallelize it?
+        r[v] = find_pose_np(    root_joint,
+                                homing_body_pose_xyzxyzw,
+                                controlled_joints,
+                                joint_ranges,
+                                initial_height_randomization_range,
+                                limits_minmax,
+                                homing_pos,
+                                noncontrolled_jointpos,
+                                robot_model,
+                                is_floating_base,
+                                seeds[v],
+                                excluded_collision_pairs)
+    robot_model.set_collision_pairs(original_collision_pairs)
+
+    return th.as_tensor(r)

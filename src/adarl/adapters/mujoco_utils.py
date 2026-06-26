@@ -397,17 +397,77 @@ def get_data_into(
 model_element_separator = "#"
 
 
-def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : bool, uneven_ground : bool, discardvisual : bool, log_folder : str | None,
+def aggregate_models(models : list[ModelSpawnDef],
+                     add_ground : bool,
+                     add_sky : bool,
+                     discardvisual : bool,
+                     log_folder : str | None,
+                     uneven_ground : bool = False,
                      geom_overrides : dict[str, dict[str, Any]] | None = None,
-                     contact_pairs : list[tuple[str, str]] | None = None):
-    """Build and setup the environment scenario. Should be called by the environment before startup().
+                     contact_pairs : list[tuple[str, str]] | None = None,
+                     opt_preset : str | None = None,
+                     opt_overrides : dict[str, Any] | None = None,
+                     revolute_dof_armature_override : float | None = None,
+                     revolute_dof_damping_override : float | None = None,
+                     revolute_dof_frictionloss_override : float | None = None,
+                     safe_revolute_dof_armature = 0.01,
+                     safe_revolute_dof_damping = 1.0,
+                     safe_revolute_dof_frictionloss = 0.2):
+    
+    """Aggregates multiple models into a single MjSpec and MjModel.
+
+    Merges all the provided models into a single MjSpec, optionally adds ground/sky, applies
+    overrides, and compiles the result into an MjModel.
 
     Parameters
     ----------
+    models : list[ModelSpawnDef]
+        The models to merge into the scenario. Each is attached to the merged spec, with its
+        elements prefixed by `<modelname>#` (model_element_separator).
+    add_ground : bool
+        If True, add a ground plane geom (named "floor"), a checker ground material and a
+        directional light to the scenario.
+    add_sky : bool
+        If True, add a gradient skybox texture to the scenario.
+    uneven_ground : bool
+        If True, replace the flat ground plane with a heightfield ("uneven_ground") for
+        uneven terrain. Ignored unless add_ground/add_sky trigger ground generation.
+    discardvisual : bool
+        If True, visual-only geoms are discarded at compile time (passed through to each
+        model's compiler options). Discarded geoms cannot be targeted by geom_overrides.
+    log_folder : str | None
+        If not None, the aggregated model is dumped as XML to `<log_folder>/aggregated_model.xml`.
     geom_overrides : dict[str, dict[str, Any]] | None
         Optional per-geom field overrides applied to the merged spec before compile.
         Maps geom name -> {field_name: value}, e.g. {"robot#foot": {"solimp": [0.9, 0.95, 0.001, 0.5, 2]}}.
         Note that attached geoms are prefixed with `<modelname>#` (model_element_separator).
+    contact_pairs : list[tuple[str, str]] | None
+        Optional list of (body_a, body_b) body-name pairs to monitor for contact. One
+        mjSENS_CONTACT sensor named `__pair_<i>__` is injected per pair (warp backend only;
+        the JAX backend reads contacts directly). Body names must exist in the merged spec.
+    opt_preset : str | None
+        Name of a solver/integrator preset to apply to the spec options (see
+        apply_opt_preset_to_spec / _apply_opt_preset_to_opt). None leaves the MuJoCo defaults.
+    opt_overrides : dict[str, Any] | None
+        Optional per-field overrides for the spec options, applied on top of opt_preset.
+    revolute_dof_armature_override : float | None
+        If not None, force this armature on every hinge-joint DOF (see apply_dof_overrides_to_spec).
+    revolute_dof_damping_override : float | None
+        If not None, force this damping on every hinge-joint DOF.
+    revolute_dof_frictionloss_override : float | None
+        If not None, force this frictionloss on every hinge-joint DOF.
+    safe_revolute_dof_armature : float
+        Fallback armature applied to any hinge-joint DOF that has zero armature (avoids
+        instability). Used only when the value would otherwise be zero.
+    safe_revolute_dof_damping : float
+        Fallback damping applied to any hinge-joint DOF that has zero damping.
+    safe_revolute_dof_frictionloss : float
+        Fallback frictionloss applied to any hinge-joint DOF that has zero frictionloss.
+
+    Returns
+    -------
+    tuple[mjutils._MjModel, mjutils._MjSpec]
+        The compiled MjModel and the MjSpec it was compiled from.
     """
     ggLog.info(f"MjxAdapter building scenario")
     if add_ground or add_sky:
@@ -554,6 +614,14 @@ def aggregate_models(models : list[ModelSpawnDef], add_ground : bool, add_sky : 
 
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
+    big_speck = apply_opt_preset_to_spec(big_speck, preset_name=opt_preset, opt_override=opt_overrides)
+    big_speck = apply_dof_overrides_to_spec(big_speck, 
+                                            revolute_dof_armature_override,
+                                            revolute_dof_damping_override,
+                                            revolute_dof_frictionloss_override,
+                                            safe_revolute_dof_armature,
+                                            safe_revolute_dof_damping,
+                                            safe_revolute_dof_frictionloss)
     mj_model = big_speck.compile()
     if log_folder is not None:
         with open(log_folder+"/aggregated_model.xml", "w") as text_file:
@@ -591,6 +659,42 @@ def apply_dof_overrides(mj_model : mjutils._MjModel,
                 ggLog.info(f"Overriding revolute dof {dof_id} damping to {revolute_dof_damping_override} (was {mj_model.dof_damping[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
                 mj_model.dof_damping[dof_id] = revolute_dof_damping_override
     return mj_model
+
+def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
+                                revolute_dof_armature_override : float | None = None,
+                                revolute_dof_damping_override : float | None = None,
+                                revolute_dof_frictionloss_override : float | None = None,
+                                safe_revolute_dof_armature = 0.01,
+                                safe_revolute_dof_damping = 1.0,
+                                safe_revolute_dof_frictionloss = 0.2):
+    """Same as apply_dof_overrides, but operates on an (uncompiled) MjSpec instead of a compiled MjModel.
+
+    A hinge joint has exactly one DOF, so the spec joint's scalar armature/damping/frictionloss
+    fields correspond directly to the per-DOF fields of the compiled model.
+    """
+    for joint in spec.joints:
+        if joint.type == mjutils._mjtJoint.mjJNT_HINGE:
+            if joint.armature == 0:
+                ggLog.warn(f"Revolute joint '{joint.name}' has zero armature. Setting it to {safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                joint.armature = safe_revolute_dof_armature
+            if revolute_dof_armature_override is not None:
+                ggLog.info(f"Overriding revolute joint '{joint.name}' armature to {revolute_dof_armature_override} (was {joint.armature}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                joint.armature = revolute_dof_armature_override
+
+            if joint.frictionloss == 0:
+                ggLog.warn(f"Revolute joint '{joint.name}' has zero frictionloss. Setting it to {safe_revolute_dof_frictionloss}.")
+                joint.frictionloss = safe_revolute_dof_frictionloss
+            if revolute_dof_frictionloss_override is not None:
+                ggLog.info(f"Overriding revolute joint '{joint.name}' frictionloss to {revolute_dof_frictionloss_override} (was {joint.frictionloss}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
+                joint.frictionloss = revolute_dof_frictionloss_override
+
+            if joint.damping == 0:
+                ggLog.warn(f"Revolute joint '{joint.name}' has zero damping. Setting it to {safe_revolute_dof_damping}.")
+                joint.damping = safe_revolute_dof_damping
+            if revolute_dof_damping_override is not None:
+                ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {revolute_dof_damping_override} (was {joint.damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                joint.damping = revolute_dof_damping_override
+    return spec
 
 def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[str,Any] | None,
                              opt_override_enableflags : dict[str,bool] | None = None) -> None:

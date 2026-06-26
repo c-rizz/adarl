@@ -75,8 +75,9 @@ ml_collections
 ml_dtypes
 mpmath
 msgpack
-mujoco @ https://github.com/c-rizz/mujoco/releases/download/3.6.0-mesh-reimport-fix/mujoco-3.6.0-cp313-cp313-linux_x86_64.whl
-mujoco-mjx==3.6.0
+mujoco==3.9.0
+mujoco-mjx==3.9.0
+mujoco-mjx[warp]==3.9.0
 nest-asyncio
 networkx
 nose

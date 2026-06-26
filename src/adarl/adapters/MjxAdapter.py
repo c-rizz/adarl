@@ -953,7 +953,70 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         render_backend : Literal["cpu", "warp"] = "cpu",
                         mjx_impl : Literal["jax","warp"] = "jax",
                         disable_builtin_actuators : bool = True,
-                        geom_overrides : dict[str,Any] | None = None):
+                        geom_overrides : dict[str,Any] | None = None,
+                        warp_nccdmax : int = 10,
+                        warp_nconmax : int = 20):
+        """_summary_
+
+        Parameters
+        ----------
+        vec_size : int
+            _description_
+        enable_rendering : bool
+            _description_
+        jax_device : mjutils.jax_Device
+            _description_
+        output_th_device : th.device
+            _description_
+        sim_step_dt : float, optional
+            _description_, by default 2/1024
+        step_length_sec : float, optional
+            _description_, by default 10/1024
+        realtime_factor : float | None, optional
+            _description_, by default None
+        show_gui : bool, optional
+            _description_, by default False
+        gui_frequency : float, optional
+            _description_, by default 15
+        gui_env_index : int, optional
+            _description_, by default 0
+        add_ground : bool, optional
+            _description_, by default True
+        add_sky : bool, optional
+            _description_, by default True
+        log_freq : int, optional
+            _description_, by default -1
+        opt_preset : Literal[&quot;fast&quot;,&quot;faster&quot;,&quot;fastest&quot;,&quot;mujoco_default&quot;,&quot;slow&quot;,&quot;slower&quot;] | None, optional
+            _description_, by default "fast"
+        log_folder : str, optional
+            _description_, by default "./"
+        record_whole_joint_trajectories : bool, optional
+            _description_, by default False
+        log_freq_joints_trajectories : int, optional
+            _description_, by default 1000
+        safe_revolute_dof_armature : float, optional
+            _description_, by default 0.01
+        revolute_dof_armature_override : _type_, optional
+            _description_, by default None
+        revolute_dof_damping_override : _type_, optional
+            _description_, by default None
+        revolute_dof_frictionloss_override : _type_, optional
+            _description_, by default None
+        opt_override : dict[str,Any] | None, optional
+            _description_, by default None
+        render_backend : Literal[&quot;cpu&quot;, &quot;warp&quot;], optional
+            _description_, by default "cpu"
+        mjx_impl : Literal[&quot;jax&quot;,&quot;warp&quot;], optional
+            _description_, by default "jax"
+        disable_builtin_actuators : bool, optional
+            _description_, by default True
+        geom_overrides : dict[str,Any] | None, optional
+            _description_, by default None
+        warp_nccdmax : int, optional
+            per-world max number of mesh contacts (handled by the CCD collider), by default 10
+        warp_nconmax : int, optional
+            per-world max number of overall contacts, by default 20
+        """
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
         self._disable_builtin_actuators = disable_builtin_actuators
@@ -984,6 +1047,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mjx_impl = mjx_impl
         self._jax_float_dtype = jnp.float32
         self._out_cuda = self._out_th_device.type == "cuda"
+        self._warp_nccdmax = warp_nccdmax
+        self._warp_nconmax = warp_nconmax
 
         self._realtime_factor = realtime_factor
         self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device), # type: ignore
@@ -1176,7 +1241,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 discardvisual=self._discardvisual,
                                 log_folder=log_folder,
                                 geom_overrides=self._geom_overrides,
-                                contact_pairs=contact_pairs)
+                                contact_pairs=contact_pairs,
+                                opt_preset=self._opt_preset,
+                                opt_overrides=self._opt_override,
+                                revolute_dof_armature_override=self._revolute_dof_armature_override,
+                                revolute_dof_damping_override=self._revolute_dof_damping_override,
+                                revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
+                                safe_revolute_dof_armature=self._safe_revolute_dof_armature,
+                                safe_revolute_dof_damping=self._safe_revolute_dof_damping,
+                                safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
@@ -1187,6 +1260,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # jax.profiler.start_server(9999)
         self._uneven_ground = False
         self._mj_model, big_speck = self._aggregate_models(models, scenario_logs_folder)
+        # self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._disable_builtin_actuators:
             self._mj_model.opt.disableactuator = -1 # disable all built-in actuators, we will apply forces/torques directly to the joints in the control step
@@ -1198,17 +1272,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # - https://github.com/google-deepmind/mujoco/discussions/656#discussioncomment-4416347
         # - https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
         # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
-        self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         
-        self._mj_model = apply_dof_overrides(
-                            self._mj_model, 
-                            revolute_dof_armature_override=self._revolute_dof_armature_override,
-                            revolute_dof_damping_override=self._revolute_dof_damping_override,
-                            revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
-                            safe_revolute_dof_armature=self._safe_revolute_dof_armature,
-                            safe_revolute_dof_damping=self._safe_revolute_dof_damping,
-                            safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
+        # self._mj_model = apply_dof_overrides(
+        #                     self._mj_model, 
+        #                     revolute_dof_armature_override=self._revolute_dof_armature_override,
+        #                     revolute_dof_damping_override=self._revolute_dof_damping_override,
+        #                     revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
+        #                     safe_revolute_dof_armature=self._safe_revolute_dof_armature,
+        #                     safe_revolute_dof_damping=self._safe_revolute_dof_damping,
+        #                     safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
         # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         os.makedirs(scenario_logs_folder, exist_ok=True)
         with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
@@ -1309,8 +1382,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_conf.jnt_dofadr = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         if self._mjx_impl == "warp":
+            self._warp_nccdmax = 10 # per-world max number of mesh contacts (handled by the CCD collider)
+            self._warp_nconmax = 20 # per-world max number of overall contacts
             mjx_data = put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
-                                    naconmax = self._vec_size*20, njmax = 100, naccdmax = self._vec_size*10)
+                                    naconmax = self._vec_size*self._warp_nconmax, njmax = 100, naccdmax = self._vec_size*self._warp_nccdmax)
         else:
             mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
         data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data)
