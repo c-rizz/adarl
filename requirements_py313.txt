@@ -14,8 +14,8 @@ cloudpickle
 # cmeel-console-bridge
 # cmeel-octomap
 # cmeel-qhull
-# cmeel-tinyxml
-# cmeel-urdfdom
+# cmeel-tinyxml==10.0.0
+cmeel-urdfdom==4.0.1
 colorlog
 contourpy
 cycler
@@ -75,9 +75,9 @@ ml_collections
 ml_dtypes
 mpmath
 msgpack
-mujoco==3.9.0
-mujoco-mjx==3.9.0
-mujoco-mjx[warp]==3.9.0
+mujoco==3.8.0
+# mujoco-mjx==3.8.0
+mujoco-mjx[warp]==3.8.0
 nest-asyncio
 networkx
 nose

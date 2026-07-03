@@ -16,7 +16,7 @@ from adarl.envs.vec.BaseVecEnv import BaseVecEnv
 import adarl.utils.session
 import adarl.utils.utils
 import torch as th
-from adarl.utils.tensor_trees import TensorTree
+from adarl.utils.tensor_trees import TensorTree, shallow_copy_tensor_tree
 from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.envs.vec.EnvRunner import EnvRunner
@@ -89,6 +89,8 @@ class Runner2VecGymWrapper(gym.vector.VectorEnv, Generic[ObsType]):
          next_start_infos,
          reinit_done) = self.vec_runner.step(actions)
         next_start_infos["final_observation"] = consequent_observations
+        if consequent_info is next_start_infos:
+            consequent_info = shallow_copy_tensor_tree(next_start_infos) # avoid creating a reference cycle
         next_start_infos["final_info"] = consequent_info
         # next_start_infos["final_infos"] = consequent_info
         return next_start_observations, reward, terminated, truncated, next_start_infos

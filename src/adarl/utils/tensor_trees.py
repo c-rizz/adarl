@@ -105,6 +105,19 @@ def map_tensor_tree_withkey(src_tree : TensorTree[U],
         except Exception as e:
             raise RuntimeError(f"Exception at element {_full_key}: {e}")
 
+def shallow_copy_tensor_tree(src_tree : TensorTree[U]) -> TensorTree[U]:
+    if isinstance(src_tree, dict):
+        return {k: shallow_copy_tensor_tree(v) for k,v in src_tree.items()}
+    elif isinstance(src_tree, tuple):
+        return tuple([shallow_copy_tensor_tree(e) for e in src_tree])
+    elif isinstance(src_tree, list):
+        return [shallow_copy_tensor_tree(e) for e in src_tree]
+    elif dataclasses.is_dataclass(src_tree):
+        copied_fields = {field.name: shallow_copy_tensor_tree(getattr(src_tree, field.name))
+                          for field in dataclasses.fields(src_tree)}
+        return src_tree.__class__(**copied_fields)
+    else:
+        return src_tree
 
 _discarded = object()
 def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _already_filtered : dict = {}) -> TensorTree[U]:

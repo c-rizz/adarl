@@ -143,12 +143,12 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
 
     @override
     def step(self, actions):
-        record_region_start("EnvRunnerRecorderWrapper.step")
+        # record_region_start("EnvRunnerRecorderWrapper.step")
         # ggLog.info(f"rec.step()")
         self._ep_step_counts += 1
         self._tot_vstep_counter += 1
         vstep_ret_tuple =  self._runner.step(actions)
-        record_time("EnvRunnerRecorderWrapper subenv stepped")
+        # record_time("EnvRunnerRecorderWrapper subenv stepped")
         # record_time("EnvRunnerRecorderWrapper stepped subenv")
         self._ep_rewards += vstep_ret_tuple[2].view(-1, self._ep_rewards.shape[1])
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
@@ -168,7 +168,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             # So we can simply always save next_start
             self._record_step(next_start_observations, actions, next_start_infos, rewards, terminateds, truncateds)
         # record_time("EnvRunnerRecorderWrapper step end")
-        record_region_end("EnvRunnerRecorderWrapper.step")
+        # record_region_end("EnvRunnerRecorderWrapper.step")
         return vstep_ret_tuple
 
     @override

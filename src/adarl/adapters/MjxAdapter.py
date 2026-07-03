@@ -1,13 +1,13 @@
 from __future__ import annotations
 import os
 
-from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
-                                         get_renderdata_into, log_largest_dataclass_fields,
-                                         model_element_separator, print_mj_model, apply_dof_overrides)
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 
+from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
+                                         get_renderdata_into, log_largest_dataclass_fields,
+                                         model_element_separator, print_mj_model, apply_dof_overrides)
 from adarl.adapters.BaseVecAdapter import JointProperties, JointType
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
@@ -673,48 +673,55 @@ class AlterModelCommand(PublicCommand):
     reset_first : bool = True
 
     def build_internal_command(self, adapter : MjxAdapter) -> _InternalCommand:
-        link_masses_body_ids = adapter._empty_jax_array((0,), np.int32)
-        body_masses_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
-        frictions_body_ids = adapter._empty_jax_array((0,), np.int32)
-        body_frictions_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0, 3), np.float32)
-        dof_armatures_dof_ids = adapter._empty_jax_array((0,), np.int32)
-        dof_armatures_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
-        dof_dampings_dof_ids = adapter._empty_jax_array((0,), np.int32)
-        dof_dampings_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
-        dof_frictionloss_dof_ids = adapter._empty_jax_array((0,), np.int32)
-        dof_frictionloss_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), np.float32)
-        com_body_pos_ids = adapter._empty_jax_array((0,), np.int32)
-        com_position_diff_xyz = adapter._empty_jax_array((adapter._vec_size, 0, 3), np.float32)
-        com_body_quat_ids = adapter._empty_jax_array((0,), np.int32)
-        com_quat_diff_xyzw = adapter._empty_jax_array((adapter._vec_size, 0, 4), np.float32)
 
         if self.link_masses is not None:
             link_masses_body_ids = adapter._to_jax_ids(self.link_masses[0])
             body_masses_ratio_change = th2jax(self.link_masses[1], jax_device=adapter._jax_device)
+        else:
+            link_masses_body_ids = adapter._empty_jax_array((0,), jnp.int32)
+            body_masses_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), jnp.float32)
 
         if self.link_frictions is not None:
             frictions_body_ids = adapter._to_jax_ids(self.link_frictions[0])
             body_frictions_ratio_change = th2jax(self.link_frictions[1], jax_device=adapter._jax_device)
+        else:
+            frictions_body_ids = adapter._empty_jax_array((0,), jnp.int32)
+            body_frictions_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0, 3), jnp.float32)
 
         if self.joint_armature_ratios is not None:
             dof_armatures_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_armature_ratios[0])]
             dof_armatures_ratio_change = th2jax(self.joint_armature_ratios[1], jax_device=adapter._jax_device)
+        else:
+            dof_armatures_dof_ids = adapter._empty_jax_array((0,), jnp.int32)
+            dof_armatures_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), jnp.float32)
 
         if self.joint_damping_ratios is not None:
             dof_dampings_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_damping_ratios[0])]
             dof_dampings_ratio_change = th2jax(self.joint_damping_ratios[1], jax_device=adapter._jax_device)
+        else:
+            dof_dampings_dof_ids = adapter._empty_jax_array((0,), jnp.int32)
+            dof_dampings_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), jnp.float32)
 
         if self.joint_frictionloss_ratios is not None:
             dof_frictionloss_dof_ids = adapter._sim_conf.jnt_dofadr[adapter._to_jax_ids(self.joint_frictionloss_ratios[0])]
             dof_frictionloss_ratio_change = th2jax(self.joint_frictionloss_ratios[1], jax_device=adapter._jax_device)
+        else:
+            dof_frictionloss_dof_ids = adapter._empty_jax_array((0,), jnp.int32)
+            dof_frictionloss_ratio_change = adapter._empty_jax_array((adapter._vec_size, 0), jnp.float32)
 
         if self.com_position_diffs is not None:
             com_body_pos_ids = adapter._to_jax_ids(self.com_position_diffs[0])
             com_position_diff_xyz = th2jax(self.com_position_diffs[1], jax_device=adapter._jax_device)
+        else:
+            com_body_pos_ids = adapter._empty_jax_array((0,), jnp.int32)
+            com_position_diff_xyz = adapter._empty_jax_array((adapter._vec_size, 0, 3), jnp.float32)
 
         if self.com_quatxyzw_diffs is not None:
             com_body_quat_ids = adapter._to_jax_ids(self.com_quatxyzw_diffs[0])
             com_quat_diff_xyzw = th2jax(self.com_quatxyzw_diffs[1], jax_device=adapter._jax_device)
+        else:
+            com_body_quat_ids = adapter._empty_jax_array((0,), jnp.int32)
+            com_quat_diff_xyzw = adapter._empty_jax_array((adapter._vec_size, 0, 4), jnp.float32)
 
         return _InternalAlterModelCommand(
             vec_mask=adapter._vec_mask_to_jax(self.vec_mask),
@@ -1323,6 +1330,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                            for cid in range(self._mj_model.ncam)}
         self._cname2cid = {cn:cid for cid,cn in self._cid2cname.items()}
 
+        # Caches of name-derived, device-resident address arrays for state-setting commands.
+        # Keyed by the (normalized) joint/link name tuple; the model and device are frozen
+        # after build, so entries never need invalidation (a rebuild rebuilds these too).
+        self._joint_addr_cache : dict[tuple[tuple[str,str], ...], jnp.ndarray] = {}
+        self._link_addr_cache : dict[tuple[tuple[str,str], ...],
+                                     tuple[jnp.ndarray, th.Tensor, th.Tensor, jnp.ndarray]] = {}
+
         # Resolve buffered monitored collision pairs once lname2lid is available.
         # The JAX backend uses the (P,2) body-id array; the warp backend uses the
         # sensor adrs recovered from the __pair_<i>__ sensors injected at compile time.
@@ -1382,8 +1396,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_conf.jnt_dofadr = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         if self._mjx_impl == "warp":
-            self._warp_nccdmax = 10 # per-world max number of mesh contacts (handled by the CCD collider)
-            self._warp_nconmax = 20 # per-world max number of overall contacts
+            # self._warp_nccdmax = 10 # per-world max number of mesh contacts (handled by the CCD collider)
+            # self._warp_nconmax = 20 # per-world max number of overall contacts
             mjx_data = put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
                                     naconmax = self._vec_size*self._warp_nconmax, njmax = 100, naccdmax = self._vec_size*self._warp_nccdmax)
         else:
@@ -1448,7 +1462,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._enable_rendering:
             if self._render_backend == "cpu":
                 def make_renderer(h,w):
-                    ggLog.info(f"Making renderer for size {h}x{w}")
+                    ggLog.info(f"Making CPU renderer for size {h}x{w} MUJOCO_GL='{os.environ['MUJOCO_GL']}' MUJOCO_EGL_DEVICE_ID='{os.environ.get('MUJOCO_EGL_DEVICE_ID', None)}' (set this to select manually the device)")
                     # If you are having issues with the renderer trying to use a card that it cannot access 
                     # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
                     # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
@@ -1757,6 +1771,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # _monitored_links stays in user order (set by super())
         self._rebuild_step_stats_arrs()
 
+    @override
     def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
         """Set collision pairs to monitor. Must be called before build_scenario.
 
@@ -2774,6 +2789,32 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             sim_state = self._forward_all(sim_state, sim_conf)
         return sim_state
 
+    def _resolve_joint_qpadr_qvadr(self, joint_names : Sequence[tuple[str,str]]) -> jnp.ndarray:
+        """ Resolve joint names to their (2, njoints) qpos/dof address array on the jax device.
+
+        The result depends only on the names and the (frozen) model, so it is cached per
+        name-tuple: the dict lookups, the joint-type validation, and the host->device
+        transfer run once per distinct name set instead of on every command build. The
+        returned array must be treated as read-only (it is shared across calls).
+        """
+        key = tuple(map(tuple, joint_names))
+        cached = self._joint_addr_cache.get(key)
+        if cached is not None:
+            return cached
+        if len(key) == 0:
+            qpadr_qvadr = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
+        else:
+            jids = np.array([self._jname2jid[jn] for jn in key])
+            joint_types = self._mj_model.jnt_type[jids]
+            if not np.all(np.logical_or(joint_types == mjutils._mjtJoint.mjJNT_HINGE,
+                                        joint_types == mjutils._mjtJoint.mjJNT_SLIDE)):
+                raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(key, joint_types))}")
+            qpadr_qvadr = jnp.array(np.stack([self._mj_model.jnt_qposadr[jids],
+                                              self._mj_model.jnt_dofadr[jids]]),
+                                    device=self._jax_device)
+        self._joint_addr_cache[key] = qpadr_qvadr
+        return qpadr_qvadr
+
     def _prepare_joint_set_data(self,
                                 joint_names : Sequence[tuple[str,str]] | None = None,
                                 joint_states_pve : th.Tensor | None = None,
@@ -2781,90 +2822,103 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if joint_names is None:
             if joint_states_pve is not None:
                 raise ValueError("joint_states_pve was provided without joint_names")
-        elif joint_states_pve is None:
-            raise ValueError("joint_names was provided without joint_states_pve")
-        
-        if joint_names is not None:
-            if self._check_sizes and joint_states_pve.size() != (self._vec_size, len(joint_names), 3):
-                raise RuntimeError(f"joint_states_pve should have size {(self._vec_size, len(joint_names), 3)}, but it's {joint_states_pve.size()}")
-
-            jids = np.array([self._jname2jid[jn] for jn in joint_names])
-            joint_types = self._mj_model.jnt_type[jids]
-            if not np.all(np.logical_or(joint_types == mjutils._mjtJoint.mjJNT_HINGE,
-                                        joint_types == mjutils._mjtJoint.mjJNT_SLIDE)):
-                raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names, joint_types))}")
-
-            qpadr_qvadr = jnp.array(np.stack([self._mj_model.jnt_qposadr[jids],
-                                                    self._mj_model.jnt_dofadr[jids]]),
-                                          device=self._jax_device)
-            joint_states_pve_jnp = th2jax(joint_states_pve, jax_device=self._jax_device)
-        else:
             qpadr_qvadr = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
             joint_states_pve_jnp = jnp.array(np.empty((self._vec_size, 0, 3), dtype=np.float32), device=self._jax_device)
-        
+            return qpadr_qvadr, joint_states_pve_jnp
+        if joint_states_pve is None:
+            raise ValueError("joint_names was provided without joint_states_pve")
+
+        if self._check_sizes and joint_states_pve.size() != (self._vec_size, len(joint_names), 3):
+            raise RuntimeError(f"joint_states_pve should have size {(self._vec_size, len(joint_names), 3)}, but it's {joint_states_pve.size()}")
+
+        qpadr_qvadr = self._resolve_joint_qpadr_qvadr(joint_names)
+        joint_states_pve_jnp = th2jax(joint_states_pve, jax_device=self._jax_device)
         return qpadr_qvadr, joint_states_pve_jnp
+
+    def _resolve_link_set_addrs(self, link_names : Sequence[tuple[str,str]]):
+        """ Resolve link names to the constant address/index arrays needed to set link states.
+
+        Returns ``(mjmodel_lids, idx_without_parents, idx_connected_to_world_th,
+        mjdata_qpadrs_qvadrs)``: the parentless-body ids and free-joint qpos/dof addresses
+        (jax, on device) plus the torch index arrays that split the per-call state tensor into
+        the two groups. These depend only on the names and the (frozen) model, so they are
+        cached per name-tuple: the validation and host->device transfers run once per distinct
+        name set. The returned arrays must be treated as read-only (they are shared across calls).
+        """
+        key = tuple(map(tuple, link_names))
+        cached = self._link_addr_cache.get(key)
+        if cached is not None:
+            return cached
+
+        link_ids = np.array([self._lname2lid[ln] for ln in key])
+        site_mask = link_ids >= self._nbody
+        if np.any(site_mask):
+            site_names = np.array(key)[site_mask]
+            raise RuntimeError(f"Cannot set state for sites (they are kinematic, attached to a body): {site_names.tolist()}")
+        root_body_ids = self._mj_model.body_rootid[link_ids]
+        body_jnt_nums = self._mj_model.body_jntnum[link_ids]
+        body_parent_ids = self._mj_model.body_parentid[link_ids]
+
+        are_all_lids_root_bodies = np.all(root_body_ids == link_ids)
+        if not are_all_lids_root_bodies:
+            nonroot_lids = np.array(key)[root_body_ids != link_ids]
+            raise RuntimeError(f"All links in setLinksStateDirect must be root bodies, but links {nonroot_lids} are not.")
+        are_links_world = link_ids == 0
+        if np.any(are_links_world):
+            world_lids = np.array(key)[are_links_world]
+            raise RuntimeError(f"Cannot set state for world link, but links {world_lids} are among the requested ones.")
+
+        links_without_parents_mask = np.logical_and(body_jnt_nums == 0, body_parent_ids == 0)
+        idx_without_parents = th.as_tensor(np.nonzero(links_without_parents_mask)[0]).to(self._out_th_device, non_blocking=self._out_cuda)
+        lids_without_parents = link_ids[links_without_parents_mask]
+        mjmodel_lids = jnp.array(lids_without_parents, device=self._jax_device)
+
+        links_conected_to_world_mask = np.logical_and(body_jnt_nums == 1, body_parent_ids == 0)
+        idx_connected_to_world = np.nonzero(links_conected_to_world_mask)[0]
+        idx_connected_to_world_th = th.as_tensor(idx_connected_to_world).to(self._out_th_device, non_blocking=self._out_cuda)
+        lids_connected_to_world = link_ids[links_conected_to_world_mask]
+
+        link_joint_ids = self._mj_model.body_jntadr[lids_connected_to_world]
+        link_joint_types = self._mj_model.jnt_type[link_joint_ids]
+        all_free_joints_mask = link_joint_types == mjutils._mjtJoint.mjJNT_FREE
+        if not np.all(all_free_joints_mask):
+            non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
+            raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
+
+        mjdata_qpadrs_qvadrs = jnp.array(np.stack([self._mj_model.jnt_qposadr[link_joint_ids],
+                                                   self._mj_model.jnt_dofadr[link_joint_ids]], axis=0),
+                                         device=self._jax_device)
+
+        uncategorized_mask = ~(links_without_parents_mask | links_conected_to_world_mask)
+        if np.any(uncategorized_mask):
+            uncategorized_names = np.array(key)[uncategorized_mask]
+            raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
+
+        resolved = (mjmodel_lids, idx_without_parents, idx_connected_to_world_th, mjdata_qpadrs_qvadrs)
+        self._link_addr_cache[key] = resolved
+        return resolved
 
     def _prepare_links_set_data(self, link_names: Sequence[tuple[str, str]] | None = None,
                                 link_states_pose_vel: th.Tensor | None = None):
         if link_names is None:
             if link_states_pose_vel is not None:
                 raise ValueError("link_states_pose_vel was provided without link_names")
-        elif link_states_pose_vel is None:
-            raise ValueError("link_names was provided without link_states_pose_vel")
-
-        if link_names is not None:
-            link_ids = np.array([self._lname2lid[ln] for ln in link_names])
-            site_mask = link_ids >= self._nbody
-            if np.any(site_mask):
-                site_names = np.array(link_names)[site_mask]
-                raise RuntimeError(f"Cannot set state for sites (they are kinematic, attached to a body): {site_names.tolist()}")
-            root_body_ids = self._mj_model.body_rootid[link_ids]
-            body_jnt_nums = self._mj_model.body_jntnum[link_ids]
-            body_parent_ids = self._mj_model.body_parentid[link_ids]
-
-            are_all_lids_root_bodies = np.all(root_body_ids == link_ids)
-            if not are_all_lids_root_bodies:
-                nonroot_lids = np.array(link_names)[root_body_ids != link_ids]
-                raise RuntimeError(f"All links in setLinksStateDirect must be root bodies, but links {nonroot_lids} are not.")
-            are_links_world = link_ids == 0
-            if np.any(are_links_world):
-                world_lids = np.array(link_names)[are_links_world]
-                raise RuntimeError(f"Cannot set state for world link, but links {world_lids} are among the requested ones.")
-
-            link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
-
-            links_without_parents_mask = np.logical_and(body_jnt_nums == 0, body_parent_ids == 0)
-            idx_without_parents = th.as_tensor(np.nonzero(links_without_parents_mask)[0]).to(self._out_th_device, non_blocking=self._out_cuda)
-            lids_without_parents = link_ids[links_without_parents_mask]
-            mjmodel_lids = jnp.array(lids_without_parents, device=self._jax_device)
-            mjmodel_pose_xyz_xyzw = th2jax(link_states_pose_vel[:, idx_without_parents], jax_device=self._jax_device)
-
-            links_conected_to_world_mask = np.logical_and(body_jnt_nums == 1, body_parent_ids == 0)
-            idx_connected_to_world = np.nonzero(links_conected_to_world_mask)[0]
-            idx_connected_to_world_th = th.as_tensor(idx_connected_to_world).to(self._out_th_device, non_blocking=self._out_cuda)
-            lids_connected_to_world = link_ids[links_conected_to_world_mask]
-
-            link_joint_ids = self._mj_model.body_jntadr[lids_connected_to_world]
-            link_joint_types = self._mj_model.jnt_type[link_joint_ids]
-            all_free_joints_mask = link_joint_types == mjutils._mjtJoint.mjJNT_FREE
-            if not np.all(all_free_joints_mask):
-                non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
-                raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
-
-            mjdata_qpadrs_qvadrs = jnp.array(np.stack([self._mj_model.jnt_qposadr[link_joint_ids],
-                                                       self._mj_model.jnt_dofadr[link_joint_ids]], axis=0),
-                                             device=self._jax_device)
-            mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:, idx_connected_to_world_th], jax_device=self._jax_device)
-
-            uncategorized_mask = ~(links_without_parents_mask | links_conected_to_world_mask)
-            if np.any(uncategorized_mask):
-                uncategorized_names = np.array(link_names)[uncategorized_mask]
-                raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
-        else:
             mjmodel_lids = jnp.array(np.empty((0,), dtype=np.int32), device=self._jax_device)
             mjmodel_pose_xyz_xyzw = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
             mjdata_qpadrs_qvadrs = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
             mjdata_poses_xyzxyzw_vel_xyzxyz = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
+            return mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz
+        if link_states_pose_vel is None:
+            raise ValueError("link_names was provided without link_states_pose_vel")
+
+        (mjmodel_lids,
+         idx_without_parents,
+         idx_connected_to_world_th,
+         mjdata_qpadrs_qvadrs) = self._resolve_link_set_addrs(link_names)
+
+        link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
+        mjmodel_pose_xyz_xyzw = th2jax(link_states_pose_vel[:, idx_without_parents], jax_device=self._jax_device)
+        mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:, idx_connected_to_world_th], jax_device=self._jax_device)
         return mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz
 
     @override
@@ -2916,10 +2970,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         record_region_end("MjxAdapter.setJointsAndLinksStateDirect")
 
     def _empty_jax_array(self, shape : tuple[int, ...], dtype) -> jnp.ndarray:
-        return jnp.array(np.empty(shape, dtype=dtype), device=self._jax_device)
+        return jnp.empty(shape, dtype=dtype, device=self._jax_device)
 
     def _to_jax_ids(self, ids : Sequence[int] | np.ndarray | jnp.ndarray) -> jnp.ndarray:
-        return jnp.array(np.asarray(ids, dtype=np.int32), device=self._jax_device)
+        return jnp.array(ids, dtype=jnp.int32, device=self._jax_device)
 
     def _vec_mask_to_jax(self, vec_mask : th.Tensor | None) -> jnp.ndarray:
         if vec_mask is None:
@@ -2941,6 +2995,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if command is None:
                 continue
             internal_command = command.build_internal_command(self)
+            record_time(f"MjxAdapter.run_command_sequence: built internal command {type(internal_command).__name__}") 
             internal_commands.append(internal_command)
             has_effects = has_effects or internal_command.has_effect()
             if internal_command.runs_forward():
@@ -2949,6 +3004,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 forward_needed = True
         if forward_needed and forward_if_needed:
             internal_commands.append(ForwardCommand().build_internal_command(self))
+            record_time(f"MjxAdapter.run_command_sequence: built internal command forward") 
             forward_needed = False
 
         record_time("MjxAdapter.run_command_sequence: built internal commands") 
@@ -3550,6 +3606,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
         record_region_end("MjxAdapter.alter_model")
 
+    @override
     def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
         """Check if link pairs are colliding.
         

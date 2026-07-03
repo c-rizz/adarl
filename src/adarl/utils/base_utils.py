@@ -764,7 +764,6 @@ class GcMonitor:
         self.collected_types: dict[str, int] = {}
         self.collected_num = 0
         self.track_type_growth = track_type_growth
-        self.type_growth: dict[str, int] = {}
         self._type_snapshot: dict[int, str] = {}
         self._prev_type_counts: dict[str, int] = {}
         self._snapshot_taken = False
@@ -798,7 +797,7 @@ class GcMonitor:
             self.call_start = time.perf_counter()
             self._snapshot_taken = False
             if info["generation"] == 2:
-                print(f"Will be looking at {len(gc.get_objects(2))} objects for GC gen2")
+                print(f"Will be looking at {len(gc.get_objects(2)):_} objects for GC gen2")
             if self.track_collected_types or self.track_type_growth:
                 if self.track_collected_types:
                     self._type_snapshot = {id(o): self._describe(o) for o in gc.get_objects()}
@@ -806,6 +805,7 @@ class GcMonitor:
         else:
             dt = time.perf_counter() - self.call_start
             self.calls_durations.append(dt)
+            type_growth = {}
             if self._snapshot_taken:
                 after_objs = gc.get_objects()
                 if self.track_collected_types:
@@ -823,12 +823,15 @@ class GcMonitor:
                     for label, count in cur_counts.items():
                         delta = count - self._prev_type_counts.get(label, 0)
                         if delta != 0:
-                            self.type_growth[label] = self.type_growth.get(label, 0) + delta
+                            type_growth[label] = type_growth.get(label, 0) + delta
                     self._prev_type_counts = cur_counts
                 self._snapshot_taken = False
             if dt > 0.01:
-                print(f"{self._log_prefix}GC gen{info['generation']} took {dt*1000:.1f}ms. Collected {info['collected']} objects. Uncollectable {info['uncollectable']} objects.\n"
-                      f"      Total collected: {self.collected_num} objects. Collected types: {self.collected_types}. Type growth: {self.type_growth}")
+                typegrowth = sorted(type_growth.items(), key=lambda x: x[1], reverse=True)[:50]
+                print(f"{self._log_prefix}GC gen{info['generation']} took {dt*1000:.1f}ms. Collected {info['collected']} objects. Uncollectable {info['uncollectable']} objects."
+                      f"\n      Total collected: {self.collected_num} objects."
+                      f"\n      Collected types: {self.collected_types}."
+                      f"\n      Type growth: {typegrowth}.")
 
     def reset_counters(self):
         self.call_counter = 0
@@ -860,12 +863,13 @@ class _DSCh(IntEnum):
     N_CH         = auto()  # always last — equals the channel count
 
 class DelayStats:
-    def __init__(self, maxlen = 100):
+    def __init__(self, maxlen = 100,
+                       track_obj_type_growth = False):
         self._keeper = MultiAverageKeeper(bufferSize=maxlen, n_channels=_DSCh.N_CH)
         self._start_time = None
         use_slow_gc_checks = False
         self._gc_registered = False
-        self._gc_monitor = GcMonitor(track_collected_types=use_slow_gc_checks, track_type_growth=False,
+        self._gc_monitor = GcMonitor(track_collected_types=use_slow_gc_checks, track_type_growth=track_obj_type_growth,
                                      log_prefix="[DelayStats] ")
 
     def mark_start(self):
@@ -923,3 +927,50 @@ class DelayStats:
             "gc_collected_types": ", ".join(f"{t}:{n}" for t, n in sorted(self._gc_monitor.collected_types.items(), key=lambda x: -x[1])[:10]) or "none",
             "gc_type_growth":     ", ".join(f"{t}:{n:+d}" for t, n in sorted(self._gc_monitor.type_growth.items(), key=lambda x: -x[1])[:10]) or "none",
         }
+    
+def _compare_grouped_stats(old_group, new_group):
+    import tracemalloc
+    statistics = []
+    for traceback, stat in new_group.items():
+        previous = old_group.pop(traceback, None)
+        if previous is not None:
+            stat = tracemalloc.StatisticDiff(traceback,
+                                 stat.size, stat.size - previous.size,
+                                 stat.count, stat.count - previous.count)
+        else:
+            stat = tracemalloc.StatisticDiff(traceback,
+                                 stat.size, stat.size,
+                                 stat.count, stat.count)
+        statistics.append(stat)
+
+    for traceback, stat in old_group.items():
+        stat = tracemalloc.StatisticDiff(traceback, 0, -stat.size, 0, -stat.count)
+        statistics.append(stat)
+    return statistics
+
+def compare_tracemalloc_snapshots_to(new_snapshot, old_snapshot, key_type, cumulative=False):
+        """
+        Compute the differences with an old snapshot old_snapshot. Get
+        statistics as a sorted list of StatisticDiff instances, grouped by
+        group_by.
+        """
+        new_group = new_snapshot._group_by(key_type, cumulative)
+        old_group = old_snapshot._group_by(key_type, cumulative)
+        statistics = _compare_grouped_stats(old_group, new_group)
+        statistics.sort(reverse=True, key=lambda stat: stat.count_diff)
+        return statistics
+
+_last_tracemalloc_snapshot = None
+def trace_malloc_diffs(iteration = 0, freq = 1):
+    import tracemalloc
+    global _last_tracemalloc_snapshot
+    if iteration % freq == 0:
+        if _last_tracemalloc_snapshot is None:
+            tracemalloc.start(25)
+        new_trace = tracemalloc.take_snapshot()
+        if _last_tracemalloc_snapshot is not None:
+            stats = compare_tracemalloc_snapshots_to(new_trace, _last_tracemalloc_snapshot, 'lineno')
+            ggLog.info(f"Tracemalloc stats (top 10):")
+            for stat in stats[:10]:
+                ggLog.info(f"{stat}")
+        _last_tracemalloc_snapshot = new_trace

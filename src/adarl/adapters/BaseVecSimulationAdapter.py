@@ -166,3 +166,36 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
             the same parameters are altered multiple times.
         """
         raise NotImplementedError()
+    
+    def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
+        """Set collision pairs to monitor. Must be called before build_scenario.
+
+        Pairs are buffered here and resolved to body ids / sensor adrs inside build_scenario,
+        once the model is compiled and the lname2lid map exists. The warp backend additionally
+        gets one mjSENS_CONTACT sensor per pair injected into the spec.
+
+        Parameters
+        ----------
+        collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
+            List of link name pairs to monitor for collisions.
+            Each pair is ((model_a, link_a), (model_b, link_b)).
+        """
+        raise NotImplementedError()
+    
+
+    def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
+        """Check if link pairs are colliding.
+        
+        Parameters
+        ----------
+        requested_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None
+            If None, returns mask for all monitored pairs.
+            If th.Tensor, indices into monitored pairs array.
+            If Sequence, link name pairs to look up (must be monitored).
+        
+        Returns
+        -------
+        th.Tensor
+            Boolean tensor of shape (vec_size, num_pairs) indicating collision status.
+        """
+        raise NotImplementedError()

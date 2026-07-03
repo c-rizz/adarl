@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelSpawnDef:
+    """Specification of a model to be spawned into a simulation.
+    """
     name : str
     definition_string : str | None
     format : str

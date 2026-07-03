@@ -25,7 +25,7 @@ from typing_extensions import override
 from adarl.envs.vec.EnvRunnerInterface import EnvRunnerInterface, ObsType
 from adarl.utils.utils import to_string_tensor, masked_assign
 from adarl.utils.tensor_trees import clone_tensor_tree
-from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end, clear_recorded_times
+from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end, clear_recorded_times, trace_malloc_diffs
 import os
 from adarl.utils.session import default_session
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
@@ -250,6 +250,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                     reinit_done = self._no_vecs
 
         record_region_end("EnvRunner loop ----------------------------")
+        # trace_malloc_diffs(self._total_vsteps, 100)
         if self._total_vsteps % self._log_freq == 0:
             print_recorded_times(f"num_envs = {self.num_envs}, step {self._total_vsteps-1}")
         else:

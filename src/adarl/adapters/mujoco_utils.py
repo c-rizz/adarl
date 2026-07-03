@@ -688,12 +688,23 @@ def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
                 ggLog.info(f"Overriding revolute joint '{joint.name}' frictionloss to {revolute_dof_frictionloss_override} (was {joint.frictionloss}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
                 joint.frictionloss = revolute_dof_frictionloss_override
 
-            if joint.damping == 0:
+            # In mujoco >=3.9 the spec joint 'damping' is a per-DOF vector (shape (3,)) to
+            # support ball/free joints; for a hinge only index 0 is meaningful. Older versions
+            # expose it as a scalar, so handle both.
+            damping_is_vec = getattr(joint.damping, "ndim", 0) > 0
+            if (joint.damping[0] if damping_is_vec else joint.damping) == 0:
                 ggLog.warn(f"Revolute joint '{joint.name}' has zero damping. Setting it to {safe_revolute_dof_damping}.")
-                joint.damping = safe_revolute_dof_damping
+                if damping_is_vec:
+                    joint.damping[0] = safe_revolute_dof_damping
+                else:
+                    joint.damping = safe_revolute_dof_damping
             if revolute_dof_damping_override is not None:
-                ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {revolute_dof_damping_override} (was {joint.damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
-                joint.damping = revolute_dof_damping_override
+                old_damping = joint.damping[0] if damping_is_vec else joint.damping
+                ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {revolute_dof_damping_override} (was {old_damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                if damping_is_vec:
+                    joint.damping[0] = revolute_dof_damping_override
+                else:
+                    joint.damping = revolute_dof_damping_override
     return spec
 
 def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[str,Any] | None,
@@ -754,6 +765,8 @@ def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[
     ggLog.info(f"opt_override = {opt_override}, opt_override_enableflags = {opt_override_enableflags}")
     if opt_override is not None:
         for k,v in opt_override.items():
+            if not hasattr(opt, k):
+                raise RuntimeError(f"opt_override: no field named '{k}' in mujoco_MjOption")
             setattr(opt,k,v)
     if opt_override_enableflags is not None:
         for f,v in opt_override_enableflags.items():
