@@ -5,7 +5,7 @@ checks for joint-impedance adapters (BaseVecJointImpedanceAdapter). The checks u
 cartpole+ball models and validate the adapter interface contract: shapes/devices, direct
 state setting (masked and unmasked), basic physics sanity (gravity, ballistic motion),
 time bookkeeping, impedance command semantics (immediate, queued, delayed, masked),
-step statistics and world resetting.
+collision-pair monitoring, step statistics and world resetting.
 
 Usage:
     python test_vec_adapter_compliance.py --backend genesis --vec-size 4
@@ -30,6 +30,7 @@ FOOT_JOINT = ("cartpole", "foot_joint")
 BAR_LINK = ("cartpole", "bar_link")
 BASE_LINK = ("cartpole", "base_link")
 BALL_LINK = ("ball", "ball")
+GROUND_LINK = ("ground", "ground_link")
 
 
 class ComplianceContext:
@@ -37,6 +38,7 @@ class ComplianceContext:
         self.adapter = adapter
         self.vec = adapter.vec_size()
         self.dev = adapter.output_th_device()
+        self.collision_pairs_supported = False
         self.passed: list[str] = []
         self.skipped: list[str] = []
         self.failed: list[str] = []
@@ -264,7 +266,7 @@ def check_impedance(ctx: ComplianceContext):
 
 
 # =====================================================================================
-#                              stats and reset checks
+#                       stats, collision and reset checks
 # =====================================================================================
 
 def check_step_stats(ctx: ComplianceContext):
@@ -283,6 +285,43 @@ def check_step_stats(ctx: ComplianceContext):
         ctx.skip("stats.*", "not implemented by this adapter")
 
 
+def check_collisions(ctx: ComplianceContext):
+    if not ctx.collision_pairs_supported:
+        ctx.skip("collision.*", "set_monitored_collision_pairs not implemented by this adapter")
+        return
+    pair = (BALL_LINK, GROUND_LINK)
+    # rest the ball on the ground in even envs, keep it high up in the air in odd envs
+    # (at y=3, clear of the cartpole rail which sits at the origin)
+    state = th.zeros((ctx.vec, 1, 13), device=ctx.dev)
+    state[:, 0, 1] = 3.0
+    state[:, 0, 2] = 5.0
+    state[::2, 0, 2] = 0.6
+    state[:, 0, 6] = 1.0
+    ctx.adapter.setLinksStateDirect([BALL_LINK], state)
+    elapsed = 0.0
+    while elapsed < 0.4:
+        elapsed += ctx.adapter.step()
+    mask = ctx.adapter.check_colliding_links()
+    ok_shape = tuple(mask.shape) == (ctx.vec, 1) and mask.dtype == th.bool
+    ctx.check("collision.mask_shape", ok_shape, f"got shape {tuple(mask.shape)} dtype {mask.dtype}")
+    if not ok_shape:
+        return
+    expected = th.zeros((ctx.vec,), dtype=th.bool, device=mask.device)
+    expected[::2] = True
+    ctx.check("collision.mask_values", bool((mask[:, 0] == expected).all()),
+              f"got {mask[:, 0].tolist()}, expected {expected.tolist()} (ball resting on ground in even envs)")
+    by_name = ctx.adapter.check_colliding_links([pair])
+    ctx.check("collision.query_by_name", bool((by_name == mask).all()),
+              f"by-name query {by_name[:, 0].tolist()} != full mask {mask[:, 0].tolist()}")
+    pair_ids = ctx.adapter.get_collision_pair_ids([pair])
+    by_ids = ctx.adapter.check_colliding_links(pair_ids)
+    ctx.check("collision.query_by_ids", bool((by_ids == mask).all()),
+              f"by-ids query {by_ids[:, 0].tolist()} != full mask {mask[:, 0].tolist()}")
+    names = ctx.adapter.get_collision_pair_names(pair_ids.cpu())
+    ctx.check("collision.pair_names_roundtrip", [tuple(map(tuple, p)) for p in names] == [pair],
+              f"got {names}, expected [{pair}]")
+
+
 def check_reset_world(ctx: ComplianceContext):
     pre = ctx.adapter.getLinksState([BALL_LINK])[:, 0, 0:3]
     ctx.adapter.resetWorld()
@@ -298,6 +337,11 @@ def check_reset_world(ctx: ComplianceContext):
 def run_vec_adapter_compliance_test(adapter: BaseVecSimulationAdapter) -> ComplianceContext:
     ctx = ComplianceContext(adapter)
     print(f"=== Compliance test for {type(adapter).__name__} (vec_size={ctx.vec}, device={ctx.dev}) ===")
+    ctx.collision_pairs_supported = True
+    try:
+        adapter.set_monitored_collision_pairs([(BALL_LINK, GROUND_LINK)])
+    except NotImplementedError:
+        ctx.collision_pairs_supported = False
     adapter.build_scenario(_spawn_defs())
     adapter.set_monitored_joints([CART_JOINT, FOOT_JOINT])
     adapter.set_monitored_links([BAR_LINK, BASE_LINK])
@@ -311,6 +355,7 @@ def run_vec_adapter_compliance_test(adapter: BaseVecSimulationAdapter) -> Compli
     check_effort(ctx)
     check_impedance(ctx)
     check_step_stats(ctx)
+    check_collisions(ctx)
     check_reset_world(ctx)
 
     adapter.destroy_scenario()

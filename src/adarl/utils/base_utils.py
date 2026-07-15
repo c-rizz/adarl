@@ -974,3 +974,20 @@ def trace_malloc_diffs(iteration = 0, freq = 1):
             for stat in stats[:10]:
                 ggLog.info(f"{stat}")
         _last_tracemalloc_snapshot = new_trace
+
+import yaml
+def check_dict_match(d1 : dict[str, Any], d2 : dict[str, Any]):
+    if d1 != d2:
+        import difflib
+        self_init_args_yaml = yaml.dump(d1)
+        load_init_args_yaml = yaml.dump(d2)
+        diff = "".join(difflib.unified_diff(self_init_args_yaml.splitlines(keepends=True),
+                                    load_init_args_yaml.splitlines(keepends=True),
+                                    fromfile="self",
+                                    tofile="loaded",
+                                    lineterm=""))
+        ggLog.warn(f"init args of loaded model differ from those of self.\n"
+                    f"self init_args = \n{self_init_args_yaml}\n"
+                    f"load init_args = \n{load_init_args_yaml}\n"
+                    f"diff init_args = \n{diff}")
+        raise RuntimeError("Unmatched init_args")

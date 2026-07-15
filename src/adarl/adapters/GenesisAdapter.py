@@ -234,6 +234,11 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._dofs_acc: th.Tensor | None = None
         self._impulses: _ImpulsesSpec | None = None
         self._warned_nonbatched_render = False
+        self._mon_collision_pair_names: list[tuple[tuple[str, str], tuple[str, str]]] = []
+        self._mon_collision_pair_to_idx: dict[tuple[int, int], int] = {}
+        self._mon_collision_pair_keys = th.empty((0,), dtype=th.long)
+        self._mon_collision_entities: list[Any] = []
+        self._n_solver_links = 0
         self._enable_model_randomization = enable_model_randomization
         self._orig_link_mass: th.Tensor | None = None
         self._orig_dof_armature: th.Tensor | None = None
@@ -372,6 +377,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._camlink_name2id[lname] = neg_id
             self._camlink_id2entry[neg_id] = entry
             self._linkidx2lname[neg_id] = lname
+
+        self._resolve_monitored_collision_pairs()
 
         # recompute the monitored sets in terms of the new scene
         self.set_monitored_joints(self._monitored_joints)
@@ -535,6 +542,9 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._prev_dofs_vel = None
         self._dofs_acc = None
         self._impulses = None
+        self._mon_collision_pair_to_idx = {}
+        self._mon_collision_pair_keys = th.empty((0,), dtype=th.long)
+        self._mon_collision_entities = []
 
     @override
     def spawn_models(self, models: Sequence[ModelSpawnDef]) -> list[str]:
@@ -862,6 +872,107 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if len(info.free_pos) > 0:
             free_vels = vals[:, info.free_pos, 7:13]  # (sel, n_free, 6), [lin,ang] matching genesis free-joint dof order
             rs.set_dofs_velocity(free_vels.reshape(free_vels.shape[0], len(info.free_dofs_idx)), dofs_idx=info.free_dofs_idx, envs_idx=envs_idx)
+
+    # =================================================================================
+    #                               collision monitoring
+    # =================================================================================
+
+    @override
+    def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]]):
+        """Set the link pairs to monitor for collisions (queried with check_colliding_links()).
+        Normally called before build_scenario() (the pairs are resolved during the build), but with
+        this adapter it can also be called after the scenario has been built."""
+        self._mon_collision_pair_names = [(tuple(a), tuple(b)) for a, b in collision_pairs]
+        if self._scene is not None:
+            self._resolve_monitored_collision_pairs()
+
+    def _resolve_monitored_collision_pairs(self):
+        """Resolve the monitored collision pair names to global link-pair keys, and collect the
+        entities whose contacts must be inspected (any contact of a pair involves the first link's entity)."""
+        self._mon_collision_pair_to_idx = {}
+        keys: list[int] = []
+        entities: dict[int, Any] = {}
+        n_links = int(self._rigid_solver().n_links)
+        for idx, (name_a, name_b) in enumerate(self._mon_collision_pair_names):
+            link_a = self._links.get(name_a)
+            link_b = self._links.get(name_b)
+            if link_a is None or link_b is None:
+                missing = name_a if link_a is None else name_b
+                raise RuntimeError(f"Monitored collision pair ({name_a},{name_b}): link {missing} not found. "
+                                   f"Available links: {list(self._links.keys())}")
+            ia, ib = int(link_a.idx), int(link_b.idx)
+            self._mon_collision_pair_to_idx[(ia, ib)] = idx
+            self._mon_collision_pair_to_idx[(ib, ia)] = idx
+            keys.append(min(ia, ib) * n_links + max(ia, ib))
+            entities[id(link_a.entity)] = link_a.entity
+        self._mon_collision_pair_keys = th.as_tensor(keys, dtype=th.long, device=self._sim_dev).view(-1)
+        self._mon_collision_entities = list(entities.values())
+        self._n_solver_links = n_links
+
+    def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]]) -> th.Tensor:
+        """Get indices into the monitored collision pairs array (either link order matches)."""
+        indices = []
+        for pair in collision_pairs:
+            ia = int(self._links[tuple(pair[0])].idx)
+            ib = int(self._links[tuple(pair[1])].idx)
+            idx = self._mon_collision_pair_to_idx.get((ia, ib))
+            if idx is None:
+                raise KeyError(f"Collision pair {pair} is not in the monitored collision pairs")
+            indices.append(idx)
+        return th.as_tensor(indices, dtype=th.long).to(self._out_th_device,
+                                                       non_blocking=self._out_th_device.type == "cuda")
+
+    def get_collision_pair_names(self, pair_ids: th.Tensor) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+        """Get collision pair names from indices into the monitored collision pairs array."""
+        return [self._mon_collision_pair_names[idx] for idx in pair_ids.tolist()]
+
+    @override
+    def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]] | th.Tensor | None = None) -> th.Tensor:
+        """Check if the monitored link pairs are colliding, based on the contacts computed during the
+        most recent simulation step (setting states directly does not update the contacts until the
+        next step is performed).
+
+        Parameters
+        ----------
+        requested_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None
+            If None, returns the mask for all monitored pairs. If a tensor, indices into the monitored
+            pairs array (see get_collision_pair_ids()). If a sequence of link name pairs, they must be
+            among the monitored pairs.
+
+        Returns
+        -------
+        th.Tensor
+            Boolean tensor of shape (vec_size, num_pairs) indicating the collision status.
+        """
+        if requested_pairs is not None and len(requested_pairs) == 0:
+            return th.empty((self._vec_size, 0), dtype=th.bool, device=self._out_th_device)
+        n_pairs = int(self._mon_collision_pair_keys.shape[0])
+        if n_pairs == 0:
+            return th.empty((self._vec_size, 0), dtype=th.bool, device=self._out_th_device)
+        contact_keys = []
+        for entity in self._mon_collision_entities:
+            contacts = entity.get_contacts()
+            link_a, link_b = contacts["link_a"], contacts["link_b"]
+            valid = contacts.get("valid_mask")
+            if link_a.dim() == 1:  # non-parallelized scene
+                link_a, link_b = link_a.unsqueeze(0), link_b.unsqueeze(0)
+                valid = valid.unsqueeze(0) if valid is not None else None
+            link_a, link_b = link_a.long(), link_b.long()
+            if valid is None:
+                valid = link_a >= 0
+            keys = th.minimum(link_a, link_b) * self._n_solver_links + th.maximum(link_a, link_b)
+            keys = th.where(valid.bool(), keys, th.full_like(keys, -1))
+            contact_keys.append(keys.to(self._sim_dev))
+        all_keys = th.cat(contact_keys, dim=1)  # (vec_size, n_contacts)
+        full_mask = (all_keys.unsqueeze(-1) == self._mon_collision_pair_keys.view(1, 1, -1)).any(dim=1)
+        full_mask = full_mask.to(device=self._out_th_device, non_blocking=self._out_th_device.type == "cuda")
+        if requested_pairs is None:
+            return full_mask
+        if isinstance(requested_pairs, th.Tensor):
+            indices = requested_pairs
+        else:
+            indices = self.get_collision_pair_ids(requested_pairs)
+        return full_mask[:, indices.to(full_mask.device)]
 
     # =================================================================================
     #                                     control
