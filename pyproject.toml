@@ -32,3 +32,19 @@ adarl = "adarl:launcher"
 [tool.setuptools.package-data]
 "adarl.models" = ["*.urdf", "*.xacro"]
 "adarl.assets.audio" = ["*.ogg"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# adapter_compliance.py is a shared helper library, not a test module
+addopts = "--strict-markers"
+markers = [
+    "gpu: needs a CUDA/JAX GPU device",
+    "slow: slow to run (builds a simulator and/or runs many steps)",
+    "mujoco: exercises the MuJoCo (CPU) backend",
+    "mjx: exercises the MJX (JAX/WARP, GPU) backend",
+    "genesis: exercises the Genesis backend",
+    "integration: end-to-end across multiple components",
+]

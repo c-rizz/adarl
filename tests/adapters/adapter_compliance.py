@@ -32,6 +32,10 @@ BASE_LINK = ("cartpole", "base_link")
 BALL_LINK = ("ball", "ball")
 GROUND_LINK = ("ground", "ground_link")
 
+# The sets the runner monitors; checks that depend on the monitored count reference these.
+MONITORED_JOINTS = [CART_JOINT, FOOT_JOINT]
+MONITORED_LINKS = [BAR_LINK, BASE_LINK, BALL_LINK]
+
 
 class ComplianceContext:
     def __init__(self, adapter: BaseVecSimulationAdapter):
@@ -273,14 +277,14 @@ def check_step_stats(ctx: ComplianceContext):
     try:
         ctx.adapter.step()
         stats = ctx.adapter.get_joints_state_step_stats()
-        ok_shape = tuple(stats.shape) == (ctx.vec, 4, 2, 4)
+        ok_shape = tuple(stats.shape) == (ctx.vec, 4, len(MONITORED_JOINTS), 4)
         ctx.check("stats.joints_shape", ok_shape, f"got {tuple(stats.shape)}")
         if ok_shape:
             jmin, jmax, javg = stats[:, 0], stats[:, 1], stats[:, 2]
             ctx.check("stats.joints_minavgmax", bool((jmin <= javg + 1e-5).all() and (javg <= jmax + 1e-5).all()),
                       "expected min <= avg <= max")
         lstats = ctx.adapter.get_links_state_step_stats()
-        ctx.check("stats.links_shape", tuple(lstats.shape) == (ctx.vec, 4, 2, 6), f"got {tuple(lstats.shape)}")
+        ctx.check("stats.links_shape", tuple(lstats.shape) == (ctx.vec, 4, len(MONITORED_LINKS), 6), f"got {tuple(lstats.shape)}")
     except NotImplementedError:
         ctx.skip("stats.*", "not implemented by this adapter")
 
@@ -343,8 +347,11 @@ def run_vec_adapter_compliance_test(adapter: BaseVecSimulationAdapter) -> Compli
     except NotImplementedError:
         ctx.collision_pairs_supported = False
     adapter.build_scenario(_spawn_defs())
-    adapter.set_monitored_joints([CART_JOINT, FOOT_JOINT])
-    adapter.set_monitored_links([BAR_LINK, BASE_LINK])
+    adapter.set_monitored_joints(MONITORED_JOINTS)
+    # Monitor every link the checks read back. The adapter contract only requires
+    # getLinksState() to work for monitored links (some adapters also serve non-monitored
+    # links, but that is not required), so the compliance checks must monitor what they query.
+    adapter.set_monitored_links(MONITORED_LINKS)
     adapter.startup()
 
     check_introspection(ctx)
@@ -363,38 +370,3 @@ def run_vec_adapter_compliance_test(adapter: BaseVecSimulationAdapter) -> Compli
     for f in ctx.failed:
         print(f"    FAILED: {f}")
     return ctx
-
-
-def _build_genesis_adapter(vec_size: int):
-    from adarl.adapters.GenesisJointImpedanceAdapter import GenesisJointImpedanceAdapter
-    device = th.device("cuda", 0) if th.cuda.is_available() else th.device("cpu")
-    return GenesisJointImpedanceAdapter(vec_size=vec_size,
-                                        output_th_device=device,
-                                        sim_step_dt=1 / 256,
-                                        step_length_sec=12 / 256,
-                                        enable_rendering=False,
-                                        reference_filter_mode="none")
-
-
-def _build_mujoco_adapter():
-    from adarl.adapters.MujocoJointImpedanceAdapter import MujocoJointImpedanceAdapter
-    return MujocoJointImpedanceAdapter(vec_size=1,
-                                       sim_step_dt=1 / 512,
-                                       step_length_sec=24 / 512,
-                                       output_th_device=th.device("cpu"),
-                                       reference_filter_mode="none")
-
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", type=str, default="all", choices=["genesis", "mujoco", "all"])
-    parser.add_argument("--vec-size", type=int, default=4)
-    args = parser.parse_args()
-    results = []
-    if args.backend in ("mujoco", "all"):
-        results.append(run_vec_adapter_compliance_test(_build_mujoco_adapter()))
-    if args.backend in ("genesis", "all"):
-        results.append(run_vec_adapter_compliance_test(_build_genesis_adapter(args.vec_size)))
-    if any(len(r.failed) > 0 for r in results):
-        raise SystemExit(1)

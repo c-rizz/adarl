@@ -647,7 +647,11 @@ class SetLinksStateDirectCommand(PublicCommand):
         (mjmodel_lids,
          mjmodel_pose_xyz_xyzw,
          mjdata_qpadrs_qvadrs,
-         mjdata_poses_xyzxyzw_vel_xyzxyz) = adapter._prepare_links_set_data(
+         mjdata_poses_xyzxyzw_vel_xyzxyz,
+         mjmodel_geom_ids,
+         mjmodel_geom_slot,
+         mjmodel_geom_local_pos,
+         mjmodel_geom_local_mat) = adapter._prepare_links_set_data(
             self.link_names,
             self.link_states_pose_vel,
         )
@@ -657,6 +661,10 @@ class SetLinksStateDirectCommand(PublicCommand):
             mjmodel_pose_xyz_xyzw=mjmodel_pose_xyz_xyzw,
             mjdata_qpadrs_qvadrs=mjdata_qpadrs_qvadrs,
             mjdata_poses_xyzxyzw_vel_xyzxyz=mjdata_poses_xyzxyzw_vel_xyzxyz,
+            mjmodel_geom_ids=mjmodel_geom_ids,
+            mjmodel_geom_slot=mjmodel_geom_slot,
+            mjmodel_geom_local_pos=mjmodel_geom_local_pos,
+            mjmodel_geom_local_mat=mjmodel_geom_local_mat,
         )
 
 
@@ -802,6 +810,10 @@ class _InternalSetLinksStateDirectCommand(_InternalCommand):
     mjmodel_pose_xyz_xyzw : jnp.ndarray
     mjdata_qpadrs_qvadrs : jnp.ndarray
     mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray
+    mjmodel_geom_ids : jnp.ndarray
+    mjmodel_geom_slot : jnp.ndarray
+    mjmodel_geom_local_pos : jnp.ndarray
+    mjmodel_geom_local_mat : jnp.ndarray
 
     def has_effect(self) -> bool:
         return (self.mjmodel_lids.shape[0] > 0
@@ -818,6 +830,10 @@ class _InternalSetLinksStateDirectCommand(_InternalCommand):
             mjdata_qpadrs_qvadrs=self.mjdata_qpadrs_qvadrs,
             mjdata_poses_xyzxyzw_vel_xyzxyz=self.mjdata_poses_xyzxyzw_vel_xyzxyz,
             vec_mask_jnp=self.vec_mask,
+            mjmodel_geom_ids=self.mjmodel_geom_ids,
+            mjmodel_geom_slot=self.mjmodel_geom_slot,
+            mjmodel_geom_local_pos=self.mjmodel_geom_local_pos,
+            mjmodel_geom_local_mat=self.mjmodel_geom_local_mat,
         )
 
 
@@ -1528,6 +1544,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Compiling mjx_integrate_and_forward....")
         _ = self._mjx_integrate_and_forward(self._sim_state.mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
         ggLog.info(f"Compiled.")
+        self._forward_needed = True
 
     def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
                                         explicit_groups : list[tuple[tuple[str,str],...]] = []) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -1789,19 +1806,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError("Monitored collision pairs cannot be changed after build_scenario has been called.")
         self._monitored_collision_pairs = list(collision_pairs)
 
+    @override
     def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]) -> th.Tensor:
-        """Get indices into monitored collision pairs array.
-        
-        Parameters
-        ----------
-        collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
-            List of link name pairs to look up.
-            
-        Returns
-        -------
-        th.Tensor
-            Long tensor of indices into the monitored collision pairs array.
-        """
         indices = []
         for pair in collision_pairs:
             body_a = self._lname2lid[pair[0]]
@@ -2772,7 +2778,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                             mjmodel_lids : jnp.ndarray,
                                             mjmodel_pose_xyz_xyzw : jnp.ndarray,
                                             mjdata_qpadrs_qvadrs : jnp.ndarray,
-                                            mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray):
+                                            mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray,
+                                            mjmodel_geom_ids : jnp.ndarray,
+                                            mjmodel_geom_slot : jnp.ndarray,
+                                            mjmodel_geom_local_pos : jnp.ndarray,
+                                            mjmodel_geom_local_mat : jnp.ndarray):
         sim_state = self._set_joint_state_data(sim_state,
                                                sim_conf,
                                                vec_mask_jnp,
@@ -2784,7 +2794,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                               mjmodel_pose_xyz_xyzw,
                                               mjdata_qpadrs_qvadrs,
                                               mjdata_poses_xyzxyzw_vel_xyzxyz,
-                                              vec_mask_jnp)
+                                              vec_mask_jnp,
+                                              mjmodel_geom_ids=mjmodel_geom_ids,
+                                              mjmodel_geom_slot=mjmodel_geom_slot,
+                                              mjmodel_geom_local_pos=mjmodel_geom_local_pos,
+                                              mjmodel_geom_local_mat=mjmodel_geom_local_mat)
         if run_forward:
             sim_state = self._forward_all(sim_state, sim_conf)
         return sim_state
@@ -2894,7 +2908,40 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             uncategorized_names = np.array(key)[uncategorized_mask]
             raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
 
-        resolved = (mjmodel_lids, idx_without_parents, idx_connected_to_world_th, mjdata_qpadrs_qvadrs)
+        # Geoms of the parentless (fixed) bodies, in the same slot order as mjmodel_lids /
+        # mjmodel_pose_xyz_xyzw. Needed because the warp backend bakes static geoms' world
+        # poses at put_model time and never recomputes geom_xpos/geom_xmat for them during
+        # forward; _set_link_poses recomputes them from the target body pose so collision and
+        # rendering track the moved body. (See _set_link_poses for details.)
+        geom_bodyid = self._mj_model.geom_bodyid
+        geom_ids_list = []
+        geom_slot_list = []
+        for slot, body_lid in enumerate(lids_without_parents):
+            g = np.nonzero(geom_bodyid == body_lid)[0]
+            geom_ids_list.append(g)
+            geom_slot_list.append(np.full(g.shape, slot, dtype=np.int32))
+        if len(geom_ids_list) > 0:
+            geom_ids_np = np.concatenate(geom_ids_list).astype(np.int32)
+            geom_slot_np = np.concatenate(geom_slot_list).astype(np.int32)
+        else:
+            geom_ids_np = np.empty((0,), dtype=np.int32)
+            geom_slot_np = np.empty((0,), dtype=np.int32)
+        geom_local_pos_np = self._mj_model.geom_pos[geom_ids_np].astype(np.float32)   # (G,3)
+        geom_local_quat_np = self._mj_model.geom_quat[geom_ids_np].astype(np.float32)  # (G,4) wxyz
+        gw, gx, gy, gz = (geom_local_quat_np[:, 0], geom_local_quat_np[:, 1],
+                          geom_local_quat_np[:, 2], geom_local_quat_np[:, 3])
+        geom_local_mat_np = np.stack([
+            np.stack([1 - 2 * (gy * gy + gz * gz), 2 * (gx * gy - gw * gz),     2 * (gx * gz + gw * gy)],     axis=-1),
+            np.stack([2 * (gx * gy + gw * gz),     1 - 2 * (gx * gx + gz * gz), 2 * (gy * gz - gw * gx)],     axis=-1),
+            np.stack([2 * (gx * gz - gw * gy),     2 * (gy * gz + gw * gx),     1 - 2 * (gx * gx + gy * gy)], axis=-1),
+        ], axis=-2).astype(np.float32)  # (G,3,3)
+        mjmodel_geom_ids = jnp.array(geom_ids_np, device=self._jax_device)
+        mjmodel_geom_slot = jnp.array(geom_slot_np, device=self._jax_device)
+        mjmodel_geom_local_pos = jnp.array(geom_local_pos_np, device=self._jax_device)
+        mjmodel_geom_local_mat = jnp.array(geom_local_mat_np, device=self._jax_device)
+
+        resolved = (mjmodel_lids, idx_without_parents, idx_connected_to_world_th, mjdata_qpadrs_qvadrs,
+                    mjmodel_geom_ids, mjmodel_geom_slot, mjmodel_geom_local_pos, mjmodel_geom_local_mat)
         self._link_addr_cache[key] = resolved
         return resolved
 
@@ -2907,19 +2954,29 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             mjmodel_pose_xyz_xyzw = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
             mjdata_qpadrs_qvadrs = jnp.array(np.empty((2, 0), dtype=np.int32), device=self._jax_device)
             mjdata_poses_xyzxyzw_vel_xyzxyz = jnp.array(np.empty((self._vec_size, 0, 13), dtype=np.float32), device=self._jax_device)
-            return mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz
+            mjmodel_geom_ids = jnp.array(np.empty((0,), dtype=np.int32), device=self._jax_device)
+            mjmodel_geom_slot = jnp.array(np.empty((0,), dtype=np.int32), device=self._jax_device)
+            mjmodel_geom_local_pos = jnp.array(np.empty((0, 3), dtype=np.float32), device=self._jax_device)
+            mjmodel_geom_local_mat = jnp.array(np.empty((0, 3, 3), dtype=np.float32), device=self._jax_device)
+            return (mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz,
+                    mjmodel_geom_ids, mjmodel_geom_slot, mjmodel_geom_local_pos, mjmodel_geom_local_mat)
         if link_states_pose_vel is None:
             raise ValueError("link_names was provided without link_states_pose_vel")
 
         (mjmodel_lids,
          idx_without_parents,
          idx_connected_to_world_th,
-         mjdata_qpadrs_qvadrs) = self._resolve_link_set_addrs(link_names)
+         mjdata_qpadrs_qvadrs,
+         mjmodel_geom_ids,
+         mjmodel_geom_slot,
+         mjmodel_geom_local_pos,
+         mjmodel_geom_local_mat) = self._resolve_link_set_addrs(link_names)
 
         link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
         mjmodel_pose_xyz_xyzw = th2jax(link_states_pose_vel[:, idx_without_parents], jax_device=self._jax_device)
         mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:, idx_connected_to_world_th], jax_device=self._jax_device)
-        return mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz
+        return (mjmodel_lids, mjmodel_pose_xyz_xyzw, mjdata_qpadrs_qvadrs, mjdata_poses_xyzxyzw_vel_xyzxyz,
+                mjmodel_geom_ids, mjmodel_geom_slot, mjmodel_geom_local_pos, mjmodel_geom_local_mat)
 
     @override
     def setJointsAndLinksStateDirect(self,
@@ -2950,7 +3007,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         (mjmodel_lids,
          mjmodel_pose_xyz_xyzw,
          mjdata_qpadrs_qvadrs,
-         mjdata_poses_xyzxyzw_vel_xyzxyz) = self._prepare_links_set_data(link_names, link_states_pose_vel)
+         mjdata_poses_xyzxyzw_vel_xyzxyz,
+         mjmodel_geom_ids,
+         mjmodel_geom_slot,
+         mjmodel_geom_local_pos,
+         mjmodel_geom_local_mat) = self._prepare_links_set_data(link_names, link_states_pose_vel)
         record_time("MjxAdapter.setJointsAndLinksStateDirect: prepared link data")
 
         self._sim_state = self._set_joints_and_links_state_data(sim_state = self._sim_state,
@@ -2963,7 +3024,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                                 mjmodel_lids = mjmodel_lids,
                                                                 mjmodel_pose_xyz_xyzw = mjmodel_pose_xyz_xyzw,
                                                                 mjdata_qpadrs_qvadrs = mjdata_qpadrs_qvadrs,
-                                                                mjdata_poses_xyzxyzw_vel_xyzxyz = mjdata_poses_xyzxyzw_vel_xyzxyz)
+                                                                mjdata_poses_xyzxyzw_vel_xyzxyz = mjdata_poses_xyzxyzw_vel_xyzxyz,
+                                                                mjmodel_geom_ids = mjmodel_geom_ids,
+                                                                mjmodel_geom_slot = mjmodel_geom_slot,
+                                                                mjmodel_geom_local_pos = mjmodel_geom_local_pos,
+                                                                mjmodel_geom_local_mat = mjmodel_geom_local_mat)
         record_time("MjxAdapter.setJointsAndLinksStateDirect: setted data")
 
         self._mark_forward_needed()
@@ -3039,29 +3104,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"setJointsStateDirect(\n{joint_names}, \n{joint_states_pve}, \n{vec_mask})")
 
         record_region_start("MjxAdapter.setJointsStateDirect")
-        if self._check_sizes and joint_states_pve.size() != (self._vec_size,len(joint_names),3):
-            raise RuntimeError(f"joint_states_pve should have size {(self._vec_size,len(joint_names),3)}, but it's {joint_states_pve.size()}")
-        
-        if vec_mask is not None:
-            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
-        else:
-            vec_mask_jnp = self._all_vecs
-        jids = np.array([self._jname2jid[jn] for jn in joint_names])
-        js_pve = th2jax(joint_states_pve, jax_device=self._jax_device)
-        record_time("MjxAdapter.setJointsStateDirect: got js_pve and vec_mask_jnp")
-
-
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all(np.logical_or(jtypes == mjutils._mjtJoint.mjJNT_HINGE, jtypes == mjutils._mjtJoint.mjJNT_SLIDE)):
-            raise RuntimeError(f"Cannot control set state for multi-dimensional joint, types = {list(zip(joint_names,jtypes))}")
-        qpadr_np = self._mj_model.jnt_qposadr[jids]
-        qvadr_np = self._mj_model.jnt_dofadr[jids]
-        record_time("MjxAdapter.setJointsStateDirect: got adrs")
-
-        
-        record_time("MjxAdapter.setJointsStateDirect: def func")
-        qpadr_qvadr = jnp.array(np.stack([qpadr_np, qvadr_np]), device=self._jax_device)
-        record_time("MjxAdapter.setJointsStateDirect: converted np->jax")
+        vec_mask_jnp = self._vec_mask_to_jax(vec_mask)
+        qpadr_qvadr, js_pve = self._prepare_joint_set_data(joint_names, joint_states_pve)
+        record_time("MjxAdapter.setJointsStateDirect: prepared data")
         self._sim_state = self._set_joint_state_data(self._sim_state, self._sim_conf, vec_mask_jnp, qpadr_qvadr, js_pve)
         record_time("MjxAdapter.setJointsStateDirect: setted data")
 
@@ -3088,7 +3133,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         mjmodel_pose_xyz_xyzw : jnp.ndarray,
                         mjdata_qpadrs_qvadrs : jnp.ndarray,
                         mjdata_poses_xyzxyzw_vel_xyzxyz : jnp.ndarray,
-                        vec_mask_jnp : jnp.ndarray):
+                        vec_mask_jnp : jnp.ndarray,
+                        mjmodel_geom_ids : jnp.ndarray,
+                        mjmodel_geom_slot : jnp.ndarray,
+                        mjmodel_geom_local_pos : jnp.ndarray,
+                        mjmodel_geom_local_mat : jnp.ndarray):
         """ Set the state of links by changing both mjmodel (for bodies with no parent joint) and mjdata (for bodies with a parent joint), using the same vec_mask_jnp to decide which envs to update in either case.
             Referenced MjData joints are assumed to be free joints.
 
@@ -3117,8 +3166,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         new_model_body_pos = sim_state.mjx_model.body_pos.at[:,mjmodel_lids].set(
             jnp.where(vec_mask_jnp[:, None, None], mjmodel_pose_xyz_xyzw[:,:,:3], sim_state.mjx_model.body_pos[:, mjmodel_lids])
         )
+        # Normalize the incoming body quaternions like C mujoco's mj_kinematics does (mju_normalize4):
+        # mjx does not normalize body_quat, so a near-zero quat would silently produce a degenerate
+        # (all-zero) rotation matrix. Match mujoco's semantics: near-zero -> identity, else unit-normalize.
+        new_quats_wxyz = mjmodel_pose_xyz_xyzw[:,:,[6,3,4,5]]
+        quat_norms = jnp.linalg.norm(new_quats_wxyz, axis=-1, keepdims=True)
+        new_quats_wxyz = jnp.where(quat_norms < 1e-15,
+                                   jnp.array([1.0, 0.0, 0.0, 0.0]),
+                                   new_quats_wxyz / jnp.maximum(quat_norms, 1e-15))
         new_model_body_quat = sim_state.mjx_model.body_quat.at[:,mjmodel_lids].set(
-            jnp.where(vec_mask_jnp[:, None, None], mjmodel_pose_xyz_xyzw[:,:,[6,3,4,5]], sim_state.mjx_model.body_quat[:, mjmodel_lids])
+            jnp.where(vec_mask_jnp[:, None, None], new_quats_wxyz, sim_state.mjx_model.body_quat[:, mjmodel_lids])
         )
         
         qpadrs = mjdata_qpadrs_qvadrs[0]
@@ -3139,7 +3196,39 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             jnp.where(vec_mask_jnp[:, None], all_vels, sim_state.mjx_data.qvel[:, all_qvadrs])
         )
 
-        mjx_data = sim_state.mjx_data.replace(qpos=new_qpos, qvel=new_qvel)
+        # Keep the moved fixed bodies' geom WORLD poses (geom_xpos/geom_xmat) in sync with the
+        # new body_pos/body_quat. The warp backend bakes world-attached (DoF-less) geoms at
+        # put_model time and does NOT recompute geom_xpos/geom_xmat for them during forward, so
+        # without this the body xpos moves but its collision geometry and the render BVH stay at
+        # the original pose (object falls through / renders at the origin). We recompute them here
+        # from the target body pose. Harmless under the jax backend (forward recomputes them).
+        # mjmodel_geom_ids/slot/local_* are empty when no fixed body is being set, in which case
+        # this is a no-op (the branch is on a static shape, so it is jit-safe).
+        if mjmodel_geom_ids.shape[0] > 0:
+            body_xyz = mjmodel_pose_xyz_xyzw[:, :, :3]                       # (V, F, 3) target pos
+            bw = new_quats_wxyz[..., 0]; bx = new_quats_wxyz[..., 1]
+            by = new_quats_wxyz[..., 2]; bz = new_quats_wxyz[..., 3]
+            body_mat = jnp.stack([
+                jnp.stack([1 - 2 * (by * by + bz * bz), 2 * (bx * by - bw * bz),     2 * (bx * bz + bw * by)],     axis=-1),
+                jnp.stack([2 * (bx * by + bw * bz),     1 - 2 * (bx * bx + bz * bz), 2 * (by * bz - bw * bx)],     axis=-1),
+                jnp.stack([2 * (bx * bz - bw * by),     2 * (by * bz + bw * bx),     1 - 2 * (bx * bx + by * by)], axis=-1),
+            ], axis=-2)                                                      # (V, F, 3, 3)
+            g_body_xyz = body_xyz[:, mjmodel_geom_slot]                      # (V, G, 3)
+            g_body_mat = body_mat[:, mjmodel_geom_slot]                      # (V, G, 3, 3)
+            g_xpos = g_body_xyz + jnp.einsum("vgij,gj->vgi", g_body_mat, mjmodel_geom_local_pos)
+            g_xmat = jnp.einsum("vgij,gjk->vgik", g_body_mat, mjmodel_geom_local_mat)
+            new_geom_xpos = sim_state.mjx_data.geom_xpos.at[:, mjmodel_geom_ids].set(
+                jnp.where(vec_mask_jnp[:, None, None], g_xpos, sim_state.mjx_data.geom_xpos[:, mjmodel_geom_ids])
+            )
+            new_geom_xmat = sim_state.mjx_data.geom_xmat.at[:, mjmodel_geom_ids].set(
+                jnp.where(vec_mask_jnp[:, None, None, None], g_xmat, sim_state.mjx_data.geom_xmat[:, mjmodel_geom_ids])
+            )
+        else:
+            new_geom_xpos = sim_state.mjx_data.geom_xpos
+            new_geom_xmat = sim_state.mjx_data.geom_xmat
+
+        mjx_data = sim_state.mjx_data.replace(qpos=new_qpos, qvel=new_qvel,
+                                              geom_xpos=new_geom_xpos, geom_xmat=new_geom_xmat)
         mjx_model = sim_state.mjx_model.replace(body_pos=new_model_body_pos, body_quat=new_model_body_quat)
         sim_state = sim_state.replace_d({"mjx_data": mjx_data, "mjx_model": mjx_model})
         return sim_state
@@ -3149,135 +3238,36 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def setLinksStateDirect(self, link_names : list[tuple[str,str]], link_states_pose_vel : th.Tensor, vec_mask : th.Tensor | None = None):
 
         record_region_start("mjxAdapter.setLinksStateDirect")
-        if vec_mask is not None:
-            vec_mask_jnp = th2jax(vec_mask, jax_device=self._jax_device)
-        else:
-            vec_mask_jnp = self._all_vecs
+        vec_mask_jnp = self._vec_mask_to_jax(vec_mask)
 
-        lids = np.array([self._lname2lid[ln] for ln in link_names])
-        site_mask = lids >= self._nbody
-        if np.any(site_mask):
-            site_names = np.array(link_names)[site_mask]
-            raise RuntimeError(f"Cannot set state for sites (they are kinematic, attached to a body): {site_names.tolist()}")
-        root_body_ids = self._mj_model.body_rootid[lids]
-        body_jnt_nums = self._mj_model.body_jntnum[lids]
-        body_parent_ids = self._mj_model.body_parentid[lids]
-
-        are_all_lids_root_bodies = np.all(root_body_ids == lids)
-        if not are_all_lids_root_bodies:
-            nonroot_lids = np.array(link_names)[root_body_ids != lids]
-            raise RuntimeError(f"All links in setLinksStateDirect must be root bodies, but links {nonroot_lids} are not.")
-        are_links_world = lids == 0
-        if np.any(are_links_world):
-            world_lids = np.array(link_names)[are_links_world]
-            raise RuntimeError(f"Cannot set state for world link, but links {world_lids} are among the requested ones.")
-        
-        # - bodies with no parents must be moved changing the mjmodel, 
+        # - bodies with no parents must be moved changing the mjmodel,
         #   these can be set directly by knowing the lid
         # - bodies attached with one joint to the world must be moved changing mjdata,
         #   these can be set by knowing the lid and the parent joint id
-        
-        link_states_pose_vel = link_states_pose_vel.to(self._out_th_device, non_blocking=self._out_cuda)
-
-        links_without_parents_mask = np.logical_and(body_jnt_nums == 0, body_parent_ids == 0)
-        idx_without_parents = th.as_tensor(np.nonzero(links_without_parents_mask)[0]).to(self._out_th_device, non_blocking=self._out_cuda)
-        lids_without_parents = lids[links_without_parents_mask]
-        lids_without_parents_jax = jnp.array(lids_without_parents, device=self._jax_device)
-        new_mjmodel_poses_xyz_xyzw = th2jax(link_states_pose_vel[:,idx_without_parents], jax_device=self._jax_device)
-
-        links_conected_to_world_mask = np.logical_and(body_jnt_nums == 1, body_parent_ids == 0)
-        idx_connected_to_world = np.nonzero(links_conected_to_world_mask)[0]
-        idx_connected_to_world_th = th.as_tensor(idx_connected_to_world).to(self._out_th_device, non_blocking=self._out_cuda)
-        lids_connected_to_world = lids[links_conected_to_world_mask]
-
-        jids = self._mj_model.body_jntadr[lids_connected_to_world]
-        jtypes = self._mj_model.jnt_type[jids]
-        all_free_joints_mask = jtypes == mjutils._mjtJoint.mjJNT_FREE
-        if not np.all(all_free_joints_mask):
-            non_free_joints_lids = lids_connected_to_world[~all_free_joints_mask]
-            raise RuntimeError(f"Cannot set state for links connected to world with non-free joint, but links {non_free_joints_lids} are among the requested ones.")
-        qpadrs_qvadrs = np.stack([self._mj_model.jnt_qposadr[jids], self._mj_model.jnt_dofadr[jids]], axis = 0)
-        qpadrs_qvadrs = jnp.array(qpadrs_qvadrs, device=self._jax_device)
-        new_mjdata_poses_xyzxyzw_vel_xyzxyz = th2jax(link_states_pose_vel[:,idx_connected_to_world_th], jax_device=self._jax_device)
-
-        uncategorized_mask = ~(links_without_parents_mask | links_conected_to_world_mask)
-        if np.any(uncategorized_mask):
-            uncategorized_names = np.array(link_names)[uncategorized_mask]
-            raise RuntimeError(f"Links {uncategorized_names.tolist()} are neither parentless bodies nor free-joint bodies connected to world, cannot set their state.")
+        (mjmodel_lids,
+         mjmodel_pose_xyz_xyzw,
+         mjdata_qpadrs_qvadrs,
+         mjdata_poses_xyzxyzw_vel_xyzxyz,
+         mjmodel_geom_ids,
+         mjmodel_geom_slot,
+         mjmodel_geom_local_pos,
+         mjmodel_geom_local_mat) = self._prepare_links_set_data(link_names, link_states_pose_vel)
         record_time("prepared data")
         self._sim_state = self._set_link_poses( self._sim_state,
                                                 self._static_sim_conf.vec_size,
-                                                mjmodel_lids = lids_without_parents_jax,
-                                                mjmodel_pose_xyz_xyzw = new_mjmodel_poses_xyz_xyzw,
-                                                mjdata_qpadrs_qvadrs = qpadrs_qvadrs,
-                                                mjdata_poses_xyzxyzw_vel_xyzxyz = new_mjdata_poses_xyzxyzw_vel_xyzxyz,
-                                                vec_mask_jnp = vec_mask_jnp)
+                                                mjmodel_lids = mjmodel_lids,
+                                                mjmodel_pose_xyz_xyzw = mjmodel_pose_xyz_xyzw,
+                                                mjdata_qpadrs_qvadrs = mjdata_qpadrs_qvadrs,
+                                                mjdata_poses_xyzxyzw_vel_xyzxyz = mjdata_poses_xyzxyzw_vel_xyzxyz,
+                                                vec_mask_jnp = vec_mask_jnp,
+                                                mjmodel_geom_ids = mjmodel_geom_ids,
+                                                mjmodel_geom_slot = mjmodel_geom_slot,
+                                                mjmodel_geom_local_pos = mjmodel_geom_local_pos,
+                                                mjmodel_geom_local_mat = mjmodel_geom_local_mat)
         record_region_end("mjxAdapter.setLinksStateDirect")
 
-
-        # model_body_pos = self._sim_state.mjx_model.body_pos
-        # model_body_quat = self._sim_state.mjx_model.body_quat
-        # data_joint_pos = self._sim_state.mjx_data.qpos
-        # data_joint_vel = self._sim_state.mjx_data.qvel
-        # link_states_pose_vel_jnp = th2jax(link_states_pose_vel, jax_device=self._jax_device)
-        # for i, link_name in enumerate(link_names):
-        #     # ggLog.info(f"setting link state for {link_name}")
-        #     lid = lids[i]            
-        #     # Contrary to what you might expect mujoco associates each body to multiple possible parent joints
-        #     # so:
-        #     # - mj_model.body_jntnum[link_id] is the number of parent joints of a body
-        #     # - mj_model.body_jntadr[link_id] is the id of the first of these parent joints
-        #     # - mj_model.jnt_qposadr[joint_id] is the qpos addredd of a specific joint id
-        #     parent_joints_num = self._mj_model.body_jntnum[lid]
-        #     parent_body_id = self._mj_model.body_parentid[lid]
-        #     if parent_joints_num == 0 and parent_body_id==0: # if it has no parent joints
-        #         # ggLog.info(f"changing 'fixed joint'")
-        #         #    Fixed joints cannot be set to different positions across the vectorized simulations.
-        #         #    This because MJX does not vectorize the MjModel, all vec simulations use the same model,
-        #         #     and fixed joints are represented as fixed transforms in the model.
-        #         # if not jnp.all(jnp.array_equal(link_states_pose_vel_jnp[:,i], jnp.broadcast_to(link_states_pose_vel_jnp[0,i], shape=link_states_pose_vel_jnp[:,i].shape),equal_nan=True)):
-        #         #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations.\n"
-        #         #                        f"{link_states_pose_vel_jnp[0,i]}\n"
-        #         #                        f"!=\n"
-        #         #                        f"{link_states_pose_vel_jnp[:,i]}")
-        #         # if jnp.any(vec_mask_jnp != vec_mask_jnp[0]):
-        #         #     raise RuntimeError(f"Fixed joints cannot be set to different positions across the vectorized simulations, but vec_mask has different values.")
-        #         model_body_pos = model_body_pos.at[:,lid].set(link_states_pose_vel_jnp[:,i,:3])
-        #         model_body_quat = model_body_quat.at[:,lid].set(link_states_pose_vel_jnp[:,i,[6,3,4,5]])
-        #         # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")
-        #     elif parent_joints_num == 1 and parent_body_id==0:
-        #         jid = self._mj_model.body_jntadr[lid]
-        #         jtype = self._mj_model.jnt_type[jid]
-        #         if jtype == mujoco_mjtJoint.mjJNT_FREE:
-        #             # ggLog.info(f"writing at qpos[{self._mj_model.jnt_qposadr[jid]}:{self._mj_model.jnt_qposadr[jid]+7}]")
-        #             qadr = self._mj_model.jnt_qposadr[jid]
-        #             dadr = self._mj_model.jnt_dofadr[jid]
-        #             data_joint_pos = set_rows_cols(data_joint_pos,
-        #                                            (vec_mask_jnp, jnp.arange(qadr, qadr+7)),
-        #                                            get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,[0,1,2,6,3,4,5])))
-        #             data_joint_vel = set_rows_cols(data_joint_vel,
-        #                                            (vec_mask_jnp, jnp.arange(dadr, dadr+6)),
-        #                                            link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]) #get_rows_cols(link_states_pose_vel_jnp, (vec_mask_jnp,i,jnp.arange(7,13))))
-        #             # data_joint_pos = (data_joint_pos.at[vec_mask_jnp,qadr:qadr+7]
-        #             #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,[0,1,2,6,3,4,5]]))
-        #             # data_joint_vel = (data_joint_vel.at[vec_mask_jnp,dadr:dadr+6]
-        #             #                                 .set(link_states_pose_vel_jnp[vec_mask_jnp,i,7:13]))
-        #             # raise NotImplementedError()
-        #         else:
-        #             raise NotImplementedError(f"Cannot set link state for link {link_name} with parent joint of type {jtype} (see mjtJoint enum)")
-        #     else:
-        #         raise NotImplementedError(f"Cannot set link state for link {link_name} with {self._mj_model.body_jntnum} parent joints and parent body {parent_body_id}")
-        # mjx_model = self._sim_state.mjx_model.replace(body_pos=model_body_pos, body_quat = model_body_quat)
-        # mjx_data = self._sim_state.mjx_data.replace(qpos=data_joint_pos, qvel=data_joint_vel)
-        # self._sim_state = self._sim_state.replace_d({"mjx_data"  : mjx_data,
-        #                                              "mjx_model" : mjx_model})
-        # self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         self._mark_forward_needed()
-        # print(f"self._sim_state.mjx_model.body_pos = {self._sim_state.mjx_model.body_pos}")        
-        # print(f"self._sim_state.mjx_data.qpos = {self._sim_state.mjx_data.qpos}")        
-        # self._update_gui(True)
-        # ggLog.info(f"setted_lstate Simtime [{self._simTime:.9f}] step [{self._sim_step_count_since_build}] monitored jstate:\n{self._get_vec_joint_states_raw_pvea(self._monitored_qpadr, self._monitored_qvadr, self._sim_state.mjx_data)}")
-
+    
     def _mark_forward_needed(self):
         self._forward_needed = True
 

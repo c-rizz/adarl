@@ -377,6 +377,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self.set_impedance_controlled_joints([]) # initialize attributes
         self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds_queue","cmds_queue_times"]))
         self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds_queue","cmds_queue_times"]), in_axes=(0,0,None))
+        self._peek_current_impedance_cmd_jit = jax.jit(self._peek_current_impedance_cmd)
         self._compute_impedance_torques_vec = jax.vmap(jax.jit(self._compute_impedance_torques), in_axes=(0,0,None))
 
     def setJointsImpedanceCommand(self, joint_impedances_pvesd : th.Tensor,
@@ -540,8 +541,27 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         
         return current_cmd, has_cmd, cmds_queue, cmds_queue_times
 
+    @staticmethod
+    def _peek_current_impedance_cmd(cmds_queue : jnp.ndarray,
+                                    cmds_queue_times : jnp.ndarray,
+                                    current_time : jnp.ndarray):
+        """Read-only view of the impedance command currently in effect, per environment.
 
-    
+        Selects the most recent queued command whose time <= current_time (same choice
+        _get_cmd_and_cleanup makes during a step) but does NOT consume/clean up the queue, so it
+        is safe to call from a getter without mutating sim_state. Envs with no active command
+        (all queued commands are in the future) get a zero command, matching that no impedance
+        effort is applied for them.
+
+        cmds_queue: (V, Q, J, 5); cmds_queue_times: (V, Q); current_time: scalar -> (V, J, 5)
+        """
+        past_mask = cmds_queue_times <= current_time                              # (V, Q)
+        has_cmd = jnp.any(past_mask, axis=1)                                       # (V,)
+        masked_times = jnp.where(past_mask, cmds_queue_times, float("-inf"))       # (V, Q)
+        current_cmd_idx = jnp.argmax(masked_times, axis=1)                         # (V,)
+        current_cmd = jnp.take_along_axis(cmds_queue, current_cmd_idx[:, None, None, None], axis=1)[:, 0]
+        return jnp.where(has_cmd[:, None, None], current_cmd, 0.0)
+
     def set_impedance_controlled_joints(self, joint_names : Sequence[tuple[str,str]]):
         """Set the joints that will be controlled by the adapter
 
@@ -553,10 +573,11 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         """
         self._imp_controlled_joint_names = tuple(joint_names)
         imp_control_jids = [self._jname2jid[jn] for jn in joint_names]
-        imp_control_jids_np = np.array(imp_control_jids)
+        # force int dtype: an empty joint list makes np/jnp default to float, and these ids are used to index joint-state arrays
+        imp_control_jids_np = np.array(imp_control_jids, dtype=np.int64)
         self._imp_control_max_torque = jnp.array([self._max_joint_impedance_ctrl_torques.get(jn, self._default_max_joint_impedance_ctrl_torque)
                                                     for jn in self._imp_controlled_joint_names], device=self._jax_device)
-        imp_control_jids_jax = jnp.array(imp_control_jids, device=self._jax_device)
+        imp_control_jids_jax = jnp.array(imp_control_jids, dtype=jnp.int32, device=self._jax_device)
         self._sim_conf = self._sim_conf.replace_d({"imp_control_jids" : imp_control_jids_jax})
         if len(imp_control_jids) != 0:
             self._jids_to_imp_cmd_qpadr = self._sim_conf.jnt_qposadr[imp_control_jids_np]
@@ -754,7 +775,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     
     @override
     def get_current_joint_impedance_command(self) -> th.Tensor:
-        return self._last_applied_jimp_cmd
+        current_cmd = self._peek_current_impedance_cmd_jit(self._sim_state.cmds_queue,
+                                                           self._sim_state.cmds_queue_times,
+                                                           self._sim_state.sim_time)
+        return jax2th(current_cmd, self._out_th_device)
 
     @override
     def _get_joint_state_for_history(self, sim_state : SimStateJimp):
@@ -813,7 +837,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
     @override
     def control_period(self):
-        self._sim_step_dt_th
+        return self._sim_step_dt_th
 
     @override
     @partial(jax.jit, static_argnames=["self"], donate_argnames=("sim_state",))

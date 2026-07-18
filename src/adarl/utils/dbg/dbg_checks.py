@@ -31,7 +31,9 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
               assert_msg : str | None = None,
               stacktrace_depth : int = 0):
     from adarl.utils.session import default_session
-    if default_session.debug_level>0:
+    # debug_level is only set once Session.initialize() runs; default to off (0) so that
+    # dbg-checked helpers stay usable before/without session initialization (e.g. in unit tests).
+    if getattr(default_session, "debug_level", 0)>0:
         global printed_dbg_check_msg
         if not printed_dbg_check_msg:
             ggLog.warn(f"dbg_check is enabled")
@@ -62,7 +64,7 @@ def dbg_check(is_check_passed : Callable[[],bool|th.Tensor], build_msg : Callabl
     
 def dbg_run(func : Callable[[],Any]):
     from adarl.utils.session import default_session
-    if default_session.debug_level>0:
+    if getattr(default_session, "debug_level", 0)>0:
         func()
 
 def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn : bool = False, assert_msg : str | None = None):

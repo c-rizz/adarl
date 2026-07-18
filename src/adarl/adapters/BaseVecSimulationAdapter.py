@@ -182,6 +182,20 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         """
         raise NotImplementedError()
     
+    def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]) -> th.Tensor:
+        """Get indices into monitored collision pairs array.
+        
+        Parameters
+        ----------
+        collision_pairs : Sequence[tuple[tuple[str,str], tuple[str,str]]]
+            List of link name pairs to look up.
+            
+        Returns
+        -------
+        th.Tensor
+            Long tensor of indices into the monitored collision pairs array.
+        """
+        raise NotImplementedError()
 
     def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
         """Check if link pairs are colliding.
