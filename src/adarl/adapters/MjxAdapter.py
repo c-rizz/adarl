@@ -1502,7 +1502,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 raise RuntimeError(f"Unknown render backend '{self._render_backend}'")
         else:
             self._renderers = {}
-        self._visualize_xfrc_applied = True
+        self._visualize_xfrc_applied = False
 
         self._precompute_depth_cam_params()
 
