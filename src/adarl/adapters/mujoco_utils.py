@@ -201,7 +201,7 @@ def add_geom_to_renderer(renderer : mujoco.Renderer,
     quat_xyzw = quat_xyzw.astype(np.float64)
     orient_mat = np.empty((9,),dtype=quat_xyzw.dtype)
     mjutils.mju_quat2Mat(orient_mat, quat_xyzw[...,[3,0,1,2]])
-    mjutils.mju_quat2Mat(geom=renderer.scene.geoms[renderer.scene.ngeom],
+    mjutils.mjv_initGeom(geom=renderer.scene.geoms[renderer.scene.ngeom],
                         type=geom_type,
                         size=size_xyz,
                         pos=pos_xyz,
@@ -214,7 +214,7 @@ def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6,
   """Add an arrow to the scene."""
   scene = renderer.scene
   scene.geoms[scene.ngeom].category = mjutils.mjtCatBit.mjCAT_STATIC
-  mjutils.mju_quat2Mat(
+  mjutils.mjv_initGeom(
       geom=scene.geoms[scene.ngeom],
       type=mjutils.mjtGeom.mjGEOM_ARROW,
       size=np.zeros(3),

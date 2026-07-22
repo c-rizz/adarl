@@ -1276,8 +1276,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
-                       default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None):
+                       default_link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]] | None = None,
+                       add_ground : bool | None = None):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
+        if add_ground is not None:
+            self._add_ground = add_ground
         ggLog.info(f"MjxAdapter building scenario")
         scenario_logs_folder = self._log_folder+"/MjxAdapter/scenario_logs"
         # jax.profiler.start_server(9999)

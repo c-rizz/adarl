@@ -12,6 +12,7 @@ tests/
     test_quaternion.py
     test_masked_tensor_ops.py
     test_normalization.py
+    test_robot_helpers.py         # pinocchio Robot: construction, FK, multi-model merge, pickling, collisions
   adapters/
     adapter_compliance.py         # shared, backend-agnostic behavioral checks (not a test module)
     _backends.py                  # capability detection, skip decorators, adapter builders

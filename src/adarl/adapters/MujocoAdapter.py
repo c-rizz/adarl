@@ -134,6 +134,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def build_scenario(self, models: Sequence[ModelSpawnDef] = (), **kwargs):
         """Build and setup the environment scenario. Should be called by the environment before startup()."""
+        add_ground = kwargs.pop("add_ground", None)
+        if add_ground is not None:
+            self._add_ground = add_ground
         if self._vec_size != 1:
             raise RuntimeError("MujocoAdapter only supports vec_size=1")
         models = list(models)

@@ -306,11 +306,11 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         return mj_model, big_speck
 
     @override
-    def build_scenario(self, models, default_link_group_collisions=None):
+    def build_scenario(self, models, default_link_group_collisions=None, add_ground=None):
         """Override build_scenario to additionally build the joint-to-actuator mapping
         and initialize the ctrl state. Actuators are kept enabled via disable_builtin_actuators=False
         passed to the parent constructor."""
-        super().build_scenario(models, default_link_group_collisions)
+        super().build_scenario(models, default_link_group_collisions, add_ground=add_ground)
         
         # Build joint-to-actuator mapping from the compiled model
         self._build_joint_actuator_mapping()

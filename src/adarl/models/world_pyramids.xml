@@ -1,0 +1,453 @@
+<mujoco>
+    <extension>
+        <plugin plugin="mujoco.sdf.torus">
+            <instance name="torus">
+                <config key="radius1" value="0.077103"/>
+                <config key="radius2" value="0.03"/>
+            </instance>
+        </plugin>
+    </extension>
+
+    <default>
+        <default class="kyon_all">
+            <joint damping="1.7" armature="0.215" frictionloss="5"/>
+            <geom condim="3" solref="0.005 1.2" solimp="0.995 0.995 0.001 0.5 2" friction="0.7 0.005 0.001"/>
+        </default>
+        <default class="kyon_wheel">
+            <joint damping="0.01" armature="0.1" frictionloss="0.01"/>
+            <geom condim="3" solref="0.005 1.2" solimp="0.995 0.995 0.001 0.5 2" friction="0.7 0.005 0.001"/>
+        </default>
+        <default class="terrain">
+            <geom solref="0.004 1.2" solimp="0.995 0.995 0.001 0.5 2" friction="0.7 0.005 0.001" type="plane" material="grid"/>
+        </default>
+    </default>
+
+    <asset>
+        <mesh name="torus">
+            <plugin instance="torus"/>
+        </mesh>
+
+        <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="512"/>
+        <texture name="body" type="cube" builtin="flat" mark="cross" width="127" height="1278" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" markrgb="1 1 1" random="0.01"/>
+        <material name="body" texture="body" texuniform="true" rgba="0.8 0.6 .4 1"/>
+        <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+        <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
+    	<!-- <hfield name="terrain" file="package://kyon_urdf/meshes/noisy_terrain.png" size="50 50 0.05 0.01"/> -->
+        <!-- <texture name="step_material" type="2d" builtin="checker" width="512" height="512" rgb1=".8 .8 0" rgb2="0 0.1 0.1"/>
+        <material name="step_material" texture="step_material"/> -->
+    </asset>
+    <worldbody>
+    	<!-- <geom name="floor" type="hfield" hfield="terrain" pos="0 0 -1.0" material="grid" friction="0.6" condim="3" group="1"/> --> 
+        <geom name="floor_0" size="0 0 .05" pos="0 0 0" type="plane" material="grid" condim="3" group="0" friction="0.6"/>
+        <!-- <geom name="step0" type="box" size="0.5 0.5 0.1" pos="5 0.7 0.1" material="step_material" condim="3" group="0" friction="0.6"/>
+        <geom name="step1" type="box" size="0.5 0.5 0.1" pos="5 0.7 0.1" material="step_material" condim="3" group="1" friction="0.6"/> -->
+        <geom name="floor_1" size="0 0 .05" pos="0 0 0" type="plane" material="grid" condim="3" group="1" friction="0.6"/>
+        <!-- <light name="spotlight" mode="targetbodycom" target="pelvis" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -20 4" cutoff="10"/> -->
+        <body name="staircourse" pos="0 0 0">
+      <!-- Level 0 -->
+      <body name="pyramid_lvl0_1" pos="-6 6 0">
+        <geom name="lvl0_step_1_0_1" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_1" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_1" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_1" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_2" pos="-6 -6 0">
+        <geom name="lvl0_step_1_0_2" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_2" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_2" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_2" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_3" pos="6 -6 0">
+        <geom name="lvl0_step_1_0_3" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_3" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_3" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_3" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_4" pos="6 6 0">
+        <geom name="lvl0_step_1_0_4" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_4" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_4" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_4" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_5" pos="-6 18 0">
+        <geom name="lvl0_step_1_0_5" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_5" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_5" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_5" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_6" pos="6 18 0">
+        <geom name="lvl0_step_1_0_6" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_6" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_6" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_6" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_7" pos="6 -18 0">
+        <geom name="lvl0_step_1_0_7" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_7" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_7" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_7" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl0_8" pos="-6 -18 0">
+        <geom name="lvl0_step_1_0_8" type="box" size="5.0 5.0 0.02" material="grid" pos="0 0 0.02" class="terrain"/>
+        <geom name="lvl0_step_2_0_8" type="box" size="3.8 3.8 0.02" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl0_step_3_0_8" type="box" size="2.6 2.6 0.02" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl0_step_4_0_8" type="box" size="1.4 1.4 0.02" material="grid" pos="0 0 0.14" class="terrain"/>
+      </body>
+      <!-- Level 1: low risers, generous treads, fewer steps -->
+      <body name="pyramid_lvl1_1" pos="18 6 0">
+        <geom name="lvl1_step_1_1" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_2" pos="18 -6 0">
+        <geom name="lvl1_step_1_1_2" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_2" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_2" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_2" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_2" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_3" pos="30 -6 0">
+        <geom name="lvl1_step_1_1_3" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_3" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_3" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_3" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_3" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_4" pos="30 6 0">
+        <geom name="lvl1_step_1_1_4" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_4" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_4" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_4" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_4" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_5" pos="18 18 0">
+        <geom name="lvl1_step_1_1_5" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_5" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_5" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_5" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_5" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_6" pos="30 18 0">
+        <geom name="lvl1_step_1_1_6" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_6" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_6" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_6" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_6" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_7" pos="18 -18 0">
+        <geom name="lvl1_step_1_1_7" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_7" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_7" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_7" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_7" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl1_8" pos="30 -18 0">
+        <geom name="lvl1_step_1_1_8" type="box" size="5.0 5.0 0.04" material="grid" pos="0 0 0.04" class="terrain"/>
+        <geom name="lvl1_step_2_1_8" type="box" size="4.0 4.0 0.04" material="grid" pos="0 0 0.12" class="terrain"/>
+        <geom name="lvl1_step_3_1_8" type="box" size="3.0 3.0 0.04" material="grid" pos="0 0 0.20" class="terrain"/>
+        <geom name="lvl1_step_4_1_8" type="box" size="2.0 2.0 0.04" material="grid" pos="0 0 0.28" class="terrain"/>
+        <geom name="lvl1_step_5_1_8" type="box" size="1.0 1.0 0.04" material="grid" pos="0 0 0.36" class="terrain"/>
+      </body>
+      <!-- Level 2: medium risers, tighter treads, more steps -->
+      <body name="pyramid_lvl2_1" pos="42 -6 0">
+        <geom name="lvl2_step_1_2_1" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_1" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_1" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_1" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_1" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_1" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_2" pos="42 6 0">
+        <geom name="lvl2_step_1_2_2" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_2" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_2" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_2" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_2" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_2" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_3" pos="54 -6 0">
+        <geom name="lvl2_step_1_2_3" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_3" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_3" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_3" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_3" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_3" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_4" pos="54 6 0">
+        <geom name="lvl2_step_1_2_4" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_4" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_4" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_4" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_4" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_4" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_5" pos="42 18 0">
+        <geom name="lvl2_step_1_2_5" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_5" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_5" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_5" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_5" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_5" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_6" pos="54 18 0">
+        <geom name="lvl2_step_1_2_6" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_6" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_6" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_6" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_6" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_6" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_7" pos="42 -18 0">
+        <geom name="lvl2_step_1_2_7" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_7" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_7" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_7" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_7" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_7" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl2_8" pos="54 -18 0">
+        <geom name="lvl2_step_1_2_8" type="box" size="5.0 5.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl2_step_2_2_8" type="box" size="4.2 4.2 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl2_step_3_2_8" type="box" size="3.4 3.4 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl2_step_4_2_8" type="box" size="2.6 2.6 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl2_step_5_2_8" type="box" size="1.8 1.8 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl2_step_6_2_8" type="box" size="1.0 1.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+      </body>
+      <!-- <body name="pyramid_lvl3_1" pos="72 0 0">
+        <geom name="lvl3_step_1_3_1" type="box" size="10.0 10.0 0.06" material="grid" pos="0 0 0.06" class="terrain"/>
+        <geom name="lvl3_step_2_3_1" type="box" size="9.2 10.0 0.06" material="grid" pos="0 0 0.18" class="terrain"/>
+        <geom name="lvl3_step_3_3_1" type="box" size="8.4 10.0 0.06" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl3_step_4_3_1" type="box" size="7.6 10.0 0.06" material="grid" pos="0 0 0.42" class="terrain"/>
+        <geom name="lvl3_step_5_3_1" type="box" size="6.8 10.0 0.06" material="grid" pos="0 0 0.54" class="terrain"/>
+        <geom name="lvl3_step_6_3_1" type="box" size="6.0 10.0 0.06" material="grid" pos="0 0 0.66" class="terrain"/>
+        <geom name="lvl3_step_7_3_1" type="box" size="5.2 10.0 0.06" material="grid" pos="0 0 0.78" class="terrain"/>
+        <geom name="lvl3_step_8_3_1" type="box" size="4.4 10.0 0.06" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl3_step_9_3_1" type="box" size="3.6 10.0 0.06" material="grid" pos="0 0 1.02" class="terrain"/>
+        <geom name="lvl3_step_10_3_1" type="box" size="2.8 10.0 0.06" material="grid" pos="0 0 1.14" class="terrain"/>
+        <geom name="lvl3_step_11_3_1" type="box" size="2.0 10.0 0.06" material="grid" pos="0 0 1.26" class="terrain"/>
+        <geom name="lvl3_step_12_3_1" type="box" size="1.2 10.0 0.06" material="grid" pos="0 0 1.38" class="terrain"/>
+        <geom name="lvl3_step_13_3_1" type="box" size="0.4 10.0 0.06" material="grid" pos="0 0 1.50" class="terrain"/>
+      </body>
+
+      <body name="pyramid_lvl3_1" pos="72 0 0">
+        <geom name="lvl3_step_1_3_1" type="box" size="10.0 10.0 0.05" material="grid" pos="0 0 0.05" class="terrain"/>
+        <geom name="lvl3_step_2_3_1" type="box" size="9.2 10.0 0.05" material="grid" pos="0 0 0.15" class="terrain"/>
+        <geom name="lvl3_step_3_3_1" type="box" size="8.4 10.0 0.05" material="grid" pos="0 0 0.25" class="terrain"/>
+        <geom name="lvl3_step_4_3_1" type="box" size="7.6 10.0 0.05" material="grid" pos="0 0 0.35" class="terrain"/>
+        <geom name="lvl3_step_5_3_1" type="box" size="6.8 10.0 0.05" material="grid" pos="0 0 0.45" class="terrain"/>
+        <geom name="lvl3_step_6_3_1" type="box" size="6.0 10.0 0.05" material="grid" pos="0 0 0.55" class="terrain"/>
+        <geom name="lvl3_step_7_3_1" type="box" size="5.2 10.0 0.05" material="grid" pos="0 0 0.65" class="terrain"/>
+        <geom name="lvl3_step_8_3_1" type="box" size="4.4 10.0 0.05" material="grid" pos="0 0 0.75" class="terrain"/>
+        <geom name="lvl3_step_9_3_1" type="box" size="3.6 10.0 0.05" material="grid" pos="0 0 0.85" class="terrain"/>
+        <geom name="lvl3_step_10_3_1" type="box" size="2.8 10.0 0.05" material="grid" pos="0 0 0.95" class="terrain"/>
+        <geom name="lvl3_step_11_3_1" type="box" size="2.0 10.0 0.05" material="grid" pos="0 0 1.05" class="terrain"/>
+        <geom name="lvl3_step_12_3_1" type="box" size="1.2 10.0 0.05" material="grid" pos="0 0 1.15" class="terrain"/>
+        <geom name="lvl3_step_13_3_1" type="box" size="0.4 10.0 0.05" material="grid" pos="0 0 1.25" class="terrain"/>
+      </body> -->
+      <!-- Level 3: high risers, minimal tread width, six steps -->
+      <body name="pyramid_lvl3_1" pos="66 6 0">
+        <geom name="lvl3_step_1_3_1" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_1" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_1" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_1" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_1" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_1" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_1" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_1" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_2" pos="66 -6 0">
+        <geom name="lvl3_step_1_3_2" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_2" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_2" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_2" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_2" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_2" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_2" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_2" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_3" pos="78 6 0">
+        <geom name="lvl3_step_1_3_3" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_3" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_3" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_3" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_3" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_3" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_3" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_3" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_4" pos="78 -6 0">
+        <geom name="lvl3_step_1_3_4" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_4" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_4" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_4" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_4" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_4" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_4" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_4" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_5" pos="66 18 0">
+        <geom name="lvl3_step_1_3_5" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_5" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_5" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_5" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_5" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_5" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_5" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_5" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_6" pos="78 18 0">
+        <geom name="lvl3_step_1_3_6" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_6" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_6" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_6" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_6" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_6" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_6" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_6" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_7" pos="66 -18 0">
+        <geom name="lvl3_step_1_3_7" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_7" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_7" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_7" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_7" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_7" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_7" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_7" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl3_8" pos="78 -18 0">
+        <geom name="lvl3_step_1_3_8" type="box" size="5.0 5.0 0.08" material="grid" pos="0 0 0.08" class="terrain"/>
+        <geom name="lvl3_step_2_3_8" type="box" size="4.4 4.4 0.08" material="grid" pos="0 0 0.24" class="terrain"/>
+        <geom name="lvl3_step_3_3_8" type="box" size="3.8 3.8 0.08" material="grid" pos="0 0 0.40" class="terrain"/>
+        <geom name="lvl3_step_4_3_8" type="box" size="3.2 3.2 0.08" material="grid" pos="0 0 0.56" class="terrain"/>
+        <geom name="lvl3_step_5_3_8" type="box" size="2.6 2.6 0.08" material="grid" pos="0 0 0.72" class="terrain"/>
+        <geom name="lvl3_step_6_3_8" type="box" size="2.0 2.0 0.08" material="grid" pos="0 0 0.88" class="terrain"/>
+        <geom name="lvl3_step_7_3_8" type="box" size="1.4 1.4 0.08" material="grid" pos="0 0 1.04" class="terrain"/>
+        <geom name="lvl3_step_8_3_8" type="box" size="0.8 0.8 0.08" material="grid" pos="0 0 1.20" class="terrain"/>
+      </body>
+      <!-- Level 4: extreme risers, very tight treads, seven steps -->
+      <body name="pyramid_lvl4_1" pos="90 6 0">
+        <geom name="lvl4_step_1_4_1" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_1" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_1" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_1" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_1" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_1" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_1" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_1" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_1" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_1" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_1" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_1" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_2" pos="90 -6 0">
+        <geom name="lvl4_step_1_4_2" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_2" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_2" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_2" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_2" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_2" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_2" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_2" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_2" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_2" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_2" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_2" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_3" pos="102 6 0">
+        <geom name="lvl4_step_1_4_3" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_3" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_3" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_3" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_3" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_3" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_3" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_3" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_3" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_3" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_3" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_3" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_4" pos="102 -6 0">
+        <geom name="lvl4_step_1_4_4" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_4" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_4" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_4" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_4" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_4" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_4" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_4" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_4" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_4" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_4" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_4" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_5" pos="90 18 0">
+        <geom name="lvl4_step_1_4_5" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_5" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_5" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_5" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_5" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_5" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_5" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_5" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_5" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_5" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_5" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_5" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_6" pos="102 18 0">
+        <geom name="lvl4_step_1_4_6" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_6" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_6" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_6" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_6" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_6" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_6" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_6" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_6" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_6" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_6" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_6" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_7" pos="90 -18 0">
+        <geom name="lvl4_step_1_4_7" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_7" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_7" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_7" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_7" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_7" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_7" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_7" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_7" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_7" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_7" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_7" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+      <body name="pyramid_lvl4_8" pos="102 -18 0">
+        <geom name="lvl4_step_1_4_8" type="box" size="5.0 5.0 0.1" material="grid" pos="0 0 0.10" class="terrain"/>
+        <geom name="lvl4_step_2_4_8" type="box" size="4.6 4.6 0.1" material="grid" pos="0 0 0.30" class="terrain"/>
+        <geom name="lvl4_step_3_4_8" type="box" size="4.2 4.2 0.1" material="grid" pos="0 0 0.50" class="terrain"/>
+        <geom name="lvl4_step_4_4_8" type="box" size="3.8 3.8 0.1" material="grid" pos="0 0 0.70" class="terrain"/>
+        <geom name="lvl4_step_5_4_8" type="box" size="3.4 3.4 0.1" material="grid" pos="0 0 0.90" class="terrain"/>
+        <geom name="lvl4_step_6_4_8" type="box" size="3.0 3.0 0.1" material="grid" pos="0 0 1.10" class="terrain"/>
+        <geom name="lvl4_step_7_4_8" type="box" size="2.6 2.6 0.1" material="grid" pos="0 0 1.30" class="terrain"/>
+        <geom name="lvl4_step_8_4_8" type="box" size="2.2 2.2 0.1" material="grid" pos="0 0 1.50" class="terrain"/>
+        <geom name="lvl4_step_9_4_8" type="box" size="1.8 1.8 0.1" material="grid" pos="0 0 1.70" class="terrain"/>
+        <geom name="lvl4_step_10_4_8" type="box" size="1.4 1.4 0.1" material="grid" pos="0 0 1.90" class="terrain"/>
+        <geom name="lvl4_step_11_4_8" type="box" size="1.0 1.0 0.1" material="grid" pos="0 0 2.10" class="terrain"/>
+        <geom name="lvl4_step_12_4_8" type="box" size="0.6 0.6 0.1" material="grid" pos="0 0 2.30" class="terrain"/>
+      </body>
+    </body>
+    </worldbody>
+    <visual>
+    	<headlight ambient="0.5 0.5 0.5"/>
+    </visual>
+</mujoco>
+
+
+
+
+        

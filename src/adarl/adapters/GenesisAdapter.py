@@ -259,6 +259,9 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def build_scenario(self, models: Sequence[ModelSpawnDef] = (), **kwargs):
+        add_ground = kwargs.pop("add_ground", None)
+        if add_ground is not None:
+            self._add_ground = add_ground
         if self._scene is not None:
             raise RuntimeError("Scenario was already built. Call destroy_scenario() first.")
         camera_defs = kwargs.pop("cameras", None)

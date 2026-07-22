@@ -19,6 +19,7 @@ from enum import Enum
 from adarl.utils.utils import expand_default_dict, quat_mul_xyzw_np, quat_conj_xyzw_np, quaternion_xyzw_from_rotmat
 import tempfile
 import time
+from dataclasses import dataclass
 
 def buildModelFromMJCFString(model_string : str):
     with tempfile.NamedTemporaryFile(suffix=".mjcf", delete=True) as f:
@@ -35,6 +36,24 @@ def buildGeomFromMJCFString(model, model_string : str, geom_type : pinocchio.Geo
     return geom_model
 
 
+@dataclass
+class ModelDescription:
+    """One model to include in a Robot's combined pinocchio model.
+
+    - description_string : the URDF/MJCF text
+    - format             : "urdf" or "mjcf"
+    - placement_xyz_xyzw : pose of this model's root in the frame it attaches to (default: identity)
+    - attach_frame       : name of a frame (in the models merged so far) to attach to; None -> universe
+
+    A fixed/jointless root adds no DOF and is rigidly placed by ``placement_xyz_xyzw``. A part with a
+    free/floating joint contributes real DOFs, appended after the existing ones, so its pose lives in q.
+    """
+    description_string : str
+    format : Literal["urdf", "sdf", "mjcf"] = "urdf"
+    placement_xyz_xyzw : np.ndarray | None = None
+    attach_frame : str | None = None
+
+
 class JointProperties(TypedDict):
     joint_type : str
 
@@ -46,23 +65,23 @@ class Robot():
                                         "CONTINUOUS"])
     
     def __init__(self, robot_description_string : str,
-                       robot_description_format : Literal["urdf", "sdf", "mjcf"] = "urdf"):
+                       robot_description_format : Literal["urdf", "sdf", "mjcf"] = "urdf",
+                       additional_models : list[ModelDescription] | None = None):
+        # The robot is the base model; any additional_models (world, fixtures, free-floating objects)
+        # are appended after it, so the robot keeps its q/v indices at the front. Static (fixed/
+        # jointless) parts add no DOF; parts with free/floating joints add DOFs after the robot's.
+        self._parts = [ModelDescription(robot_description_string, robot_description_format)]
+        if additional_models is not None:
+            self._parts.extend(additional_models)
+        # kept for backward compatibility with code reading these attributes
         self._robot_string = robot_description_string
         self._robot_format = robot_description_format
-        if robot_description_format == "urdf":
-            self._model = pinocchio.buildModelFromXML(self._robot_string)
-            self._collision_geom_model = pinocchio.buildGeomFromUrdfString(self._model,
-                                                                        self._robot_string,
-                                                                        pinocchio.GeometryType.COLLISION)
-        elif robot_description_format == "mjcf":
-            self._model = buildModelFromMJCFString(self._robot_string)
-            self._collision_geom_model = buildGeomFromMJCFString(self._model, self._robot_string, pinocchio.GeometryType.COLLISION)
-        else:
-            raise NotImplementedError(f"Only urdf and mjcf formats are currently supported, but got {robot_description_format}")
+
+        self._model, self._collision_geom_model = self._build_and_merge(self._parts)
         self._model_data = self._model.createData()
-        # self._joint_position = pinocchio.randomConfiguration(self._model)
-        q_size = sum([self._model.joints[jid].nq for jid in range(1,self._model.njoints)])
-        self._joint_position = np.zeros(shape=(q_size,))
+        # neutral() rather than zeros: gives valid unit quaternions for free-flyer/floating (and
+        # continuous) joints, and reduces to zeros for plain revolute/prismatic robots.
+        self._joint_position = pinocchio.neutral(self._model)
         self._collision_object_count = 0
         self._collision_objects = {}
 
@@ -93,21 +112,48 @@ class Robot():
         self._current_collision_geom_pairs = set()
         self.set_collision_pairs("all")
 
+    @staticmethod
+    def _build_model_and_geom(description_string : str, description_format : str):
+        if description_format == "urdf":
+            model = pinocchio.buildModelFromXML(description_string)
+            geom = pinocchio.buildGeomFromUrdfString(model, description_string, pinocchio.GeometryType.COLLISION)
+        elif description_format == "mjcf":
+            model = buildModelFromMJCFString(description_string)
+            geom = buildGeomFromMJCFString(model, description_string, pinocchio.GeometryType.COLLISION)
+        else:
+            # SDF would go through pinocchio.buildModelsFromSdf (note: plural, can return several models)
+            raise NotImplementedError(f"Only urdf and mjcf formats are currently supported, but got {description_format}")
+        return model, geom
+
+    @staticmethod
+    def _build_and_merge(parts : list[ModelDescription]):
+        """Build each part and append them into a single (model, collision_geom_model)."""
+        model, geom = Robot._build_model_and_geom(parts[0].description_string, parts[0].format)
+        for part in parts[1:]:
+            part_model, part_geom = Robot._build_model_and_geom(part.description_string, part.format)
+            frame_idx = 0 if part.attach_frame is None else model.getFrameId(part.attach_frame)
+            if part.placement_xyz_xyzw is None:
+                aMb = pinocchio.SE3.Identity()
+            else:
+                aMb = pinocchio.XYZQUATToSE3(np.asarray(part.placement_xyz_xyzw, dtype=float).copy())
+            model, geom = pinocchio.appendModel(model, part_model, geom, part_geom, frame_idx, aMb)
+        return model, geom
+
     def __getstate__(self):
         d = dict(self.__dict__)
-        # del d["_model"]
-        del d["_collision_geom_model"]
-        del d["_collision_geom_model_data"]
-        # print(f"pickling Robot d = {d}")
+        # The pinocchio Model/GeometryModel and their Data are rebuilt from self._parts in
+        # __setstate__ (GeometryModel is not picklable: stack-of-tasks/pinocchio#2089). Collision
+        # objects/pairs added at runtime via add_collision_object are not persisted (as before).
+        for k in ("_model", "_model_data", "_collision_geom_model", "_collision_geom_model_data"):
+            d.pop(k, None)
         return d
 
     def __setstate__(self, d):
-        # Needed because of https://github.com/stack-of-tasks/pinocchio/issues/2089
-        # d["_model"] = pinocchio.buildModelFromXML(d["_urdf_string"])
-        d["_collision_geom_model"] = pinocchio.buildGeomFromUrdfString(d["_model"],
-                                                                       d["_urdf_string"],
-                                                                       pinocchio.GeometryType.COLLISION)
-        d["_collision_geom_model_data"] = pinocchio.GeometryData(self._collision_geom_model)
+        model, geom = Robot._build_and_merge(d["_parts"])
+        d["_model"] = model
+        d["_model_data"] = model.createData()
+        d["_collision_geom_model"] = geom
+        d["_collision_geom_model_data"] = pinocchio.GeometryData(geom)
         self.__dict__.update(d)
 
     def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal["all"] = []):
