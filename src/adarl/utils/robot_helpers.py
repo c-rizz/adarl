@@ -77,7 +77,9 @@ class Robot():
         self._robot_string = robot_description_string
         self._robot_format = robot_description_format
 
-        self._model, self._collision_geom_model = self._build_and_merge(self._parts)
+        self._model, self._collision_geom_model, self._part_geom_ranges = self._build_and_merge(self._parts)
+        # geom indices contributed by additional_models (world/fixtures): everything after the robot (part 0)
+        self._additional_geom_indices = [i for rng in self._part_geom_ranges[1:] for i in range(rng[0], rng[1])]
         self._model_data = self._model.createData()
         # neutral() rather than zeros: gives valid unit quaternions for free-flyer/floating (and
         # continuous) joints, and reduces to zeros for plain revolute/prismatic robots.
@@ -127,8 +129,15 @@ class Robot():
 
     @staticmethod
     def _build_and_merge(parts : list[ModelDescription]):
-        """Build each part and append them into a single (model, collision_geom_model)."""
+        """Build each part and append them into a single (model, collision_geom_model, part_geom_ranges).
+
+        part_geom_ranges is a list of (start, end) index ranges into the merged collision geom model,
+        one per part in the same order as ``parts``. ``pinocchio.appendModel`` appends each part's
+        geoms after the existing ones, so the ranges are contiguous and the robot (part 0) keeps the
+        low indices.
+        """
         model, geom = Robot._build_model_and_geom(parts[0].description_string, parts[0].format)
+        part_geom_ranges = [(0, geom.ngeoms)]
         for part in parts[1:]:
             part_model, part_geom = Robot._build_model_and_geom(part.description_string, part.format)
             frame_idx = 0 if part.attach_frame is None else model.getFrameId(part.attach_frame)
@@ -136,8 +145,10 @@ class Robot():
                 aMb = pinocchio.SE3.Identity()
             else:
                 aMb = pinocchio.XYZQUATToSE3(np.asarray(part.placement_xyz_xyzw, dtype=float).copy())
+            start = geom.ngeoms
             model, geom = pinocchio.appendModel(model, part_model, geom, part_geom, frame_idx, aMb)
-        return model, geom
+            part_geom_ranges.append((start, geom.ngeoms))
+        return model, geom, part_geom_ranges
 
     def __getstate__(self):
         d = dict(self.__dict__)
@@ -149,19 +160,31 @@ class Robot():
         return d
 
     def __setstate__(self, d):
-        model, geom = Robot._build_and_merge(d["_parts"])
+        model, geom, _ = Robot._build_and_merge(d["_parts"])
         d["_model"] = model
         d["_model_data"] = model.createData()
         d["_collision_geom_model"] = geom
         d["_collision_geom_model_data"] = pinocchio.GeometryData(geom)
         self.__dict__.update(d)
 
-    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal["all"] = []):
+    def set_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]] | Literal["all","robot_self","robot_and_world"] = []):
         self._collision_pairs = copy.deepcopy(geom_pairs)
         geoms_num = self._collision_geom_model.ngeoms
         geom_names = [g.name for g in self._collision_geom_model.geometryObjects]
         if geom_pairs == "all":
             geom_pairs = [(g1,g2) for g1 in geom_names for g2 in geom_names]
+        elif geom_pairs == "robot_self":
+            # Only pairs among robot geoms (excludes additional_models/world geoms). Used to detect
+            # always-present robot self-collisions without dragging in static world geometry.
+            robot = self.get_robot_geom_names()
+            geom_pairs = [(g1,g2) for g1 in robot for g2 in robot]
+        elif geom_pairs == "robot_and_world":
+            # Robot-self plus robot-vs-world pairs, but NOT world-vs-world. Keeps terrain-penetration
+            # checks active while ignoring the (constant, meaningless) collisions of the static world
+            # with itself, which would otherwise make every pose look colliding.
+            robot = self.get_robot_geom_names()
+            world = self.get_world_geom_names()
+            geom_pairs = [(g1,g2) for g1 in robot for g2 in robot] + [(g1,g2) for g1 in robot for g2 in world]
         self._current_collision_geom_pairs = set(geom_pairs)
         collision_matrix = np.zeros(shape=(geoms_num, geoms_num), dtype=bool)
         for pair in self._current_collision_geom_pairs:
@@ -172,6 +195,17 @@ class Robot():
 
     def get_enabled_collision_pairs(self):
         return copy.deepcopy(self._current_collision_geom_pairs)
+
+    def get_world_geom_names(self) -> list[str]:
+        """Names of collision geoms contributed by additional_models (the world/fixtures)."""
+        names = [g.name for g in self._collision_geom_model.geometryObjects]
+        return [names[i] for i in self._additional_geom_indices]
+
+    def get_robot_geom_names(self) -> list[str]:
+        """Names of collision geoms belonging to the robot itself: everything not contributed by
+        additional_models, including any runtime-added collision objects (e.g. a flat ground box)."""
+        world = set(self._additional_geom_indices)
+        return [g.name for i,g in enumerate(self._collision_geom_model.geometryObjects) if i not in world]
 
     def add_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]]):
         geom_pairs = self._current_collision_geom_pairs.union(geom_pairs)
@@ -210,13 +244,19 @@ class Robot():
         return all_pairs
 
     def get_adjacent_collision_pairs(self) -> list[tuple[str, str]]:
-        """Return geom pairs whose parent joints are directly connected by a joint."""
+        """Return geom pairs whose parent joints are directly connected by a joint.
+
+        World geoms (from additional_models) are skipped: they are all attached to the universe joint,
+        so a floating base - whose parent is also the universe - would otherwise be reported as
+        "adjacent" to every world geom, spuriously excluding all base-vs-terrain collisions.
+        """
+        world = set(self.get_world_geom_names())
         pairs = []
         for jid in range(1, self._model.njoints):  # skip universe joint at 0
             parent_jid = self._model.parents[jid]
             child_geoms = self._joint_to_geoms[self._joint_idx_to_name[jid]]
             parent_geoms = self._joint_to_geoms[self._joint_idx_to_name[parent_jid]]
-            pairs += [(g1, g2) for g1 in child_geoms for g2 in parent_geoms]
+            pairs += [(g1, g2) for g1 in child_geoms for g2 in parent_geoms if g1 not in world and g2 not in world]
         return pairs
 
 
@@ -334,6 +374,35 @@ class Robot():
                             self._collision_geom_model.geometryObjects[cp.second].name)
                 return True, collision_pair
         return False, None
+
+    def get_additional_geom_world_aabbs(self) -> tuple[np.ndarray, np.ndarray]:
+        """World-frame axis-aligned bounding boxes of the collision geoms contributed by
+        additional_models (the world/fixtures), at the current joint pose.
+
+        Returns (mins, maxs), each of shape (M, 3), where M is the number of such geoms (0 if none).
+        Note: pinocchio's parsers drop infinite planes, so flat ground planes are not represented here
+        - callers should combine these box AABBs with a ground baseline height.
+        """
+        idxs = self._additional_geom_indices
+        if len(idxs) == 0:
+            return np.zeros((0, 3)), np.zeros((0, 3))
+        pinocchio.forwardKinematics(self._model, self._model_data, self._joint_position)
+        pinocchio.updateGeometryPlacements(self._model, self._model_data,
+                                           self._collision_geom_model, self._collision_geom_model_data,
+                                           self._joint_position)
+        mins = np.empty((len(idxs), 3))
+        maxs = np.empty((len(idxs), 3))
+        for k, i in enumerate(idxs):
+            g = self._collision_geom_model.geometryObjects[i].geometry
+            g.computeLocalAABB()
+            lo = np.asarray(g.aabb_local.min_)
+            hi = np.asarray(g.aabb_local.max_)
+            corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+            M = self._collision_geom_model_data.oMg[i]
+            wc = (M.rotation @ corners.T).T + M.translation
+            mins[k] = wc.min(axis=0)
+            maxs[k] = wc.max(axis=0)
+        return mins, maxs
 
     def _update_forward_kinematics(self):
         if self._need_to_recompute_forward_kin:
@@ -494,7 +563,10 @@ class Robot():
                                          threshold = 1.0):
         original_joint_pose = self.get_joint_pose()
         original_collision_pairs = self.get_enabled_collision_pairs()
-        self.set_collision_pairs("all")
+        # Only look for always-present ROBOT self-collisions. World geoms are excluded: world-vs-world
+        # pairs are constant/irrelevant, and robot-vs-world (e.g. base touching terrain at this fixed
+        # pose) must never be excluded, otherwise the pose search would ignore terrain penetration.
+        self.set_collision_pairs("robot_self")
         # always_present_collisions = set()
         collision_counters = {}
         self.set_joint_pose_by_names(fixed_joints_pose)
@@ -613,7 +685,7 @@ def find_pose_np(  root_joint : str,
     t = time.monotonic()
     if isinstance(robot_model, str):
         robot_model = Robot(robot_model)
-        robot_model.set_collision_pairs("all")
+        robot_model.set_collision_pairs("robot_and_world")
         robot_model.remove_collision_pairs(excluded_collision_pairs)
     t1 = time.monotonic()
     found = False
@@ -698,7 +770,9 @@ def find_poses(root_joint : str,
     #     return th.as_tensor(np.stack(r))
 
     original_collision_pairs = robot_model.get_enabled_collision_pairs()
-    robot_model.set_collision_pairs("all")
+    # robot-self + robot-vs-world (terrain), but not world-vs-world; excluded pairs (robot self-collision
+    # artifacts) are then removed, leaving real self-collisions and terrain penetration to reject poses.
+    robot_model.set_collision_pairs("robot_and_world")
     robot_model.remove_collision_pairs(excluded_collision_pairs)
     joint_ranges = expand_default_dict(initial_pose_randomization_range, controlled_joints)
     r = np.zeros(shape=(num_envs, len(controlled_joints)), dtype=np.float32)

@@ -551,20 +551,22 @@ def aggregate_models(models : list[ModelSpawnDef],
         ggLog.info(f"Attaching model '{mname}' to '{attachment_link}'")
         if model_element_separator in mname:
             raise RuntimeError(f"Cannot have models with '#' in their name (this character is used internally). Found model named {mname}")
-        # add all th bodies that are direct childern of worldbody
-        body = spec.worldbody.first_body()
         # spec.compiler.discardvisual = False
         if spec.compiler.degree:
             raise NotImplementedError(f"model {mname} uses degrees instead of radians.")
-        while body is not None:
-            if attachment_link is None:
-                world_frame.attach_body(body, mname+model_element_separator, "")
-            else:
-                parentbody : mjutils._MjsBody = big_speck.body(model_element_separator.join(attachment_link))
-                f = parentbody.add_frame()
-                f.attach_body(body, mname+model_element_separator, "")
-                # ggLog.info(f"Attaching body '{mname}';'{body.name}' to '{attachment_link}'")
-            body = spec.worldbody.next_body(body)
+        # Attach the whole worldbody: this brings in all the top-level bodies AND the geoms
+        # (and lights/sites) that live directly in worldbody. We can't do this by looping over
+        # worldbody.first_body()/next_body() and calling frame.attach_body() per body, because
+        # that (a) skips worldbody-level geoms and (b) mujoco forbids more than one attach_body()
+        # from a spec that defines <material>s (it raises "incompatible id in material array").
+        # spec.attach() merges bodies, worldbody geoms and the referenced assets in one call.
+        if attachment_link is None:
+            big_speck.attach(spec, prefix=mname+model_element_separator, suffix="", frame=world_frame)
+        else:
+            parentbody : mjutils._MjsBody = big_speck.body(model_element_separator.join(attachment_link))
+            f = parentbody.add_frame()
+            big_speck.attach(spec, prefix=mname+model_element_separator, suffix="", frame=f)
+        
 
     if geom_overrides:
         geoms_by_name = {g.name: g for g in big_speck.geoms}
