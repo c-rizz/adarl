@@ -197,16 +197,21 @@ class Robot():
     def get_enabled_collision_pairs(self):
         return copy.deepcopy(self._current_collision_geom_pairs)
 
+    def _env_geom_indices(self) -> set[int]:
+        """Geoms that belong to the environment rather than to the robot: those contributed by
+        additional_models (world/fixtures) plus any collision object added at runtime (e.g. a flat
+        ground box). They are part of the scene the robot collides *with*, never of the robot itself."""
+        return set(self._additional_geom_indices).union(self._collision_objects.values())
+
     def get_world_geom_names(self) -> list[str]:
-        """Names of collision geoms contributed by additional_models (the world/fixtures)."""
+        """Names of the environment collision geoms (additional_models + runtime collision objects)."""
         names = [g.name for g in self._collision_geom_model.geometryObjects]
-        return [names[i] for i in self._additional_geom_indices]
+        return [names[i] for i in sorted(self._env_geom_indices())]
 
     def get_robot_geom_names(self) -> list[str]:
-        """Names of collision geoms belonging to the robot itself: everything not contributed by
-        additional_models, including any runtime-added collision objects (e.g. a flat ground box)."""
-        world = set(self._additional_geom_indices)
-        return [g.name for i,g in enumerate(self._collision_geom_model.geometryObjects) if i not in world]
+        """Names of the collision geoms belonging to the robot's own links."""
+        env = self._env_geom_indices()
+        return [g.name for i,g in enumerate(self._collision_geom_model.geometryObjects) if i not in env]
 
     def add_collision_pairs(self, geom_pairs : Iterable[tuple[str,str]]):
         geom_pairs = self._current_collision_geom_pairs.union(geom_pairs)
@@ -376,6 +381,15 @@ class Robot():
                 return True, collision_pair
         return False, None
 
+    def get_robot_geom_world_aabbs(self) -> tuple[np.ndarray, np.ndarray]:
+        """World-frame AABBs of the robot's own collision geoms at the current configuration.
+
+        Returns (mins, maxs), each of shape (M, 3). Useful e.g. to find the robot's lowest point
+        (mins[:,2].min()) in order to place it clear of the ground.
+        """
+        env = self._env_geom_indices()
+        return self._geom_world_aabbs([i for i in range(self._collision_geom_model.ngeoms) if i not in env])
+
     def get_additional_geom_world_aabbs(self) -> tuple[np.ndarray, np.ndarray]:
         """World-frame axis-aligned bounding boxes of the collision geoms contributed by
         additional_models (the world/fixtures), at the current joint pose.
@@ -384,7 +398,9 @@ class Robot():
         Note: pinocchio's parsers drop infinite planes, so flat ground planes are not represented here
         - callers should combine these box AABBs with a ground baseline height.
         """
-        idxs = self._additional_geom_indices
+        return self._geom_world_aabbs(self._additional_geom_indices)
+
+    def _geom_world_aabbs(self, idxs : Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
         if len(idxs) == 0:
             return np.zeros((0, 3)), np.zeros((0, 3))
         pinocchio.forwardKinematics(self._model, self._model_data, self._joint_position)
@@ -732,6 +748,7 @@ def find_pose_np(  root_joint : str,
                 body_xyz_minmax : np.ndarray,
                 footprint_radius : float = 0.0,
                 ground_baseline_z : float = 0.0,
+                fallback_clearance : float = 0.02,
                 samples : int = 1000):
     """Search jointly over joint space and body xyz for a collision-free initial pose.
 
@@ -777,8 +794,20 @@ def find_pose_np(  root_joint : str,
         seen_collision_pairs[collision_pair] = seen_collision_pairs.get(collision_pair, 0) + 1
     if not found:
         joint_pose = homing_pos
+        if is_floating_base:
+            # The loop only breaks on success, so body_pose_xyzxyzw is a KNOWN-COLLIDING pose: spawning
+            # there makes the simulator resolve the penetration by ejecting the robot at high speed.
+            # Fall back to the homing joints, lifted so the whole robot clears the terrain.
+            jp_dict.update({jn:joint_pose[i] for i,jn in enumerate(controlled_joints)})
+            robot_model.set_joint_pose_by_names({jn[1]:jp for jn,jp in jp_dict.items()})
+            robot_model.set_frame_pose(body_frame, body_pose_xyzxyzw, root_joint)
+            ground_z = robot_model.get_ground_z(body_pose_xyzxyzw[:2],
+                                                footprint_radius=footprint_radius,
+                                                baseline_z=ground_baseline_z)
+            lowest_z = robot_model.get_robot_geom_world_aabbs()[0][:,2].min()
+            body_pose_xyzxyzw[2] += max(0.0, float(ground_z) + fallback_clearance - float(lowest_z))
         seen_collision_pairs = {k:v/samples for k,v in seen_collision_pairs.items()}
-        print(  f"Failed to find initial pose."
+        print(  f"Failed to find initial pose, falling back to homing joints clear of the terrain."
                 f" last collision seen = {collision_pair}\n"
                 f" filtered collisions = {excluded_collision_pairs}\n"
                 f" coll_ratio={seen_collision_pairs}\n"

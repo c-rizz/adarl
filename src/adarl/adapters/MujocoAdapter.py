@@ -769,6 +769,10 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         it belongs to) and a conaffinity mask (the groups it collides with). Visual geoms
         (contype==0 and conaffinity==0) are left untouched.
         """
+        # A bare model name stands for all of that model's links (e.g. a whole world/terrain model)
+        link_group_collisions, explicit_groups = self.expand_link_group_collisions(link_group_collisions,
+                                                                                  self._lname2lid.keys(),
+                                                                                  explicit_groups)
         input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
 
         # Reorganize the links into a small set of groups of links that always collide together

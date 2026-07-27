@@ -1555,24 +1555,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         ggLog.info(f"Compiled.")
         self._forward_needed = True
 
-    def _expand_link_spec(self, spec : tuple[str,str] | str) -> list[tuple[str,str]]:
-        """Expand a collision link specifier into concrete (model, link) links.
-
-        A (model, link) tuple maps to itself; a bare model-name string expands to every link of that
-        model, so enable_link_collisions can reference a whole model in a single entry, e.g.
-        ('world', [(robot_name, 'foot1'), ...]) or (foot, ['world']).
-        """
-        if isinstance(spec, str):
-            links = [ml for ml in self._lname2lid.keys() if ml[0] == spec]
-            if len(links) == 0:
-                # Not present (e.g. a world model that isn't spawned in this run) -> skip it, so one
-                # config can reference optional models. A concrete (model, link) tuple is still checked
-                # strictly downstream and will raise if missing.
-                ggLog.warn(f"enable_link_collisions references model '{spec}', but no links of that model "
-                           f"are present; skipping it. Available models: {sorted({ml[0] for ml in self._lname2lid})}")
-            return links
-        return [tuple(spec)]
-
     def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str] | str, list[tuple[str,str] | str]]],
                                         explicit_groups : list[tuple[tuple[str,str] | str,...]] = []) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         """_summary_
@@ -1594,15 +1576,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         RuntimeError
             _description_
         """
-        # Expand any bare model-name specifiers (a string in place of a (model, link) tuple) into all of
-        # that model's links, so a whole model can be referenced in one enable_link_collisions entry.
-        expanded_lgc = []
-        for group_link, colliding in link_group_collisions:
-            colliding_expanded = [cl for c in colliding for cl in self._expand_link_spec(c)]
-            for link in self._expand_link_spec(group_link):
-                expanded_lgc.append((link, colliding_expanded))
-        link_group_collisions = expanded_lgc
-        explicit_groups = [tuple(gl for l in g for gl in self._expand_link_spec(l)) for g in explicit_groups]
+        # A bare model name stands for all of that model's links (e.g. a whole world/terrain model)
+        link_group_collisions, explicit_groups = self.expand_link_group_collisions(link_group_collisions,
+                                                                                  self._lname2lid.keys(),
+                                                                                  explicit_groups)
         input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
         ggLog.info(f"input link_group_collisions = {link_group_collisions}")
         ggLog.info(f"input_collision_groups = {input_collision_groups}")

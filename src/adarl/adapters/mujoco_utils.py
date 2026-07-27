@@ -1,4 +1,6 @@
 
+import os
+os.environ["MUJOCO_GL"] = "egl"
 import mujoco
 from typing import Any, TypeAlias
 
@@ -14,7 +16,6 @@ from adarl.utils.utils import compile_xacro_string
 import dataclasses
 import jax
 import pathlib
-import os
 
 mjtGeom :             TypeAlias = mujoco.mjtGeom # type: ignore
 mju_quat2Mat :        TypeAlias = mujoco.mju_quat2Mat # type: ignore

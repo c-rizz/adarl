@@ -1,9 +1,10 @@
 from __future__ import annotations
 from abc import abstractmethod
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 from adarl.utils.utils import Pose, build_pose
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
+import adarl.utils.dbg.ggLog as ggLog
 
 import torch as th
 
@@ -111,6 +112,36 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
     
     def set_body_collisions(self, link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]):
         raise NotImplementedError()
+
+    @staticmethod
+    def expand_link_group_collisions(link_group_collisions : list[tuple[tuple[str,str] | str, list[tuple[str,str] | str]]],
+                                     known_links : Iterable[tuple[str,str]],
+                                     explicit_groups : list[tuple[tuple[str,str] | str,...]] = []):
+        """Expand bare model-name specifiers in a link_group_collisions spec into concrete links.
+
+        A (model, link) tuple maps to itself, while a plain string names a whole model and expands to
+        every link of it, so a spec can reference e.g. a whole world/terrain model in one entry. A named
+        model that is not in the scene is skipped (with a warning) rather than being an error, so a
+        single configuration can reference models that only some scenarios spawn.
+
+        Returns (expanded_link_group_collisions, expanded_explicit_groups).
+        """
+        known_links = list(known_links)
+        def expand(spec):
+            if isinstance(spec, str):
+                links = [ml for ml in known_links if ml[0] == spec]
+                if len(links) == 0:
+                    ggLog.warn(f"link_group_collisions references model '{spec}', but no links of that model "
+                               f"are present; skipping it. Available models: {sorted({ml[0] for ml in known_links})}")
+                return links
+            return [tuple(spec)]
+        expanded = []
+        for group_link, colliding in link_group_collisions:
+            colliding_expanded = [cl for c in colliding for cl in expand(c)]
+            for link in expand(group_link):
+                expanded.append((link, colliding_expanded))
+        expanded_groups = [tuple(gl for l in g for gl in expand(l)) for g in explicit_groups]
+        return expanded, expanded_groups
     
     def set_link_impulses(self, link_ids : Sequence[Any],
                                 force_torque_xyzxyz : th.Tensor,
