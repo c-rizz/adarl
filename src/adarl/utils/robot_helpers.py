@@ -586,6 +586,29 @@ class Robot():
         self.remove_collision_pairs(self_collision_pairs)
         return self_collision_pairs
     
+    def get_debug_visualizer(self, open_browser : bool = False):
+        """Lazily build (and cache) a meshcat visualizer showing this Robot's *collision* model.
+
+        The collision model is what the pose search reasons about, so this shows exactly the geometry
+        that decides whether a pose is accepted - including anything merged in from additional_models
+        (world/terrain) and runtime collision objects (e.g. the flat ground box).
+        Requires the optional `meshcat` package.
+        """
+        viz = getattr(self, "_debug_viz", None)
+        if viz is None:
+            from pinocchio.visualize import MeshcatVisualizer
+            viz = MeshcatVisualizer(self._model, self._collision_geom_model, self._collision_geom_model)
+            viz.initViewer(open=open_browser)
+            viz.loadViewerModel(rootNodeName="robot")
+            viz.displayCollisions(True)
+            viz.displayVisuals(False)
+            self._debug_viz = viz
+        return viz
+
+    def debug_display(self, open_browser : bool = False):
+        """Show the current configuration in the meshcat debug visualizer. See get_debug_visualizer."""
+        self.get_debug_visualizer(open_browser=open_browser).display(self._joint_position)
+
     def get_dbg_image(self):
         from panda3d_viewer import Viewer, ViewerConfig
 
@@ -733,6 +756,29 @@ if __name__ == "__main__":
     cv2.imwrite(f"robot_img{time.time()}.png", img)
 
 
+def _debug_show_pose(robot_model : Robot, sample_i : int, samples : int, joint_pose : np.ndarray,
+                     controlled_joints : Sequence[tuple[str,str]], body_pose_xyzxyzw : np.ndarray,
+                     has_collision : bool) -> bool:
+    """Publish one attempted pose to meshcat and wait for a keypress. Returns False to stop stepping."""
+    robot_model.debug_display()
+    lowest = robot_model.get_robot_geom_world_aabbs()[0][:,2].min()
+    print(f"\n[find_pose debug] sample {sample_i+1}/{samples}: "
+          f"{'COLLIDING' if has_collision else 'FREE (accepted)'}")
+    print(f"   body pose xyz = {np.round(body_pose_xyzxyzw[:3],4).tolist()}   lowest robot point z = {lowest:+.4f}")
+    if has_collision:
+        collisions = robot_model.get_all_collisions()
+        print(f"   {len(collisions)} colliding pairs:")
+        for a,b in collisions[:12]:
+            print(f"      {a} <-> {b}")
+        if len(collisions) > 12:
+            print(f"      ... and {len(collisions)-12} more")
+    try:
+        answer = input("   ENTER = next sample, 'q' = stop stepping: ")
+    except EOFError:
+        return False
+    return answer.strip().lower() != "q"
+
+
 def find_pose_np(  root_joint : str,
                 body_frame : str,
                 default_body_pose_xyzxyzw : np.ndarray,
@@ -749,7 +795,8 @@ def find_pose_np(  root_joint : str,
                 footprint_radius : float = 0.0,
                 ground_baseline_z : float = 0.0,
                 fallback_clearance : float = 0.02,
-                samples : int = 1000):
+                samples : int = 1000,
+                debug : bool = False):
     """Search jointly over joint space and body xyz for a collision-free initial pose.
 
     Each sample draws a joint configuration around homing (within joint_randomization_ranges, scaled to
@@ -771,7 +818,10 @@ def find_pose_np(  root_joint : str,
     seen_collision_pairs = {}
     collision_pair = None
     body_pose_xyzxyzw = default_body_pose_xyzxyzw.copy()
-    for _ in range(samples):
+    if debug:
+        robot_model.get_debug_visualizer() # prints the meshcat url; build it before the first sample
+        print("[find_pose debug] open the url above; ENTER = next sample, 'q' = stop stepping")
+    for sample_i in range(samples):
         norm_jpos = truncnorm.rvs(size=(len(controlled_joints),), random_state=rng).astype(np.float32)*joint_ranges
         joint_pose = ((norm_jpos>=0)*((limits_minmax[1]-homing_pos)*norm_jpos + homing_pos) +
                       (norm_jpos< 0)*((homing_pos-limits_minmax[0])*norm_jpos + homing_pos))
@@ -788,6 +838,9 @@ def find_pose_np(  root_joint : str,
             # Robot resolves the root-joint value that puts body_frame exactly at this pose
             robot_model.set_frame_pose(body_frame, body_pose_xyzxyzw, root_joint)
         has_collision, collision_pair = robot_model.has_collisions()
+        if debug:
+            debug = _debug_show_pose(robot_model, sample_i, samples, joint_pose, controlled_joints,
+                                     body_pose_xyzxyzw, has_collision)
         if not has_collision:
             found = True
             break
@@ -811,7 +864,8 @@ def find_pose_np(  root_joint : str,
                 f" last collision seen = {collision_pair}\n"
                 f" filtered collisions = {excluded_collision_pairs}\n"
                 f" coll_ratio={seen_collision_pairs}\n"
-                f" body_pose_xyzxyzw={body_pose_xyzxyzw}")
+                f" body_pose_xyzxyzw={body_pose_xyzxyzw}\n"
+                f" You can enable find_poses() debug mode to see the sampled poses")
     return joint_pose, body_pose_xyzxyzw
 
 
@@ -831,6 +885,7 @@ def find_poses(root_joint : str,
                 body_xyz_minmax : np.ndarray,
                 footprint_radius : float = 0.0,
                 ground_baseline_z : float = 0.0,
+                debug : bool = False,
                 ):
     """Per-env collision-free initial poses, searching over both joint space and body xyz.
 
@@ -861,6 +916,7 @@ def find_poses(root_joint : str,
                                                      excluded_collision_pairs,
                                                      body_xyz_minmax,
                                                      footprint_radius,
-                                                     ground_baseline_z)
+                                                     ground_baseline_z,
+                                                     debug=debug)
     robot_model.set_collision_pairs(original_collision_pairs)
     return th.as_tensor(joint_poses), th.as_tensor(body_poses)
