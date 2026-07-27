@@ -412,7 +412,9 @@ def aggregate_models(models : list[ModelSpawnDef],
                      revolute_dof_frictionloss_override : float | None = None,
                      safe_revolute_dof_armature = 0.01,
                      safe_revolute_dof_damping = 1.0,
-                     safe_revolute_dof_frictionloss = 0.2):
+                     safe_revolute_dof_frictionloss = 0.2,
+                     render_znear : float | None = 0.01,
+                     render_zfar : float | None = 100.0):
     
     """Aggregates multiple models into a single MjSpec and MjModel.
 
@@ -624,6 +626,16 @@ def aggregate_models(models : list[ModelSpawnDef],
                                             safe_revolute_dof_armature,
                                             safe_revolute_dof_damping,
                                             safe_revolute_dof_frictionloss)
+    if render_znear is not None or render_zfar is not None:
+        # Make the near/far clip planes absolute (in meters) regardless of scene size. MuJoCo scales
+        # them by stat.extent, so we pin extent to 1.0; this stops a huge ground box from pushing the
+        # near plane out (which clips the robot) and from aiming the default camera at the box center.
+        big_speck.stat.extent = 1.0
+        big_speck.stat.center = [0.0, 0.0, 0.0]
+        if render_znear is not None:
+            big_speck.visual.map.znear = render_znear
+        if render_zfar is not None:
+            big_speck.visual.map.zfar = render_zfar
     mj_model = big_speck.compile()
     if log_folder is not None:
         with open(log_folder+"/aggregated_model.xml", "w") as text_file:

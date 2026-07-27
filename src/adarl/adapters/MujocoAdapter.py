@@ -126,6 +126,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._viewer_mj_data : mujoco_MjData | None = None
         self._last_gui_update_wtime = 0.0
         self._geom_overrides = geom_overrides
+        self._monitored_collision_pairs : list[tuple[tuple[str,str], tuple[str,str]]] = []
+        self._monitored_collision_body_pairs = np.empty((0, 2), dtype=np.int64)
+        self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
 
     def _ensure_ready(self):
         if self._mj_model is None or self._mj_data is None:
@@ -174,6 +177,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._renderer_cache.clear()
         self._build_name_maps()
+        self._resolve_monitored_collision_pairs()
         self._build_renderers()
 
         self.set_monitored_joints([])
@@ -314,6 +318,82 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str, str]]):
         super().set_monitored_links(linksToObserve)
         self._reset_step_stats(self._step_stats_len)
+
+    @override
+    def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]]):
+        if self._mj_model is not None:
+            raise RuntimeError("Monitored collision pairs cannot be changed after build_scenario has been called.")
+        self._monitored_collision_pairs = list(collision_pairs)
+
+    def _resolve_monitored_collision_pairs(self):
+        """Resolve the buffered monitored collision pairs to body-id pairs. Called from
+        build_scenario, once the link name maps exist."""
+        num_pairs = len(self._monitored_collision_pairs)
+        self._monitored_collision_body_pairs = np.empty((num_pairs, 2), dtype=np.int64)
+        self._monitored_collision_pair_to_idx = {}
+        for idx, (link_a, link_b) in enumerate(self._monitored_collision_pairs):
+            body_a = self._lname2lid[tuple(link_a)]
+            body_b = self._lname2lid[tuple(link_b)]
+            self._monitored_collision_body_pairs[idx] = (body_a, body_b)
+            # store both directions so lookups are order-independent
+            self._monitored_collision_pair_to_idx[(body_a, body_b)] = idx
+            self._monitored_collision_pair_to_idx[(body_b, body_a)] = idx
+
+    @override
+    def get_collision_pair_ids(self, collision_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]]) -> th.Tensor:
+        indices = []
+        for pair in collision_pairs:
+            body_a = self._lname2lid[tuple(pair[0])]
+            body_b = self._lname2lid[tuple(pair[1])]
+            idx = self._monitored_collision_pair_to_idx.get((body_a, body_b))
+            if idx is None:
+                raise KeyError(f"Collision pair {pair} is not in monitored collision pairs")
+            indices.append(idx)
+        return th.as_tensor(indices, dtype=th.long, device=self._out_th_device)
+
+    def get_collision_pair_names(self, pair_ids: th.Tensor) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+        return [self._monitored_collision_pairs[idx] for idx in pair_ids.tolist()]
+
+    def _compute_monitored_collision_mask(self) -> th.Tensor:
+        """(vec_size, num_pairs) bool tensor: which monitored pairs are in contact right now.
+
+        A pair is in contact if any active MuJoCo contact (dist < includemargin) is between a
+        geom of body_a and a geom of body_b, in either order (matching MjxAdapter semantics).
+        """
+        num_pairs = len(self._monitored_collision_pairs)
+        mask = np.zeros((self._vec_size, num_pairs), dtype=bool)
+        if num_pairs == 0:
+            return th.as_tensor(mask, device=self._out_th_device)
+        d = self._mj_data
+        geom_bodyid = self._mj_model.geom_bodyid
+        colliding : set[tuple[int, int]] = set()
+        for i in range(int(d.ncon)):
+            c = d.contact[i]
+            if c.dist >= c.includemargin:
+                continue
+            body_a = int(geom_bodyid[int(c.geom[0])])
+            body_b = int(geom_bodyid[int(c.geom[1])])
+            colliding.add((body_a, body_b))
+            colliding.add((body_b, body_a))
+        for idx in range(num_pairs):
+            body_a, body_b = self._monitored_collision_body_pairs[idx]
+            if (int(body_a), int(body_b)) in colliding:
+                mask[0, idx] = True
+        return th.as_tensor(mask, device=self._out_th_device)
+
+    @override
+    def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str, str], tuple[str, str]]] | th.Tensor | None = None) -> th.Tensor:
+        if requested_pairs is not None and len(requested_pairs) == 0:
+            return th.empty(size=(self._vec_size, 0), dtype=th.bool, device=self._out_th_device)
+        self._forward_if_needed()
+        full_mask = self._compute_monitored_collision_mask()
+        if requested_pairs is None:
+            return full_mask
+        if isinstance(requested_pairs, th.Tensor):
+            reorder_indices = requested_pairs
+        else:
+            reorder_indices = self.get_collision_pair_ids(requested_pairs)
+        return full_mask[:, reorder_indices]
 
     @override
     def initialize_for_step(self):

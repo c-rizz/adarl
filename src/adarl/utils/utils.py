@@ -342,46 +342,50 @@ def pyTorch_makeDeterministic(seed):
 
 
 def list_gpus():
-    import pynvml
-    pynvml.nvmlInit()
-    count = pynvml.nvmlDeviceGetCount()
-    gpus = []
+    try:
+        import pynvml
+        pynvml.nvmlInit()
+        count = pynvml.nvmlDeviceGetCount()
+        gpus = []
 
-    for i in range(count):
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        for i in range(count):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
 
-        name = pynvml.nvmlDeviceGetName(handle)
-        uuid = pynvml.nvmlDeviceGetUUID(handle)
+            name = pynvml.nvmlDeviceGetName(handle)
+            uuid = pynvml.nvmlDeviceGetUUID(handle)
 
-        # CUDA support
-        try:
-            major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-            cuda_supported = True
-            compute_capability = f"{major}.{minor}"
-        except pynvml.NVMLError:
-            cuda_supported = False
-            compute_capability = None
+            # CUDA support
+            try:
+                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                cuda_supported = True
+                compute_capability = f"{major}.{minor}"
+            except pynvml.NVMLError:
+                cuda_supported = False
+                compute_capability = None
 
-        # VRAM
-        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        total_vram = mem.total          # bytes
-        free_vram = mem.free            # bytes
-        used_vram = mem.used            # bytes
-        pci_bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
+            # VRAM
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            total_vram = mem.total          # bytes
+            free_vram = mem.free            # bytes
+            used_vram = mem.used            # bytes
+            pci_bus_id = pynvml.nvmlDeviceGetPciInfo(handle).busId
 
-        gpus.append({
-            "index": i,
-            "name": name,
-            "uuid": uuid,
-            "cuda_supported": cuda_supported,
-            "compute_capability": compute_capability,
-            "total_vram": total_vram,
-            "free_vram": free_vram,
-            "used_vram": used_vram,
-            "pci_bus_id": pci_bus_id
-        })
+            gpus.append({
+                "index": i,
+                "name": name,
+                "uuid": uuid,
+                "cuda_supported": cuda_supported,
+                "compute_capability": compute_capability,
+                "total_vram": total_vram,
+                "free_vram": free_vram,
+                "used_vram": used_vram,
+                "pci_bus_id": pci_bus_id
+            })
 
-    return gpus
+        return gpus
+    except Exception as e:
+        ggLog.warn("Cannot list GPUs")
+        return []
 
 def get_gpu_names():
     return [gpu['name'] for gpu in list_gpus()]

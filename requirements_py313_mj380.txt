@@ -184,3 +184,4 @@ werkzeug==3.1.8
 xacro @ git+https://github.com/c-rizz/xacro_standalone@4ec1618a7bc42b2e3d5df0db77a577765a6f0519
 xmltodict==1.0.4
 zipp==4.1.0
+hdf5plot @ git+https://github.com/c-rizz/hdf5plot

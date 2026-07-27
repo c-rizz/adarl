@@ -112,6 +112,7 @@ class Robot():
         self._need_to_recompute_forward_kin = True
         self._need_to_place_geoms = True
         self._current_collision_geom_pairs = set()
+        self._world_aabbs : tuple[np.ndarray,np.ndarray] | None = None # lazily computed by get_ground_z (world geoms are static)
         self.set_collision_pairs("all")
 
     @staticmethod
@@ -404,6 +405,29 @@ class Robot():
             maxs[k] = wc.max(axis=0)
         return mins, maxs
 
+    def get_ground_z(self, xy : np.ndarray, footprint_radius : float = 0.0, baseline_z : float = 0.0) -> np.ndarray:
+        """Terrain height at world (x, y), from the additional_models (world) collision geometry.
+
+        xy: (2,) or (N,2). Returns a scalar or (N,) accordingly. With footprint_radius > 0 the height is
+        the max over the terrain overlapping a square of that half-side around each point (i.e. the
+        highest ground under the robot's footprint), so limbs reaching out from the body clear nearby
+        higher steps instead of spawning inside them. Where no terrain applies, baseline_z is used
+        (pinocchio's parsers drop infinite planes, so flat ground planes are not in the geometry).
+        """
+        if self._world_aabbs is None:
+            self._world_aabbs = self.get_additional_geom_world_aabbs()
+        mins, maxs = self._world_aabbs
+        single = xy.ndim == 1
+        pts = xy.reshape(1,2) if single else xy
+        ground = np.full((pts.shape[0],), baseline_z, dtype=float)
+        if mins.shape[0] > 0:
+            x = pts[:,0:1]; y = pts[:,1:2] # (N,1)
+            overlaps = ((x + footprint_radius >= mins[:,0]) & (x - footprint_radius <= maxs[:,0]) &
+                        (y + footprint_radius >= mins[:,1]) & (y - footprint_radius <= maxs[:,1])) # (N,M)
+            tops = np.where(overlaps, maxs[:,2], -np.inf).max(axis=1) # (N,), -inf where nothing overlaps
+            ground = np.maximum(ground, np.where(np.isfinite(tops), tops, baseline_z))
+        return ground[0] if single else ground
+
     def _update_forward_kinematics(self):
         if self._need_to_recompute_forward_kin:
             pinocchio.forwardKinematics(self._model, self._model_data, self._joint_position)
@@ -511,6 +535,29 @@ class Robot():
                 self._joint_position[q_idx:q_idx+nq] = joints[name]
         self._need_to_recompute_forward_kin = True
         self._need_to_place_geoms = True
+
+    def root_pose_for_frame_pose(self, frame_name : str, frame_pose_xyz_xyzw : np.ndarray, root_joint : str) -> np.ndarray:
+        """Value the (floating) root joint must take for `frame_name` to sit at the given world pose.
+
+        Callers usually care about a specific link (the robot's main body, a foot, ...) while pinocchio
+        is driven through the root joint, which generally differs from it by both the joint's placement
+        in the model and the root->frame transform of the current configuration. Both are accounted for
+        here, so this is exact for any frame and any orientation.
+        """
+        jid = self._joint_name_to_idx[root_joint]
+        frame = self._model.frames[self._frame_name_to_idx[frame_name]]
+        self._update_forward_kinematics()
+        # same convention as get_frame_poses_xyzxyzw: the frame sits at oMi[parent_joint]*frame.placement
+        parent_jid = frame.parentJoint if hasattr(frame,"parentJoint") else frame.parent
+        oMf = self._model_data.oMi[parent_jid]*frame.placement
+        iMf = self._model_data.oMi[jid].inverse()*oMf # root joint -> frame, independent of the root pose
+        target = pinocchio.XYZQUATToSE3(np.asarray(frame_pose_xyz_xyzw, dtype=float).copy())
+        return np.array(pinocchio.SE3ToXYZQUAT(self._model.jointPlacements[jid].inverse()*target*iMf.inverse()))
+
+    def set_frame_pose(self, frame_name : str, frame_pose_xyz_xyzw : np.ndarray, root_joint : str):
+        """Move the (floating) root joint so that `frame_name` sits at the given world pose.
+        The other joints are left untouched. See root_pose_for_frame_pose."""
+        self.set_joint_pose_by_names({root_joint : self.root_pose_for_frame_pose(frame_name, frame_pose_xyz_xyzw, root_joint)})
 
     def disable_tree_self_collisions(self, root_joint : str | None = None, root_frame : str | None = None):
         if root_joint is None:
@@ -671,78 +718,79 @@ if __name__ == "__main__":
 
 
 def find_pose_np(  root_joint : str,
-                homing_body_pose_xyzxyzw : np.ndarray,
+                body_frame : str,
+                default_body_pose_xyzxyzw : np.ndarray,
                 controlled_joints : Sequence[tuple[str,str]],
-                initial_pose_randomization_ranges : dict[tuple[str,str], float],
-                initial_height_randomization_range : float,
+                joint_randomization_ranges : dict[tuple[str,str], float],
                 limits_minmax : np.ndarray,
                 homing_pos : np.ndarray,
                 noncontrolled_jointpos : dict[tuple[str,str], np.ndarray],
-                robot_model : Robot | str,
+                robot_model : Robot,
                 is_floating_base : bool,
                 rng_seed,
-                excluded_collision_pairs):
-    t = time.monotonic()
-    if isinstance(robot_model, str):
-        robot_model = Robot(robot_model)
-        robot_model.set_collision_pairs("robot_and_world")
-        robot_model.remove_collision_pairs(excluded_collision_pairs)
-    t1 = time.monotonic()
-    found = False
-    coll_counter = {}
-    samples = 1000
-    jp_dict = noncontrolled_jointpos
+                excluded_collision_pairs,
+                body_xyz_minmax : np.ndarray,
+                footprint_radius : float = 0.0,
+                ground_baseline_z : float = 0.0,
+                samples : int = 1000):
+    """Search jointly over joint space and body xyz for a collision-free initial pose.
+
+    Each sample draws a joint configuration around homing (within joint_randomization_ranges, scaled to
+    the joint limits) and a position for `body_frame` within body_xyz_minmax. x and y are world-absolute,
+    while z is a clearance *above the local terrain* at that (x, y) - so a zero-width x/y range
+    degenerates to searching only over height, and a zero-width z range fixes the clearance. The body
+    orientation is the one of default_body_pose_xyzxyzw.
+
+    Returns (joint_pose, body_pose_xyzxyzw) for the first non-colliding sample, or the homing joint pose
+    and the last tried body pose if none was found.
+    """
     rng = np.random.default_rng(seed=rng_seed)
     truncnorm = scipy.stats.truncnorm(-1, 1, loc=0, scale=1/3)
+    jp_dict = noncontrolled_jointpos
+    joint_ranges = np.array([joint_randomization_ranges[jn] for jn in controlled_joints], dtype=np.float32)
+    xyz_min, xyz_max = body_xyz_minmax[0], body_xyz_minmax[1]
+
+    found = False
     seen_collision_pairs = {}
-    ranges = np.array([initial_pose_randomization_ranges[jn] for jn in controlled_joints], dtype=np.float32)
-    for i in range(samples):
-        norm_jpos = truncnorm.rvs(size=(len(controlled_joints),), random_state=rng).astype(np.float32)*ranges
-        # norm_jpos = (rng.random(size=(len(controlled_joints),), dtype=np.float32)*2-1)*initial_pose_randomization_range
-        # initial_joint_pose = unnormalize(((npos)),limits_minmax[0],limits_minmax[1])                
-        initial_joint_pose = ((norm_jpos>=0)*((limits_minmax[1]-homing_pos)*norm_jpos + homing_pos) +
-                                (norm_jpos< 0)*((homing_pos-limits_minmax[0])*norm_jpos + homing_pos))
-        jp_dict.update({jn:initial_joint_pose[i] for i,jn in enumerate(controlled_joints)})
+    collision_pair = None
+    body_pose_xyzxyzw = default_body_pose_xyzxyzw.copy()
+    for _ in range(samples):
+        norm_jpos = truncnorm.rvs(size=(len(controlled_joints),), random_state=rng).astype(np.float32)*joint_ranges
+        joint_pose = ((norm_jpos>=0)*((limits_minmax[1]-homing_pos)*norm_jpos + homing_pos) +
+                      (norm_jpos< 0)*((homing_pos-limits_minmax[0])*norm_jpos + homing_pos))
+        jp_dict.update({jn:joint_pose[i] for i,jn in enumerate(controlled_joints)})
         robot_model.set_joint_pose_by_names({jn[1]:jp for jn,jp in jp_dict.items()})
         if is_floating_base:
-            norm_height = (rng.random(size=(1,), dtype=np.float32)*2-1)*initial_height_randomization_range
-            initial_body_pose_xyzxyzw = homing_body_pose_xyzxyzw.copy()
-            initial_body_pose_xyzxyzw[2] += norm_height[0]
-            robot_model.set_joint_pose_by_names({root_joint:initial_body_pose_xyzxyzw})
-        has_collision, collision_pair = robot_model.has_collisions() # Returns True if there is any collision, and the first collision pair found (or None if no collision)
+            body_xyz = rng.random(size=(3,)).astype(np.float32)*(xyz_max - xyz_min) + xyz_min
+            # z is relative to the terrain under the robot's footprint at the sampled (x, y)
+            body_xyz[2] += robot_model.get_ground_z(body_xyz[:2],
+                                                    footprint_radius=footprint_radius,
+                                                    baseline_z=ground_baseline_z)
+            body_pose_xyzxyzw = default_body_pose_xyzxyzw.copy()
+            body_pose_xyzxyzw[:3] = body_xyz
+            # Robot resolves the root-joint value that puts body_frame exactly at this pose
+            robot_model.set_frame_pose(body_frame, body_pose_xyzxyzw, root_joint)
+        has_collision, collision_pair = robot_model.has_collisions()
         if not has_collision:
             found = True
-            initial_jpose = initial_joint_pose
             break
         seen_collision_pairs[collision_pair] = seen_collision_pairs.get(collision_pair, 0) + 1
-        # collisions = robot_model.get_all_collisions()
-        # # all_link_poses = self._robot_model.get_frame_poses_xyzxyzw() #frames=self._robot_model.get_tree_frame_names_under_joint(self._configuration.robot_root_joint))
-        # # pprint.pprint(all_link_poses)
-        # # all_links_z = np.stack([pose[2] for pose in all_link_poses.values()])
-        # coll_counter.update({ln:coll_counter.get(ln,0)+1 for ln in collisions})                    
-        # if len(collisions) == 0: # and np.all(all_links_z>0):
-        #     # ggLog.info(f"joint_pose = {self._robot_model.get_joint_pose()}")
-        #     # ggLog.info(f"selected all_link_poses = {all_link_poses}")
-        #     found = True
-        #     initial_jpose = initial_joint_pose
-        #     break
-    t2 = time.monotonic()
     if not found:
-        initial_jpose = homing_pos
+        joint_pose = homing_pos
         seen_collision_pairs = {k:v/samples for k,v in seen_collision_pairs.items()}
-        print(  f"Failed to find initial joint configuration."
+        print(  f"Failed to find initial pose."
                 f" last collision seen = {collision_pair}\n"
                 f" filtered collisions = {excluded_collision_pairs}\n"
-                f" coll_ratio={seen_collision_pairs}")
-    # ggLog.info(f"Model creation took {t1-t}s, pose search {t2-t1}s")
-    return initial_jpose
+                f" coll_ratio={seen_collision_pairs}\n"
+                f" body_pose_xyzxyzw={body_pose_xyzxyzw}")
+    return joint_pose, body_pose_xyzxyzw
 
 
 def find_poses(root_joint : str,
-                homing_body_pose_xyzxyzw : np.ndarray,
+                body_frame : str,
+                default_body_pose_xyzxyzw : np.ndarray,
                 controlled_joints : Sequence[tuple[str,str]],
-                initial_pose_randomization_range : float | dict[tuple[str,str] | str, float],
-                initial_height_randomization_range : float,
+                joint_randomization_range : float | dict[tuple[str,str] | str, float],
                 limits_minmax : np.ndarray,
                 homing_pos : np.ndarray,
                 noncontrolled_jointpos : dict[tuple[str,str], np.ndarray],
@@ -751,44 +799,39 @@ def find_poses(root_joint : str,
                 seed : int,
                 excluded_collision_pairs : set[tuple[str,str]],
                 num_envs : int,
+                body_xyz_minmax : np.ndarray,
+                footprint_radius : float = 0.0,
+                ground_baseline_z : float = 0.0,
                 ):
-    seeds = np.random.default_rng(seed).integers(0, 1_000_000_000_000, size=(num_envs,))
-    # seeds = [int(th.randint(low=0, high=1_000_000_000_000, size=(1,), generator=rng, device=homing_pos.device).item()) for _ in range(num_envs)]
-    # with adarl.utils.mp_helper.get_context().Pool() as p:
-    #     r = p.starmap(find_pose_np, [[ root_joint,
-    #                             homing_body_pose_xyzxyzw,
-    #                             controlled_joints,
-    #                             initial_pose_randomization_range,
-    #                             limits_np,
-    #                             homing_np,
-    #                             noncontrolled_jointpos_np,
-    #                             robot_model._urdf_string,
-    #                             is_floating_base,
-    #                             seeds[i],
-    #                             excluded_collision_pairs]
-    #                          for i in range(num_envs)])
-    #     return th.as_tensor(np.stack(r))
+    """Per-env collision-free initial poses, searching over both joint space and body xyz.
 
+    Returns (joint_poses, body_poses): joint_poses is (num_envs, len(controlled_joints)) and body_poses
+    is (num_envs, 7), the `body_frame` poses the search validated. See find_pose_np for the xyz semantics.
+    """
+    seeds = np.random.default_rng(seed).integers(0, 1_000_000_000_000, size=(num_envs,))
     original_collision_pairs = robot_model.get_enabled_collision_pairs()
     # robot-self + robot-vs-world (terrain), but not world-vs-world; excluded pairs (robot self-collision
     # artifacts) are then removed, leaving real self-collisions and terrain penetration to reject poses.
     robot_model.set_collision_pairs("robot_and_world")
     robot_model.remove_collision_pairs(excluded_collision_pairs)
-    joint_ranges = expand_default_dict(initial_pose_randomization_range, controlled_joints)
-    r = np.zeros(shape=(num_envs, len(controlled_joints)), dtype=np.float32)
+    joint_ranges = expand_default_dict(joint_randomization_range, controlled_joints)
+    joint_poses = np.zeros(shape=(num_envs, len(controlled_joints)), dtype=np.float32)
+    body_poses = np.zeros(shape=(num_envs, 7), dtype=np.float32)
     for v in range(num_envs): # TODO: this may be sloooooow, can I parallelize it?
-        r[v] = find_pose_np(    root_joint,
-                                homing_body_pose_xyzxyzw,
-                                controlled_joints,
-                                joint_ranges,
-                                initial_height_randomization_range,
-                                limits_minmax,
-                                homing_pos,
-                                noncontrolled_jointpos,
-                                robot_model,
-                                is_floating_base,
-                                seeds[v],
-                                excluded_collision_pairs)
+        joint_poses[v], body_poses[v] = find_pose_np(root_joint,
+                                                     body_frame,
+                                                     default_body_pose_xyzxyzw,
+                                                     controlled_joints,
+                                                     joint_ranges,
+                                                     limits_minmax,
+                                                     homing_pos,
+                                                     noncontrolled_jointpos,
+                                                     robot_model,
+                                                     is_floating_base,
+                                                     seeds[v],
+                                                     excluded_collision_pairs,
+                                                     body_xyz_minmax,
+                                                     footprint_radius,
+                                                     ground_baseline_z)
     robot_model.set_collision_pairs(original_collision_pairs)
-
-    return th.as_tensor(r)
+    return th.as_tensor(joint_poses), th.as_tensor(body_poses)

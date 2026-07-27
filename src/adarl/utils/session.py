@@ -159,8 +159,8 @@ class Session():
                 ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
                             "                  NO CUDA AVAILABLE!\n"+
                             "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
-                            "Will continue in 10 sec...")
-                time.sleep(10)
+                            "Will continue in 3 sec...")
+                time.sleep(3)
             import rreal.utils.torch_patcher as torch_patcher
             torch_patcher.torch_monkey_patch()
 
