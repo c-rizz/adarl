@@ -6,7 +6,7 @@ import torch as th
 from typing import final, TypeVar, Mapping, Generic
 from gymnasium.vector.utils import batch_space
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import masked_assign
+from adarl.utils.utils import masked_assign, thtens
 from typing import Tuple, Union
 import sys
 
@@ -314,7 +314,7 @@ class BaseVecEnv(ABC, Generic[Observation]):
 
     
     def _thtens(self, data):
-        return th.as_tensor(data, dtype=self._obs_dtype).to(device=self._th_device, non_blocking=self._th_device.type=="cuda")
+        return thtens(data, dtype=self._obs_dtype, device=self._th_device)
 
     def _thzeros(self, size : tuple[int,...], th_device : th.device | None = None, dtype : th.dtype | None = None):
         if th_device is None:

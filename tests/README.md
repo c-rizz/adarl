@@ -19,6 +19,9 @@ tests/
     test_mujoco_compliance.py     # MuJoCo (CPU) — full compliance, green
     test_mjx_compliance.py        # MJX jax+warp — xfail (see Findings)
     test_mjx_static_link_warp.py  # regression: moving a fixed link under warp (green)
+    test_set_rows_cols_masks.py   # unit: masked sub-block writer (sparse-mask regression)
+    test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
+    test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
 benchmarks/                       # perf/demo scripts (NOT collected by pytest)
   bench_mjx_adapter.py
   bench_genesis_adapter.py
@@ -71,7 +74,19 @@ Wiring the existing checks into a real suite surfaced several latent bugs.
    (`_peek_current_impedance_cmd`) — the same selection a step makes, without consuming the queue;
    envs with no active command return a zero command. Handles the immediate/delayed/masked cases.
 
-With 1–5 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there are no open findings.
+6. `set_rows_cols_masks` (MjxAdapter): with a **sparse boolean** mask and full-size `vals` it
+   resolved the mask via `jnp.nonzero(mask, size=vec_size)`, which pads missing entries with index
+   **0** — clobbering row 0 (env 0) and misassigning per-row values. This corrupted env-0 impulses
+   every step (impulses vanished after ~1 frame in env-0 videos, regardless of duration) and was a
+   latent hazard for the effort/impedance paths when their mask went sparse. Reworked to a proper
+   masked overwrite (boolean dims overwrite only `True` rows, keep the rest; integer dims stay a
+   compacted cross-product write). Guarded by `test_set_rows_cols_masks.py` and
+   `test_impulse_persistence.py`.
+7. `MjxAdapter` impulse `impulse_startends_stime` was initialised with `fill_value=-1` → **int32**,
+   so impulse start/end **times were truncated to whole seconds** (sub-second impulses collapsed to
+   a zero-length window and never fired). Now `float32`.
+
+With 1–7 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there are no open findings.
 
 **By design (not a bug)**
 

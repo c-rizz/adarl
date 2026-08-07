@@ -28,7 +28,7 @@ import cpuinfo
 import warnings
 import traceback
 import pprint
-
+from enum import IntEnum
 
 warning_printstack = False
 original_showwarning = None
@@ -57,6 +57,11 @@ def cleanup_config_for_json(config : dict) -> dict:
             ggLog.error(f"Could not JSON serialize config entry {k}:{v}\n{exc_to_str(e2)}")
     return clean_config
 
+class DbgLevel(IntEnum):
+    OFF = 0
+    VERBOSE = 1
+    SLOW = 2
+
 class Session():
     def __init__(self):
 
@@ -70,6 +75,7 @@ class Session():
 
     def reapply_globals(self):
         wandb_wrapper.default_wrapper = self._wandb_wrapper
+        self._setup_torch()
 
     def initialize(self,main_file_path : str,
                         currentframe = None,
@@ -78,7 +84,7 @@ class Session():
                         seed = None,
                         experiment_name : Optional[str] = None,
                         run_id : Optional[str] = None,
-                        debug : Union[bool, int]  = False,
+                        debug : int  = 0,
                         run_comment = "",
                         use_wandb = True,
                         reference_data_folder : Optional[str] = None):
@@ -126,44 +132,46 @@ class Session():
         np.set_printoptions(edgeitems=10,linewidth=180)
         from adarl.utils.sigint_handler import setupSigintHandler
         setupSigintHandler()
+        from adarl.utils.utils import get_gpu_names
+        self.run_info["gpu"] = get_gpu_names()
         if using_pytorch:
-            import torch as th
-            from adarl.utils.utils import get_gpu_names
-            self.run_info["gpu"] = get_gpu_names()
-            th.set_printoptions(linewidth=160)
-            from adarl.utils.utils import pyTorch_makeDeterministic
-            pyTorch_makeDeterministic(seed)
-            th._dynamo.config.capture_scalar_outputs = True
-            if debug_level>0:
-                if debug_level>1:
-                    os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
-                if debug_level>2:
-                    warnings.simplefilter("always")
-                override_warning_func()
-                th.cuda.set_sync_debug_mode("warn")
-                import logging
-                th._logging.set_logs(recompiles=True,
-                                     graph_breaks=True,
-                                     inductor=logging.INFO,
-                                     cudagraphs=True,
-                                     )
-                import torch._inductor.config as iconfig
-                iconfig.trace.enabled = True
-                iconfig.trace.graph_diagram = True
-            ggLog.info(f"set dbg. Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
-            th.autograd.set_detect_anomaly(debug_level > 2) # type: ignore
-            th.distributions.Distribution.set_default_validate_args(debug_level > 2) # do not check distribution args validity (it leads to cuda syncs)
-            if th.cuda.is_available():
-                ggLog.info(f"CUDA AVAILABLE: device = {get_gpu_names()}")
-            else:
-                ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                            "                  NO CUDA AVAILABLE!\n"+
-                            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
-                            "Will continue in 3 sec...")
-                time.sleep(3)
-            import rreal.utils.torch_patcher as torch_patcher
-            torch_patcher.torch_monkey_patch()
+            self._setup_torch()
 
+    def _setup_torch(self):
+        import torch as th
+        from adarl.utils.utils import get_gpu_names, pyTorch_makeDeterministic
+        th.set_printoptions(linewidth=160)
+        pyTorch_makeDeterministic(self.run_info["seed"])
+        th._dynamo.config.capture_scalar_outputs = True
+        th.distributions.Distribution.set_default_validate_args(False) # do not check distribution args validity (it leads to cuda syncs)
+        if self.debug_level>=DbgLevel.VERBOSE:
+            os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
+            override_warning_func()
+            th.cuda.set_sync_debug_mode("warn")
+            import logging
+            th._logging.set_logs(recompiles=True,
+                                    graph_breaks=True,
+                                    inductor=logging.INFO,
+                                    cudagraphs=True,
+                                    )
+            import torch._inductor.config as iconfig
+            iconfig.trace.enabled = True
+            iconfig.trace.graph_diagram = True
+            if self.debug_level>=DbgLevel.SLOW:
+                warnings.simplefilter("always")
+                th.autograd.set_detect_anomaly(True) # type: ignore
+                th.distributions.Distribution.set_default_validate_args(True)
+        ggLog.info(f"set dbg. Cuda initialized = {th.cuda.is_initialized(), th.cuda._is_in_bad_fork()}")
+        if th.cuda.is_available():
+            ggLog.info(f"CUDA AVAILABLE: device = {get_gpu_names()}")
+        else:
+            ggLog.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                        "                  NO CUDA AVAILABLE!\n"+
+                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
+                        "Will continue in 3 sec...")
+            time.sleep(3)
+        import rreal.utils.torch_patcher as torch_patcher
+        torch_patcher.torch_monkey_patch()
 
     def _setupLoggingForRun(self,   file : str,
                                     currentframe = None,

@@ -8,7 +8,7 @@ import adarl.utils.dbg.ggLog as ggLog
 import adarl.utils.spaces as spaces
 import adarl.utils.tensor_trees
 import adarl.utils.utils
-from adarl.utils.utils import masked_assign
+from adarl.utils.utils import masked_assign, thtens
 from adarl.utils.dbg.dbg_checks import dbg_check_size, dbg_check
 import numpy as np
 import torch as th
@@ -17,14 +17,15 @@ from dataclasses import dataclass
 import math
 import numpy.typing as npt
 import copy
+from adarl.utils.base_utils import record_time, record_region_start, record_region_end, DelayStats
 
 
 _T = TypeVar('_T', float, th.Tensor)
-def unnormalize(v : _T, min : _T, max : _T) -> _T:
-    return min+(v+1)/2*(max-min)
+def unnormalize(v : _T, min : _T, max : _T, norm_min : float = -1.0, norm_max : float = 1.0) -> _T:
+    return min+(v-norm_min)/(norm_max-norm_min)*(max-min)
 
-def normalize(value : _T, min : _T, max : _T):
-    return (value + (-min))/(max-min)*2-1
+def normalize(value : _T, min : _T, max : _T, norm_min : float = -1.0, norm_max : float = 1.0):
+    return (value + (-min))/(max-min)*(norm_max-norm_min)+norm_min
 
 def _build_full_mask(dims_masks : Sequence[th.Tensor]):
     print(f"dims_masks shapes = {[_m.shape for _m in dims_masks]}")
@@ -114,6 +115,7 @@ class ThBoxStateHelper(StateHelper):
         obs_space : spaces.ThBox
         single_obs_space : spaces.ThBox
         fully_observable : bool
+        skip_history_dim : bool = False
     @dataclass
     class SimpleObsDef():
         observable_fields : Sequence[FieldName] | None = None
@@ -122,7 +124,9 @@ class ThBoxStateHelper(StateHelper):
         """Defines the observable subfields for the observation. If None, all subfields are observable. Only supported for 1-dimensional fields."""
         obs_history_length : int = 1
         """Defines how many history steps are observable. Must be less than or equal to the state history_length."""
-        
+        skip_history_dim : bool = False
+        """Skips the history dimension in the observation. Only possible if obs_history_length==1."""
+
         @classmethod
         def not_observable(cls):
             return cls([],[],1)
@@ -140,7 +144,8 @@ class ThBoxStateHelper(StateHelper):
                         history_length : int = 1,
                         subfield_names : list[str] | np.ndarray | None = None,
                         flatten_observation = False,
-                        observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None = None):
+                        observation_definitions : dict[str,SimpleObsDef] | SimpleObsDef | None = None,
+                        normalization_range : tuple[float,float] = (-1.0, 1.0)):
         """_summary_
 
         Parameters
@@ -174,6 +179,11 @@ class ThBoxStateHelper(StateHelper):
         self.field_shape = tuple(field_size)
         self.subfield_names = self._fix_subfield_names(subfield_names)
         self._dtype = dtype
+        # Target range that normalize() maps field values into. For uint8 storage it must be (0,255)
+        # and normalization is skipped entirely: values are kept raw, to be scaled downstream (e.g. in the encoder).
+        self._normalization_range = (float(normalization_range[0]), float(normalization_range[1]))
+        if dtype == th.uint8 and self._normalization_range != (0.0, 255.0):
+            raise ValueError(f"normalization_range must be (0, 255) for uint8 dtype, got {self._normalization_range}")
         self._th_device = th_device
         self._history_length = history_length
         self._flatten_observation = flatten_observation
@@ -204,6 +214,8 @@ class ThBoxStateHelper(StateHelper):
         observable_fields, observable_subfields, obs_history_length = obs_def.observable_fields, obs_def.observable_subfields, obs_def.obs_history_length
         if obs_history_length>self._history_length:
             raise RuntimeError(f"obs_history_length ({obs_history_length}) must be less than state history_length ({self._history_length})")
+        if obs_def.skip_history_dim and obs_history_length!=1:
+            raise RuntimeError(f"remove_history_dim is only possible if obs_history_length==1, but obs_history_length={obs_history_length}")
         if observable_subfields is None:
             observable_subfields_masks = tuple()
             observed_field_shape = self.field_shape
@@ -236,14 +248,19 @@ class ThBoxStateHelper(StateHelper):
         obs_idx_np = np.ix_(observable_hist_mask.cpu().numpy(),
                             observable_fields_mask.cpu().numpy(),
                             *[m.cpu().numpy() for m in observable_subfields_masks])
-        full_observation_indexes=[th.as_tensor(i) for i in obs_idx_np]
+        # Keep the index tensors on the state's device: indexing a CUDA `state` (line ~417) with
+        # CPU index tensors forces a synchronous host->device copy of the indices on every observe().
+        full_observation_indexes=[thtens(i, device=self._th_device) for i in obs_idx_np]
 
 
 
         
         obs_hist_count = int(th.count_nonzero(observable_hist_mask).item())
         obs_fields_count = int(th.count_nonzero(observable_fields_mask).item())
-        unflattened_obs_shape = ( self._vec_size, obs_hist_count, obs_fields_count)+observed_field_shape
+        if obs_def.skip_history_dim:
+            unflattened_obs_shape = ( self._vec_size, obs_fields_count)+observed_field_shape
+        else:
+            unflattened_obs_shape = ( self._vec_size, obs_hist_count, obs_fields_count)+observed_field_shape
         # print(f"obs_history_length = {obs_history_length}")
         # print(f"observable_fields = {observable_fields}")
         # print(f"observable_subfields = {observable_subfields}")
@@ -254,7 +271,8 @@ class ThBoxStateHelper(StateHelper):
         obs_names = self._build_obs_names(  obs_history_length,
                                             observable_fields,
                                             observed_field_shape,
-                                            observable_subfields_masks)
+                                            observable_subfields_masks,
+                                            skip_history_dim=obs_def.skip_history_dim)
         # ggLog.info(f"obsnames.shape = {obs_names.shape}, obsnames = {obs_names}")
         hlmin = self._limits_minmax[0].expand(self._state_shape)
         hlmax = self._limits_minmax[1].expand(self._state_shape)
@@ -269,7 +287,8 @@ class ThBoxStateHelper(StateHelper):
                                             obs_history_length=obs_history_length, 
                                             obs_space=None,
                                             single_obs_space=None,
-                                            fully_observable=fully_observable)
+                                            fully_observable=fully_observable,
+                                            skip_history_dim=obs_def.skip_history_dim)
         full_obs_def.obs_space = spaces.ThBox(   low=self.observe(hlmin, full_obs_def), high=self.observe(hlmax, full_obs_def), shape=full_obs_def.obs_shape,
                                     dtype=self._dtype, labels=obs_names)
         full_obs_def.single_obs_space = spaces.ThBox(low=self.observe(hlmin, full_obs_def)[0], high=self.observe(hlmax, full_obs_def)[0], shape=full_obs_def.obs_shape[1:],
@@ -311,8 +330,8 @@ class ThBoxStateHelper(StateHelper):
         return th.stack([th.as_tensor(fields_minmax[fn], dtype=self._dtype, device=self._th_device) for fn in self.field_names]).transpose(0,1)
 
     def _mapping_to_tensor(self, instantaneous_state : Mapping[FieldName,th.Tensor | float | Sequence[float]]) -> th.Tensor:
-        # ggLog.info(f"self._vec_size = {self._vec_size}, self.field_size = {self.field_size}, instantaneous_state = {instantaneous_state}")
-        instantaneous_state = {k:th.as_tensor(v).view(self._vec_size, *self.field_shape) for k,v in instantaneous_state.items()}
+        # ggLog.info(f"self._vec_size = {self._vec_size}, self.field_size = {self.field_shape}, instantaneous_state = {instantaneous_state}")
+        instantaneous_state = {k:thtens(v).view(self._vec_size, *self.field_shape) for k,v in instantaneous_state.items()}
         return th.stack([instantaneous_state[k] for k in self.field_names], dim = -len(self.field_shape)-1) # stack along the field dimension
 
     @override
@@ -385,8 +404,10 @@ class ThBoxStateHelper(StateHelper):
 
     @override
     def normalize(self, state : th.Tensor, alternative_limits : th.Tensor | None = None, warn_limits_violation = False):
+        if self._dtype == th.uint8:
+            return state # uint8 is kept raw ([0,255]); normalization is skipped and left to downstream (e.g. the encoder)
         limits = self._limits_minmax if alternative_limits is None else alternative_limits
-        ret = normalize(state, limits[0], limits[1])
+        ret = normalize(state, limits[0], limits[1], self._normalization_range[0], self._normalization_range[1])
         if warn_limits_violation and th.any(th.abs(ret) > 1.1):
             ggLog.warn(f"Normalization exceeded [-1.1,1.1] range: {state} with {limits[0]} & {limits[1]} = {ret}")
         # if not th.all(th.isfinite(ret)):
@@ -399,7 +420,9 @@ class ThBoxStateHelper(StateHelper):
     
     @override
     def unnormalize(self, state : th.Tensor):
-        return unnormalize(state, self._limits_minmax[0], self._limits_minmax[1])
+        if self._dtype == th.uint8:
+            return state
+        return unnormalize(state, self._limits_minmax[0], self._limits_minmax[1], self._normalization_range[0], self._normalization_range[1])
     
     @override
     def observe(self, state : th.Tensor, obs_def : ThBoxStateHelper.ObservationDef | str | None = None):
@@ -417,11 +440,13 @@ class ThBoxStateHelper(StateHelper):
                 obs = obs.view(obs_def.unflattened_obs_shape)
                 # obs = th.masked_select(state, obs_def.full_observation_mask).view(obs_def.unflattened_obs_shape)
                 # obs = state[:,obs_def.full_observation_mask].view(obs_def.unflattened_obs_shape)
+        if obs_def.skip_history_dim:
+            obs = obs[:,0]
         if self._flatten_observation:
             obs = th.flatten(obs, start_dim=1)
         return obs
 
-    def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_masks):
+    def _build_obs_names(self, obs_history_length, observable_fields, observed_field_size, observable_subfields_masks, skip_history_dim=False):
         obs_names = np.empty(shape=(obs_history_length,len(observable_fields))+observed_field_size, dtype=object)
         # print(f"observed_field_size = {observed_field_size}")
         for h in range(obs_history_length):
@@ -451,6 +476,8 @@ class ThBoxStateHelper(StateHelper):
                     else:
                         sn = ','.join([str(i) for i in s])
                     obs_names[(h,fn)+obs_s] = f"[{h},{f},{sn}]"
+        if skip_history_dim:
+            obs_names = obs_names[0]
         if self._flatten_observation:
             obs_names = obs_names.flatten()
         return obs_names
@@ -531,19 +558,19 @@ class ThBoxStateHelper(StateHelper):
             if isinstance(field_names, Sequence):
                 if not isinstance(field_names, tuple):
                     field_names = tuple(field_names)
-                idx = th.as_tensor([self._field_idxs[n] for n in field_names], device=self._th_device, dtype=th.int64)
+                idx = thtens([self._field_idxs[n] for n in field_names], device=self._th_device, dtype=th.int64)
             else:
-                idx = th.as_tensor(field_names, device=self._th_device, dtype=th.int64)
+                idx = thtens([field_names], device=self._th_device, dtype=th.int64)
             self._field_idx_cache[field_names] = idx
             return idx
         return idx
     
     def subfield_idx(self, subfield_names : Sequence[FieldName]):
         if self._subfield_idxs is not None:
-            return th.as_tensor([self._subfield_idxs[n] for n in subfield_names], device=self._th_device)
+            return thtens([self._subfield_idxs[n] for n in subfield_names], device=self._th_device)
         else:
             # Then subfield names are just the indexes
-            return th.as_tensor([int(typing.cast(int, n)) for n in subfield_names], device=self._th_device)
+            return thtens([int(typing.cast(int, n)) for n in subfield_names], device=self._th_device)
 
     def get_limits(self):
         """_summary_
@@ -894,8 +921,10 @@ class DictStateHelper(StateHelper):
         return ret
 
     def _observe(self, noisy_state:  Mapping[str,th.Tensor], obs_def_name : str):
+        record_region_start(f"DictStateHelper._observe({obs_def_name})")
         obs_def = self._obs_defs[obs_def_name]
         nonflat_obs = {k:self.sub_helpers[k].observe(noisy_state[k], obs_def=obs_def_name) for k in  obs_def.observable_substates}
+        record_time(f"DictStateHelper._observe({obs_def_name}) got subobs")
         # ggLog.info(f"non_flat_obs = {nonflat_obs}")
         concatenable_parts = []
         obs = {}
@@ -908,26 +937,32 @@ class DictStateHelper(StateHelper):
             obs[obs_def.concatenated_part_name] = th.concat(concatenable_parts, dim=1)
             # if th.any(th.abs(obs[self._flatten_part_name]) > 1.0):
             #     ggLog.warn(f"observation values exceed -1,1 normalization: nonflat_obs = {nonflat_obs},\nstate = {state}")
+        record_region_end(f"DictStateHelper._observe({obs_def_name})")
         return obs
 
     @override
     def observe(self, state:  Mapping[str,th.Tensor], obs_def_name: None | str = None):
+        record_region_start("DictStateHelper.observe")
         # ggLog.info(f"observing state {state}")
         state = self.normalize(state)
         # ggLog.info(f"normalized state = {state}")
 
         if obs_def_name is not None:
+            record_time(f"DictStateHelper.observe: single {obs_def_name}")
             noisy_state = {k:ss+state[self._stateobs2noise_names[(k,obs_def_name)]] if (k,obs_def_name) in self._stateobs2noise_names else ss for k,ss in state.items()}
-            return self._observe(noisy_state, obs_def_name)
+            observations = self._observe(noisy_state, obs_def_name)
         else:
             observations = {}
             for obs_def_name in self._obs_defs:
+                record_time(f"DictStateHelper.observe: loop {obs_def_name}")
                 noisy_state = {ssname:ss+state[self._stateobs2noise_names[(ssname,obs_def_name)]] 
                                         if (ssname,obs_def_name) in self._stateobs2noise_names else ss 
                                for ssname,ss in state.items()}
+                record_time(f"DictStateHelper.observe: loop {obs_def_name} added noise")
                 obs = self._observe(noisy_state, obs_def_name=obs_def_name)
                 observations.update({obs_def_name+"."+subobs_name:subobs for subobs_name,subobs in obs.items()})
-            return observations
+        record_region_end("DictStateHelper.observe")
+        return observations
 
     def _obs_names(self, obs_def : DictObsDef):
         
@@ -1337,7 +1372,9 @@ class JointImpedanceActionHelper:
             posref = cmd_vec_joints_pvesd[:,:,0]
             delta = posref - prev_posref #type: ignore
             dbg_check(lambda: th.logical_and(th.all(delta <= self._position_delta_max), 
-                                             th.all(delta >= -self._position_delta_max)), build_msg=lambda: f"Position delta exceeds maximum! delta = {delta}, max = {self._position_delta_max}")
+                                             th.all(delta >= -self._position_delta_max)),
+                                             build_msg=lambda: f"Position delta exceeds maximum! delta = {delta}, max = {self._position_delta_max}",
+                                             async_assert=True)
             delta = th.clamp(delta, -self._position_delta_max, self._position_delta_max)
             return delta/self._position_delta_max
         else:

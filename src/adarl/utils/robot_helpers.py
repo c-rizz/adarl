@@ -602,12 +602,32 @@ class Robot():
             viz.loadViewerModel(rootNodeName="robot")
             viz.displayCollisions(True)
             viz.displayVisuals(False)
+            # the meshcat server is reused across runs: make sure no camera offset is left over from a
+            # previous session, otherwise the orbit controls start off-target
+            import meshcat.transformations as mtf
+            viz.viewer["/Cameras/default"].set_transform(mtf.identity_matrix())
             self._debug_viz = viz
         return viz
 
-    def debug_display(self, open_browser : bool = False):
-        """Show the current configuration in the meshcat debug visualizer. See get_debug_visualizer."""
-        self.get_debug_visualizer(open_browser=open_browser).display(self._joint_position)
+    def debug_display(self, open_browser : bool = False, follow_frame : str | None = None):
+        """Show the current configuration in the meshcat debug visualizer. See get_debug_visualizer.
+
+        If follow_frame is given, the camera target is recentered on that frame's x,y (keeping z at
+        ground level), so the robot stays in view when the spawn position is randomized. The user's
+        current zoom/orientation is preserved - only the orbit center moves.
+        """
+        viz = self.get_debug_visualizer(open_browser=open_browser)
+        viz.display(self._joint_position)
+        if follow_frame is not None:
+            import meshcat.transformations as mtf
+            xyz = self.get_frame_poses_xyzxyzw(frames=[follow_frame])[follow_frame][:3]
+            # meshcat has no API to move OrbitControls' target: translating the camera rig leaves the
+            # target at the world origin, so once the robot is far away you end up orbiting around a
+            # distant point and the mouse becomes unusable. Instead leave the camera alone and shift
+            # the whole scene, so the followed frame always sits at the view origin where the controls
+            # behave normally. Only the displayed coordinates shift - relative geometry is untouched.
+            viz.viewer[viz.viewerRootNodeName].set_transform(
+                    mtf.translation_matrix([-float(xyz[0]), -float(xyz[1]), 0.0]))
 
     def get_dbg_image(self):
         from panda3d_viewer import Viewer, ViewerConfig
@@ -758,9 +778,9 @@ if __name__ == "__main__":
 
 def _debug_show_pose(robot_model : Robot, sample_i : int, samples : int, joint_pose : np.ndarray,
                      controlled_joints : Sequence[tuple[str,str]], body_pose_xyzxyzw : np.ndarray,
-                     has_collision : bool) -> bool:
+                     has_collision : bool, body_frame : str | None = None) -> bool:
     """Publish one attempted pose to meshcat and wait for a keypress. Returns False to stop stepping."""
-    robot_model.debug_display()
+    robot_model.debug_display(follow_frame=body_frame)
     lowest = robot_model.get_robot_geom_world_aabbs()[0][:,2].min()
     print(f"\n[find_pose debug] sample {sample_i+1}/{samples}: "
           f"{'COLLIDING' if has_collision else 'FREE (accepted)'}")
@@ -795,8 +815,9 @@ def find_pose_np(  root_joint : str,
                 footprint_radius : float = 0.0,
                 ground_baseline_z : float = 0.0,
                 fallback_clearance : float = 0.02,
-                samples : int = 1000,
-                debug : bool = False):
+                samples : int = 10_000,
+                debug : bool = False,
+                print_id = ""):
     """Search jointly over joint space and body xyz for a collision-free initial pose.
 
     Each sample draws a joint configuration around homing (within joint_randomization_ranges, scaled to
@@ -840,7 +861,7 @@ def find_pose_np(  root_joint : str,
         has_collision, collision_pair = robot_model.has_collisions()
         if debug:
             debug = _debug_show_pose(robot_model, sample_i, samples, joint_pose, controlled_joints,
-                                     body_pose_xyzxyzw, has_collision)
+                                     body_pose_xyzxyzw, has_collision, body_frame=body_frame)
         if not has_collision:
             found = True
             break
@@ -860,7 +881,7 @@ def find_pose_np(  root_joint : str,
             lowest_z = robot_model.get_robot_geom_world_aabbs()[0][:,2].min()
             body_pose_xyzxyzw[2] += max(0.0, float(ground_z) + fallback_clearance - float(lowest_z))
         seen_collision_pairs = {k:v/samples for k,v in seen_collision_pairs.items()}
-        print(  f"Failed to find initial pose, falling back to homing joints clear of the terrain."
+        print(  f"[{print_id}] Failed to find initial pose, falling back to homing joints clear of the terrain."
                 f" last collision seen = {collision_pair}\n"
                 f" filtered collisions = {excluded_collision_pairs}\n"
                 f" coll_ratio={seen_collision_pairs}\n"
@@ -917,6 +938,7 @@ def find_poses(root_joint : str,
                                                      body_xyz_minmax,
                                                      footprint_radius,
                                                      ground_baseline_z,
-                                                     debug=debug)
+                                                     debug=debug,
+                                                     print_id=f"{v}")
     robot_model.set_collision_pairs(original_collision_pairs)
     return th.as_tensor(joint_poses), th.as_tensor(body_poses)

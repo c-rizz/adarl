@@ -233,6 +233,135 @@ def add_arrow_to_renderer(renderer, from_, to, radius=0.03, rgba=[0.2, 0.2, 0.6,
   scene.ngeom += 1
 
 
+def assign_camera_visibility_geom_groups(mj_model,
+                                         lname2lid : dict[tuple[str,str], int],
+                                         cameras : list[str],
+                                         link_group_cameras : list[tuple[str, list[tuple[str,str] | str]]],
+                                         max_groups : int = 6) -> dict[str, list[int]]:
+    """Restrict which cameras can see which links, by assigning MuJoCo geom groups.
+
+    Backend-agnostic: it only edits ``mj_model.geom_group`` in place and returns the camera->groups
+    mapping; applying it at render time is up to the caller (classic renderer: per-camera
+    ``MjvOption.geomgroup``; warp: ``enabled_geom_groups`` when creating each camera's render
+    context).
+
+    Semantics: a camera that appears in ``link_group_cameras`` sees ONLY its listed links (a listed
+    model name expands to all its links); it is hidden from every other detected link. A camera that
+    does not appear sees everything. Geoms not on any detected link (e.g. worldbody/ground) stay
+    visible to all cameras. Links that end up visible to the same set of cameras share one geom group;
+    their geoms are reassigned to it and each camera's renderable groups are recorded. Groups already
+    used by always-visible geoms are reserved; MuJoCo only has ``max_groups`` (mjNGROUP = 6) geom
+    groups, which caps the number of distinct visibility patterns.
+
+    Parameters
+    ----------
+    mj_model : mujoco.MjModel
+        The model whose ``geom_group`` is edited in place (``geom_bodyid`` maps geoms to bodies).
+    lname2lid : dict[tuple[str,str], int]
+        Map from link name to its body id (a link's geoms are those with that body id).
+    cameras : list[str]
+        All valid camera names (used to validate the input and to build the mapping for every camera).
+    link_group_cameras : list[tuple[str, list[tuple[str,str] | str]]]
+        List of ``(camera_name, visible_items)`` pairs: the ONLY items that camera may see (a camera
+        with no entry sees everything). Each item is either a ``(model, link)`` pair or a bare
+        model-name string, which expands to all of that model's links.
+    max_groups : int
+        Number of geom groups available (MuJoCo's mjNGROUP = 6).
+
+    Returns
+    -------
+    dict[str, list[int]]
+        Mapping ``camera_name -> sorted list of geom groups`` that camera must render.
+    """
+    cameras = list(cameras)
+    valid_cameras = set(cameras)
+    all_cams_frozen = frozenset(cameras)
+    models = {l[0] for l in lname2lid}
+
+    # 1. Validate inputs and collect, per camera, the set of links it may see (its whitelist). Each
+    #    item is either a (model, link) pair or a bare model-name string (expanded to all of that
+    #    model's links). A camera that appears here sees ONLY its whitelisted links; a camera that
+    #    does not appear sees everything.
+    camera_whitelist : dict[str, set[tuple[str,str]]] = {}
+    for camera_name, visible_items in link_group_cameras:
+        if camera_name not in valid_cameras:
+            raise RuntimeError(f"assign_camera_visibility_geom_groups: unknown camera '{camera_name}'. Cameras: {cameras}")
+        whitelist = camera_whitelist.setdefault(camera_name, set())
+        for item in visible_items:
+            if isinstance(item, str):
+                links = [l for l in lname2lid if l[0] == item]  # model name -> all its links
+                if not links:
+                    raise RuntimeError(f"assign_camera_visibility_geom_groups: unknown model '{item}'. Models: {sorted(models)}")
+            else:
+                link = tuple(item)
+                if link not in lname2lid:
+                    raise RuntimeError(f"assign_camera_visibility_geom_groups: unknown link {link}. Links: {list(lname2lid.keys())}")
+                links = [link]
+            whitelist.update(links)
+
+    # Cameras without an entry see everything.
+    unspecified_cameras = frozenset(c for c in cameras if c not in camera_whitelist)
+
+    # 2. Each detected link is visible on the unspecified cameras plus the specified cameras that
+    #    whitelist it. Links visible to every camera stay in the common groups (not reassigned); geoms
+    #    not on any detected link (e.g. worldbody/ground) are likewise left visible to all cameras.
+    restricted_link_visset : dict[tuple[str,str], frozenset[str]] = {}
+    for link in lname2lid:
+        visset = unspecified_cameras.union(cam for cam, wl in camera_whitelist.items() if link in wl)
+        if visset != all_cams_frozen:
+            restricted_link_visset[link] = visset
+
+    geom_bodyid = np.asarray(mj_model.geom_bodyid)
+    geom_group = np.asarray(mj_model.geom_group)
+
+    # 2. Common (always-visible) groups: those used by any geom that is NOT restricted. Every camera
+    #    renders these, so unmentioned / all-camera links stay visible everywhere.
+    restricted_lids = {lname2lid[l] for l in restricted_link_visset}
+    restricted_geom_mask = (np.isin(geom_bodyid, list(restricted_lids)) if restricted_lids
+                            else np.zeros(geom_bodyid.shape, dtype=bool))
+    common_groups = ({int(g) for g in np.unique(geom_group[~restricted_geom_mask])}
+                     if (~restricted_geom_mask).any() else set())
+
+    # 3. Group restricted links by their visible-camera set (distinct set -> one geom group).
+    visset_to_links : dict[frozenset[str], list[tuple[str,str]]] = {}
+    for link, visset in restricted_link_visset.items():
+        visset_to_links.setdefault(visset, []).append(link)
+
+    available_groups = [g for g in range(max_groups) if g not in common_groups]
+    if len(visset_to_links) > len(available_groups):
+        raise RuntimeError(f"assign_camera_visibility_geom_groups needs {len(visset_to_links)} distinct visibility groups "
+                           f"but only {len(available_groups)} of the {max_groups} geom groups are free "
+                           f"(common/always-visible groups already in use: {sorted(common_groups)}).")
+
+    # 4. Assign each distinct visibility set a free geom group and reassign the links' geoms.
+    new_geom_group = geom_group.copy()
+    visset_to_group : dict[frozenset[str], int] = {}
+    for visset, links in visset_to_links.items():
+        g = available_groups.pop(0)
+        visset_to_group[visset] = g
+        for link in links:
+            geoms = np.nonzero(geom_bodyid == lname2lid[link])[0]
+            if geoms.size == 0:
+                ggLog.warn(f"assign_camera_visibility_geom_groups: link {link} has no geoms; its visibility cannot be enforced")
+            new_geom_group[geoms] = g
+    mj_model.geom_group[:] = new_geom_group
+
+    # 5. Record which geom groups each camera must render: common groups (always) + the restricted
+    #    groups whose visible-camera set includes that camera.
+    camera_enabled_geom_groups : dict[str, list[int]] = {}
+    for cam in cameras:
+        groups = set(common_groups)
+        for visset, g in visset_to_group.items():
+            if cam in visset:
+                groups.add(g)
+        camera_enabled_geom_groups[cam] = sorted(groups)
+
+    ggLog.info(f"assign_camera_visibility_geom_groups: common groups={sorted(common_groups)}, "
+               f"restricted groups={ {g: sorted(vs) for vs, g in visset_to_group.items()} }, "
+               f"per-camera enabled groups={camera_enabled_geom_groups}")
+    return camera_enabled_geom_groups
+
+
 @jax.jit
 def get_renderdata_dict(jax_data : mjx.Data):
     """ Copy the position and orientation data from a jax mjx.Data into a dict. Just to avoid copying all fields when only these are needed."""

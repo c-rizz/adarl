@@ -34,7 +34,35 @@ numpy_to_torch_dtype_dict.update({np.dtype(npd):td for npd,td in numpy_to_torch_
 
 torch_to_numpy_dtype_dict = {v:k for k,v in numpy_to_torch_dtype_dict.items()}
 
+def thtens(array, device:th.device | str | None = None, dtype: th.dtype | None = None) -> th.Tensor:
+    """Allocate a torch tensor from an array, just like torch.as_tensor, but avoids CUDA syncs
 
+    Parameters
+    ----------
+    array : _type_
+        _description_
+    device : th.device | str | None, optional
+        _description_, by default None
+    dtype : th.dtype | None, optional
+        _description_, by default None
+
+    Returns
+    -------
+    th.Tensor
+        _description_
+    """
+    if isinstance(array, th.Tensor):
+        if dtype is not None:
+            array = array.to(dtype=dtype)
+        if device is not None:
+            device = th.device(device) if isinstance(device, str) else device
+            array = array.to(device=device, non_blocking=device.type=="cuda")
+        return array
+    if device is None:
+        device = th.device("cpu")
+    elif isinstance(device, str):
+        device = th.device(device)
+    return th.tensor(array, dtype=dtype).to(device=device,non_blocking=device.type=="cuda")
 
 
 T = TypeVar('T')
@@ -707,7 +735,8 @@ def quaternion_xyzw_from_rotmat(rotmat : np.ndarray | th.Tensor):
         return quat_xyzw
 
 def ros_rpy_to_quaternion_xyzw_th(rpy):
-    rpy = th.as_tensor(rpy)
+    if not isinstance(rpy, th.Tensor):
+        rpy = thtens(rpy)
     zero = th.zeros_like(rpy[...,0])
     roll   = th.stack([th.sin(rpy[...,0]/2),    zero,                   zero,                   th.cos(rpy[...,0]/2)], dim=-1)
     pitch  = th.stack([zero,                    th.sin(rpy[...,1]/2),   zero,                   th.cos(rpy[...,1]/2)], dim=-1)
@@ -722,6 +751,33 @@ def ros_rpy_to_quaternion_xyzw_th(rpy):
 def ros_rpy_to_quaternion_xyzw(rpy):
     q = ros_rpy_to_quaternion_xyzw_th(rpy)
     return q[0].item(), q[1].item(), q[2].item(), q[3].item()
+
+def _pure_axis_quaternion_xyzw_th(angle : th.Tensor, axis : int):
+    """Quaternion (xyzw) of a rotation of ``angle`` radians about a single principal axis.
+
+    ``axis`` selects the rotation axis: 0 -> x (roll), 1 -> y (pitch), 2 -> z (yaw).
+    The angle is flattened to a 1-D batch, giving an ``(N, 4)`` output. The output is
+    preallocated (the two off-axis vector components stay zero) and sin/cos are written
+    straight into the axis and w slices, so no intermediate tensors or stack/cat copy are
+    allocated.
+    """
+    if not isinstance(angle, th.Tensor):
+        angle = thtens(angle)
+    angle = angle.reshape(-1)
+    q = th.zeros((*angle.shape, 4), dtype=angle.dtype, device=angle.device)
+    half = angle / 2
+    th.sin(half, out=q[..., axis])
+    th.cos(half, out=q[..., 3])
+    return q
+
+def pure_roll_quaternion_xyzw_th(roll : th.Tensor):
+    return _pure_axis_quaternion_xyzw_th(roll, 0)
+
+def pure_pitch_quaternion_xyzw_th(pitch : th.Tensor):
+    return _pure_axis_quaternion_xyzw_th(pitch, 1)
+
+def pure_yaw_quaternion_xyzw_th(yaw : th.Tensor):
+    return _pure_axis_quaternion_xyzw_th(yaw, 2)
 
 
 
@@ -1142,12 +1198,12 @@ def distr_to_tensor(distr : DistributionDef, size : tuple[int,...] | None = None
         distr_type = distr[0]
         if isinstance(distr_type, str):
             if size is not None:
-                distr_params = tuple(th.as_tensor(t, device=device, dtype=dtype).expand(size) for t in distr[1])
+                distr_params = tuple(thtens(t, device=device, dtype=dtype).expand(size) for t in distr[1])
             else:
-                distr_params = tuple(th.as_tensor(t, device=device, dtype=dtype) for t in distr[1])            
+                distr_params = tuple(thtens(t, device=device, dtype=dtype) for t in distr[1])            
             return distr_type, distr_params
         else:
-            return th.as_tensor(distr, device=device, dtype=dtype)
+            return thtens(distr, device=device, dtype=dtype)
 
 @staticmethod
 def sample_distr(size, distribution : DistributionDefTh, device : th.device, dtype : th.dtype, generator : th.Generator) -> th.Tensor:
@@ -1164,7 +1220,7 @@ def sample_distr(size, distribution : DistributionDefTh, device : th.device, dty
     elif distribution[0] == "normal":
         if len(distribution[1]) == 2:
             mean, std = distribution[1]
-            clamp_width = th.tensor(5.0, device=device, dtype=dtype)
+            clamp_width = thtens(5.0, device=device, dtype=dtype)
         else:
             mean, std, clamp_width = distribution[1] #type: ignore
         return th.clamp(th.randn(size, device=device, dtype=dtype, generator=generator), -clamp_width, clamp_width)*std+mean
@@ -1266,3 +1322,7 @@ def override_struct(struct1: _Struct, struct2: Any) -> _Struct:
         else:
             set_value(struct1, key, new_value)
     return struct1
+
+def dataclass2dict(dc):
+    """Shallow-convert a dataclass instance to a dict, dataclasses.asdict does a deep conversion and deepcopies everything."""
+    return {field.name: getattr(dc, field.name) for field in dataclasses.fields(dc)}

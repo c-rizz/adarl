@@ -380,7 +380,8 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         ep_count = adarl.utils.session.default_session.run_info["collected_episodes"].value if self._use_global_ep_count else  self._ep_counts[self._env_idx]
         run_id = adarl.utils.session.default_session.run_info["run_id"]
         tot_ep_reward = self._ep_rewards[self._env_idx].sum()
-        if self._may_episode_be_saved(ep_count) and envs_ended_mask[self._env_idx] and self._stored_frames > 1:
+        env_ended = envs_ended_mask[self._env_idx].item()
+        if self._may_episode_be_saved(ep_count) and env_ended and self._stored_frames > 1:
             # ggLog.info(f"maybe Saving episode {ep_count} with reward {tot_ep_reward}")
             # Episode with at least a full step finishing
             if self._stored_frames!=self._ep_step_counts[self._env_idx]+1:
@@ -402,13 +403,13 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
                 self._saveLastEpisode(f"{self._outFolder}/{fname}")
                 self._last_saved_ep = ep_count
 
-        if self._saveBestEpisodes and tot_ep_reward>self._bestReward and envs_ended_mask[self._env_idx]:
+        if self._saveBestEpisodes and tot_ep_reward>self._bestReward and env_ended:
             self._bestReward = tot_ep_reward
         self._ep_rewards[envs_ended_mask] = 0.0
         self._ep_step_counts[envs_ended_mask] = 0
         self._ep_counts[envs_ended_mask] = 0
 
-        if envs_ended_mask[self._env_idx]:
+        if env_ended:
             self._imgBuffer = []
             self._vecBuffer = {"action":[], "reward":[], "terminated":[], "truncated":[]}
             self._vecobs_buffer = {k: [] for k in self._vec_obs_keys}

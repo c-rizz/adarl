@@ -96,7 +96,7 @@ class Async_cuda2cpu_queue():
 
         
     def send(self, cuda_tensors : dict[str,th.Tensor], callback : Callable[[dict[str,th.Tensor]], None]):
-        cpu_tensors = {k:t.to(device="cpu", non_blocking=True) for k,t in cuda_tensors.items()}
+        cpu_tensors = {k:t.to(device="cpu", non_blocking=True) if isinstance(t, th.Tensor) else t for k,t in cuda_tensors.items()}
         event = th.Event()
         event.record()
         self._queue.put((event, cuda_tensors, cpu_tensors, callback))

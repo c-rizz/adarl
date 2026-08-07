@@ -187,17 +187,17 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                                                     efforts = force_command.expand(self.num_envs, 1))
         else:
             raise RuntimeError(f"Unsupported adapter type {type(self._adapter)}")
-        dbg_check_finite(self._adapter.getJointsState())
+        dbg_check_finite(self._adapter.getJointsState(), async_assert=True)
         # ggLog.info(f"Action submitted")
 
     def pre_step(self):
         # ggLog.info(f"Pre-step")
-        dbg_check_finite(self._adapter.getJointsState())
+        dbg_check_finite(self._adapter.getJointsState(), async_assert=True)
         return super().pre_step()
     
     def post_step(self):
         # ggLog.info(f"Post-step")
-        dbg_check_finite(self._adapter.getJointsState())
+        dbg_check_finite(self._adapter.getJointsState(), async_assert=True)
         # ggLog.info(f"Step {self.get_ep_step_counter()}")
         return super().post_step()
     

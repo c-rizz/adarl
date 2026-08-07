@@ -655,6 +655,12 @@ def _record_time(name : str, t : float = None, is_region_end = False):
         Tiem recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
     if _disable_record_times:
         return
+    # Skip while under torch.compile tracing: recording is a Python side effect (list append + a
+    # time.monotonic() call) that would graph-break the compiled function and pollute the records.
+    # Only consult torch if it is already imported elsewhere, so this module stays torch-free.
+    _torch = sys.modules.get("torch")
+    if _torch is not None and _torch.compiler.is_compiling():
+        return
     if t is None:
         t = time.monotonic()
     time_from_region_start = t-_region_stack[-1][1] if len(_region_stack)>0 else 0

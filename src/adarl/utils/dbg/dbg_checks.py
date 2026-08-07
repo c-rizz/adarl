@@ -68,21 +68,22 @@ def dbg_run(func : Callable[[],Any]):
         func()
 
 def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn : bool = False, assert_msg : str | None = None):
-    from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite, is_leaf_bounded
     if async_assert:
+        from adarl.utils.tensor_trees import is_all_finite
         if assert_msg is None:
             assert_msg = f"non-finite values in tensor at {get_caller_info()}"
         th._assert_async(is_all_finite(tensor_tree), assert_msg)
-        return
-    dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
-              build_msg=lambda: (   f"Non-finite values in tensor tree: \n"
-                                    f"    offending = "+str([f"{k}:{l.nonzero()}" for k,l in map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite).items()])+"\n"
-                                    f"    isfinite = {map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite)}"),
+    else:
+        from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite
+        dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
+                build_msg=lambda: (   f"Non-finite values in tensor tree: \n"
+                                        f"    offending = "+str([f"{k}:{l.nonzero()}" for k,l in map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite).items()])+"\n"
+                                        f"    isfinite = {map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite)}"),
+                    just_warn=just_warn)
+        if min != float("-inf") or max != float("+inf"):
+            dbg_check(is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
+                build_msg=lambda: f"out of bounds values in tensor tree: {tensor_tree}",
                 just_warn=just_warn)
-    if min != float("-inf") or max != float("+inf"):
-        dbg_check(is_check_passed=lambda: is_all_bounded(tensor_tree, min=th.as_tensor(min),max=th.as_tensor(max)), 
-              build_msg=lambda: f"out of bounds values in tensor tree: {tensor_tree}",
-              just_warn=just_warn)
         
 
 def dbg_check_bounded(tensor_tree, min = float("-inf"), max = float("+inf"), async_assert = False, just_warn=False,

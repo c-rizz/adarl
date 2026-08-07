@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate, expand_default_dict
+from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate, expand_default_dict, thtens
 from adarl.utils.robot_helpers import Robot
 import numpy as np
 
@@ -130,7 +130,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
     def _thtens(self, arr: np.ndarray) -> th.Tensor:
         """Convert a numpy array to a torch tensor on the configured device."""
-        return th.as_tensor(arr, device=self._torch_device)
+        return thtens(arr, device=self._torch_device)
 
     @override
     def set_monitored_joints(self, jointsToObserve: Sequence[Tuple[str, str]]):

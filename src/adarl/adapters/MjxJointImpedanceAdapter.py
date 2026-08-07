@@ -267,7 +267,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         max_joint_impedance_ctrl_torques : dict[tuple[str,str],float] = {},
                         add_ground : bool = True,
                         add_sky : bool = True,
-                        render_znear : float | None = 0.01,
+                        render_znear : float | None = 0.025,
                         render_zfar : float | None = 100.0,
                         impedance_commands_queue_size : int = 10,
                         log_freq : int = -1,
@@ -678,7 +678,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             self._ref_filter_cutoff_freqs_th = reference_filter_cutoff_frequency.expand(self.vec_size())
         ref_filter_cutoff_freqs = th2jax(self._ref_filter_cutoff_freqs_th, self._jax_device)
         self._sim_conf = self._sim_conf.replace_d({"ref_filter_cutoff_freqs" : ref_filter_cutoff_freqs})
-        self._reset_filters_jax(self._sim_state, self._sim_conf, reset_state=False)
+        self._sim_state = self._reset_filters_jax(self._sim_state, self._sim_conf, reset_state=False)
         
     def get_impedance_controlled_joints(self) -> tuple[tuple[str,str],...]:
         """Get the names of the joints that are controlled by this adapter

@@ -48,7 +48,7 @@ jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 jax.config.update("jax_enable_compilation_cache", True)
 # jax.config.update("jax_log_compiles", True)
 # jax.config.update("jax_transfer_guard_device_to_host", "log") # Should log implicit device-to-host transfers
-jax.config.update("jax_debug_nans", True) # May have a performance impact?
+jax.config.update("jax_debug_nans", False) # May have a performance impact?
 # jax.config.update("jax_debug_infs", True) # May have a performance impact?
 # jax.config.update("jax_disable_jit", True)  # 
 # jax.config.update("jax_check_tracer_leaks", True) # May have a performance impact
@@ -261,43 +261,55 @@ def set_rows_cols(array : jnp.ndarray,
 def set_rows_cols_masks(array : jnp.ndarray,
                         masks : Sequence[jnp.ndarray],
                         vals : jnp.ndarray):
-    """Sets values in the specified subarray. index_arrs indicates which indexes of each dimension to set
-       the values in. For example you can write in a 2D array at the rows [2,3] and columns [0,2,3] 
-       (which identify a 2x3 array) by setting index_arrs=(jnp.array([False, False, True, True]), jnp.array([True, False, True, True])) and
-       passing a 2x3 array in vals.
+    """Write ``vals`` into the sub-block of ``array`` selected by one ``masks`` entry per leading
+    dimension. Each selector is either:
+
+      * an **integer index array** -> selects those positions in that dimension; ``vals`` is
+        *compacted* to ``len(indices)`` along it (positions are taken as a cross-product, via ix_).
+      * a **boolean mask** (length ``array.shape[dim]``) -> overwrites only the ``True`` positions;
+        ``vals`` is **full-size** (``array.shape[dim]``) along that dimension, and ``False`` rows keep
+        their current value.
+
+    Boolean dims are a masked overwrite, NOT a compacting scatter: rows are never moved, so a sparse
+    mask is handled correctly. (A previous ``jnp.nonzero(mask, size=vals.shape[dim])`` version padded
+    the missing entries with index 0, which clobbered row 0 and misassigned values whenever the mask
+    was sparse.)
+
+    Example: to zero rows 1,3 at columns 0,2 of a (4, n) array, pass
+    ``masks=(jnp.array([F,T,F,T]), jnp.array([0,2]))`` and ``vals`` of shape ``(4, 2)`` (full-size in
+    the boolean dim, compacted in the index dim).
 
     Parameters
     ----------
     array : jnp.ndarray
-        The array to be modified (Will not be written to)
-    index_arrs : Sequence[jnp.ndarray]
-        The indexes in each dimension.
+        The array to read from (not modified in place).
+    masks : Sequence[jnp.ndarray]
+        One selector per leading dimension (boolean mask or integer index array).
     vals : jnp.ndarray
-        The values to write
+        The values to write, sized per the rules above.
 
     Returns
     -------
     jnp.ndarray
-        The edited array
+        A new array with the selected sub-block overwritten.
     """
-    # # ggLog.info(f"set_rows_cols(\n"
-    # #            f"{array}\n"
-    # #            f"{index_arrs}\n"
-    # #            f"{vals}\n"
-    # #            f")")
-    # # index_arrs = [jnp.full(ia.shape[i],-1,device=ia.device).at([])[0]    for i,ia in enumerate(masks)]
-    # index_arrs = [mask if mask.dtype!=bool else jnp.where(mask, jnp.arange(mask.shape[0]), mask.shape[0]+1) for mask in masks]
-    # print(f"index_arrs = {index_arrs}")
-    # print(f"array.at[jnp.ix_(*index_arrs)] = {array[jnp.ix_(*index_arrs)]}")
-    # return array.at[jnp.ix_(*index_arrs)].set(vals)
-    def to_indices(mask, expected_size):
-        if mask.dtype == bool:
-            # Fixed-size nonzero for JIT compatibility
-            return jnp.nonzero(mask, size=expected_size)[0]
-        return mask
-    
-    index_arrs = [to_indices(m, vals.shape[i]) for i, m in enumerate(masks)]
-    return array.at[jnp.ix_(*index_arrs)].set(vals)
+    index_arrs = []
+    bool_dims : list[tuple[int, jnp.ndarray]] = []
+    for dim, m in enumerate(masks):
+        if m.dtype == bool:
+            # Address every position in this dim; the boolean mask decides overwrite vs keep below.
+            index_arrs.append(jnp.arange(array.shape[dim]))
+            bool_dims.append((dim, m))
+        else:
+            index_arrs.append(m)
+    grid = jnp.ix_(*index_arrs)
+    current = array[grid]
+    new_vals = vals
+    for dim, m in bool_dims:
+        mask_shape = [1] * current.ndim
+        mask_shape[dim] = m.shape[0]
+        new_vals = jnp.where(m.reshape(mask_shape), new_vals, current)
+    return array.at[grid].set(new_vals)
 
 # def set_masks(  array : jnp.ndarray,
 #                 masks : Sequence[jnp.ndarray],
@@ -963,7 +975,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_env_index : int = 0,
                         add_ground : bool = True,
                         add_sky : bool = True,
-                        render_znear : float | None = 0.01,
+                        render_znear : float | None = 0.025,
                         render_zfar : float | None = 100.0,
                         log_freq : int = -1,
                         opt_preset : Literal["fast","faster","fastest","mujoco_default","slow","slower"] | None = "fast",
@@ -1113,10 +1125,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._gui_freq = gui_frequency
         self._prev_step_end_wtime = 0.0
         self._viewer = None
-        self._warp_render_context = None
-        self._warp_render_context_pytree = None
+        self._warp_render_context_objs : dict[str, Any] = {}    # per-camera warp render contexts (kept alive)
+        self._warp_render_context_pytrees : dict[str, Any] = {} # per-camera warp render context pytrees (render index 0)
         self._warp_render_has_rgb = False
         self._warp_render_has_depth = False
+        # camera_name -> sorted list of geom groups that camera must render (None = no per-camera
+        # visibility set; render everything). Populated by set_body_camera_visibility(), consumed
+        # by the render / render-context init code.
+        self._camera_enabled_geom_groups : dict[str, list[int]] | None = None
+        self._visualize_xfrc_applied = True
         self._all_vecs = jnp.ones((vec_size,), dtype=bool, device=self._jax_device)
         self._no_vecs = jnp.zeros((vec_size,), dtype=bool, device=self._jax_device)
         self._all_vecs_th = th.ones((vec_size,), dtype=th.bool, device=self._out_th_device)
@@ -1213,24 +1230,32 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 f"render_backend='warp' requested, but mujoco.mjx is missing rendering symbols: {missing_symbols}"
             )
 
-        cam_active = [self._cid2cname[cid] in self._monitored_cameras for cid in range(self._mj_model.ncam)]
-        cam_res_wh = [(self._camera_sizes_hw[c][1], self._camera_sizes_hw[c][0])
-                        for c in self._monitored_cameras]
-        self._warp_render_context = mjx.create_render_context(
-            self._mj_model,
-            nworld=self._vec_size,
-            cam_res=cam_res_wh,
-            render_rgb=True,
-            render_depth=True,
-            cam_active=cam_active,
-        )
-        self._warp_render_context_pytree = self._warp_render_context.pytree()
-        self._warp_render_cname2idx = {cname: i for i, cname in enumerate(self._monitored_cameras)}
+        # One render context per monitored camera: a warp context bakes a single enabled_geom_groups
+        # (and the current geom_group) into its BVH at creation, so per-camera visibility
+        # (set_body_camera_visibility) needs a context per camera. Each context has exactly that one
+        # camera active, so the camera's render index within it is always 0.
+        self._warp_render_context_objs = {}
+        self._warp_render_context_pytrees = {}
+        for cam in self._monitored_cameras:
+            cid = self._cname2cid[cam]
+            cam_active = [ci == cid for ci in range(self._mj_model.ncam)]
+            cam_res_wh = [(self._camera_sizes_hw[cam][1], self._camera_sizes_hw[cam][0])]
+            enabled_groups = (list(self._camera_enabled_geom_groups.get(cam, [0, 1, 2]))
+                              if self._camera_enabled_geom_groups is not None else [0, 1, 2])
+            ctx = mjx.create_render_context(
+                self._mj_model,
+                nworld=self._vec_size,
+                cam_res=cam_res_wh,
+                render_rgb=True,
+                render_depth=True,
+                cam_active=cam_active,
+                enabled_geom_groups=enabled_groups,
+            )
+            self._warp_render_context_objs[cam] = ctx
+            self._warp_render_context_pytrees[cam] = ctx.pytree()
+            ggLog.info(f"Warp render context for camera '{cam}' initialized with enabled_geom_groups={enabled_groups}, res={cam_res_wh}")
         self._warp_render_has_rgb = True
         self._warp_render_has_depth = True
-        ggLog.info(f"monitored_cameras = {self._monitored_cameras}")
-        ggLog.info(f"_cid2cname = {self._cid2cname}")
-        ggLog.info(f"Warp render context initialized with cam_active={cam_active}, res={cam_res_wh}")
 
     @staticmethod
     @partial(jax.vmap, in_axes=(None, None, 0))
@@ -1249,6 +1274,23 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             rgb = MjxAdapter._vec_get_rgb(render_context, cidx, pixels)
             rgbs.append(rgb)
         return rgbs
+
+    @staticmethod
+    @partial(jax.vmap, in_axes=(None, None, 0))
+    def _vec_get_depth(render_context, cidx, pixels):
+        return mjx.get_depth(render_context, cidx, pixels, 1.0)
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["render_context","cam_indexes"])
+    def _render_warp_depth_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
+        if render_context is None:
+            raise RuntimeError("Warp render context not initialized")
+        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
+        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        depths = []
+        for cidx in cam_indexes:
+            depths.append(MjxAdapter._vec_get_depth(render_context, cidx, pixels))
+        return depths
 
     def _aggregate_models(self, models, log_folder):
         """Aggregate models into a single MuJoCo model. Override in subclasses to modify the model before compilation."""
@@ -1292,44 +1334,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # jax.profiler.start_server(9999)
         self._uneven_ground = False
         self._mj_model, big_speck = self._aggregate_models(models, scenario_logs_folder)
-        # self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._disable_builtin_actuators:
             self._mj_model.opt.disableactuator = -1 # disable all built-in actuators, we will apply forces/torques directly to the joints in the control step
             # MJX and warp actually seem to ignore disableactuator, so we also set the corresponding disable flag to be sure:
             self._mj_model.opt.disableflags |= mjutils._mjtDisableBit.mjDSBL_ACTUATION
-        # I prevent slipping by using a big impratio see for example:
-        # - https://github.com/google-deepmind/mujoco_menagerie/blob/d98292efc73511aa7a4ca958eaaf226403d56cb7/anybotics_anymal_b/anymal_b.xml#L4 
-        # and the discussion at these links:
-        # - https://github.com/google-deepmind/mujoco/discussions/656#discussioncomment-4416347
-        # - https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
-        # - https://mujoco.readthedocs.io/en/latest/overview.html#softness-and-slip
         
-        
-        # self._mj_model = apply_dof_overrides(
-        #                     self._mj_model, 
-        #                     revolute_dof_armature_override=self._revolute_dof_armature_override,
-        #                     revolute_dof_damping_override=self._revolute_dof_damping_override,
-        #                     revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
-        #                     safe_revolute_dof_armature=self._safe_revolute_dof_armature,
-        #                     safe_revolute_dof_damping=self._safe_revolute_dof_damping,
-        #                     safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
-        # ggLog.info(f"big_speck.degree = {big_speck.compiler.degree}")
         os.makedirs(scenario_logs_folder, exist_ok=True)
         with open(scenario_logs_folder+"/mujoco_opt.txt", "w") as text_file:
             text_file.write(str(self._mj_model.opt))
-        
-        # model = models[0]
-        # if model.format == "urdf.xacro":
-        #     urdf_string = compile_xacro_string( model_definition_string=model.definition_string,
-        #                                                     model_kwargs=model.kwargs)
-        # elif model.format == "urdf":
-        #     urdf_string = model.definition_string
-        # else:
-        #     raise RuntimeError(f"Unsupported model format '{model.format}'")
-        # self._model_name = model.name
-        # # Make model, data, and renderer
-        # self._mj_model = mujoco_MjModel.from_xml_string(urdf_string)
 
         self._jid2jname : dict[int, tuple[str,str]] = {jid:self._mj_name_to_pair(jid, mjutils._mjtObj.mjOBJ_JOINT)
                            for jid in range(self._mj_model.njnt)}
@@ -1393,7 +1406,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         print_mj_model(self._mj_model, full_dump=True, file=scenario_logs_folder+"/mj_model_full.txt")
 
-
         self._mj_data = mjutils.MjData(self._mj_model)
         mjutils._mj_resetData(self._mj_model, self._mj_data)
 
@@ -1421,8 +1433,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_conf.jnt_dofadr = jnp.array(mjx_model.jnt_dofadr, device = self._jax_device, dtype=jnp.int32) # for some reason it's a numpy array, so I cannot use it properly in jit
 
         if self._mjx_impl == "warp":
-            # self._warp_nccdmax = 10 # per-world max number of mesh contacts (handled by the CCD collider)
-            # self._warp_nconmax = 20 # per-world max number of overall contacts
             mjx_data = put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
                                     naconmax = self._vec_size*self._warp_nconmax, njmax = 100, naccdmax = self._vec_size*self._warp_nccdmax)
         else:
@@ -1448,7 +1458,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"self._mj_model.nM = {self._mj_model.nM}")
         # mujoco.mj_forward(self._mj_model, self._mj_data) # Compute all fields
 
-
         self._original_mjx_data = copy.deepcopy(mjx_data)
         self._original_mjx_model = copy.deepcopy(mjx_model)
         self._original_mj_data = copy.deepcopy(self._mj_data)
@@ -1464,18 +1473,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time,
                                                         "impulses_xfrc" : jnp.zeros_like(mjx_data.xfrc_applied),
-                                                        "impulse_startends_stime" : jnp.full(shape=(self._vec_size, mjx_model.nbody, 2), fill_value=-1) })
+                                                        "impulse_startends_stime" : jnp.full(shape=(self._vec_size, mjx_model.nbody, 2), fill_value=-1.0, dtype=jnp.float32) })
         
         # self._check_model_inaxes()        
-        
         # ggLog.info(f"compiled")
         # self._check_model_inaxes()        
         
         self.set_monitored_joints([])
         self.set_monitored_links([])
         self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
-
-
 
         if self._show_gui:
             self._viewer_mj_data : mjutils.MjData = mjx.get_data(self._mj_model, jax.tree_util.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
@@ -1484,36 +1490,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._camera_sizes_hw_by_id : dict[int,tuple[int,int]] = {cid:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         self._camera_sizes_hw :dict[str,tuple[int,int]] = {self._cid2cname[cid]:hw for cid, hw in self._camera_sizes_hw_by_id.items()}
-        if self._enable_rendering:
-            if self._render_backend == "cpu":
-                def make_renderer(h,w):
-                    ggLog.info(f"Making CPU renderer for size {h}x{w} MUJOCO_GL='{os.environ['MUJOCO_GL']}' MUJOCO_EGL_DEVICE_ID='{os.environ.get('MUJOCO_EGL_DEVICE_ID', None)}' (set this to select manually the device)")
-                    # If you are having issues with the renderer trying to use a card that it cannot access 
-                    # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
-                    # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
-                    # To be sure what exact device path to use you can navigate the folders
-                    # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
-                    # You can see the egl devices with eglinfo -B
-                    # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
-                    return mujoco.Renderer(self._mj_model,height=h,width=w)
-                self._render_scene_option = mjutils._MjvOption()
-                # self._render_scene_option.flags[mjutils._mjtVisFlag.mjVIS_CONTACTPOINT] = 1
-                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
-                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
-                self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
-                                for resolution in set(self._camera_sizes_hw.values())}
-                self._renderers_mj_datas : list[mjutils.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
-            elif self._render_backend == "warp":
-                self._renderers = {}
-                self._renderers_mj_datas = []
-                self._init_warp_render_context()
-            else:
-                raise RuntimeError(f"Unknown render backend '{self._render_backend}'")
-        else:
-            self._renderers = {}
-        self._visualize_xfrc_applied = False
-
-        self._precompute_depth_cam_params()
 
         self._lid2geoms : dict[int,jnp.ndarray] = {}
         all_links = list(self._lname2lid.keys())
@@ -1544,8 +1520,51 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._scenario_built = True
 
+    def _init_renderers(self):
+        if self._enable_rendering:
+            cam_details = {}
+            for cid, cname in self._cid2cname.items():
+                cam_details[cname] = {
+                    "resolution": self._camera_sizes_hw_by_id[cid],
+                    "fovy": self._mj_model.cam_fovy[cid],
+                    "projection": self._mj_model.cam_projection[cid],
+                    "intrinsic": self._mj_model.cam_intrinsic[cid],
+                    "cam_sensorsize": self._mj_model.cam_sensorsize[cid],
+                }
+            ggLog.info(f"Initializing renderers for backend '{self._render_backend}'\n"
+                       f"Detected cameras:\n{pprint.pformat(cam_details)}\n"
+                       f"Monitored cameras: {self._monitored_cameras}\n")
+            if self._render_backend == "cpu":
+                def make_renderer(h,w):
+                    ggLog.info(f"Making CPU renderer for size {h}x{w} MUJOCO_GL='{os.environ['MUJOCO_GL']}' MUJOCO_EGL_DEVICE_ID='{os.environ.get('MUJOCO_EGL_DEVICE_ID', None)}' (set this to select manually the device)")
+                    # If you are having issues with the renderer trying to use a card that it cannot access 
+                    # (e.g. an integrated GPU without proper permissions), you can try somthing like this:
+                    # sudo setfacl -m u:crizz:rw /dev/dri/renderD128
+                    # To be sure what exact device path to use you can navigate the folders
+                    # Otherwise you can alsoe set MUJOCO_EGL_DEVICE_ID to force egl to use a certain device
+                    # You can see the egl devices with eglinfo -B
+                    # If things get stuck you may need : apt-get install -y   libegl1-mesa-dev libgl1-mesa-dri mesa-utils mesa-utils-bin
+                    return mujoco.Renderer(self._mj_model,height=h,width=w)
+                self._render_scene_option = mjutils._MjvOption()
+                # self._render_scene_option.flags[mjutils._mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = 1
+                # self._render_scene_option.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 1
+                self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution:make_renderer(resolution[0],resolution[1])
+                                for resolution in set(self._camera_sizes_hw.values())}
+                self._renderers_mj_datas : list[mjutils.MjData] = [copy.deepcopy(self._mj_data) for _ in range(self.vec_size())]
+            elif self._render_backend == "warp":
+                self._renderers = {}
+                self._renderers_mj_datas = []
+                self._init_warp_render_context()
+            else:
+                raise RuntimeError(f"Unknown render backend '{self._render_backend}'")
+        else:
+            self._renderers = {}
+        self._precompute_depth_cam_params()
+
 
     def startup(self):
+        self._init_renderers()
         ggLog.info(f"Compiling mjx.forward....")
         data = self._mjx_forward(self._sim_state.mjx_model, self._sim_state.mjx_data)
         ggLog.info(f"Compiled forward.")
@@ -1733,6 +1752,50 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._rebuild_lower_funcs()
         self._check_model_inaxes()        
 
+    def set_link_camera_visibility(self, link_group_cameras : list[tuple[str,list[tuple[str,str] | str]]]) -> dict[str, list[int]]:
+        """Restrict which cameras can see which links, by assigning MuJoCo geom groups.
+
+        A camera that appears in ``link_group_cameras`` sees ONLY its listed links (a listed model
+        name expands to all its links); it is hidden from every other detected link. A camera that
+        does not appear sees everything, and geoms not on a detected link (e.g. worldbody/ground) stay
+        visible to all. Links visible to the same set of cameras share a geom group; their geoms are
+        reassigned to it and each camera's renderable groups are recorded.
+
+        This method only defines the groups and the camera->groups mapping; applying it at render
+        time is done elsewhere (classic renderer: per-camera ``MjvOption.geomgroup``; warp:
+        ``enabled_geom_groups`` when creating each camera's render context). The mapping is stored in
+        ``self._camera_enabled_geom_groups`` and also returned.
+
+        Must be called after ``build_scenario()`` and before ``startup()`` / the first render (so the
+        geom-group edit is picked up when the render context is created). MuJoCo only has geom groups
+        0-5 (``mjNGROUP``), and groups already used by always-visible geoms are reserved, so the
+        number of distinct visibility patterns is limited accordingly.
+
+        Parameters
+        ----------
+        link_group_cameras : list[tuple[str,list[tuple[str,str] | str]]]
+            List of ``(camera_name, visible_items)`` pairs: the ONLY items that camera may see (a
+            camera with no entry sees everything). Each item is a ``(model, link)`` pair or a bare
+            model-name string (expanded to all of that model's links).
+
+        Returns
+        -------
+        dict[str, list[int]]
+            Mapping ``camera_name -> sorted list of geom groups`` that camera must render.
+        """
+        if not self._scenario_built:
+            raise RuntimeError("set_body_camera_visibility must be called after build_scenario() (and before startup/rendering)")
+        self._camera_enabled_geom_groups = mjutils.assign_camera_visibility_geom_groups(
+            mj_model=self._mj_model,
+            lname2lid=self._lname2lid,
+            cameras=list(self._cname2cid.keys()),
+            link_group_cameras=link_group_cameras)
+        # The classic renderer reads geom_group live and applies per-camera MjvOption.geomgroup at
+        # render time, but a warp render context bakes geom_group + enabled_geom_groups at creation,
+        # so rebuild the warp contexts to pick up the new visibility.
+        if self._enable_rendering and self._render_backend == "warp":
+            self._init_warp_render_context()
+        return self._camera_enabled_geom_groups
 
 
     @override
@@ -2062,6 +2125,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 mjdata = self._renderers_mj_datas[env]
                 mjutils._mj_camlight(self._mj_model, mjdata) # see https://github.com/google-deepmind/mujoco/issues/1806
                 t_preupdate = time.monotonic()
+                # Per-camera geom-group visibility (set_body_camera_visibility): enable only this
+                # camera's groups on the shared scene option before building the scene.
+                if self._camera_enabled_geom_groups is not None:
+                    enabled = self._camera_enabled_geom_groups.get(cam)
+                    if enabled is not None:
+                        self._render_scene_option.geomgroup[:] = 0
+                        for _g in enabled:
+                            if 0 <= _g < len(self._render_scene_option.geomgroup):
+                                self._render_scene_option.geomgroup[_g] = 1
                 renderer.update_scene(mjdata, self._cname2cid[cam], scene_option=self._render_scene_option)
                 if self._visualize_xfrc_applied:
                     for body_id in range(0,self._mj_model.nbody):
@@ -2105,16 +2177,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                          out_th_device : th.device,
                          out : list[th.Tensor] | None = None,
                          use_fixed_shapes : bool = False):
-        if not self._warp_render_has_rgb or self._warp_render_context_pytree is None:
+        if not self._warp_render_has_rgb or not self._warp_render_context_pytrees:
             raise RuntimeError("Warp RGB rendering is not initialized")
+        for cam in requestedCameras:
+            if cam not in self._warp_render_context_pytrees:
+                raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
         times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
             out_th_device, non_blocking=out_th_device.type=="cuda"
         )
         self._forward_if_needed()
-        rgbs = self._render_warp_jax(self._sim_state,
-                                          self._warp_render_context_pytree,
-                                          tuple([self._warp_render_cname2idx[cam] for cam in requestedCameras]))
+        # Each camera has its own single-camera context, so its render index within it is 0.
+        rgbs = [self._render_warp_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
+                for cam in requestedCameras]
         # ggLog.info(f"got warp render pixels with shape {[i.shape for i in rgbs]} for {nvecs} vecs and {len(requestedCameras)} cameras")
 
         all_imgs : list[th.Tensor] = []
@@ -2169,19 +2244,21 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                            out_th_device : th.device,
                            out : list[th.Tensor] | None = None,
                            use_fixed_shapes : bool = False):
-        if not self._warp_render_has_depth or self._warp_render_context_pytree is None:
+        if not self._warp_render_has_depth or not self._warp_render_context_pytrees:
             raise RuntimeError("Warp depth rendering is not initialized")
+        for cam in requestedCameras:
+            if cam not in self._warp_render_context_pytrees:
+                raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
         times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
             out_th_device, non_blocking=out_th_device.type=="cuda"
         )
         self._forward_if_needed()
-        pixels, _ = self._render_warp_jax(self._sim_state)
 
         all_imgs : list[th.Tensor] = []
         for cam_i, cam in enumerate(requestedCameras):
-            cid = self._cname2cid[cam]
-            depth = mjx.get_depth(self._warp_render_context_pytree, cid, p)(pixels)
+            # Each camera has its own single-camera context, so its render index within it is 0.
+            depth = self._render_warp_depth_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
             depth = jnp.expand_dims(depth, axis=-1)
             depth_th = jax2th(depth, th_device=out_th_device)
             vec_mask_dev = vec_mask.to(device=depth_th.device, non_blocking=depth_th.device.type=="cuda")
@@ -3376,7 +3453,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask_jnp = self._all_vecs
         # print(f"r0 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
         # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
-        self._sim_state.mjx_model = self._reset_model_alterations(vec_mask_jnp, self._sim_state, self._original_mjx_model)
+        self._sim_state.mjx_model = self._reset_model_alterations(vec_mask_jnp, self._sim_state.mjx_model, self._original_mjx_model)
         # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 

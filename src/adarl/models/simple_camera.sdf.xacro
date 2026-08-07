@@ -7,27 +7,41 @@
   <xacro:arg name="camera_name"  default="simple_camera"/>
   <xacro:arg name="camera_topic" default="$(arg camera_name)"/>
   <xacro:arg name="pose" default="0 0 0 0 0 0"/>
+  <xacro:arg name="horizontal_fov_degrees" default="70.0"/>
+  <xacro:arg name="near_clip" default="0.01"/>
+  <xacro:arg name="far_clip" default="100.0"/>
   <xacro:property name="camera_width" value="$(arg camera_width)" />
   <xacro:property name="camera_height" value="$(arg camera_height)" />
   <xacro:property name="frame_rate" value="$(arg frame_rate)" />
   <xacro:property name="camera_topic" value="$(arg camera_topic)" />
   <xacro:property name="camera_name" value="$(arg camera_name)" />
   <xacro:property name="pose" value="$(arg pose)" />
+  <xacro:property name="horizontal_fov_degrees" value="$(arg horizontal_fov_degrees)" />
+  <xacro:property name="near_clip" value="$(arg near_clip)" />
+  <xacro:property name="far_clip" value="$(arg far_clip)" />
   <model name="${camera_name}">
     <static>true</static>
     <link name="simple_camera_link">
         <pose>${pose}</pose>
         <sensor type="camera" name="${camera_name}">
           <camera>
-            <horizontal_fov>${69.4*3.14159/180}</horizontal_fov>
+            <horizontal_fov>${horizontal_fov_degrees*3.14159/180}</horizontal_fov>
             <image>
               <width>${camera_width}</width>
               <height>${camera_height}</height>
             </image>
             <clip>
-              <near>0.01</near>
-              <far>100</far>
+              <near>${near_clip}</near>
+              <far>${far_clip}</far>
             </clip>
+            <!-- <lens>
+              <intrinsics>
+                <cx>${center_x}</cx>
+                <cy>${center_y}</cy>
+                <fx>${sensor_size/(2*tan(horizontal_fov/2))}</fx>
+                <fy>${sensor_size/(2*tan(horizontal_fov/camera_width*camera_height/2))}</fy>
+              </intrinsics>
+            </lens> -->
           </camera>
           <always_on>1</always_on>
           <update_rate>${frame_rate}</update_rate>

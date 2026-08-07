@@ -27,7 +27,8 @@ from adarl.utils.utils import to_string_tensor, masked_assign
 from adarl.utils.tensor_trees import clone_tensor_tree
 from adarl.utils.base_utils import record_time, print_recorded_times, record_region_start, record_region_end, clear_recorded_times, trace_malloc_diffs
 import os
-from adarl.utils.session import default_session
+from adarl.utils.async_cuda2cpu_queue import log_async
+
 class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
 
     spec = None
@@ -321,23 +322,39 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
         return next_start_observations, next_start_infos
 
     def print_dbg_info(self):
-        msg =  (f"EnvRunner: vsteps={self._dbg_info['vsteps']:d}"+
-                f" wHz={self._dbg_info['wall_fps']:.4g}"+
-                f" rt_estep={self._dbg_info['rtfactor_estep']:.4g}"+
-                f" rt_rstep={self._dbg_info['rtfactor_rstep']:.4g}"+
-                f" rt_tot={self._dbg_info['rtfactor_tot']:.4g}"+
-                f" rt_wall={self._dbg_info['rtfactor']:.4g}"+
-                f" aStpWt={self._dbg_info['avg_env_step_wall_duration']:.6g}"+
-                f" aSimWt={self._dbg_info['avg_adarl_step_wall_duration']:.6g}"+
-                f" aActWt={self._dbg_info['avg_act_wall_duration']:.6g}"+
-                f" aStaWt={self._dbg_info['avg_sta_wall_duration']:.6g}"+
-                f" aObsWt={self._dbg_info['avg_obs_rew_wall_duration']:.6g}"+
-                f" aReiWt={self._dbg_info['avg_reinit_wall_duration']:.6g}"+
-                f" tstep%wt={self._dbg_info['ratio_time_spent_stepping']:.2f}"+
-                f" tinit%wt={self._dbg_info['ratio_time_spent_reinit']:.2f}"+
-                f" trinit%wt={self._dbg_info['ratio_time_spent_really_reinit']:.2f}"+
-                f" tstep%st={self._dbg_info['ratio_time_spent_simulating']:.2f}")
-        ggLog.info(msg)
+        log_async(  "EnvRunner: vsteps[{vsteps}]"+
+                    " wHz={wall_fps}"+
+                    " rt_estep={rtfactor_estep}"+
+                    " rt_rstep={rtfactor_rstep}"+
+                    " rt_tot={rtfactor_tot}"+
+                    " rt_wall={rtfactor}"+
+                    " aStpWt={avg_env_step_wall_duration}"+
+                    " aSimWt={avg_adarl_step_wall_duration}"+
+                    " aActWt={avg_act_wall_duration}"+
+                    " aStaWt={avg_sta_wall_duration}"+
+                    " aObsWt={avg_obs_rew_wall_duration}"+
+                    " aReiWt={avg_reinit_wall_duration}"+
+                    " tstep%wt={ratio_time_spent_stepping}"+
+                    " tinit%wt={ratio_time_spent_reinit}"+
+                    " trinit%wt={ratio_time_spent_really_reinit}"+
+                    " tstep%st={ratio_time_spent_simulating}",
+                    {"vsteps":self._dbg_info['vsteps'],
+                     "wall_fps" : self._dbg_info['wall_fps'],
+                     "rtfactor_estep" : self._dbg_info['rtfactor_estep'],
+                     "rtfactor_rstep" : self._dbg_info['rtfactor_rstep'],
+                     "rtfactor_tot" : self._dbg_info['rtfactor_tot'],
+                     "rtfactor" : self._dbg_info['rtfactor'],
+                     "avg_env_step_wall_duration" : self._dbg_info['avg_env_step_wall_duration'],
+                     "avg_adarl_step_wall_duration" : self._dbg_info['avg_adarl_step_wall_duration'],
+                     "avg_act_wall_duration" : self._dbg_info['avg_act_wall_duration'],
+                     "avg_sta_wall_duration" : self._dbg_info['avg_sta_wall_duration'],
+                     "avg_obs_rew_wall_duration" : self._dbg_info['avg_obs_rew_wall_duration'],
+                     "avg_reinit_wall_duration" : self._dbg_info['avg_reinit_wall_duration'],
+                     "ratio_time_spent_stepping" : self._dbg_info['ratio_time_spent_stepping'],
+                     "ratio_time_spent_reinit" : self._dbg_info['ratio_time_spent_reinit'],
+                     "ratio_time_spent_really_reinit" : self._dbg_info['ratio_time_spent_really_reinit'],
+                     "ratio_time_spent_simulating" : self._dbg_info['ratio_time_spent_simulating'],
+                    })
 
     @override
     def reset(self, seed = None, options = {}) -> tuple[ObsType, TensorTree[th.Tensor]]:
