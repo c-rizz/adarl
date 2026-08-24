@@ -77,7 +77,7 @@ def dbg_check_finite(tensor_tree, min = float("-inf"), max = float("+inf"), asyn
         from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite
         dbg_check(is_check_passed=lambda: is_all_finite(tensor_tree), 
                 build_msg=lambda: (   f"Non-finite values in tensor tree: \n"
-                                        f"    offending = "+str([f"{k}:{l.nonzero()}" for k,l in map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite).items()])+"\n"
+                                        f"    offending = "+str([f"{k}:{(th.logical_not(l)).nonzero()}" for k,l in map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite).items()])+"\n"
                                         f"    isfinite = {map_tensor_tree(flatten_tensor_tree(tensor_tree), is_leaf_finite)}"),
                     just_warn=just_warn)
         if min != float("-inf") or max != float("+inf"):
@@ -109,7 +109,7 @@ def dbg_check_size(tensor : th.Tensor, size : Sequence[int], msg : str = ""):
               build_msg=lambda: f"Unexpected tensor size at {get_caller_info()}: {tensor.size()} instead of {size}. "+msg)
     
 def dbg_check_device(tensor_tree, device: th.device):
-    from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_finite
+    from adarl.utils.tensor_trees import is_all_finite, is_all_bounded, flatten_tensor_tree, map_tensor_tree, is_leaf_all_finite
     def is_tree_on_device(tensor_tree):
         is_on_dev : dict[Any, th.Tensor] = map_tensor_tree(flatten_tensor_tree(tensor_tree), lambda l: l.device==device)
         return all(list(is_on_dev.values()))

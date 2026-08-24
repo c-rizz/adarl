@@ -512,10 +512,11 @@ def randn_from_mustd(mu_std : th.Tensor, generator  : th.Generator | None,
         generator = None
     if size is None:
         size = mu_std[0].size()
-    noise =  th.randn(size=size,
-                    generator=generator,
-                    dtype=mu_std.dtype,
-                    device=mu_std.device)
+    noise = th.empty(size=size, dtype=mu_std.dtype, device=mu_std.device).normal_(generator=generator)*mu_std[1] + mu_std[0]
+    # noise =  th.randn(size=size,
+    #                 generator=generator,
+    #                 dtype=mu_std.dtype,
+    #                 device=mu_std.device)
     if squash_sigma > 0:
         if squash_sigma < 1.5:
             ggLog.warn(f"Using randn squashing with squash_sigma={squash_sigma}. This may lead to a non-concave distribution!")

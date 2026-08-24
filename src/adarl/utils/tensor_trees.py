@@ -353,7 +353,7 @@ def sizetree_from_space(space : gym_spaces.Space):
     else:
         raise NotImplemented(f"space {space} is not supported.")
     
-def is_leaf_finite(tensor : th.Tensor | np.ndarray):
+def is_leaf_all_finite(tensor : th.Tensor | np.ndarray):
     if isinstance(tensor, th.Tensor):
         return th.all(th.isfinite(tensor))
     elif isinstance(tensor, (np.ndarray, int, float)):
@@ -362,14 +362,23 @@ def is_leaf_finite(tensor : th.Tensor | np.ndarray):
         return True
         # raise NotImplementedError(f"Unsupported type {type(tensor)}")
 
+def is_leaf_finite(tensor : th.Tensor | np.ndarray):
+    if isinstance(tensor, th.Tensor):
+        return th.isfinite(tensor)
+    elif isinstance(tensor, (np.ndarray, int, float)):
+        return np.isfinite(tensor)
+    else:
+        return True
+        # raise NotImplementedError(f"Unsupported type {type(tensor)}")
+
 def is_all_finite(tree : TensorTree):
     tree = flatten_tensor_tree(tree)
     tree : dict[Any, th.Tensor] = map_tensor_tree(tree, lambda l: th.as_tensor(l))
-    is_finites = map_tensor_tree(tree, is_leaf_finite)
+    is_finites = map_tensor_tree(tree, is_leaf_all_finite)
     return th.all(th.stack(list(is_finites.values())))
 
 def non_finite_flat_keys(tree : TensorTree):
-    return [k for k,v in flatten_tensor_tree(map_tensor_tree(tree, is_leaf_finite)).items() if not v]
+    return [k for k,v in flatten_tensor_tree(map_tensor_tree(tree, is_leaf_all_finite)).items() if not v]
 
 def is_leaf_bounded(tensor : th.Tensor | np.ndarray | float,
                     min : th.Tensor | np.ndarray | float,

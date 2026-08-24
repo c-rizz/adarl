@@ -644,6 +644,12 @@ def build_1D_vramp_trajectory(t0 : float, p0 : float, v0 : float, pf : float, ct
 
     return trajectory_tpva
 
+def _check_torch_compiling_noimport():
+    
+    # Only consult torch if it is already imported elsewhere, so this module stays torch-free.
+    _torch = sys.modules.get("torch")
+    return _torch is not None and _torch.compiler.is_compiling()
+
 _disable_record_times = False
 _t0 = time.monotonic()
 _rec_times = []
@@ -652,14 +658,12 @@ _statslen  = 10
 _region_stack = [("root", _t0)]
 def _record_time(name : str, t : float = None, is_region_end = False):
     """ Record the current time, associating it with a name.
-        Tiem recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
+        Time recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
     if _disable_record_times:
         return
-    # Skip while under torch.compile tracing: recording is a Python side effect (list append + a
-    # time.monotonic() call) that would graph-break the compiled function and pollute the records.
-    # Only consult torch if it is already imported elsewhere, so this module stays torch-free.
-    _torch = sys.modules.get("torch")
-    if _torch is not None and _torch.compiler.is_compiling():
+    if _check_torch_compiling_noimport():
+        # Skip while under torch.compile tracing: recording is a Python side effect (list append + a
+        # time.monotonic() call) that would graph-break the compiled function and pollute the records.
         return
     if t is None:
         t = time.monotonic()
@@ -668,12 +672,16 @@ def _record_time(name : str, t : float = None, is_region_end = False):
 
 def record_time(name : str):
     """ Record the current time, associating it with a name.
-        Tiem recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
+        Time recorded with this functions can then be analyzed and pritned with print_recorded_times()."""
     # print(f"Recording time for '{name}'")
     _record_time(name)
 
 def record_region_start(name : str):
     if _disable_record_times:
+        return
+    if _check_torch_compiling_noimport():
+        # Skip while under torch.compile tracing: recording is a Python side effect (list append + a
+        # time.monotonic() call) that would graph-break the compiled function and pollute the records.
         return
     region_start_time = time.monotonic()
     _region_stack.append((name, region_start_time))
@@ -681,6 +689,10 @@ def record_region_start(name : str):
 
 def record_region_end(name : str):
     if _disable_record_times:
+        return
+    if _check_torch_compiling_noimport():
+        # Skip while under torch.compile tracing: recording is a Python side effect (list append + a
+        # time.monotonic() call) that would graph-break the compiled function and pollute the records.
         return
     current_region = _region_stack[-1][0]
     if name != current_region:

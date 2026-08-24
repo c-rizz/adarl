@@ -17,7 +17,7 @@ import multiprocessing
 import multiprocessing.pool
 import random
 import atexit
-from adarl.utils.wandb_wrapper import wandb_init
+from adarl.utils.wandb_wrapper import wandb_init, wandb
 import adarl.utils.mp_helper as mp_helper
 import adarl.utils.wandb_wrapper as wandb_wrapper
 import signal
@@ -283,7 +283,8 @@ class Session():
                             monitor_gym = False, # Do not save openai gym videos
                             save_code = True, # Save run code
                             sync_tensorboard = True, # Save tensorboard stuff,
-                            notes = comment
+                            notes = comment,
+                            settings=wandb.Settings(console="off")
                             )
             except Exception as e: # type: ignore
                 ggLog.error(f"Wandb init failed: {exc_to_str(e)}")
