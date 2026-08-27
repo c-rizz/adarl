@@ -345,7 +345,7 @@ class ThBoxStateHelper(StateHelper):
         elif isinstance(initial_values,(SupportsFloat, Sequence)):
             initial_values = th.as_tensor(initial_values)
         initial_values = initial_values.expand(self._vec_size,*self._state_shape[2:]).to(device=self._th_device, dtype=self._dtype, non_blocking=self._th_device.type=="cuda")
-        dbg_check_size(initial_values, (self._state_shape[0],)+self._state_shape[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
+        # dbg_check_size(initial_values, (self._state_shape[0],)+self._state_shape[2:], msg=f" Fields are {self.field_names}, subfields are {self.subfield_names}")
         new_state = initial_values.unsqueeze(1).expand(*self._state_shape).clone() # repeat along the history dimension
         # state = initial_values.repeat(self._history_length, *((1,)*len(initial_values.size())))
         assert new_state.size() == self._state_shape,    f"Unexpected resulting state size {new_state.size()}, should be {self._state_shape}."\
@@ -357,6 +357,7 @@ class ThBoxStateHelper(StateHelper):
             dbg_check(lambda: th.logical_or(th.all(vec_mask),
                                             th.as_tensor(old_state is not None).to(vec_mask.device, non_blocking=vec_mask.device.type=="cuda")),
                       lambda: "vec_mask is not all True but old_state is None",
+                      assert_msg="vec_mask is not all True but old_state is None",
                       async_assert=True)
             if old_state is None:
                 return new_state
@@ -887,11 +888,15 @@ class DictStateHelper(StateHelper):
         return state        
     
     @override
-    def update(self, instantaneous_state : Mapping[str,th.Tensor | Mapping[FieldName, th.Tensor]], state : Mapping[str,th.Tensor]):
+    def update(self, instantaneous_state : Mapping[str,th.Tensor | Mapping[FieldName, th.Tensor]], state : Mapping[str,th.Tensor], inplace = True):
+        newstate = {}
         for k,sh in self.sub_helpers.items():
-            sh.update(instantaneous_state[k], state[k])
+            substate = sh.update(instantaneous_state[k], state[k], inplace=inplace)
+            newstate[k] = substate
         for noise_name in self._all_noise_generators:
-            self._all_noise_generators[noise_name].update(state[noise_name])
+            subnoise = self._all_noise_generators[noise_name].update(state[noise_name], inplace=inplace)
+            newstate[noise_name] = subnoise
+        return newstate
 
     @override
     def normalize(self, state : Mapping[str,th.Tensor]):

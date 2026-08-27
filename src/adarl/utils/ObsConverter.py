@@ -1,6 +1,6 @@
 import gymnasium
 import numpy as np
-from typing import Tuple, Dict, Union
+from typing import Tuple, Dict, Union, Sequence
 import torch as th
 import copy
 from numpy.typing import DTypeLike
@@ -84,8 +84,18 @@ class ObsConverter:
             obs = obs[i]
         return obs
 
-    def __init__(self, observation_shape : gymnasium.spaces.Dict, hide_achieved_goal : bool = True):
+    def __init__(self, observation_shape : gymnasium.spaces.Dict, hide_achieved_goal : bool = True,
+                 passthrough_keys : Sequence[str] = ()):
+        """Analyzes a dict observation space, splitting it into an image part and a vector part.
+
+        Parameters
+        ----------
+        passthrough_keys : Sequence[str]
+            Top-level keys to keep *out* of the vector part and expose separately through
+            getPassthroughPart(). Purely a layout choice: what to do with them is up to the caller.
+        """
         self._original_obs_space = observation_shape
+        self._passthrough_keys = tuple(passthrough_keys)
         
         if not isinstance(observation_shape, gymnasium.spaces.Dict):
             raise AttributeError(f"observation_shape must be a gymnasium.spaces.Dict, if it is not, just wrap it to be one")
@@ -138,7 +148,25 @@ class ObsConverter:
                         elif space_info.dtype_th != self._vec_parts_dtype:
                             raise RuntimeError(f"Observation contains vectors of different dtypes")
 
-        
+
+        # Split off the passthrough components. They keep their relative order and are simply
+        # served separately; the vector part behaves exactly as before for the keys that remain.
+        unknown = [k for k in self._passthrough_keys
+                   if k not in [idxs[0] for idxs in self._vec_part_idxs]]
+        if len(unknown) > 0:
+            raise RuntimeError(f"passthrough_keys {unknown} are not vector components of the "
+                               f"observation. Vector components are "
+                               f"{sorted({idxs[0] for idxs in self._vec_part_idxs})}")
+        keep, through = [], []
+        for idxs, size in zip(self._vec_part_idxs, self._vec_parts_sizes):
+            (through if idxs[0] in self._passthrough_keys else keep).append((idxs, size))
+        self._vec_part_idxs = [i for i, _ in keep]
+        self._vec_parts_sizes = [s for _, s in keep]
+        self._vectorPartSize = sum(self._vec_parts_sizes)
+        self._passthrough_idxs = [i for i, _ in through]
+        self._passthrough_sizes = [s for _, s in through]
+        self._passthroughPartSize = sum(self._passthrough_sizes)
+
         self._img_part_indexes = None
         for space_info in obs_elements:
             if space_info.is_img:
@@ -165,6 +193,15 @@ class ObsConverter:
 
     def vector_part_size(self) -> int:
         return int(self._vectorPartSize)
+
+    def passthrough_part_size(self) -> int:
+        return int(self._passthroughPartSize)
+
+    def passthrough_keys(self) -> Tuple[str, ...]:
+        return self._passthrough_keys
+
+    def has_passthrough_part(self):
+        return self._passthroughPartSize > 0
 
     def imageSizeCHW(self) -> Tuple[int,int,int]:
         return (self._image_channels, self._image_height, self._image_width)
@@ -195,17 +232,49 @@ class ObsConverter:
                 return th.empty(size=(batch_size,0)).to(img_part.device) #same batch size as the image part
             else:
                 return th.empty(size=(batch_size,traj_size,0)).to(img_part.device) #same batch size as the image part
-        vec = []
-        for idxs in self._vec_part_idxs:
-            subvec = self._get_sub_obs(observation_batch, idxs)
-            # ggLog.info(f"subvec.size() = {subvec.size()}")
-            vec.append(subvec)
-        if len(vec[0].size())==2: # batch, no trajectories
-            return th.cat(vec,dim=1)
-        elif len(vec[0].size())==3: # batch of trajectories
-            return th.cat(vec,dim=2)
-        else:
+        return self._cat_parts(observation_batch, self._vec_part_idxs)
+
+    def _cat_parts(self, observation_batch : Dict[str,th.Tensor], part_idxs) -> th.Tensor:
+        """Concatenate the given components along their feature (last) dimension."""
+        vec = [self._get_sub_obs(observation_batch, idxs) for idxs in part_idxs]
+        if len(vec[0].size()) not in (2,3): # (batch, n) or (batch, traj, n)
             raise RuntimeError(f"Unexpected batch vec dimensionality: vec[0].size() = {vec[0].size()}")
+        return th.cat(vec, dim=-1)
+
+    def _getPassthroughPart(self, observation_batch : Dict[str,th.Tensor]) -> th.Tensor:
+        if self._passthroughPartSize == 0:
+            return self._empty_part(observation_batch, width=0)
+        return self._cat_parts(observation_batch, self._passthrough_idxs)
+
+    def getPassthroughPart(self, observation_batch : Union[Dict[str,th.Tensor],Dict[str,np.ndarray]]):
+        first_obs = next(iter(observation_batch.values()))
+        if isinstance(first_obs,np.ndarray):
+            observation_batch_th = {k:th.as_tensor(v) for k,v in observation_batch.items()}
+            return self._getPassthroughPart(observation_batch_th).numpy()
+        elif isinstance(first_obs,th.Tensor):
+            return self._getPassthroughPart(observation_batch) # type: ignore
+        else:
+            raise AttributeError(f"unexpected observation type {type(first_obs)}")
+
+    def getPassthroughPartLimits(self) -> Tuple[np.ndarray, np.ndarray]:
+        if self._passthroughPartSize == 0:
+            return np.empty((0,)),np.empty((0,))
+        lows = [self._space_infos[tuple(i)].obs_space.low for i in self._passthrough_idxs]
+        highs = [self._space_infos[tuple(i)].obs_space.high for i in self._passthrough_idxs]
+        return np.concatenate(lows),np.concatenate(highs)
+
+    def _empty_part(self, observation_batch : Dict[str,th.Tensor], width : int) -> th.Tensor:
+        """An empty (..., width) tensor carrying the batch/trajectory dims of the observation."""
+        if self._vectorPartSize != 0:
+            ref, feat_dims = self._getVectorPart(observation_batch), 1
+        elif self._img_part_indexes is not None:
+            ref, feat_dims = self._get_sub_obs(observation_batch, self._img_part_indexes), 3
+        else:
+            return th.empty(size=(1,width))
+        lead = tuple(ref.size())[:max(ref.dim()-feat_dims, 0)]
+        if len(lead) == 0:
+            lead = (1,)
+        return th.empty(size=lead+(width,), device=ref.device)
 
 
     def getVectorPart(self, observation_batch : Union[Dict[str,th.Tensor],Dict[str,np.ndarray]]):
@@ -264,7 +333,13 @@ class ObsConverter:
         else:
             raise AttributeError(f"unexpected observation type {type(first_obs)}")
 
-    def buildDictObs(self, vectorPart_batch : th.Tensor, imgPart_batch : th.Tensor):
+    def buildDictObs(self, vectorPart_batch : th.Tensor, imgPart_batch : th.Tensor,
+                     passthroughPart_batch : th.Tensor | None = None):
+        """Rebuild a dict observation from its parts.
+
+        If passthroughPart_batch is None the passthrough components are left out of the result
+        (they bypass the autoencoder, so they are not reconstructed by it).
+        """
         obs = copy.deepcopy(self._original_obs_space_structure)
         pos = 0
         for i in range(len(self._vec_part_idxs)):
@@ -272,6 +347,15 @@ class ObsConverter:
             vec_size = self._vec_parts_sizes[i]
             self._get_sub_obs(obs, idxs[:-1])[idxs[-1]] = vectorPart_batch[:, pos:pos+vec_size]
             pos+=vec_size
+        pos = 0
+        for i in range(len(self._passthrough_idxs)):
+            idxs = self._passthrough_idxs[i]
+            pt_size = self._passthrough_sizes[i]
+            if passthroughPart_batch is None:
+                self._get_sub_obs(obs, idxs[:-1]).pop(idxs[-1], None)
+            else:
+                self._get_sub_obs(obs, idxs[:-1])[idxs[-1]] = passthroughPart_batch[:, pos:pos+pt_size]
+            pos+=pt_size
         if self._img_part_indexes is not None:
             self._get_sub_obs(obs, self._img_part_indexes[:-1])[self._img_part_indexes[-1]] = imgPart_batch
         return obs
@@ -283,7 +367,7 @@ class ObsConverter:
         return self._img_pixel_range
     
     def to_standard_tensors(self, obs_batch, device):        
-        for idxs in self._vec_part_idxs:
+        for idxs in self._vec_part_idxs + self._passthrough_idxs:
             self._get_sub_obs(obs_batch, idxs[:-1])[idxs[-1]] = th.as_tensor(self._get_sub_obs(obs_batch, idxs), device = device)
         if self._img_part_indexes is not None:
             self._get_sub_obs(obs_batch, self._img_part_indexes[:-1])[self._img_part_indexes[-1]] = th.as_tensor(self._get_sub_obs(obs_batch, self._img_part_indexes), device = device)

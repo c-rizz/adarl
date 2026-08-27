@@ -13,6 +13,9 @@ tests/
     test_masked_tensor_ops.py
     test_normalization.py
     test_robot_helpers.py         # pinocchio Robot: construction, FK, multi-model merge, pickling, collisions
+    test_obs_converter_passthrough.py # ObsConverter passthrough components (default path unchanged)
+    test_observation_filter.py    # ObservationFilter: vec/img split, named filters, concat spaces+labels
+    test_vec_state_helper.py      # ThBoxStateHelper rolling history buffer: eager semantics, torch.compile(fullgraph), cudagraph feedback hazard (GPU)
   adapters/
     adapter_compliance.py         # shared, backend-agnostic behavioral checks (not a test module)
     _backends.py                  # capability detection, skip decorators, adapter builders
@@ -88,6 +91,23 @@ Wiring the existing checks into a real suite surfaced several latent bugs.
 
 With 1–7 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there are no open findings.
 
+**Documented hazard (characterised, not a code bug)**
+
+- `ThBoxStateHelper.update()`'s rolling history buffer (`state.roll(1, dims=1)`, newest at index
+  0) is correct in eager and captures as a single graph under `torch.compile(fullgraph=True)`.
+  But under `mode="max-autotune"` on **CUDA** (which turns on cudagraphs) the per-step loop
+  `state = update(sample, state)` feeds a *static cudagraph output buffer* straight back in as the
+  next input, so a later run overwrites a buffer the graph still owns. This has two faces, same
+  root cause: current torch's cudagraph-tree checker *raises*
+  (`RuntimeError: accessing tensor output of CUDAGraphs that has been overwritten by a subsequent run`);
+  on versions/configs without that checker it corrupts *silently* -- stale reads → wrong values →
+  the non-finite states this originally showed up as.
+  This is the concrete reason the `@th.compile(mode="max-autotune", ..., fullgraph=True)` on
+  `RobotVecEnv._post_step_optimized` is commented out. Fix if re-enabling: **clone the compiled
+  output** before feeding it back (`cudagraph_mark_step_begin()` alone is insufficient -- the
+  fed-back input is the overwritten one). `test_vec_state_helper.py` pins both the failure and the
+  clone remedy (GPU-only tests; skipped without CUDA).
+
 **By design (not a bug)**
 
 - `getJointsState`/`getLinksState` are only required to work for *monitored* elements. Some
@@ -98,7 +118,7 @@ With 1–7 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there a
 
 Unit (fast, high value, no hardware):
 - `tensor_trees` (map/flatten/stack/cat), `tensor_struct`, `running_mean_std`, `spaces`,
-  `ObsConverter`, `vec_state_helper`, replay buffers (`ThVecDictEpReplayBuffer`).
+  `ObsConverter`, replay buffers (`ThVecDictEpReplayBuffer`).
 - More geometry: `quat_swing_twist_decomposition_xyzw`, `average_two_quaternions`,
   `ros_rpy_to_quaternion_xyzw`, `quaternion_xyzw_from_rotmat` round-trips.
 - `sample_distr` / distribution-def sampling (shapes, determinism with a seeded generator).
