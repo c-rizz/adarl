@@ -170,7 +170,7 @@ class Session():
                         "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n"+
                         "Will continue in 3 sec...")
             time.sleep(3)
-        import rreal.utils.torch_patcher as torch_patcher
+        import adarl.utils.torch_patcher as torch_patcher
         torch_patcher.torch_monkey_patch()
 
     def _setupLoggingForRun(self,   file : str,
