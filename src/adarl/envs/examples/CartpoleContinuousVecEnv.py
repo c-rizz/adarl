@@ -222,8 +222,10 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
 
     @override
     def compute_rewards(self,   states : dict[str,th.Tensor],
-                                sub_rewards_return : dict[str,th.Tensor] = {}) -> th.Tensor:
-        
+                                sub_rewards_return : dict[str,th.Tensor] | None = None) -> th.Tensor:
+        if sub_rewards_return is None:
+            sub_rewards_return = {}
+
         pole_angle = th.abs(th.atan2(states["vec"][:,self._POLE_SIN],states["vec"][:,self._POLE_COS]))
         cart_pos = states["vec"][:,self._CART_POS]
         centering_reward = 0.1*(1-th.clamp(th.abs(cart_pos)/2, min=0, max=1))

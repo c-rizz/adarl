@@ -39,7 +39,9 @@ class LrWrapper(BaseEnv):
     def performStep(self, *args,**kwargs):
         return self.env.performStep(*args,**kwargs)
 
-    def performReset(self, options = {}):
+    def performReset(self, options : dict | None = None):
+        if options is None:
+            options = {}
         return self.env.performReset(options)
 
     def getUiRendering(self, *args,**kwargs):

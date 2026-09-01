@@ -551,7 +551,7 @@ def launchRun(runFunction,
             seeds : Optional[List[int]] = None,
             resumeFolder : Optional[str] = None,
             pretrainedModelFile : Optional[str] = None,
-            args = {},
+            args : dict | None = None,
             pkgs_to_save = ["adarl"],
             start_adarl : bool = True,
             debug_level = 0,
@@ -563,6 +563,8 @@ def launchRun(runFunction,
     tries = 0
     folderName = ""
     launch_id = ""
+    if args is None:
+        args = {}
     while not done:
         try:
             launch_id = datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')

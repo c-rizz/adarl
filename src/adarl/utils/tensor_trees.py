@@ -157,14 +157,16 @@ def filter_tensor_tree(src_tree : TensorTree[U], keep : Callable[[U],bool], _alr
 
 _discarded = object()
 _no_key = object()
-def filter_by_key_tensor_tree(src_tree : TensorTree[U], keep : Callable[[Any,U],bool], _already_filtered : dict = {}, _key : Any =_no_key) -> TensorTree[U]:
+def filter_by_key_tensor_tree(src_tree : TensorTree[U], keep : Callable[[Any,U],bool], _already_filtered : dict | None = None, _key : Any =_no_key) -> TensorTree[U]:
+    if _already_filtered is None:
+        _already_filtered = {}
     if isinstance(src_tree, dict):
         if id(src_tree) in _already_filtered:
             return _already_filtered[id(src_tree)]
         filtered = {}
         _already_filtered[id(src_tree)] = filtered
-        _filtered = {k:filter_by_key_tensor_tree(v, keep=keep, _key=k) for k,v in src_tree.items()}
-        _filtered = {k:v for k,v in filtered.items() if v is not _discarded}
+        _filtered = {k:filter_by_key_tensor_tree(v, keep=keep, _key=k, _already_filtered=_already_filtered) for k,v in src_tree.items()}
+        _filtered = {k:v for k,v in _filtered.items() if v is not _discarded}
         filtered.update(_filtered)
         return filtered
     elif isinstance(src_tree, tuple):
@@ -172,17 +174,17 @@ def filter_by_key_tensor_tree(src_tree : TensorTree[U], keep : Callable[[Any,U],
             return tuple(_already_filtered[id(src_tree)])
         filtered = []
         _already_filtered[id(src_tree)] = filtered
-        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i) for i,v in enumerate(src_tree)]
-        _filtered = [v for v in filtered if v is not _discarded]
-        filtered.extend(filtered)
+        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i, _already_filtered=_already_filtered) for i,v in enumerate(src_tree)]
+        _filtered = [v for v in _filtered if v is not _discarded]
+        filtered.extend(_filtered)
         return tuple(filtered)
     elif isinstance(src_tree, list):
         if id(src_tree) in _already_filtered:
             return _already_filtered[id(src_tree)]
         filtered = []
         _already_filtered[id(src_tree)] = filtered
-        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i) for i,v in enumerate(src_tree)]
-        _filtered = [v for v in filtered if v is not _discarded]
+        _filtered = [filter_by_key_tensor_tree(v, keep=keep, _key=i, _already_filtered=_already_filtered) for i,v in enumerate(src_tree)]
+        _filtered = [v for v in _filtered if v is not _discarded]
         filtered.extend(_filtered)
         return filtered
     elif dataclasses.is_dataclass(src_tree):
