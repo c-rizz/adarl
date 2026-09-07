@@ -82,6 +82,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             The first element contains a list of length len(requestedCameras) containing tensors of shape
             (th.count_nonzero(vec_mask), image_shape) and the second has shape(th.count_nonzero(vec_mask), len(requestedCameras))
             Images are in HWC channel order.
+            RGB images may be float32 or uint8, they are always in the range [0,1] for float32 and [0,255] for uint8.
 
         """
         raise NotImplementedError()

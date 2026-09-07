@@ -53,7 +53,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         self._enable_highres_camera = enable_highres_camera
         self._lowres_camera_link_name = (self._lowres_camera_name, "simple_camera_link")
         self._use_depth_camera = use_depth_camera
-
+        self._adapter_img_dtype : th.dtype | None = None
         cams = [self._lowres_camera_name]
         if self._enable_highres_camera:
             cams.append("simple_camera")
@@ -122,6 +122,9 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             rendresult = self._adapter.getRenderings([self._lowres_camera_name], depth=self._use_depth_camera)
             # current_times_vec = rendresult[1][0]
             current_images_vec_chw = rendresult[0][0].permute(0,3,1,2) # to NCHW
+            self._adapter_img_dtype = current_images_vec_chw.dtype
+            if current_images_vec_chw.dtype == th.float32:
+                current_images_vec_chw = (current_images_vec_chw*255.0).to(dtype=th.uint8)
             # ggLog.info(f"raw current_images_vec_chw device and type: {current_images_vec_chw.device}, {current_images_vec_chw.dtype}")
             # ggLog.info(f"raw current_images_vec_chw minmax: {current_images_vec_chw.min().item()} - {current_images_vec_chw.max().item()}")
             
@@ -166,6 +169,8 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         imgs_vec_chw  = imgs_vec_chw[:,:,top:bottom,left:right]
         if not self._use_depth_camera:
             imgs_vec_chw = rgb_to_grayscale(imgs_vec_chw).view(imgs_vec_chw.shape[0], 1, imgs_vec_chw.shape[2], imgs_vec_chw.shape[3])
+            if imgs_vec_chw.dtype == th.float32:
+                imgs_vec_chw = (imgs_vec_chw*255.0).to(dtype=th.uint8)
         else:
             imgs_vec_chw = (imgs_vec_chw/3.0*255.0).to(dtype=th.uint8)
         imgs_vec_chw = resize(imgs_vec_chw, [self._img_obs_resolution, self._img_obs_resolution])
@@ -194,11 +199,11 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
 
         if self._use_depth_camera:
             all_renderings_fvhwc = th.empty((nframes, self.num_envs, cam_h, cam_w, 1),
-                                    dtype=th.float32,
+                                    dtype=self._adapter_img_dtype,
                                     device=th.device("cuda"))
         else:
             all_renderings_fvhwc = th.empty((nframes, self.num_envs, cam_h, cam_w, 3),
-                                    dtype=th.uint8,
+                                    dtype=self._adapter_img_dtype,
                                     device=th.device("cpu"))
         for i in range(nframes):
             t0_sub = time.monotonic()

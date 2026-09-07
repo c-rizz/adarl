@@ -331,10 +331,10 @@ class CartpoleContinuousVecEnv(ControlledVecEnv):
                   lambda: f"Non-finite values in state vec: {state['vec']}")
         joint_step_stats = self._adapter.get_joints_state_step_stats_extended()
         link_step_stats = self._adapter.get_links_state_step_stats()
-        state["jstats"] = joint_step_stats
-        state["lstats"] = link_step_stats
+        state["jstats"] = joint_step_stats.clone() # Avoid handing out direct reference to sim internals (MJX donations are unhappy for example)
+        state["lstats"] = link_step_stats.clone()
         lstate = self._adapter.getLinksState()
-        state["lvels"] = lstate[:,:,7:10]
+        state["lvels"] = lstate[:,:,7:10].clone()
         return state
 
     def _get_spawn_defs(self):
