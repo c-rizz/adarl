@@ -16,8 +16,7 @@ from adarl.utils.tensor_trees import is_all_finite, non_finite_flat_keys, map_te
 import numpy as np
 from typing import Callable
 from adarl.utils.async_cuda2cpu_queue import Async_cuda2cpu_queue
-import pprint
-
+import inspect
 
 
 def _fix_histogram_range(value):
@@ -29,9 +28,12 @@ def _fix_histogram_range(value):
         if not isinstance(value, th.Tensor):
             value = th.as_tensor(value)
         if value.ndim>0 and len(value) > 1:
-            # minval = th.min(th.where(th.isfinite(value), value, th.tensor(th.inf, device=value.device)))
-            # maxval = th.max(th.where(th.isfinite(value), value, th.tensor(-th.inf, device=value.device)))
-            hist, bin_edges = th.histogram(value) #, range=(minval.item(),maxval.item()))
+            # Histogram only the finite values: th.histogram fails on a non-finite range, and wandb
+            # would otherwise drop the whole log. If nothing is finite there is nothing to plot.
+            finite_value = value[th.isfinite(value)].float()
+            if finite_value.numel() < 1:
+                return value
+            hist, bin_edges = th.histogram(finite_value)
             value =  wandb.Histogram(np_histogram=(
                             hist.detach().cpu().numpy(),
                             bin_edges.detach().cpu().numpy(),
@@ -43,6 +45,19 @@ def _fix_histogram_range(value):
     else:
         return value
 
+
+def get_stacktrace_string(depth : int = 5, exclude_bottom_frames : int = 0):
+    stack = inspect.stack()
+    # exclude this function itself (frame 0) and any bottom frames
+    start = 1 + exclude_bottom_frames
+    end = min(start + depth, len(stack))
+    frames = stack[start:end]
+    lines = []
+    for frame_info in frames:
+        lines.append(f"  File \"{frame_info.filename}\", line {frame_info.lineno}, in {frame_info.function}")
+        if frame_info.code_context:
+            lines.append(f"    {frame_info.code_context[0].strip()}")
+    return "\n".join(lines)
 
 class WandbWrapper():
     """Wrap Weight and Biases calls:
@@ -105,16 +120,20 @@ class WandbWrapper():
     
     @staticmethod
     def _safe_wandb_log(log_dict : dict[str,th.Tensor]):
-        import pprint
+        # import pprint
+        stacktrace_str = log_dict.pop("__wandb_log_stacktrace", None)
         log_dict = map_tensor_tree(log_dict, _fix_histogram_range)
         try:
             wandb.log(log_dict)
         except Exception as e:
-            ggLog.warn(f"wandb log failed with error: {exc_to_str(e)}")
+            ggLog.warn(f"wandb log failed with error:\n{exc_to_str(e)}\n"
+                        f"Caller stacktrace:\n{stacktrace_str}")
         
 
     def _async_thread_wandb_log(self, log_dict : dict[str, th.Tensor]):
         log_dict = map_tensor_tree(log_dict, lambda l: th.as_tensor(l))
+        stacktrace_str = get_stacktrace_string(depth=15)
+        log_dict["__wandb_log_stacktrace"] = stacktrace_str
         self._async_cuda2cpu_queue.send(log_dict, self._safe_wandb_log)
 
     def _async_log_tensor_stats(self, tensors : dict[str, th.Tensor]):
