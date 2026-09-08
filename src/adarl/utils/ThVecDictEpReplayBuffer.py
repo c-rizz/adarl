@@ -131,6 +131,7 @@ class VecEpisodeStorage():
         self.full = False
 
     def memory_size(self):
+        """ Calculate the total memory size of the replay buffer, in bytes. """
         obs_nbytes = 0
         for _, obs in self.observations.items():
             obs_nbytes += obs.element_size()*obs.nelement()
@@ -436,7 +437,9 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         min_episode_duration : int = 0,
         disable_validation_set : bool = True,
         validation_episodes : int = 0,
-        rewards_num : int = 1
+        rewards_num : int = 1,
+        max_vram_usage_ratio : float = 1.0,
+        min_residual_vram : int | None = None
     ):
         self.obs_shape : dict[str, tuple[int, ...]]
         super().__init__(buffer_size, observation_space, action_space, output_device, n_envs=n_envs)
@@ -472,7 +475,8 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         if self._storage_torch_device.type == "cuda" and fallback_to_cpu_storage:
             pred_usage,tot = self.predict_memory_consumption()
             consumptionRatio = pred_usage/tot
-            if consumptionRatio>1.0:
+            residual_memory = tot - pred_usage
+            if consumptionRatio>max_vram_usage_ratio or (min_residual_vram is not None and residual_memory<min_residual_vram):
                 ggLog.warn("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
                             f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_usage/1024**3:.3f} GiB)\n"
                             f"Falling back to CPU memory\n"
@@ -502,23 +506,27 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
     
     @override
     def memory_size(self):
+        """ Calculate the total memory size of the replay buffer, in bytes. """
         if self._validation_episodes==0:
             return self._storage.memory_size()
         return self._storage.memory_size() + self._validation_storage.memory_size()
     
     @override
     def predict_memory_consumption(self):
+        """ Predict the memory consumption of the replay buffer, in bytes. """
         testRatio = 0.01
         self._allocate_buffers(int(self.buffer_size*testRatio), int(self._validation_buffer_size*testRatio))
         predicted_mem_usage = self.memory_size()/testRatio
 
-        mem_available = float("+inf")
+        total_mem = float("+inf")
         if self._storage_torch_device.type == "cpu":
-            mem_available = psutil.virtual_memory().available
+            total_mem = psutil.virtual_memory().total
         elif self._storage_torch_device.type == "cuda":
-            mem_available = th.cuda.mem_get_info(self._storage_torch_device)[0]
+            total_mem = th.cuda.mem_get_info(self._storage_torch_device)[0]
+        else:
+            raise RuntimeError(f"Unknown device type {self._storage_torch_device.type}")
 
-        return predicted_mem_usage, mem_available
+        return predicted_mem_usage, total_mem
 
 
     def _allocate_buffers(self, buffer_size : int, validation_buffer_size : int):
