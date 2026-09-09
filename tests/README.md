@@ -24,6 +24,7 @@ tests/
     test_mjx_static_link_warp.py  # regression: moving a fixed link under warp (green)
     test_set_rows_cols_masks.py   # unit: masked sub-block writer (sparse-mask regression)
     test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
+    test_mjx_rendering.py         # warp RGB+depth: shapes/dtypes, depth content, vec_mask, out= path
     test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
 benchmarks/                       # perf/demo scripts (NOT collected by pytest)
   bench_mjx_adapter.py

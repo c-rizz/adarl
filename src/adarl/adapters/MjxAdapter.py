@@ -1277,8 +1277,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @staticmethod
     @partial(jax.vmap, in_axes=(None, None, 0))
-    def _vec_get_depth(render_context, cidx, pixels):
-        return mjx.get_depth(render_context, cidx, pixels, 1.0)
+    def _vec_get_depth(render_context, cidx, pixels, max_depth = 10.0):
+        return mjx.get_depth(render_context, cidx, pixels, max_depth)*max_depth
 
     @staticmethod
     @partial(jax.jit, static_argnames=["render_context","cam_indexes"])
@@ -1286,10 +1286,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if render_context is None:
             raise RuntimeError("Warp render context not initialized")
         mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
-        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        # mjx.render returns (rgb_data, depth_data); get_depth must be fed the depth buffer.
+        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)
         depths = []
         for cidx in cam_indexes:
-            depths.append(MjxAdapter._vec_get_depth(render_context, cidx, pixels))
+            depths.append(MjxAdapter._vec_get_depth(render_context, cidx, depth_data))
         return depths
 
     def _aggregate_models(self, models, log_folder):
@@ -2259,7 +2260,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         for cam_i, cam in enumerate(requestedCameras):
             # Each camera has its own single-camera context, so its render index within it is 0.
             depth = self._render_warp_depth_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
-            depth = jnp.expand_dims(depth, axis=-1)
+            # depth = jnp.expand_dims(depth, axis=-1)
             depth_th = jax2th(depth, th_device=out_th_device)
             vec_mask_dev = vec_mask.to(device=depth_th.device, non_blocking=depth_th.device.type=="cuda")
             if use_fixed_shapes:
