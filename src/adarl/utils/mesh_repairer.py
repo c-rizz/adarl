@@ -214,6 +214,22 @@ def reconstruct_poisson(mesh, depth, n_views, rays_per_view, density_quantile,
         process=False,
     )
 
+def watertightness_check(mesh):
+    edge_counts = np.bincount(mesh.edges_unique_inverse)
+    boundary_edges = int(np.sum(edge_counts == 1))
+    nonmanifold_edges = int(np.sum(edge_counts > 2))
+
+    print("\nWatertightness check:")
+    print(f"  is_watertight:         {mesh.is_watertight}")
+    print(f"  is_winding_consistent: {mesh.is_winding_consistent}")
+    print(f"  euler_number:          {mesh.euler_number}  (closed sphere-topology = 2)")
+    print(f"  boundary edges:        {boundary_edges}  (open holes; should be 0)")
+    print(f"  non-manifold edges:    {nonmanifold_edges}  (3+ faces share an edge; should be 0)")
+    print(f"  components:            {len(mesh.split(only_watertight=False))}")
+    if not mesh.is_watertight:
+        broken = trimesh.repair.broken_faces(mesh)
+        print(f"  broken faces:          {len(broken)} (touching a boundary edge)")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -375,6 +391,8 @@ def main():
                 print(f"  Component {i}: {len(c.faces)} faces, volume: {c.volume:.4f}")
             return
 
+        watertightness_check(mesh)
+
         if args.method == "voxel":
             outer = reconstruct_voxel(mesh, args.pitch)
         else:
@@ -424,20 +442,7 @@ def main():
         outer.export(out_path)
         print(f"Done. Final mesh: {len(outer.faces)} faces, {len(outer.vertices)} vertices")
 
-        edge_counts = np.bincount(outer.edges_unique_inverse)
-        boundary_edges = int(np.sum(edge_counts == 1))
-        nonmanifold_edges = int(np.sum(edge_counts > 2))
-
-        print("\nWatertightness check:")
-        print(f"  is_watertight:         {outer.is_watertight}")
-        print(f"  is_winding_consistent: {outer.is_winding_consistent}")
-        print(f"  euler_number:          {outer.euler_number}  (closed sphere-topology = 2)")
-        print(f"  boundary edges:        {boundary_edges}  (open holes; should be 0)")
-        print(f"  non-manifold edges:    {nonmanifold_edges}  (3+ faces share an edge; should be 0)")
-        print(f"  components:            {len(outer.split(only_watertight=False))}")
-        if not outer.is_watertight:
-            broken = trimesh.repair.broken_faces(outer)
-            print(f"  broken faces:          {len(broken)} (touching a boundary edge)")
+        watertightness_check(outer)
 
     if args.input_dir is not None:
         if args.output_dir is None:
