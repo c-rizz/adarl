@@ -30,6 +30,10 @@ class ObsToImgVecDict(LrWrapper):
         if self._obs_converter.has_image_part():
             img_shape = self._obs_converter.imageSizeCHW()
             l,h = self._obs_converter.getImgPixelRange()
+            # getImgPixelRange gives one value per channel: gym wants either a scalar or the full
+            # Box shape, so broadcast (channels,) over height and width.
+            l = np.ascontiguousarray(np.broadcast_to(np.asarray(l).reshape(-1,1,1), img_shape))
+            h = np.ascontiguousarray(np.broadcast_to(np.asarray(h).reshape(-1,1,1), img_shape))
             obss[self._img_key] = spaces.gym_spaces.Box(low=l,high=h,
                                                         shape=img_shape,
                                                         dtype=self._obs_converter.getImgDtype()) # Can I use a torch dtype?

@@ -8,7 +8,7 @@ os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
 from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
                                          get_renderdata_into, log_largest_dataclass_fields,
                                          model_element_separator, print_mj_model, apply_dof_overrides)
-from adarl.adapters.BaseVecAdapter import JointProperties, JointType
+from adarl.adapters.BaseVecAdapter import JointProperties, JointType, Renderings
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
@@ -1293,6 +1293,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             depths.append(MjxAdapter._vec_get_depth(render_context, cidx, depth_data))
         return depths
 
+    @staticmethod
+    @partial(jax.jit, static_argnames=["render_context","cam_indexes","want_rgb","want_depth"])
+    def _render_warp_rgbd_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int],
+                              want_rgb : bool = True, want_depth : bool = False):
+        """Render rgb and/or depth in a single pass.
+
+        mjx.render() computes both the color and the depth buffer, so asking for them with two
+        separate calls repeats the bvh refit and the rasterization for nothing.
+        """
+        if render_context is None:
+            raise RuntimeError("Warp render context not initialized")
+        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
+        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        rgbs = [MjxAdapter._vec_get_rgb(render_context, cidx, rgb_data)
+                for cidx in cam_indexes] if want_rgb else []
+        depths = [MjxAdapter._vec_get_depth(render_context, cidx, depth_data)
+                  for cidx in cam_indexes] if want_depth else []
+        return rgbs, depths
+
     def _aggregate_models(self, models, log_folder):
         """Aggregate models into a single MuJoCo model. Override in subclasses to modify the model before compilation."""
         # Build post-attach body-name pairs for contact sensors. Sensors are warp-only;
@@ -2283,6 +2302,98 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return img_batch
     
     @override
+    def _render_rgbd_warp(self,
+                          requestedCameras : list[str],
+                          want_rgb : bool,
+                          want_depth : bool,
+                          vec_mask : th.Tensor,
+                          out_th_device : th.device,
+                          out_rgb : list[th.Tensor] | None = None,
+                          out_depth : list[th.Tensor] | None = None,
+                          use_fixed_shapes : bool = False):
+        """Render rgb and/or depth for the requested cameras with a single warp pass each."""
+        if not self._warp_render_context_pytrees:
+            raise RuntimeError("Warp rendering is not initialized")
+        if want_rgb and not self._warp_render_has_rgb:
+            raise RuntimeError("Warp RGB rendering is not initialized")
+        if want_depth and not self._warp_render_has_depth:
+            raise RuntimeError("Warp depth rendering is not initialized")
+        for cam in requestedCameras:
+            if cam not in self._warp_render_context_pytrees:
+                raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
+        nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
+        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
+            out_th_device, non_blocking=out_th_device.type=="cuda"
+        )
+        self._forward_if_needed()
+
+        def _to_output(jax_img, out_list, cam_i):
+            img_th = jax2th(jax_img, th_device=out_th_device)
+            vec_mask_dev = vec_mask.to(device=img_th.device, non_blocking=img_th.device.type=="cuda")
+            if use_fixed_shapes:
+                img_th = img_th.clone()
+                img_th[~vec_mask_dev] = 0
+            else:
+                img_th = img_th[vec_mask_dev]
+            if out_list is not None:
+                # TODO: the images are rendered into fresh buffers and then copied into out_list.
+                #       Rendering straight into the provided tensors would avoid this copy.
+                if out_list[cam_i].shape != img_th.shape:
+                    raise RuntimeError(f"get_camera_images: out[{cam_i}].shape={out_list[cam_i].shape} != expected shape={img_th.shape}")
+                out_list[cam_i].copy_(img_th, non_blocking=out_th_device.type=="cuda")
+                return out_list[cam_i]
+            return img_th
+
+        rgb_imgs : list[th.Tensor] | None = [] if want_rgb else None
+        depth_imgs : list[th.Tensor] | None = [] if want_depth else None
+        for cam_i, cam in enumerate(requestedCameras):
+            # Each camera has its own single-camera context, so its render index within it is 0.
+            rgbs, depths = self._render_warp_rgbd_jax(self._sim_state,
+                                                      self._warp_render_context_pytrees[cam],
+                                                      (0,),
+                                                      want_rgb = want_rgb,
+                                                      want_depth = want_depth)
+            if want_rgb:
+                rgb_imgs.append(_to_output(rgbs[0], out_rgb, cam_i)) # type: ignore
+            if want_depth:
+                depth_imgs.append(_to_output(depths[0], out_depth, cam_i)) # type: ignore
+        return rgb_imgs, depth_imgs, times
+
+    @override
+    def get_camera_images(self,  requestedCameras : list[str],
+                                 rgb : bool = True,
+                                 depth : bool = False,
+                                 vec_mask : th.Tensor | None = None,
+                                 out_th_device : th.device | None = None,
+                                 out_rgb : list[th.Tensor] | None = None,
+                                 out_depth : list[th.Tensor] | None = None,
+                                 use_fixed_shapes : bool = False) -> Renderings:
+        if not rgb and not depth:
+            raise AttributeError(f"get_camera_images: at least one of rgb and depth must be requested")
+        if self._render_backend != "warp":
+            # The CPU renderers do not share a pass between rgb and depth, the generic
+            # one-call-per-modality fallback is as good as it gets.
+            return super().get_camera_images(requestedCameras, rgb=rgb, depth=depth, vec_mask=vec_mask,
+                                             out_th_device=out_th_device, out_rgb=out_rgb,
+                                             out_depth=out_depth, use_fixed_shapes=use_fixed_shapes)
+        record_region_start("MjxAdapter.get_camera_images")
+        if out_th_device is None:
+            out_th_device = self._out_th_device
+        if not self._enable_rendering:
+            raise RuntimeError(f"Called get_camera_images, but rendering is not initialized. did you set enable_rendering?")
+        if vec_mask is None:
+            vec_mask = self._all_vecs_thcpu
+        rgb_imgs, depth_imgs, times = self._render_rgbd_warp(requestedCameras,
+                                                             want_rgb = rgb,
+                                                             want_depth = depth,
+                                                             vec_mask = vec_mask,
+                                                             out_th_device = out_th_device,
+                                                             out_rgb = out_rgb,
+                                                             out_depth = out_depth,
+                                                             use_fixed_shapes = use_fixed_shapes)
+        record_region_end("MjxAdapter.get_camera_images")
+        return Renderings(rgb=rgb_imgs, depth=depth_imgs, times=times)
+
     def getRenderings(self,
                       requestedCameras : list[str],
                       vec_mask : th.Tensor | None = None,
@@ -2290,6 +2401,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                       out : list[th.Tensor] | None = None,
                       depth : bool = False,
                       use_fixed_shapes : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
+        """Deprecated: use get_camera_images(), which can render rgb and depth in a single pass."""
         record_region_start("MjxAdapter.getRenderings")
         if out_th_device is None:
             out_th_device = self._out_th_device

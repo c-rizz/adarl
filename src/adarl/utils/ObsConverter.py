@@ -43,6 +43,16 @@ class ObsConverter:
             raise RuntimeError(f"Unexpected image obs_shape {obs_shape}")
 
     @staticmethod
+    def _pixel_range_for_dtype(dtype) -> Tuple[float,float]:
+        """The value range an image of this dtype is expected to span."""
+        if dtype == np.uint8:
+            return (0.0, 255.0)
+        elif dtype == np.float32:
+            return (0.0, 1.0)
+        else:
+            raise NotImplementedError(f"Unsupported image dtype {dtype}")
+
+    @staticmethod
     def _get_space_info(obs_space):
         """Generates a list of all the sub-observations definitions.
         Each of them with its corresponding key and the space shape and type."""
@@ -167,29 +177,53 @@ class ObsConverter:
         self._passthrough_sizes = [s for _, s in through]
         self._passthroughPartSize = sum(self._passthrough_sizes)
 
-        self._img_part_indexes = None
+        # All the image components are stacked along the channel dimension, in observation-space
+        # order. Their values are *not* rescaled: each keeps its natural units, and
+        # getImgPixelRange() reports one range per channel so the consumer can normalize each
+        # channel by its own range. This is what allows mixing e.g. a uint8 grayscale image with a
+        # float32 depth image in a single stacked image part.
+        self._img_parts_idxs : list = []
+        self._img_parts_channels : list[int] = []
+        self._img_parts_space_ndim : list[int] = []
+        self._img_parts_dtypes : list = []
+        img_pixel_lows : list[np.ndarray] = []
+        img_pixel_highs : list[np.ndarray] = []
+        self._image_height = 0
+        self._image_width = 0
         for space_info in obs_elements:
             if space_info.is_img:
-                if self._img_part_indexes is not None:
-                    raise NotImplementedError(f"observation has more than one image, currently not supported: {obs_elements}")
-                self._img_part_indexes = space_info.indexes
-                self._image_channels = space_info.shape[0]
-                self._image_height = space_info.shape[1] # type: ignore
-                self._image_width = space_info.shape[2] # type: ignore
-                self._img_dtype = space_info.dtype
+                channels, height, width = space_info.shape
+                if len(self._img_parts_idxs) == 0:
+                    self._image_height = height
+                    self._image_width = width
+                elif (height, width) != (self._image_height, self._image_width):
+                    raise RuntimeError(f"Image observations are stacked on the channel dimension, so they must "
+                                       f"all have the same height and width, but {space_info.indexes} is "
+                                       f"{height}x{width} instead of {self._image_height}x{self._image_width}")
+                low, high = ObsConverter._pixel_range_for_dtype(space_info.dtype)
+                img_pixel_lows.append(np.full((channels,), low, dtype=np.float32))
+                img_pixel_highs.append(np.full((channels,), high, dtype=np.float32))
+                self._img_parts_idxs.append(space_info.indexes)
+                self._img_parts_channels.append(channels)
+                self._img_parts_space_ndim.append(len(space_info.obs_space.shape))
+                self._img_parts_dtypes.append(space_info.dtype)
                 self._space_infos[tuple(space_info.indexes)] = space_info
-        if self._img_part_indexes is None: # If no image os present
+        if len(self._img_parts_idxs) == 0: # If no image is present
             self._image_channels = 0
             self._image_height = 0
             self._image_width = 0
-            self._img_dtype = np.uint8
-
-        if self._img_dtype == np.uint8:
-            self._img_pixel_range = (0,255)
-        elif self._img_dtype == np.float32:
-            self._img_pixel_range = (0,1)
+            self._img_dtype = np.dtype(np.uint8)
+            self._img_pixel_range = (np.empty((0,), dtype=np.float32), np.empty((0,), dtype=np.float32))
         else:
-            raise NotImplemented(f"Unsupported image dtype {self._img_dtype}")
+            self._image_channels = sum(self._img_parts_channels)
+            # Stacking needs a single dtype: keep it if all the images agree, otherwise promote to
+            # float32. The values stay in their original units, the per-channel range tracks the scale.
+            if all(d == self._img_parts_dtypes[0] for d in self._img_parts_dtypes):
+                self._img_dtype = np.dtype(self._img_parts_dtypes[0])
+            else:
+                self._img_dtype = np.dtype(np.float32)
+            self._img_pixel_range = (np.concatenate(img_pixel_lows), np.concatenate(img_pixel_highs))
+        self._img_dtype_th = numpy_to_torch_dtype_dict[self._img_dtype]
 
     def vector_part_size(self) -> int:
         return int(self._vectorPartSize)
@@ -207,7 +241,7 @@ class ObsConverter:
         return (self._image_channels, self._image_height, self._image_width)
 
     def has_image_part(self):
-        return self._img_part_indexes is not None
+        return len(self._img_parts_idxs) > 0
 
     def hasVectorPart(self):
         return self._vectorPartSize > 0
@@ -267,8 +301,9 @@ class ObsConverter:
         """An empty (..., width) tensor carrying the batch/trajectory dims of the observation."""
         if self._vectorPartSize != 0:
             ref, feat_dims = self._getVectorPart(observation_batch), 1
-        elif self._img_part_indexes is not None:
-            ref, feat_dims = self._get_sub_obs(observation_batch, self._img_part_indexes), 3
+        elif len(self._img_parts_idxs) > 0:
+            ref = self._get_sub_obs(observation_batch, self._img_parts_idxs[0])
+            feat_dims = self._img_parts_space_ndim[0]
         else:
             return th.empty(size=(1,width))
         lead = tuple(ref.size())[:max(ref.dim()-feat_dims, 0)]
@@ -302,7 +337,7 @@ class ObsConverter:
 
     def _getImgPart(self, observation_batch : Dict[str,th.Tensor]):
         # ggLog.info(f"getImgPart("+str([f"{k} : {subobs_batch.size()}" for k, subobs_batch in observation_batch.items()]))        
-        if self._img_part_indexes is None:
+        if len(self._img_parts_idxs) == 0:
             vecPart = self.getVectorPart(observation_batch)
             if len(vecPart.size())==1:
                 batch_size = 1
@@ -320,7 +355,18 @@ class ObsConverter:
                 return th.empty(size=(batch_size,)+self.imageSizeCHW()).to(vecPart.device)
             else:
                 return th.empty(size=(batch_size,traj_size)+self.imageSizeCHW()).to(vecPart.device)
-        return self._get_sub_obs(observation_batch, self._img_part_indexes)
+        parts = []
+        for idxs, channels, space_ndim in zip(self._img_parts_idxs,
+                                              self._img_parts_channels,
+                                              self._img_parts_space_ndim):
+            part = self._get_sub_obs(observation_batch, idxs)
+            # Give every component an explicit channel dimension, so that components declared as
+            # (height,width) and as (channels,height,width) can be concatenated together.
+            lead = tuple(part.size())[:part.dim()-space_ndim]
+            parts.append(part.reshape(lead+(channels, self._image_height, self._image_width)))
+        if len(parts) == 1:
+            return parts[0] # single image: keep it as a view, no copy and no dtype change
+        return th.cat([p.to(self._img_dtype_th) for p in parts], dim=-3)
     
 
     def getImgPart(self, observation_batch : Union[Dict[str,th.Tensor],Dict[str,np.ndarray]]):
@@ -356,21 +402,35 @@ class ObsConverter:
             else:
                 self._get_sub_obs(obs, idxs[:-1])[idxs[-1]] = passthroughPart_batch[:, pos:pos+pt_size]
             pos+=pt_size
-        if self._img_part_indexes is not None:
-            self._get_sub_obs(obs, self._img_part_indexes[:-1])[self._img_part_indexes[-1]] = imgPart_batch
+        # Split the stacked channels back into the individual image components, in the same order
+        # getImgPart() concatenated them.
+        chan = 0
+        for idxs, channels, space_ndim in zip(self._img_parts_idxs,
+                                              self._img_parts_channels,
+                                              self._img_parts_space_ndim):
+            part = imgPart_batch[..., chan:chan+channels, :, :]
+            if space_ndim == 2: # component declared without a channel dimension
+                part = part.reshape(tuple(part.size())[:part.dim()-3]+(self._image_height, self._image_width))
+            self._get_sub_obs(obs, idxs[:-1])[idxs[-1]] = part
+            chan += channels
         return obs
 
     def getImgDtype(self) -> DTypeLike:
         return self._img_dtype
 
-    def getImgPixelRange(self):
+    def getImgPixelRange(self) -> Tuple[np.ndarray, np.ndarray]:
+        """The (low, high) value range of each channel of the stacked image part.
+
+        Both are (channels,) arrays: stacked images keep their own units, so each channel must be
+        normalized by its own range.
+        """
         return self._img_pixel_range
     
     def to_standard_tensors(self, obs_batch, device):        
         for idxs in self._vec_part_idxs + self._passthrough_idxs:
             self._get_sub_obs(obs_batch, idxs[:-1])[idxs[-1]] = th.as_tensor(self._get_sub_obs(obs_batch, idxs), device = device)
-        if self._img_part_indexes is not None:
-            self._get_sub_obs(obs_batch, self._img_part_indexes[:-1])[self._img_part_indexes[-1]] = th.as_tensor(self._get_sub_obs(obs_batch, self._img_part_indexes), device = device)
-            while len(self._get_sub_obs(obs_batch, self._img_part_indexes).size())<4:
-                self._get_sub_obs(obs_batch, self._img_part_indexes[:-1])[self._img_part_indexes[-1]] = self._get_sub_obs(obs_batch, self._img_part_indexes).unsqueeze(dim = 0)
+        for idxs in self._img_parts_idxs:
+            self._get_sub_obs(obs_batch, idxs[:-1])[idxs[-1]] = th.as_tensor(self._get_sub_obs(obs_batch, idxs), device = device)
+            while len(self._get_sub_obs(obs_batch, idxs).size())<4:
+                self._get_sub_obs(obs_batch, idxs[:-1])[idxs[-1]] = self._get_sub_obs(obs_batch, idxs).unsqueeze(dim = 0)
         return obs_batch

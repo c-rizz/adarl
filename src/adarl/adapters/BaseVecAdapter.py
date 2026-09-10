@@ -23,6 +23,18 @@ JointType=IntEnum("JointType", ["REVOLUTE", "PRISMATIC", "FIXED", "FLOATING", "S
 class JointProperties:
     joint_type : JointType
 
+@dataclass
+class Renderings:
+    """The images produced by get_camera_images(), one tensor per requested camera."""
+    rgb : list[th.Tensor] | None
+    """RGB images, of shape (rendered_vecs, height, width, 3). None if rgb was not requested.
+    They may be float32 or uint8, in the range [0,1] for float32 and [0,255] for uint8."""
+    depth : list[th.Tensor] | None
+    """Depth images, of shape (rendered_vecs, height, width, 1), float, in meters. None if depth
+    was not requested."""
+    times : th.Tensor
+    """The sim time of each image, of shape (rendered_vecs, len(requestedCameras))."""
+
 class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
     """Base class for implementing environment adapters. Adapters allow to interface with a variety of 
     execution environments, being them real or simulated. Different capabilities may be available depending
@@ -51,12 +63,16 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         return self._out_th_device
     
     @abstractmethod
+    @deprecated("Use get_camera_images() instead: it returns rgb and depth separately and can "
+                "produce both in a single rendering pass.")
     def getRenderings(self, requestedCameras : List[str],
                             vec_mask : th.Tensor | None = None,
                             out_th_device : th.device | None = None,
                             out : list[th.Tensor] | None = None,
                             depth : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
         """Get the images for the specified cameras.
+
+        Deprecated: use get_camera_images(), which can return rgb and depth together.
 
         Parameters
         ----------
@@ -86,6 +102,71 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
         """
         raise NotImplementedError()
+
+    def get_camera_images(self,  requestedCameras : List[str],
+                                 rgb : bool = True,
+                                 depth : bool = False,
+                                 vec_mask : th.Tensor | None = None,
+                                 out_th_device : th.device | None = None,
+                                 out_rgb : list[th.Tensor] | None = None,
+                                 out_depth : list[th.Tensor] | None = None,
+                                 use_fixed_shapes : bool = False) -> Renderings:
+        """Get rgb and/or depth images for the specified cameras.
+
+        Replaces getRenderings(): the two modalities are returned separately, and adapters whose
+        renderer produces both at once can satisfy a rgb+depth request with a single pass.
+
+        Parameters
+        ----------
+        requestedCameras : List[str]
+            Names of the cameras to get the images of.
+        rgb : bool
+            Whether to render rgb images. If False, Renderings.rgb is None.
+        depth : bool
+            Whether to render depth images. If False, Renderings.depth is None.
+        vec_mask : th.Tensor | None
+            Which environments to render, if None renders all.
+        out_th_device : th.device | None
+            Device to place the output tensors on. If None, uses the default output device.
+        out_rgb, out_depth : list[th.Tensor] | None
+            If provided, each must contain len(requestedCameras) tensors of the appropriate shape
+            and dtype, into which the images are written, to avoid allocations.
+        use_fixed_shapes : bool
+            Render all the environments and zero out the masked ones, so that the output shape does
+            not depend on vec_mask.
+
+        Returns
+        -------
+        Renderings
+            The requested images and their sim times.
+        """
+        if not rgb and not depth:
+            raise AttributeError(f"get_camera_images: at least one of rgb and depth must be requested")
+        # Generic fallback: one getRenderings() call per requested modality. Adapters whose renderer
+        # computes rgb and depth together should override this to do it in a single pass.
+        # Only the non-default arguments are forwarded, so that adapters implementing a reduced
+        # getRenderings() signature keep working for the simple cases.
+        common_kwargs = {}
+        if vec_mask is not None:
+            common_kwargs["vec_mask"] = vec_mask
+        if out_th_device is not None:
+            common_kwargs["out_th_device"] = out_th_device
+        if use_fixed_shapes:
+            common_kwargs["use_fixed_shapes"] = use_fixed_shapes
+        rgb_imgs : list[th.Tensor] | None = None
+        depth_imgs : list[th.Tensor] | None = None
+        times : th.Tensor | None = None
+        if rgb:
+            kwargs = dict(common_kwargs)
+            if out_rgb is not None:
+                kwargs["out"] = out_rgb
+            rgb_imgs, times = self.getRenderings(requestedCameras, **kwargs)
+        if depth:
+            kwargs = dict(common_kwargs)
+            if out_depth is not None:
+                kwargs["out"] = out_depth
+            depth_imgs, times = self.getRenderings(requestedCameras, depth=True, **kwargs)
+        return Renderings(rgb=rgb_imgs, depth=depth_imgs, times=times)
 
 
     @abstractmethod
