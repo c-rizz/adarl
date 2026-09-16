@@ -5,7 +5,6 @@ os.environ["MUJOCO_GL"] = "egl"
 
 from adarl.adapters.MjxAdapter import (
     MjxAdapter,
-    MjxCommandBatch,
     jax2th,
     th2jax,
     SimState,
@@ -85,6 +84,7 @@ class SimConfActuated(SimConf):
             "monitored_jids" : self.monitored_jids,
             "body_rootid" : self.body_rootid,
             "monitored_collision_pairs" : self.monitored_collision_pairs,
+            "pair_sensor_adrs" : self.pair_sensor_adrs,
             "geom_bodyid" : self.geom_bodyid,
             "sim_dt" : self.sim_dt,
             "jnt_qposadr" : self.jnt_qposadr,
@@ -97,12 +97,6 @@ class SimConfActuated(SimConf):
         d.update(name_values)
         ret = SimConfActuated(**d)
         return ret
-
-
-@jax.tree_util.register_dataclass
-@dataclass
-class MjxActuatedCommandBatch(MjxCommandBatch):
-    current_joint_impedance_command_pvesd : jnp.ndarray
 
 
 @dataclass(frozen=True)
@@ -251,6 +245,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             monitored_lids=self._sim_conf.monitored_lids,
             body_rootid=self._sim_conf.body_rootid,
             monitored_collision_pairs=self._sim_conf.monitored_collision_pairs,
+            pair_sensor_adrs=self._sim_conf.pair_sensor_adrs,
             geom_bodyid=self._sim_conf.geom_bodyid,
             sim_dt=self._sim_conf.sim_dt,
             jnt_qposadr=self._sim_conf.jnt_qposadr,
@@ -668,7 +663,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
         sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
                                           "sim_time": sim_state.sim_time + self._sim_step_dt})
-        sim_state = MjxAdapter._update_monitored_data_cache(sim_state, sim_conf)
+        sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:
             joint_state = self._assemble_joint_history(sim_state.mjx_data, pre_pos, pre_vel, pre_pvesd)
