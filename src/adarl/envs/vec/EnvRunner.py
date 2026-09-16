@@ -232,7 +232,7 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                     self._envs_needing_reinit = th.logical_or(terminateds, truncateds)
                     # ggLog.info(f"Reinit ratio = {th.mean(self._envs_needing_reinit.float()).item()*100:.2f}% (num_env={self.num_envs}) at step {self._total_vsteps-1}")
                     if (not self._sync_on_reinit) or th.any(self._envs_needing_reinit):
-                        reinit_done = self._envs_needing_reinit
+                        reinit_done = self._envs_needing_reinit.clone()
                         next_start_observations, next_start_infos = self.reinit_envs(reinit_envs_mask=self._envs_needing_reinit,
                                                                                     terminateds=terminateds,
                                                                                     truncateds=truncateds,
