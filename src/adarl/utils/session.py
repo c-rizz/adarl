@@ -8,6 +8,7 @@ import threading
 import time
 import os
 import shutil
+import sys
 import inspect
 from pathlib import Path
 import yaml
@@ -543,9 +544,36 @@ def detectFolderArgs(resumeFolder):
 #     steps = int(re.sub("[^0-9]", "", os.path.basename(file)))
 #     return evalFunction(fileToLoad=file, folderName=folderName+"/runs/"+str(steps))
     
+def save_pip_freeze(out_file : str) -> bool:
+    """Save the packages installed in the current environment to out_file.
+
+    Tries a plain ``pip freeze`` first and falls back to ``uv pip freeze``, which is needed in
+    uv-managed venvs, as those usually have no pip installed at all. Both are pointed at the
+    interpreter that is running, so the list describes this process and not whatever environment
+    happens to be active in the shell. The file starts with a comment reporting which of the two
+    produced it.
+
+    Returns whether the list could be saved. A failure is only logged, never raised: not knowing the
+    package versions is not a reason to lose a run.
+    """
+    cmds = [[sys.executable, "-m", "pip", "freeze"],
+            ["uv", "pip", "freeze", "--python", sys.executable]]
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as e:
+            ggLog.info(f"Could not list packages with '{' '.join(cmd)}': {e}")
+            continue
+        if r.returncode == 0:
+            Path(out_file).write_text(f"# generated with: {' '.join(cmd)}\n"+r.stdout)
+            return True
+        ggLog.info(f"Could not list packages with '{' '.join(cmd)}': {r.stderr.strip()}")
+    ggLog.warn(f"Could not save the installed package list to {out_file}, neither pip nor uv pip worked")
+    return False
+
 def launchRun(runFunction,
             seedsNum,
-            seedsOffset, 
+            seedsOffset,
             maxProcs,
             launchFilePath,
             seeds : Optional[List[int]] = None,
@@ -586,6 +614,10 @@ def launchRun(runFunction,
             raise RuntimeError(f"Failed to get path for package {pkg}")
         shutil.copytree(pkg_path, saved_pkgs_folder+"/"+pkg,
                         ignore=shutil.ignore_patterns("__pycache__","*.pyc","*.pyo","*.dist-info","*.egg-info"))
+    # The copied packages only cover pkgs_to_save, everything else (torch, mujoco, jax, ...) is pinned
+    # down only by the environment, so record it next to them
+    save_pip_freeze(folderName+"/pip_freeze.txt")
+    
     args["launch_id"] = launch_id #Unique for each launch, even between different seeds, this way they can be grouped together
     
 
