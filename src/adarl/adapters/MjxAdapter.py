@@ -2440,7 +2440,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
         full_state = jax2th(self._sim_state.mon_joint_state_pveae, th_device=self._out_th_device)
         if requestedJoints is None:
-            return full_state
+            return full_state.clone() # nothing selected, so nothing copied it out of the donated buffer yet
         # KeyError will propagate if joint doesn't exist or isn't monitored
         if isinstance(requestedJoints, th.Tensor):
             reorder_indices = requestedJoints
@@ -2482,7 +2482,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             link_stats_v       : (vec_size, 4, L, 6)   [min,max,avg,std] of link linear+angular velocity over the step substeps
         """
         self._forward_if_needed()
-        # Zero-copy DLPack transfers for all cached arrays in one shot
+        # Zero-copy DLPack transfers for all cached arrays in one shot. These view the _sim_state
+        # arrays, which are donated to the jitted monitored data cache update, so jax may recycle
+        # those buffers and nothing that still views them can be handed to a caller. Indexing with an
+        # index tensor allocates, so the reorders below give owned copies; what is not reordered is
+        # cloned further down.
         jstate  = jax2th(self._sim_state.mon_joint_state_pveae,          th_device=self._out_th_device) if return_jstates else None
         lstate  = jax2th(self._sim_state.mon_link_state,                  th_device=self._out_th_device) if return_lstates else None
         lacc    = jax2th(self._sim_state.mon_link_acceleration,            th_device=self._out_th_device) if return_accelerations else None
@@ -2507,6 +2511,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 lacc    = lacc[:,    link_ids, :]
             if return_lstats:
                 lstats  = lstats[:, :, link_ids, :]
+        # Everything reordered above is an owned copy (indexing with an index tensor allocates), what
+        # was returned unreordered is still a view onto a donated buffer and has to be copied out.
+        if joint_ids is None:
+            jstate = jstate.clone() if jstate is not None else None
+            jstats = jstats.clone() if jstats is not None else None
+        if link_ids is None:
+            lstate = lstate.clone() if lstate is not None else None
+            lacc   = lacc.clone()   if lacc   is not None else None
+            lstats = lstats.clone() if lstats is not None else None
+        cmask = cmask.clone() if cmask is not None else None # never reordered here
         return SimElementsState(joint_state_pveae=jstate,
                                 link_state=lstate,
                                 link_linacc=lacc,
@@ -2640,13 +2654,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         replace["mon_joint_state_pveae"] = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
                                                                   sim_conf.monitored_qvadr,
                                                                   sim_state.mjx_data)
-        body_link_state = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_state.mjx_data)
+        body_link_state = MjxAdapter._get_links_state_jax(sim_conf.monitored_lids, sim_conf.body_rootid, sim_state.mjx_data)
         # Compute local link linear acceleration (only for bodies)
         body_link_acceleration = MjxAdapter._get_links_acceleration_static(
             sim_conf.monitored_lids, sim_conf.body_rootid, sim_state.mjx_data)
         # If there are monitored sites, compute their state and concatenate
         if sim_conf.monitored_sids.shape[0] > 0:
-            site_link_state = MjxAdapter._get_sites_state_jax(sim_conf.monitored_sids, sim_conf.site_bodyid, sim_state.mjx_data)
+            site_link_state = MjxAdapter._get_sites_state_jax(sim_conf.monitored_sids, sim_conf.site_bodyid, sim_conf.body_rootid, sim_state.mjx_data)
             replace["mon_link_state"] = jnp.concatenate([body_link_state, site_link_state], axis=1)
             # Acceleration is unavailable for sites — fill with zeros here, replaced with NaN on the PyTorch side
             vec_size = body_link_state.shape[0]
@@ -2767,25 +2781,37 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     def get_joints_state_step_stats(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep, self._out_th_device)[:,:4,:,:4]
+        # a jax slice is not a selection: this is still a view of the donated buffer, so copy it out
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4,:,:4], th_device=self._out_th_device).clone()
 
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep, self._out_th_device)[:,:4]
+        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4], th_device=self._out_th_device).clone()
     
     def get_links_state_step_stats(self) -> th.Tensor:
-        stats = jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], self._out_th_device)
+        stats = jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], th_device=self._out_th_device)
         return stats[:, :, self._mon_link_jax_to_user, :]
 
     @staticmethod
     @partial(jax.jit)
-    def _get_links_state_jax(body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
-        return jnp.concatenate([mjx_data.xpos[:,body_ids], # frame position
+    def _get_links_state_jax(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        # cvel is com-based: its linear part is the velocity of the point that currently coincides with
+        # the subtree com of the body's kinematic tree root, not of the body frame origin. Reporting it
+        # as is next to xpos describes two different points, off by omega x (xpos - subtree_com): small
+        # for a body near the robot com (a floating base), but meters per second for a swinging foot.
+        # This is the same shift _transform_acceleration already does for the accelerations.
+        com_angvel   = mjx_data.cvel[:,body_ids,0:3]
+        com_linvel   = mjx_data.cvel[:,body_ids,3:6]
+        body_pos     = mjx_data.xpos[:,body_ids]
+        com_offset   = body_pos - mjx_data.subtree_com[:, body_rootid[body_ids]]
+        frame_linvel = com_linvel + jnp.cross(com_angvel, com_offset)
+        return jnp.concatenate([body_pos, # frame position
                                 mjx_data.xquat[:,body_ids][:,:,[1,2,3,0]], # frame orientation
-                                mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) # com linear and angular velocity
+                                frame_linvel, # linear velocity of the frame origin
+                                com_angvel], axis = -1) # angular velocity, the same about any point
 
     @staticmethod
     @partial(jax.jit)
-    def _get_sites_state_jax(site_ids : jnp.ndarray, site_bodyid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+    def _get_sites_state_jax(site_ids : jnp.ndarray, site_bodyid : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """Compute state for sites treated as links.
         Position from site_xpos, orientation from site_xmat->quat,
         velocity derived from parent body velocity via rigid body kinematics.
@@ -2796,24 +2822,31 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         parent_body_ids = site_bodyid[site_ids]
         parent_cvel = mjx_data.cvel[:, parent_body_ids]  # (V, S, 6) = [angvel, linvel]
         parent_angvel = parent_cvel[:, :, 0:3]  # (V, S, 3)
-        parent_linvel = parent_cvel[:, :, 3:6]  # (V, S, 3)
-        parent_pos = mjx_data.xpos[:, parent_body_ids]  # (V, S, 3)
-        r = site_pos - parent_pos  # offset from parent body origin to site
-        site_linvel = parent_linvel + jnp.cross(parent_angvel, r)  # (V, S, 3)
+        parent_com_linvel = parent_cvel[:, :, 3:6]  # (V, S, 3), at the subtree com, see _get_links_state_jax
+        # The offset must be measured from the point cvel refers to, i.e. the subtree com of the tree
+        # root, not from the parent body origin
+        r = site_pos - mjx_data.subtree_com[:, body_rootid[parent_body_ids]]  # (V, S, 3)
+        site_linvel = parent_com_linvel + jnp.cross(parent_angvel, r)  # (V, S, 3)
         site_angvel = parent_angvel  # same angular velocity as parent (rigidly attached)
         return jnp.concatenate([site_pos, site_quat_xyzw, site_linvel, site_angvel], axis=-1)  # (V, S, 13)
     
     @staticmethod
     @jax.jit
-    def _get_links_com_state_jax(body_ids : jnp.ndarray, mjx_data) -> jnp.ndarray:
-        """ The COM orientation is aligned along the principal axes of inertia, 
+    def _get_links_com_state_jax(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
+        """ The COM orientation is aligned along the principal axes of inertia,
             as stated in https://mujoco.readthedocs.io/en/stable/XMLreference.html?#body-inertial
             I believe this means the x ends up on the highes inertia axis and so on
             So for example on the main body of a usual quadruped the x would point down, the y sideways and the z front/back
         """
-        return jnp.concatenate([mjx_data.xipos[:,body_ids], # com position
+        # Same shift as in _get_links_state_jax, here onto the body com (xipos) instead of the frame origin
+        com_angvel  = mjx_data.cvel[:,body_ids,0:3]
+        com_linvel  = mjx_data.cvel[:,body_ids,3:6]
+        bodycom_pos = mjx_data.xipos[:,body_ids]
+        com_offset  = bodycom_pos - mjx_data.subtree_com[:, body_rootid[body_ids]]
+        return jnp.concatenate([bodycom_pos, # com position
                                 jax_mat_to_quat_xyzw(mjx_data.ximat[:,body_ids]), # com orientation, see above
-                                mjx_data.cvel[:,body_ids][:,:,[3,4,5,0,1,2]]], axis = -1) #com linear and angular velocity
+                                com_linvel + jnp.cross(com_angvel, com_offset), # linear velocity of the body com
+                                com_angvel], axis = -1) # angular velocity, the same about any point
     
     @override
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]):
@@ -3822,8 +3855,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         full_mask = jax2th(self._sim_state.mon_collision_mask, th_device=self._out_th_device)
         
         if requested_pairs is None:
-            return full_mask
-        
+            return full_mask.clone() # nothing selected, so nothing copied it out of the donated buffer yet
+
         if isinstance(requested_pairs, th.Tensor):
             reorder_indices = requested_pairs
         else:
