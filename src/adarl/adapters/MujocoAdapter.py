@@ -401,14 +401,14 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             return
 
     @override
-    def step(self) -> float:
+    def step(self) -> th.Tensor:
         self.initialize_for_step()
         self._reset_step_stats(self._step_stats_len)
         self._stepping = True
         duration = self.run(self._step_length_sec)
         self._stepping = False
         self._compute_stats()
-        return duration
+        return th.full((self._vec_size,), duration, dtype=th.float32) # every env steps together
 
     @override
     def getRenderings(self, requestedCameras: list[str], vec_mask: th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
@@ -887,8 +887,8 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self.initialize_for_episode()
 
     @override
-    def getEnvTimeFromStartup(self) -> float:
-        return self._time_since_startup 
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        return th.full((self._vec_size,), self._time_since_startup, dtype=th.float32, device=self._out_th_device) 
 
     def _reset_step_stats(self, max_substeps_count: int):
         self._recorded_stats_substeps = 0

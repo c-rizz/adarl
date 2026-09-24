@@ -214,7 +214,7 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
             in_resolution_wh = None
             goodImg = None
             for npimg in npimgs:
-                if npimg is not None:
+                if npimg is not None and npimg.size != 0: # a zero-sized frame is as unusable as a missing one
                     goodImg = npimg
                     break
             if goodImg is None:

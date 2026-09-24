@@ -168,16 +168,16 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
         self._sub_adapter.run(duration_sec)
 
     @override
-    def step(self) -> float:
-        return self._sub_adapter.step()
+    def step(self) -> th.Tensor:
+        return th.full((self._vec_size,), self._sub_adapter.step(), dtype=th.float32)
     
     @override
     def resetWorld(self):
         return self._sub_adapter.resetWorld()
     
     @override
-    def getEnvTimeFromStartup(self) -> float:
-        return self._sub_adapter.getEnvTimeFromStartup()
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        return th.full((self._vec_size,), self._sub_adapter.getEnvTimeFromStartup(), dtype=th.float32, device=self._out_th_device)
     
     @override
     def getEnvTimeFromEpStart(self) -> float:

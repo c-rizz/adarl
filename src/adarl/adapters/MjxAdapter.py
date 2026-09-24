@@ -508,7 +508,8 @@ class SimState:
     mjx_data : mjx.Data
     mjx_model : mjx.Model
     requested_qfrc_applied : jnp.ndarray
-    sim_time : jnp.ndarray
+    sim_time : jnp.ndarray  # (vec_size,) simulation time of each env, always sim_substeps*sim_step_dt
+    sim_substeps : jnp.ndarray  # (vec_size,) int32, substeps each env has simulated since startup
     stats_step_count : jnp.ndarray
     mon_joint_stats_arr_pvaeep : jnp.ndarray
     mon_links_stats_arr_v : jnp.ndarray
@@ -535,6 +536,7 @@ class SimState:
              "mjx_model" : self.mjx_model,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
+             "sim_substeps" : self.sim_substeps,
              "stats_step_count" : self.stats_step_count,
              "impulse_startends_stime" : self.impulse_startends_stime,
              "impulses_xfrc" : self.impulses_xfrc,
@@ -1063,7 +1065,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_step_dt = sim_step_dt
         self._sim_step_dt_th = th.as_tensor(sim_step_dt, device=output_th_device)
         self._step_length_sec = step_length_sec
-        self._simTime = 0.0
+        self._simTime = th.zeros((vec_size,), dtype=th.float64) # per-env simulated time, CPU mirror of sim_state.sim_substeps
+        self._env_iterations_cache : tuple[th.Tensor, jnp.ndarray] | None = None
+        self._must_init_step = True # so that run() also works before the first step(), starting from cleared stats
         self._total_iterations = 0
         self._sim_step_count_since_build = 0
         self._add_ground = add_ground
@@ -1094,6 +1098,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                     mjx_model=jnp.empty((0,), device = jax_device), # type: ignore
                                     requested_qfrc_applied=jnp.empty((0,), device = jax_device),
                                     sim_time=jnp.empty((0,), device = jax_device),
+                                    sim_substeps=jnp.empty((0,), dtype=jnp.int32, device = jax_device),
                                     stats_step_count=jnp.zeros((1,), device = jax_device),
                                     mon_joint_stats_arr_pvaeep=jnp.empty((self._vec_size,0,6), device = jax_device),
                                     mon_links_stats_arr_v=jnp.empty((self._vec_size,0,6), device = jax_device),
@@ -1192,7 +1197,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "dof_frictionloss":0,
                                           "dof_damping":0,
                                           "body_pos":0,
-                                          "body_quat":0}) # model fields to be vmapped
+                                          "body_quat":0,
+                                          "opt.timestep":0}) # model fields to be vmapped. Per-env timestep: run() sets it to 0 to freeze an env
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
         #             "geom_friction":0,
@@ -1487,11 +1493,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._rebuild_lower_funcs()
         
         requested_qfrc_applied = jnp.copy(mjx_data.qfrc_applied)
-        sim_time = jnp.zeros((1,), jnp.float32, device=self._jax_device)
+        sim_substeps = jnp.zeros((self._vec_size,), jnp.int32, device=self._jax_device)
+        sim_time = jnp.zeros((self._vec_size,), jnp.float32, device=self._jax_device)
         self._sim_state = self._sim_state.replace_d({   "mjx_data":mjx_data,
                                                         "mjx_model":mjx_model,
                                                         "requested_qfrc_applied":requested_qfrc_applied,
                                                         "sim_time":sim_time,
+                                                        "sim_substeps":sim_substeps,
                                                         "impulses_xfrc" : jnp.zeros_like(mjx_data.xfrc_applied),
                                                         "impulse_startends_stime" : jnp.full(shape=(self._vec_size, mjx_model.nbody, 2), fill_value=-1.0, dtype=jnp.float32) })
         
@@ -1935,13 +1943,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._must_init_step = True
 
     @override
-    def step(self) -> float:
+    def step(self) -> th.Tensor:
         """Run a simulation step.
 
         Returns
         -------
-        float
-            Duration of the step in simulation time (in seconds)"""
+        th.Tensor
+            Duration of the step in simulation time (in seconds) for each environment, CPU float32 tensor of shape (vec_size,)"""
         record_region_start("MjxAdapter.step")
         self.initialize_for_step()
         record_time("MjxAdapter.step: initialized for step")
@@ -1971,8 +1979,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         sim_state = self._apply_commands(sim_state)
         sim_state = self._apply_impulses(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
-        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
-                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data}) # the clock is advanced by _run_fast_save_full_jpveae
         sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:
@@ -1992,17 +1999,45 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         return pveaec
     
+    @staticmethod
+    def _set_sim_timestep(sim_state : SimState, timesteps : jnp.ndarray) -> SimState:
+        """Set the integration timestep of each env, shape (vec_size,). A zero timestep freezes the env:
+        the integration becomes an identity, so its state is kept exactly, velocities included."""
+        opt = sim_state.mjx_model.opt
+        return sim_state.replace_d({"mjx_model" : sim_state.mjx_model.replace(opt=opt.replace(timestep=timesteps.astype(opt.timestep.dtype)))})
+
+    def _substep(self, sim_state_conf : tuple[SimState,SimConf, jnp.ndarray], i : jnp.ndarray):
+        sim_state, sim_conf, env_iterations = sim_state_conf
+        active = i < env_iterations
+        sim_state = MjxAdapter._set_sim_timestep(sim_state, jnp.where(active, self._sim_step_dt, 0.0))
+        (sim_state, sim_conf), joint_state = self._sim_step_fast_for_scan_full_pveae((sim_state, sim_conf), None)
+        sim_substeps = sim_state.sim_substeps + active.astype(sim_state.sim_substeps.dtype)
+        sim_state = sim_state.replace_d({"sim_substeps" : sim_substeps,
+                                            "sim_time" : sim_substeps.astype(sim_state.sim_time.dtype)*self._sim_step_dt})
+        return (sim_state, sim_conf, env_iterations), joint_state
+    
     @partial(jax.jit, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
-    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool) -> tuple[SimState, jnp.ndarray | None]:
+    def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool,
+                                   env_iterations : jnp.ndarray) -> tuple[SimState, jnp.ndarray | None]:
+        """Run `iterations` substeps, of which env i only simulates the first env_iterations[i].
+
+        Once past its own count an env is frozen: its timestep is set to 0, and neither its clock nor its step
+        statistics advance, so what it reports does not depend on how long the other envs are simulated.
+        """
         if must_init_step:
             sim_state = MjxAdapter._clear_step_stats(sim_state)
-        (sim_state, sim_conf), joints_state_history = jax.lax.scan(self._sim_step_fast_for_scan_full_pveae, 
-                                                  init = (sim_state, sim_conf),
-                                                  xs = (), 
+        (sim_state, sim_conf, _), joints_state_history = jax.lax.scan(self._substep,
+                                                  init = (sim_state, sim_conf, env_iterations),
+                                                  xs = jnp.arange(iterations, dtype=jnp.int32),
                                                   length = iterations)
         # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
         #                                                 body_fun=self._sim_step_fast,
         #                                                 init_val=(sim_state, joint_stats_arr))
+        # Put every env back to the nominal timestep, so that computations outside run() (e.g. forward) are unaffected
+        sim_state = MjxAdapter._set_sim_timestep(sim_state, jnp.full(env_iterations.shape, self._sim_step_dt))
+        # An env that has not simulated a single substep since the stats were cleared reports its current state,
+        # rather than empty (+-inf) statistics
+        sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf, sim_state.stats_step_count == 0)
         return sim_state, joints_state_history
 
     def _get_joint_state_for_history(self, sim_state : SimState) -> jnp.ndarray:
@@ -2027,18 +2062,59 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             except TypeError as e:
                 raise RuntimeError(f"Error saving pveae, exception={e}")
 
+    def _duration_to_env_iterations(self, duration_sec : float | th.Tensor) -> th.Tensor:
+        """Substeps each env has to simulate to cover duration_sec: CPU int64 tensor of shape (vec_size,)."""
+        durations = th.as_tensor(duration_sec, dtype=th.float64)
+        if durations.device.type != "cpu":
+            raise RuntimeError(f"duration_sec must be a CPU tensor, got {durations.device}")
+        if durations.dim() == 0:
+            durations = durations.expand(self._vec_size)
+        if tuple(durations.shape) != (self._vec_size,):
+            raise ValueError(f"duration_sec must be a float or a tensor of shape ({self._vec_size},), got shape {tuple(durations.shape)}")
+        return th.floor(durations/self._sim_step_dt).clamp(min=0).to(th.int64)
+
+    def _env_iterations_to_jax(self, env_iterations : th.Tensor) -> jnp.ndarray:
+        """Device copy of env_iterations, reused as long as it does not change (usually every run has the same duration)."""
+        if self._env_iterations_cache is None or not th.equal(self._env_iterations_cache[0], env_iterations):
+            self._env_iterations_cache = (env_iterations.clone(),
+                                          jax.device_put(env_iterations.numpy().astype(np.int32), self._jax_device))
+        return self._env_iterations_cache[1]
+
     @override
-    def run(self, duration_sec : float):
-        """Run the environment for the specified duration"""
+    def run(self, duration_sec : float | th.Tensor) -> th.Tensor:
+        """Run the simulation for a duration that can be different for each environment.
+
+        All the environments are simulated together for the longest requested duration. An environment that
+        reaches its own duration is frozen for the rest of the call: its timestep is set to 0, so its state, its
+        clock, its step statistics and its controller filters stay as they are, and the next run() resumes it from
+        there. This decouples the environments (what an environment observes does not depend on how long the
+        others had to run), but it does not save compute: frozen environments are still simulated.
+
+        Parameters
+        ----------
+        duration_sec : float | th.Tensor
+            Duration to simulate, either one for all the environments or one per environment (shape (vec_size,)).
+            Each duration is rounded down to a whole number of substeps. Pass per-environment durations on CPU:
+            a device tensor has to be read back, which synchronizes with the device.
+
+        Returns
+        -------
+        th.Tensor
+            Duration simulated by each environment, CPU float32 tensor of shape (vec_size,).
+        """
         record_region_start("MjxAdapter.run")
         run_fast_jit_compiles = self._run_fast_save_full_jpveae._cache_size() # type: ignore
         wt0 = time.monotonic()
-        st0 = self._simTime
         # self._sent_motor_torque_commands_by_bid_jid = {}
         # ggLog.info(f"Starting run")
-        iterations = int(duration_sec/self._sim_step_dt)
+        env_iterations = self._duration_to_env_iterations(duration_sec)
+        iterations = int(env_iterations.max()) # not a cuda sync if env_iterations is on CPU, needs to be an int for jax scan
+        # The Euler stepper integrates with the forward quantities of the current state (it forwards after
+        # integrating, not before), so a pending forward (after a reset or a state set) has to happen first
+        self._forward_if_needed()
         record_time("MjxAdapter.run: before fast step")
-        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf, self._must_init_step)
+        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf, self._must_init_step,
+                                                                                self._env_iterations_to_jax(env_iterations))
         record_time("MjxAdapter.run: after fast step")
         self._must_init_step = False
         self._forward_needed = False
@@ -2055,7 +2131,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             ggLog.warn(f"run_fast was recompiled")
 
         self._total_iterations += iterations
-        self._simTime += iterations*self._sim_step_dt # faster than taking sim_state.sim_time, as it does not do a sync
+        env_durations = env_iterations.to(th.float64)*self._sim_step_dt
+        self._simTime += env_durations # CPU mirror of sim_state.sim_substeps, readable without touching the device
         
         # print(f"self._simTime={self._simTime}, mjData.time={self._sim_state.mjx_data.time}")
 
@@ -2074,19 +2151,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._dbg_info.wtime_simulating_since_build +=   wtime_simulating
         self._dbg_info.wtime_controlling =  0
         self._dbg_info.iterations = iterations
-        self._dbg_info.rt_factor_vec =      self._vec_size*(self._simTime-st0)/wtime_simulating
-        self._dbg_info.rt_factor_single =   (self._simTime-st0)/wtime_simulating
-        self._dbg_info.stime_ran =          self._simTime-st0
-        self._dbg_info.stime =              self._simTime
-        self._dbg_info.fps_vec =            self._vec_size*iterations/wtime_simulating
+        self._dbg_info.rt_factor_vec =      float(env_durations.sum())/wtime_simulating
+        self._dbg_info.rt_factor_single =   float(env_durations.max())/wtime_simulating
+        self._dbg_info.stime_ran =          float(env_durations.max())
+        self._dbg_info.stime =              float(self._simTime.max())
+        self._dbg_info.fps_vec =            int(env_iterations.sum())/wtime_simulating
         self._dbg_info.fps_single =         iterations/wtime_simulating
-        self._dbg_info.run_fps_vec =        self._dbg_info.fps_vec/iterations
+        self._dbg_info.run_fps_vec =        self._dbg_info.fps_vec/max(iterations,1)
         if self._log_freq > 0 and self._sim_step_count_since_build - self._last_log_iters >= self._log_freq:
             self._last_log_iters = self._sim_step_count_since_build
             ggLog.info( "MjxAdapter:\n"+"\n".join(["    "+str(k)+' : '+str(v) for k,v in self.get_debug_info().items()]))
         self._sim_step_count_since_build += iterations
         record_region_end("MjxAdapter.run")
-        return self._simTime-st0
+        return env_durations.to(th.float32)
     
     
     def get_debug_info(self) -> dict[str,th.Tensor]:
@@ -2110,7 +2187,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         # mj_data_batch = mjx.get_data(self._mj_model, self._sim_state.mjx_data)
         # print(f"mj_data_batch = {mj_data_batch}")
-        times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
+        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         cam_shapes_hw = [(int(self._camera_sizes_hw[cam][0]),int(self._camera_sizes_hw[cam][1])) for cam in requestedCameras]
         arr_shapes = [(nvecs,)+cam_shapes_hw[i]+(3,) for i in range(len(requestedCameras))]
         if out is not None:
@@ -2191,6 +2268,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         #            f" copy took {tot_copy_time*1000:.3f}ms")
         return [th.as_tensor(img_batch).to(device=out_th_device, non_blocking=out_th_device.type=="cuda") for img_batch in image_batches_hwc], times
 
+    def _render_times(self, vec_mask : th.Tensor, n_cameras : int, out_th_device : th.device, use_fixed_shapes : bool) -> th.Tensor:
+        """Simulation time of the rendered frames, shape (nvecs, n_cameras): one row per returned environment,
+        i.e. every environment with use_fixed_shapes, otherwise only those selected by vec_mask."""
+        times = self._simTime.to(dtype=th.float32)
+        if not use_fixed_shapes:
+            times = times[vec_mask.to(device="cpu")]
+        return times.unsqueeze(1).repeat(1, n_cameras).to(out_th_device, non_blocking=out_th_device.type=="cuda")
+
     def _render_rgb_warp(self,
                          requestedCameras : list[str],
                          vec_mask : th.Tensor,
@@ -2203,9 +2288,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if cam not in self._warp_render_context_pytrees:
                 raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
-        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
-            out_th_device, non_blocking=out_th_device.type=="cuda"
-        )
+        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         self._forward_if_needed()
         # Each camera has its own single-camera context, so its render index within it is 0.
         rgbs = [self._render_warp_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
@@ -2238,7 +2321,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             out : list[th.Tensor] | None = None,
                             use_fixed_shapes : bool = False):
         nvecs : int = self._vec_size if use_fixed_shapes else th.count_nonzero(vec_mask).item() #type: ignore
-        times = th.as_tensor(self._simTime).repeat((nvecs,len(requestedCameras))).to(out_th_device, non_blocking=out_th_device.type=="cuda")
+        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         all_imgs = []
         for cam_i, cam in enumerate(requestedCameras):
             imgs = self._get_depth_image(cam, sim_state=self._sim_state).to(device=out_th_device, non_blocking=out_th_device.type=="cuda")
@@ -2270,9 +2353,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if cam not in self._warp_render_context_pytrees:
                 raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
-        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
-            out_th_device, non_blocking=out_th_device.type=="cuda"
-        )
+        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         self._forward_if_needed()
 
         all_imgs : list[th.Tensor] = []
@@ -2322,9 +2403,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if cam not in self._warp_render_context_pytrees:
                 raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
-        times = th.as_tensor(self._simTime).repeat((nvecs, len(requestedCameras))).to(
-            out_th_device, non_blocking=out_th_device.type=="cuda"
-        )
+        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         self._forward_if_needed()
 
         def _to_output(jax_img, out_list, cam_i):
@@ -2602,7 +2681,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         links_stats_array = links_stats_array.at[:,4].set(0)
         links_stats_array = links_stats_array.at[:,5].set(0)
 
-        sim_state = sim_state.replace_d({"stats_step_count": 0,
+        sim_state = sim_state.replace_d({"stats_step_count": jnp.zeros((joint_stats_array.shape[0],), dtype=jnp.float32), # per env, see _update_step_stats_arrs
                                          "mon_joint_stats_arr_pvaeep" : joint_stats_array,
                                          "mon_links_stats_arr_v" : links_stats_array})
         return sim_state
@@ -2611,20 +2690,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jax.jit, donate_argnames=["sim_state"])
     def _update_step_stats_arrs(current_jstate_pvae : jnp.ndarray,
                                 current_lstate_v : jnp.ndarray,
-                                sim_state : SimState):
+                                sim_state : SimState,
+                                active : jnp.ndarray):
+        # Only the envs in `active` (vec_size,) take this sample: a frozen env keeps the statistics of what it
+        # actually simulated, however long the other envs keep running
         current_jstate_pvaee = current_jstate_pvae
-        step_count = sim_state.stats_step_count + 1
+        step_count = sim_state.stats_step_count + active.astype(sim_state.stats_step_count.dtype)
+        count = jnp.maximum(step_count, 1)[:,None,None] # guards the envs that have no sample yet
+        take = active[:,None,None]
         joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
         jvel = current_jstate_pvaee[:,:,1]
         jtorque = current_jstate_pvaee[:,:,2]
         power_spent = jnp.clip(jvel * jtorque, 0.0, 1e6)
         current_jstate_pvaeep   = jnp.concatenate([current_jstate_pvaee, power_spent[:,:,None]], axis=2)
-        values_sum              = jnp.add(    joint_stats_array[:,4], current_jstate_pvaeep)
-        values_sum_of_squares   = jnp.add(    joint_stats_array[:,5], jnp.square(current_jstate_pvaeep))
-        values_min              = jnp.minimum(joint_stats_array[:,0], current_jstate_pvaeep)
-        values_max              = jnp.maximum(joint_stats_array[:,1], current_jstate_pvaeep)
-        values_avg              = values_sum/step_count
-        values_std              = jnp.sqrt(jnp.clip(values_sum_of_squares/step_count-jnp.square(values_avg),min=0))
+        values_sum              = jnp.where(take, joint_stats_array[:,4] + current_jstate_pvaeep, joint_stats_array[:,4])
+        values_sum_of_squares   = jnp.where(take, joint_stats_array[:,5] + jnp.square(current_jstate_pvaeep), joint_stats_array[:,5])
+        values_min              = jnp.where(take, jnp.minimum(joint_stats_array[:,0], current_jstate_pvaeep), joint_stats_array[:,0])
+        values_max              = jnp.where(take, jnp.maximum(joint_stats_array[:,1], current_jstate_pvaeep), joint_stats_array[:,1])
+        values_avg              = values_sum/count
+        values_std              = jnp.sqrt(jnp.clip(values_sum_of_squares/count-jnp.square(values_avg),min=0))
         joint_stats_array = joint_stats_array.at[:,0].set(values_min) # min
         joint_stats_array = joint_stats_array.at[:,1].set(values_max) # max
         joint_stats_array = joint_stats_array.at[:,2].set(values_avg) # average values
@@ -2633,12 +2717,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         joint_stats_array = joint_stats_array.at[:,5].set(values_sum_of_squares) # sum of squares
 
         link_stats_array = sim_state.mon_links_stats_arr_v
-        link_stats_array = link_stats_array.at[:,4].set(jnp.add(    link_stats_array[:,4], current_lstate_v)) # sum of values
-        link_stats_array = link_stats_array.at[:,5].set(jnp.add(    link_stats_array[:,5], jnp.square(current_lstate_v))) # sum of squares
-        link_stats_array = link_stats_array.at[:,0].set(jnp.minimum(link_stats_array[:,0], current_lstate_v)) # maybe it would be better to do this not per-component
-        link_stats_array = link_stats_array.at[:,1].set(jnp.maximum(link_stats_array[:,1], current_lstate_v))
-        link_stats_array = link_stats_array.at[:,2].set(link_stats_array[:,4]/step_count) # average values
-        link_stats_array = link_stats_array.at[:,3].set(jnp.sqrt(jnp.clip(link_stats_array[:,5]/step_count-jnp.square(link_stats_array[:,2]),min=0))) # standard deviation
+        link_stats_array = link_stats_array.at[:,4].set(jnp.where(take, link_stats_array[:,4] + current_lstate_v, link_stats_array[:,4])) # sum of values
+        link_stats_array = link_stats_array.at[:,5].set(jnp.where(take, link_stats_array[:,5] + jnp.square(current_lstate_v), link_stats_array[:,5])) # sum of squares
+        link_stats_array = link_stats_array.at[:,0].set(jnp.where(take, jnp.minimum(link_stats_array[:,0], current_lstate_v), link_stats_array[:,0])) # maybe it would be better to do this not per-component
+        link_stats_array = link_stats_array.at[:,1].set(jnp.where(take, jnp.maximum(link_stats_array[:,1], current_lstate_v), link_stats_array[:,1]))
+        link_stats_array = link_stats_array.at[:,2].set(link_stats_array[:,4]/count) # average values
+        link_stats_array = link_stats_array.at[:,3].set(jnp.sqrt(jnp.clip(link_stats_array[:,5]/count-jnp.square(link_stats_array[:,2]),min=0))) # standard deviation
 
 
         sim_state = sim_state.replace_d({"stats_step_count" : step_count,
@@ -2684,12 +2768,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @staticmethod
     @partial(jax.jit, donate_argnames=["sim_state"])
-    def _update_step_stats(sim_state : SimState, sim_conf : SimConf) -> SimState:        
+    def _update_step_stats(sim_state : SimState, sim_conf : SimConf, active : jnp.ndarray | None = None) -> SimState:
+        """Add the current state to the step statistics of the envs selected by `active` (vec_size,) bool,
+        by default the envs being simulated, i.e. those not frozen by a zero timestep."""
+        if active is None:
+            active = sim_state.mjx_model.opt.timestep > 0
         jstate_pvaee = sim_state.mon_joint_state_pveae[:,:,[0,1,3,2,4]]
         lstate_v = sim_state.mon_link_state[:,:,7:13] # only linear velocity for stats
-        sim_state = MjxAdapter._update_step_stats_arrs( jstate_pvaee, 
+        sim_state = MjxAdapter._update_step_stats_arrs( jstate_pvaee,
                                                         lstate_v,
-                                                        sim_state)
+                                                        sim_state,
+                                                        active)
         return sim_state
 
     @staticmethod
@@ -2973,14 +3062,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_data = copy.deepcopy(self._original_mj_data)
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
+        self._mark_forward_needed() # the restored data has not been forwarded in this configuration
         # self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         
 
 
     @override
-    def getEnvTimeFromStartup(self) -> float:
-        """Get the current time within the simulation."""
-        return self._simTime
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        """Simulation time of each environment since startup, float32 tensor of shape (vec_size,) on the output device.
+
+        Environments frozen by run() report the time they actually simulated."""
+        # Derived from the per-env substep counter; the conversion makes a new tensor, so no view of the (donated)
+        # simulation state is handed out
+        return jax2th(self._sim_state.sim_substeps, self._out_th_device).to(th.float32)*self._sim_step_dt
 
     @partial(jax.jit, static_argnames=["self"], donate_argnames=("sim_state",))
     def _set_joint_state_data(self, sim_state : SimState, sim_conf : SimConf, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
@@ -4121,7 +4215,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 durations : jnp.ndarray,
                                 delays : jnp.ndarray,
                                 vec_mask : jnp.ndarray | None):
-        starts = sim_state.sim_time + delays # (vec_size,body_ids.shape[0])
+        starts = sim_state.sim_time[:,None] + delays # (vec_size,body_ids.shape[0])
         ends = starts + durations # (vec_size,body_ids.shape[0])
         startends = jnp.stack([starts,ends], axis = -1)  # (vec_size,body_ids.shape[0],2)
         if vec_mask is None:
@@ -4137,8 +4231,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_impulses(self, sim_state : SimState):
-        started_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,:,0] # vec_size*nbody
-        ended_impulses = sim_state.sim_time > sim_state.impulse_startends_stime[:,:,1] # vec_size*nbody
+        started_impulses = sim_state.sim_time[:,None] > sim_state.impulse_startends_stime[:,:,0] # vec_size*nbody
+        ended_impulses = sim_state.sim_time[:,None] > sim_state.impulse_startends_stime[:,:,1] # vec_size*nbody
         # expand to match sizesof xfrc_applied or impulse_startends_stime (i.e. vec_size*nbody*6 and vec_size*nbody*2)
         ended_impulses = jnp.expand_dims(ended_impulses, -1) # vec_size*nbody*1
         started_impulses = jnp.expand_dims(started_impulses, -1) # vec_size*nbody*1

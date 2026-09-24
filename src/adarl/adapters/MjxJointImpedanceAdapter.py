@@ -29,6 +29,11 @@ from adarl.utils.base_utils import record_time, print_recorded_times, record_reg
 import numpy as np
 from adarl.utils.dbg.dbg_checks import dbg_check
 
+def _keep_frozen(active : jnp.ndarray, new : jnp.ndarray, old : jnp.ndarray) -> jnp.ndarray:
+    """Per env, take `new` where the env is being simulated and keep `old` where run() froze it.
+    active has shape (vec_size,), new and old have vec_size as their first dimension."""
+    return jnp.where(jnp.reshape(active, active.shape+(1,)*(new.ndim-1)), new, old)
+
 @jax.jit
 @partial(jax.vmap, in_axes=(0, 0,    0), out_axes=(0, 0)) #vectorize along the number of simulations
 @partial(jax.vmap, in_axes=(0, None, 0), out_axes=(0, 0)) #vectorize along the number of references (pos,vel,torque)
@@ -137,6 +142,7 @@ class SimStateJimp(SimState):
              "mjx_model" : self.mjx_model,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
+             "sim_substeps" : self.sim_substeps,
              "cmds_queue" : self.cmds_queue,
              "cmds_queue_times" : self.cmds_queue_times,
              "stats_step_count" : self.stats_step_count,
@@ -283,6 +289,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         geom_overrides : dict[str,Any] | None = None,
                         reference_filter_cutoff_frequency : float = 20.0,
                         reference_filter_mode :  str = "second_order",
+                        sensing_filter_decimation_time : float = 0.0,
                         mjx_impl : Literal["jax","warp"] = "jax",
                         render_backend : Literal["cpu","warp"] = "cpu",
                         warp_nccdmax : int = 10,
@@ -319,6 +326,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,
+                                        sim_substeps=self._sim_state.sim_substeps,
                                         mjx_model=self._sim_state.mjx_model,
                                         cmds_queue=jnp.empty((0,), device = jax_device),
                                         cmds_queue_times=jnp.empty((0,), device = jax_device),
@@ -370,9 +378,10 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                         pv_ref_filter_alpha = pv_ref_filter_alpha,
                                         pair_sensor_adrs = self._sim_conf.pair_sensor_adrs
                                         )
-        # Controlled joint state filter (Only used for the impedance control feedback, not by getJointState)
-        pve_sensing_filter_decimation_time = 0.005        
-        self._pve_sensing_filter_alpha = 0.1**(1/pve_sensing_filter_decimation_time/self._sim_step_dt)
+        # Controlled joint state filter (Only used for the impedance control feedback, not by getJointState).
+        # sensing_filter_decimation_time is the time in which 90% of the filtered value comes from; 0 disables the filter
+        self._pve_sensing_filter_alpha = (0.1**(1/(sensing_filter_decimation_time/self._sim_step_dt))
+                                          if sensing_filter_decimation_time > 0 else 0.0)
         
 
         self._queue_size = impedance_commands_queue_size
@@ -380,7 +389,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         self._default_max_joint_impedance_ctrl_torque = default_max_joint_impedance_ctrl_torque
         self.set_impedance_controlled_joints([]) # initialize attributes
         self._insert_cmd_to_queue_vec = jax.vmap(jax.jit(self._insert_cmd_to_queue, donate_argnames=["cmds_queue","cmds_queue_times"]))
-        self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds_queue","cmds_queue_times"]), in_axes=(0,0,None))
+        self._get_cmd_and_cleanup_vec = jax.vmap(jax.jit(self._get_cmd_and_cleanup, donate_argnames=["cmds_queue","cmds_queue_times"]), in_axes=(0,0,0)) # the current time is per env
         self._peek_current_impedance_cmd_jit = jax.jit(self._peek_current_impedance_cmd)
         self._compute_impedance_torques_vec = jax.vmap(jax.jit(self._compute_impedance_torques), in_axes=(0,0,None))
 
@@ -557,9 +566,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         (all queued commands are in the future) get a zero command, matching that no impedance
         effort is applied for them.
 
-        cmds_queue: (V, Q, J, 5); cmds_queue_times: (V, Q); current_time: scalar -> (V, J, 5)
+        cmds_queue: (V, Q, J, 5); cmds_queue_times: (V, Q); current_time: (V,) -> (V, J, 5)
         """
-        past_mask = cmds_queue_times <= current_time                              # (V, Q)
+        past_mask = cmds_queue_times <= jnp.reshape(current_time, (-1, 1))                              # (V, Q)
         has_cmd = jnp.any(past_mask, axis=1)                                       # (V,)
         masked_times = jnp.where(past_mask, cmds_queue_times, float("-inf"))       # (V, Q)
         current_cmd_idx = jnp.argmax(masked_times, axis=1)                         # (V,)
@@ -725,6 +734,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
     def _apply_impedance_cmds(self, sim_state : SimStateJimp):
         
         new_state = {}
+        active = sim_state.mjx_model.opt.timestep > 0 # an env frozen by run() (zero timestep) keeps its filter states, to resume exactly where it stopped
         current_cmd_v_j_pvesd, sim_has_cmd, new_cmds_queue, new_cmds_queue_times = self._get_cmd_and_cleanup_vec(   sim_state.cmds_queue,
                                                                                                                     sim_state.cmds_queue_times,
                                                                                                                     sim_state.sim_time)
@@ -735,9 +745,11 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                                         sim_state.ref_filter_coeffs,
                                                                         sim_state.ref_filter_state)
             filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:3].set(filtered_refs)
-            new_state["ref_filter_state"] = new_ref_filter_state
+            new_state["ref_filter_state"] = _keep_frozen(active, new_ref_filter_state, sim_state.ref_filter_state)
         elif self._use_exponential_reference_filter:
-            new_filtered_pv_references = sim_state.filtered_pv_references*self._sim_conf.pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._sim_conf.pv_ref_filter_alpha)
+            new_filtered_pv_references = _keep_frozen(active,
+                                                      sim_state.filtered_pv_references*self._sim_conf.pv_ref_filter_alpha + current_cmd_v_j_pvesd[:,:,:2]*(1-self._sim_conf.pv_ref_filter_alpha),
+                                                      sim_state.filtered_pv_references)
             filtered_cmd_v_j_pvesd = current_cmd_v_j_pvesd.at[:,:,:2].set(new_filtered_pv_references)
             new_state["filtered_pv_references"] = new_filtered_pv_references
         else:
@@ -746,7 +758,9 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                                                             self._jids_to_imp_cmd_qvadr,
                                                             sim_state.mjx_data)
         vec_jstate_pve = vec_jstate[:,:,:3]
-        new_filtered_pve_states = sim_state.filtered_pve_states*self._pve_sensing_filter_alpha + vec_jstate_pve*(1-self._pve_sensing_filter_alpha)
+        new_filtered_pve_states = _keep_frozen(active,
+                                               sim_state.filtered_pve_states*self._pve_sensing_filter_alpha + vec_jstate_pve*(1-self._pve_sensing_filter_alpha),
+                                               sim_state.filtered_pve_states)
         new_state["filtered_pve_states"] = new_filtered_pve_states
         vec_efforts = self._compute_imp_cmds(   filtered_cmd_v_j_pvesd,
                                                 self._imp_control_max_torque,
@@ -799,8 +813,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         sim_state = self._apply_commands(sim_state)
         sim_state = self._apply_impulses(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
-        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
-                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data}) # the clock is advanced by _run_fast_save_full_jpveae
         sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:

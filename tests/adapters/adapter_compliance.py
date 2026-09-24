@@ -143,7 +143,7 @@ def check_set_link_state_and_gravity(ctx: ComplianceContext):
               f"got velocities {ls[:, 7:10].tolist()}")
     elapsed = 0.0
     while elapsed < 0.25:
-        elapsed += ctx.adapter.step()
+        elapsed += _step(ctx.adapter)
     ls = ctx.adapter.getLinksState([BALL_LINK])[:, 0]
     expected_vz = -9.81 * elapsed
     ctx.check("gravity.ballistic_vz", bool(((ls[:, 9] - expected_vz).abs() < 0.15 * abs(expected_vz) + 0.05).all()),
@@ -152,15 +152,28 @@ def check_set_link_state_and_gravity(ctx: ComplianceContext):
               f"expected vx~1.0, got {ls[:, 7].tolist()}")
 
 
+def _step(adapter) -> float:
+    """Step and return the step length. The compliance scenarios give every env the same step, so the per-env
+    durations returned by step() must all be equal."""
+    durations = adapter.step()
+    assert bool((durations == durations[0]).all()), f"envs stepped for different durations: {durations.tolist()}"
+    return float(durations[0])
+
+
 def check_time(ctx: ComplianceContext):
-    t0 = float(ctx.adapter.getEnvTimeFromStartup())
-    stepped = 0.0
+    t0 = ctx.adapter.getEnvTimeFromStartup().clone()
+    ctx.check("time.per_env", tuple(t0.shape) == (ctx.vec,), f"expected shape ({ctx.vec},), got {tuple(t0.shape)}")
+    stepped = th.zeros((ctx.vec,))
     for _ in range(5):
-        stepped += ctx.adapter.step()
-    t1 = float(ctx.adapter.getEnvTimeFromStartup())
-    ctx.check("time.step_advances_env_time", abs((t1 - t0) - stepped) < 1e-5,
-              f"env time advanced {t1-t0:.6f}, steps returned {stepped:.6f}")
-    ctx.check("time.step_duration_positive", stepped > 0.0, f"got {stepped}")
+        durations = ctx.adapter.step()
+        stepped += durations.cpu()
+    ctx.check("time.step_returns_per_env_cpu",
+              tuple(durations.shape) == (ctx.vec,) and durations.device.type == "cpu" and durations.dtype == th.float32,
+              f"got shape {tuple(durations.shape)}, device {durations.device}, dtype {durations.dtype}")
+    advanced = (ctx.adapter.getEnvTimeFromStartup() - t0).cpu()
+    ctx.check("time.step_advances_env_time", bool(((advanced - stepped).abs() < 1e-5).all()),
+              f"env time advanced {advanced.tolist()}, steps returned {stepped.tolist()}")
+    ctx.check("time.step_duration_positive", bool((stepped > 0.0).all()), f"got {stepped.tolist()}")
 
 
 def check_effort(ctx: ComplianceContext):
@@ -171,7 +184,7 @@ def check_effort(ctx: ComplianceContext):
     ctx.adapter.setJointsEffortCommand([CART_JOINT], th.full((ctx.vec, 1), 2.0, device=ctx.dev))
     elapsed = 0.0
     while elapsed < 0.2:
-        elapsed += ctx.adapter.step()
+        elapsed += _step(ctx.adapter)
     vel = ctx.adapter.getJointsState([CART_JOINT])[:, 0, 1]
     ctx.check("effort.moves_joint", bool((vel > 0.01).all()), f"velocities after +2Nm: {vel.tolist()}")
     ctx.adapter.setJointsEffortCommand([CART_JOINT], th.zeros((ctx.vec, 1), device=ctx.dev))
@@ -190,7 +203,7 @@ def check_impedance(ctx: ComplianceContext):
     if not isinstance(adapter, BaseVecJointImpedanceAdapter):
         ctx.skip("impedance.*", "not an impedance adapter")
         return
-    step_len = float(adapter.step())
+    step_len = _step(adapter)
 
     adapter.set_impedance_controlled_joints([CART_JOINT])
     ctx.check("impedance.controlled_joints_roundtrip",
@@ -213,7 +226,7 @@ def check_impedance(ctx: ComplianceContext):
     adapter.set_current_joint_impedance_command(_jimp_cmd(ctx, kp=200.0, kd=10.0))
     elapsed = 0.0
     while elapsed < 1.5:
-        elapsed += adapter.step()
+        elapsed += _step(adapter)
     pos = _pole_pos(ctx)
     ctx.check("impedance.position_hold", bool((pos.abs() < 0.15).all()),
               f"pole at {pos.tolist()} after {elapsed:.2f}s of kp=200 hold towards 0")
@@ -224,7 +237,7 @@ def check_impedance(ctx: ComplianceContext):
     adapter.set_current_joint_impedance_command(_jimp_cmd(ctx, e=2.0))
     elapsed = 0.0
     while elapsed < 0.25:
-        elapsed += adapter.step()
+        elapsed += _step(adapter)
     pos = _pole_pos(ctx)
     ctx.check("impedance.effort_feedforward", bool((pos > 0.005).all()),
               f"pole at {pos.tolist()} after {elapsed:.2f}s of +2Nm feedforward")
@@ -304,7 +317,7 @@ def check_collisions(ctx: ComplianceContext):
     ctx.adapter.setLinksStateDirect([BALL_LINK], state)
     elapsed = 0.0
     while elapsed < 0.4:
-        elapsed += ctx.adapter.step()
+        elapsed += _step(ctx.adapter)
     mask = ctx.adapter.check_colliding_links()
     ok_shape = tuple(mask.shape) == (ctx.vec, 1) and mask.dtype == th.bool
     ctx.check("collision.mask_shape", ok_shape, f"got shape {tuple(mask.shape)} dtype {mask.dtype}")

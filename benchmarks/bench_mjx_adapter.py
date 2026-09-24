@@ -107,7 +107,7 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
             adapter.setJointsEffortCommand([("cartpole","foot_joint")], a)
         if step == 1:
             t0 = time.monotonic() # exclude the first round, it may have some jit compiles in it
-        dt = adapter.step()
+        dt = float(adapter.step().max())
         if render:
             img = adapter.getRenderings(["simple_camera"])[0][0][0]
             img = imgToCvIntRgb(img, min_val=0, max_val=1)
@@ -118,7 +118,7 @@ def test_sim_adapter(adapter : BaseVecSimulationAdapter, render : bool, print_st
         # print(f"stepped of {dt}s")
 
         # print(f"joint states = {adapter.getJointsState()}")
-        stime = adapter.getEnvTimeFromStartup()
+        stime = float(adapter.getEnvTimeFromStartup().max())
         tf = time.monotonic()
         wtime = tf - t0
         print(f"[{step}] t = {stime:.3f} "

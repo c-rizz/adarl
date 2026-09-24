@@ -26,6 +26,7 @@ tests/
     test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
     test_mjx_rendering.py         # warp RGB+depth: shapes/dtypes, depth content, vec_mask, out= path
     test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
+    test_mjx_per_env_run.py       # per-env run() durations: frozen envs keep state/clock/stats/filters, clock past float32 limit
 benchmarks/                       # perf/demo scripts (NOT collected by pytest)
   bench_mjx_adapter.py
   bench_genesis_adapter.py

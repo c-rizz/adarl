@@ -1239,14 +1239,14 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         pass
 
     @override
-    def step(self) -> float:
+    def step(self) -> th.Tensor:
         self.initialize_for_step()
         self._reset_step_stats()
         self._stepping = True
         duration = self.run(self._step_length_sec)
         self._stepping = False
         self._compute_step_stats()
-        return duration
+        return th.full((self._vec_size,), duration, dtype=th.float32) # every env steps together
 
     @override
     def run(self, duration_sec: float):
@@ -1278,8 +1278,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self.initialize_for_episode()
 
     @override
-    def getEnvTimeFromStartup(self) -> float:
-        return self._sim_time
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        return th.full((self._vec_size,), self._sim_time, dtype=th.float32, device=self._out_th_device)
 
     @override
     def sim_step_duration(self) -> th.Tensor:

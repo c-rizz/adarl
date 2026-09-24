@@ -229,13 +229,8 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
             a.initialize_for_step()
 
     @override
-    def step(self) -> float:
-        r = []
-        for a in self._sub_adapters:
-            r.append(a.step())
-        if not all(r_i == r[0] for r_i in r):
-            raise RuntimeError("Sub-adapters returned different step durations")
-        return r[0]
+    def step(self) -> th.Tensor:
+        return th.as_tensor([a.step() for a in self._sub_adapters], dtype=th.float32) # each sub-adapter is one env
     
     @override
     def control_period(self) -> th.Tensor:        
@@ -247,8 +242,8 @@ class VecSimJointImpedanceAdapterWrapper(BaseVecSimulationAdapter, BaseVecJointI
             a.resetWorld()
     
     @override
-    def getEnvTimeFromStartup(self) -> float:
-        return self._sub_adapters[0].getEnvTimeFromStartup()
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        return th.as_tensor([a.getEnvTimeFromStartup() for a in self._sub_adapters], dtype=th.float32, device=self._out_th_device)
     
     @override
     def getEnvTimeFromEpStart(self) -> float:

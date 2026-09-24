@@ -49,6 +49,7 @@ class SimStateActuated(SimState):
              "mjx_model" : self.mjx_model,
              "requested_qfrc_applied" : self.requested_qfrc_applied,
              "sim_time" : self.sim_time,
+             "sim_substeps" : self.sim_substeps,
              "stats_step_count" : self.stats_step_count,
              "mon_joint_stats_arr_pvaeep" : self.mon_joint_stats_arr_pvaeep,
              "mon_links_stats_arr_v" : self.mon_links_stats_arr_v,
@@ -225,6 +226,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
             mjx_model=self._sim_state.mjx_model,
             requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
             sim_time=self._sim_state.sim_time,
+            sim_substeps=self._sim_state.sim_substeps,
             stats_step_count=jnp.zeros((1,), device=jax_device),
             mon_joint_stats_arr_pvaeep=jnp.empty((vec_size,0,6), device=jax_device),
             mon_links_stats_arr_v=jnp.empty((0,), device=jax_device),
@@ -661,8 +663,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         sim_state = self._apply_commands(sim_state)
         sim_state = self._apply_impulses(sim_state)
         new_mjx_data = self._mjx_integrate_and_forward(sim_state.mjx_model, sim_state.mjx_data)
-        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data,
-                                          "sim_time": sim_state.sim_time + self._sim_step_dt})
+        sim_state = sim_state.replace_d({"mjx_data": new_mjx_data}) # the clock is advanced by _run_fast_save_full_jpveae
         sim_state = self._update_monitored_data_cache(sim_state, sim_conf)
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf)
         if self._record_joint_hist:

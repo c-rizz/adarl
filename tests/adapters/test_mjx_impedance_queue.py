@@ -74,7 +74,7 @@ def test_queue_stays_bounded_under_normal_stepping(mjx_impl):
 def test_delayed_command_activates_only_after_its_delay():
     ad = _build("jax")
     try:
-        step_len = float(ad.step())
+        step_len = float(ad.step().max())
         ad.reset_joint_impedances_commands()
         ad.setJointsImpedanceCommand(_cmd(ad, kp=200.0, kd=10.0), delay_sec=2.5 * step_len)
         ad.step()

@@ -232,7 +232,7 @@ class GenesisJointImpedanceAdapter(GenesisAdapter, BaseVecJointImpedanceAdapter)
                                   vec_mask: th.Tensor | None = None,
                                   joint_names: Sequence[tuple[str, str]] | None = None) -> None:
         self._validate_cmd(joint_impedances_pvesd, joint_names)
-        now = self.getEnvTimeFromStartup()
+        now = self._sim_time
         if isinstance(delay_sec, th.Tensor) and delay_sec.numel() > 1:
             apply_time = now + delay_sec.to(self._sim_dev).clamp(min=0.0).view(-1)
         else:
@@ -320,7 +320,7 @@ class GenesisJointImpedanceAdapter(GenesisAdapter, BaseVecJointImpedanceAdapter)
         if len(self._imp_ctrl_joints) == 0:
             return
         if apply_queue:
-            self._pop_due_commands(self.getEnvTimeFromStartup())
+            self._pop_due_commands(self._sim_time)
         rs = self._rigid_solver()
         q = rs.get_qpos(qs_idx=self._imp_ctrl_jids[:, 1])
         qd = rs.get_dofs_velocity(dofs_idx=self._imp_ctrl_jids[:, 0])

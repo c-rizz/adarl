@@ -468,11 +468,39 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         pass
 
     @override
+    @abstractmethod
+    def step(self) -> th.Tensor:
+        """Run a simulation step, see BaseAdapter.step().
+
+        Returns
+        -------
+        th.Tensor
+            Duration each environment was simulated for, in seconds: CPU float32 tensor of shape (vec_size,).
+            Adapters whose step can last differently for each environment (e.g. stepping until a movement is over)
+            report each environment's own duration.
+        """
+        raise NotImplementedError()
+
+    @override
+    @abstractmethod
+    def getEnvTimeFromStartup(self) -> th.Tensor:
+        """Simulation time of each environment since startup.
+
+        Returns
+        -------
+        th.Tensor
+            float32 tensor of shape (vec_size,) on the output device. Adapters with a single clock for all the
+            environments expand it; adapters that can run the environments for different durations (e.g.
+            MjxAdapter.run) report the time each environment actually simulated.
+        """
+        raise NotImplementedError()
+
+    @override
     def initialize_for_episode(self, vec_mask : th.Tensor | None = None):
         if vec_mask is not None:
             masked_assign(self.__episode_start_env_time, vec_mask, self.getEnvTimeFromStartup())
         else:
-            self.__episode_start_env_time.fill_(self.getEnvTimeFromStartup())
+            self.__episode_start_env_time.copy_(self.getEnvTimeFromStartup())
 
     @override
     def getEnvTimeFromEpStart(self) -> th.Tensor:

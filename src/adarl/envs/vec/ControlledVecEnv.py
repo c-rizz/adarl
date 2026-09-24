@@ -68,13 +68,15 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
         th.compiler.cudagraph_mark_step_begin()
         self.pre_step()
         record_time("ControlledVecEnv: pre_step done")
-        estimated_step_duration_sec = 0.0
+        step_durations = th.zeros((self.num_envs,), dtype=th.float32) # per env, on CPU as the adapter returns them
         adapter_step_count = 0
         t1 = time.monotonic()
         while True: # Do at least one step, then check if we need more
-            estimated_step_duration_sec += self._adapter.step()
+            step_durations += self._adapter.step()
             record_time("ControlledVecEnv: adapter step done")
             adapter_step_count+=1
+            # Whether another adapter step is needed is decided for the whole batch, on its longest-running env
+            estimated_step_duration_sec = float(step_durations.max())
             residual_step_length = self._intendedStepLength_sec - estimated_step_duration_sec
             if abs(residual_step_length) <= self._step_precision_tolerance:
                 break
@@ -91,9 +93,9 @@ class ControlledVecEnv(Generic[EnvAdapterType, Observation], BaseVecEnv[Observat
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
         self._th_tot_step_counter+=1
-        self._estimated_env_times += estimated_step_duration_sec
-        if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
-            ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
+        self._estimated_env_times += step_durations.to(self._estimated_env_times.device, non_blocking=True)
+        if bool(((step_durations - self._intendedStepLength_sec).abs() > self._step_precision_tolerance).any()):
+            ggLog.warn(f"Step duration is different than intended: [{float(step_durations.min())}, {float(step_durations.max())}] != {self._intendedStepLength_sec}")
         self.post_step()
         record_time("ControlledVecEnv: post_step done")
         tf = time.monotonic()

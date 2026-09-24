@@ -172,7 +172,7 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
             raise ValueError(f"joint_impedances_pvesd has wrong shape {tuple(joint_impedances_pvesd.shape)}, expected (1,{expected_len},5)")
 
         d = delay_sec.item() if isinstance(delay_sec, th.Tensor) else float(delay_sec)
-        cmd_time = self.getEnvTimeFromStartup() + max(0.0, d)
+        cmd_time = self._time_since_startup + max(0.0, d)
         self._enqueue_command(cmd_time, joint_impedances_pvesd.cpu().numpy())
 
     @override
@@ -196,7 +196,7 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
         expected_len = len(self._imp_ctrl_joints)
         if joint_impedances_pvesd.shape[1] != expected_len or joint_impedances_pvesd.shape[2] != 5:
             raise ValueError(f"joint_impedances_pvesd has wrong shape {tuple(joint_impedances_pvesd.shape)}, expected (1,{expected_len},5)")
-        self._enqueue_command(self.getEnvTimeFromStartup(), joint_impedances_pvesd.cpu().numpy())
+        self._enqueue_command(self._time_since_startup, joint_impedances_pvesd.cpu().numpy())
         self._current_cmd = self._cmd_queue[0][2]
         self._apply_impedance_torques()
 
@@ -233,7 +233,7 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
     def _apply_impedance_torques(self):
         if len(self._imp_ctrl_joints) == 0:
             return
-        now = self.getEnvTimeFromStartup()
+        now = self._time_since_startup
         # Apply all commands scheduled up to the current simulation time, keeping the latest one.
         while self._cmd_queue and self._cmd_queue[0][0] <= now:
             _, _, next_cmd = heapq.heappop(self._cmd_queue)

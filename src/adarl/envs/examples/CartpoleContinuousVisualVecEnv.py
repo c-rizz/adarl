@@ -185,7 +185,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
             return r
         # Modified version for image stacking
         self.pre_step()
-        estimated_step_duration_sec = 0.0
+        step_durations = th.zeros((self.num_envs,), dtype=th.float32) # per env, on CPU as the adapter returns them
         t0 = time.monotonic()
         self._adapter.initialize_for_step()
         cam_h, cam_w = self._lowres_cam_resolution_hw
@@ -207,7 +207,7 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
                                     device=th.device("cpu"))
         for i in range(nframes):
             t0_sub = time.monotonic()
-            estimated_step_duration_sec += self._adapter.run(substep_len)
+            step_durations += th.as_tensor(self._adapter.run(substep_len), dtype=th.float32).expand(self.num_envs)
             t1_sub = time.monotonic()
             self._adapter.getRenderings([   self._lowres_camera_name],
                                         out=[all_renderings_fvhwc[i]],
@@ -228,9 +228,9 @@ class CartpoleContinuousVisualVecEnv(CartpoleContinuousVecEnv):
         t1 = time.monotonic()
         th.add(self._ep_step_counter,1,out=self._ep_step_counter)
         self._tot_step_counter+=1
-        self._estimated_env_times += estimated_step_duration_sec
-        if abs(estimated_step_duration_sec - self._intendedStepLength_sec) > self._step_precision_tolerance:
-            ggLog.warn(f"Step duration is different than intended: {estimated_step_duration_sec} != {self._intendedStepLength_sec}")
+        self._estimated_env_times += step_durations.to(self._estimated_env_times.device, non_blocking=True)
+        if bool(((step_durations - self._intendedStepLength_sec).abs() > self._step_precision_tolerance).any()):
+            ggLog.warn(f"Step duration is different than intended: [{float(step_durations.min())}, {float(step_durations.max())}] != {self._intendedStepLength_sec}")
         self.post_step()
         tf = time.monotonic()
         # ggLog.info(f"Step timing: total={tf - t0:.4f}s, tpost={tf-t1:.4f}s, run={tot_run_time:.4f}s, render={tot_render_time:.4f}s, reshape={tot_reshape_time:.4f}s, stime={estimated_step_duration_sec:.6f}s, rt_single={estimated_step_duration_sec/(tf - t0):.2f}x")

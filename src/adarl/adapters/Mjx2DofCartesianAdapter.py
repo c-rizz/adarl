@@ -68,6 +68,9 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
         position_tolerance : float
             Position error under which a movement is considered completed, in meters.
         blocking_movement : bool
+            If True, step() lasts until the commanded movement is complete, separately for each environment:
+            an environment whose movement is complete is frozen (see MjxAdapter.run()) while the others finish,
+            so its step lasts exactly its own movement and step() reports each environment's own duration.
             If False, step() just runs for the adapter's nominal step length, like a regular adapter.
         max_step_duration_sec : float
             Maximum simulated duration of a blocking step.
@@ -111,7 +114,6 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
                                          dtype=th.float32, device=self._out_th_device)
         self._traj_elapsed = th.zeros((self.vec_size(),), dtype=th.float32, device=self._out_th_device)
         self._command_was_set = False
-        self._move_timeouts_in_last_step = 0
         self._stuck_envs_in_last_step = 0
         self._chunks_in_last_step = 0
         self._ee_mon_ids = None
@@ -277,10 +279,6 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
                                      link_poses_xyz_xyzw=poses,
                                      vec_mask=vec_mask)
 
-    def get_move_timeouts_in_last_step(self) -> int:
-        """How many times the blocking step hit its time limit instead of settling."""
-        return self._move_timeouts_in_last_step
-
     def get_stuck_envs_in_last_step(self) -> int:
         """How many environments stopped making progress towards their target during the last step."""
         return self._stuck_envs_in_last_step
@@ -289,29 +287,36 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
         """How many control chunks the last blocking step took."""
         return self._chunks_in_last_step
 
-    def _advance_trajectory(self, elapsed_increment : float, vec_mask : th.Tensor | None = None):
-        """Advance the trajectory clock and send the resulting position reference."""
-        self._traj_elapsed = self._traj_elapsed + elapsed_increment
+    def _advance_trajectory(self, elapsed_increment : float | th.Tensor, vec_mask : th.Tensor | None = None):
+        """Advance the trajectory clock and send the resulting position reference. elapsed_increment is one
+        duration for all the environments, or one per environment (as run() and step() return them)."""
+        increment = th.as_tensor(elapsed_increment, dtype=th.float32).to(self._out_th_device, non_blocking=True)
+        self._traj_elapsed = self._traj_elapsed + increment
         self._send_position_command(self._trajectory_reference_xy(), vec_mask=vec_mask)
 
     @override
-    def step(self) -> float:
+    def step(self) -> th.Tensor:
         if not self._blocking_movement or not self._command_was_set:
             ret = super().step()
             self._advance_trajectory(ret)
             return ret
         self.initialize_for_step()
-        self._move_timeouts_in_last_step = 0
         self._stuck_envs_in_last_step = 0
         self._chunks_in_last_step = 0
-        elapsed_sec = 0.0
+        elapsed_sec = th.zeros((self.vec_size(),), dtype=th.float32) # per env, on CPU as run() returns it
         previous_error = th.full((self.vec_size(),), float("+inf"),
                                  dtype=th.float32, device=self._out_th_device)
+        # An environment whose movement is complete is frozen for the rest of the step (run() gives it a zero
+        # duration): its step lasts exactly its own movement, whatever the other environments are doing
+        done = th.zeros((self.vec_size(),), dtype=th.bool, device=self._out_th_device)
+        done_cpu = th.zeros((self.vec_size(),), dtype=th.bool)
+        stopped_stuck = th.zeros((self.vec_size(),), dtype=th.bool, device=self._out_th_device)
+        chunk_durations = th.full((self.vec_size(),), self._sim_dt, dtype=th.float64) # float64: in float32 a chunk could round down to one substep less
         while True:
-            chunk_sec = self.run(self._sim_dt)
+            chunk_sec = self.run(chunk_durations.masked_fill(done_cpu, 0.0))
             elapsed_sec += chunk_sec
             self._chunks_in_last_step += 1
-            self._advance_trajectory(chunk_sec)
+            self._advance_trajectory(chunk_sec) # frozen environments do not advance their trajectory
             error = self.get_cartesian_position_error()[:, 0]
             reached = error <= self._position_tolerance
             # An environment that is not getting any closer is not going to: it is either pushing
@@ -322,16 +327,22 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
             stuck = th.logical_and(trajectory_over,
                                    (previous_error - error) < self._min_progress_per_chunk)
             previous_error = error
-            # A movement is only complete once the reference stopped moving too
-            done = th.logical_or(th.logical_and(reached, trajectory_over), stuck)
-            if bool(done.all()):
-                self._stuck_envs_in_last_step = int(th.logical_and(stuck, th.logical_not(reached)).sum())
+            # A movement is only complete once the reference stopped moving too. Once complete it stays so: a frozen
+            # environment does not move, and would otherwise look stuck
+            newly_done = th.logical_and(th.logical_not(done),
+                                        th.logical_or(th.logical_and(reached, trajectory_over), stuck))
+            stopped_stuck = th.logical_or(stopped_stuck, th.logical_and(newly_done, th.logical_not(reached)))
+            done = th.logical_or(done, newly_done)
+            done_cpu = done.cpu() # CUDA sync, the only one per chunk: it decides both the stop and the next chunk's durations
+            if bool(done_cpu.all()):
+                self._stuck_envs_in_last_step = int(stopped_stuck.sum()) # CUDA sync
                 break
-            if elapsed_sec >= self._max_step_duration_sec:
-                self._move_timeouts_in_last_step = int(th.logical_not(done).sum())
-                ggLog.warn(f"{type(self).__name__}: step timed out after {elapsed_sec:.3f}s of simulated time "
-                           f"with {self._move_timeouts_in_last_step} environments still moving, "
-                           f"maximum position error {float(error.max()):.4f}m "
+            longest_sec = float(elapsed_sec.max()) # on CPU, no sync
+            if longest_sec >= self._max_step_duration_sec:
+                move_timeouts_in_last_step = int(th.logical_not(done_cpu).sum())
+                ggLog.warn(f"{type(self).__name__}: step timed out after {longest_sec:.3f}s of simulated time "
+                           f"with {move_timeouts_in_last_step} environments still moving, "
+                           f"maximum position error {float(error[th.logical_not(done)].max()):.4f}m "
                            f"(tolerance is {self._position_tolerance:.4f}m)")
                 break
         return elapsed_sec
@@ -345,13 +356,14 @@ class Mjx2DofCartesianAdapter(MjxActuatedAdapter, BaseVecCartesianPositionAdapte
         self.setCartesianPoseCommand(link_names=link_names,
                                      link_poses_xyz_xyzw=link_poses_xyz_xyzw,
                                      vec_mask=vec_mask)
-        elapsed_sec = 0.0
+        elapsed_sec = th.zeros((self.vec_size(),), dtype=th.float32) # per env, on CPU as run() returns it
         while True:
             elapsed_sec += self.run(self._sim_dt)
             self._advance_trajectory(self._sim_dt)
             max_err = float(self.get_cartesian_position_error().max())
             if max_err <= max_error and bool(self._trajectories_are_over().all()):
                 break
-            if elapsed_sec >= sim_timeout_sec:
-                raise TimeoutError(f"{type(self).__name__}.moveToEePoseSync timed out after {elapsed_sec:.3f}s "
+            longest_sec = float(elapsed_sec.max())
+            if longest_sec >= sim_timeout_sec:
+                raise TimeoutError(f"{type(self).__name__}.moveToEePoseSync timed out after {longest_sec:.3f}s "
                                    f"of simulated time, maximum position error is {max_err:.4f}m")

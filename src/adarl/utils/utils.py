@@ -1032,22 +1032,24 @@ def th_compile_ext(copy_outs : bool = False,
         return graphit(disable=disable)
     else:
         def compiling_decorator(func):
-            if th.compiler.is_compiling():
-                # If already compiling, do nothing
-                return func
-            else:
-                compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
-                if skip_eval_unsafe_warmup > 0:
-                    compiled_func = wrap_skip_eval_unsafe(compiled_func, warmup_runs=skip_eval_unsafe_warmup, manual_arg_guard=skip_eval_unsafe_manual_arg_guard)
-                if copy_outs:
-                    def compile_and_clone(*args, **kwargs):
-                        outs = compiled_func(*args, **kwargs)
-                        return clone_tensor_tree(outs, detach=False)
-                    return compile_and_clone
+            # This is ran once, at function definition time
+            # The function returned by this one is exectued at each call
+            compiled_func = th.compile(model=func, *compile_args, **compile_kwargs)
+            if skip_eval_unsafe_warmup > 0:
+                compiled_func = wrap_skip_eval_unsafe(compiled_func, warmup_runs=skip_eval_unsafe_warmup, manual_arg_guard=skip_eval_unsafe_manual_arg_guard)
+            def compile_if_not_nested(*args, **kwargs):
+                if th.compiler.is_compiling():
+                    return func(*args, **kwargs)
                 else:
-                    def compile(*args, **kwargs):
-                        return compiled_func(*args, **kwargs)                
-                    return compile
+                    return compiled_func(*args, **kwargs)
+            if copy_outs:
+                @functools.wraps(func)
+                def compile_and_clone(*args, **kwargs):
+                    outs = compile_if_not_nested(*args, **kwargs)
+                    return clone_tensor_tree(outs, detach=False)
+                return compile_and_clone
+            else:
+                return functools.wraps(func)(compile_if_not_nested)
     return compiling_decorator
 
 
