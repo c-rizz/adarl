@@ -2,6 +2,7 @@ from typing import Optional, List, Union, Tuple
 import adarl.utils.dbg.ggLog as ggLog
 import numpy as np
 from adarl.utils.base_utils import createSymlink, exc_to_str, cpu_info, pkgutil_get_path
+import adarl.utils.base_utils as base_utils
 
 import datetime
 import threading
@@ -290,6 +291,8 @@ class Session():
             except Exception as e: # type: ignore
                 ggLog.error(f"Wandb init failed: {exc_to_str(e)}")
 
+        if self.debug_level<DbgLevel.VERBOSE:
+            base_utils._disable_record_times = True
         return folderName
 
     def log_folder(self) -> str:

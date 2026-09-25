@@ -86,6 +86,7 @@ class VecEpisodeStorage():
         self.full = False
         self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
         self._nonblocking_out = self._output_device.type == "cuda"
+        self._standing_output_nonblocking_copy : th.Event | None = None
 
         magic_value = 42
         self.observations = {
@@ -168,6 +169,8 @@ class VecEpisodeStorage():
         # are stored in the same buffers of observations, so when overriding, we are already overriding also
         # the next slot in the observations buffer, this effectively reduces the capacity of one vframe.
         
+        if self._standing_output_nonblocking_copy is not None:
+            self._standing_output_nonblocking_copy.synchronize() # wait if there is any output copy still in progress, as we are going to overwrite the buffers
 
         terminateds = terminateds.to(th.uint8)
         truncateds = truncateds.to(th.uint8)
@@ -175,14 +178,18 @@ class VecEpisodeStorage():
         # next_observations = {k:th.as_tensor(v) for k,v in next_observations.items()}
         dbg_check_finite((observations, next_observations, actions, rewards), async_assert=True,
                          assert_msg=f"Nonfinite values in added transition")
-        src_on_cpu = (actions.device.type != "cuda" or 
-                      rewards.device.type != "cuda" or 
-                      terminateds.device.type != "cuda" or 
-                      truncateds.device.type != "cuda" or 
-                      any([v.device.type != "cuda" for v in observations.values()]) or 
-                      any([v.device.type != "cuda" for v in next_observations.values()]))
-        nb = self._use_nonblocking_adds 
-        needs_sync = self._storage_torch_device.type == "cpu" and not src_on_cpu and nb
+        
+        # cpu->cuda and cuda->cpu copies are problematic, as the cpu side is not synchonized
+        # we may read a transfer to cpu before it has been completed,
+        # or we may write to a cpu tensro that is stil being copied.
+
+        mismatched_devices = (actions.device.type != self._storage_torch_device.type or 
+                      rewards.device.type != self._storage_torch_device.type or 
+                      terminateds.device.type != self._storage_torch_device.type or 
+                      truncateds.device.type != self._storage_torch_device.type or 
+                      any([v.device.type != self._storage_torch_device.type for v in observations.values()]) or 
+                      any([v.device.type != self._storage_torch_device.type for v in next_observations.values()]))
+        nb = self._use_nonblocking_adds and mismatched_devices
 
         frame_idx : int = self._added_vframes % self._buffer_size_vframes
         overriding = self.full
@@ -198,10 +205,13 @@ class VecEpisodeStorage():
         self.rewards[:,frame_idx].copy_(rewards, non_blocking=nb)
         self.terminated[:,frame_idx].copy_(terminateds, non_blocking=nb)
         self.truncated[:,frame_idx].copy_(truncateds, non_blocking=nb)
+        next_frame_idx = (frame_idx+1) % (self._buffer_size_vframes) #careful! handle this correctly at sampling, we may be overwriting something here
         for key in self.observations.keys():
             self.observations[key][:,frame_idx].copy_(observations[key], non_blocking=nb)
-            next_frame_idx = (frame_idx+1) % (self._buffer_size_vframes) #careful! handle this correctly at sampling, we may be overwriting something here
             self.observations[key][:,next_frame_idx].copy_(next_observations[key], non_blocking=nb)
+        if nb:
+            event = th.cuda.Event()
+            event.record()
 
         self.full = self._added_vframes>=self._buffer_size_vframes
         self._current_ep_frame_counts_th = (self._current_ep_frame_counts_th+1)*(th.logical_not(eps_finishing))
@@ -213,8 +223,8 @@ class VecEpisodeStorage():
         self._tot_stored_episodes_th += eps_finishing.sum()-newly_deleted_eps_th.sum()
         self._tot_stored_frames_th += self._vec_size*th.logical_not(overriding_th)
             
-        if sync_stream and needs_sync:
-            th.cuda.current_stream().synchronize() # sync non_blocking operations
+        if sync_stream and nb:
+            event.synchronize() # sync non_blocking operations
         # ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
         
     def stored_episodes(self):
@@ -336,7 +346,8 @@ class VecEpisodeStorage():
             actions     = trajs_actions.view((batch_size,)+trajs_actions.size()[2:]).to(self._output_device, non_blocking=self._nonblocking_out)
             terminateds = trajs_terminateds.view(batch_size,1).to(self._output_device, non_blocking=self._nonblocking_out)
             rewards     = trajs_rewards.view(batch_size,self._rewards_num).to(self._output_device, non_blocking=self._nonblocking_out)
-
+        self._standing_output_nonblocking_copy = th.cuda.Event()
+        self._standing_output_nonblocking_copy.record()
         dbg_check_finite((observations, next_observations, actions, rewards), async_assert=True, assert_msg="Nonfinite values in sampled transition")
         return TransitionBatch(
             observations=observations,
@@ -353,7 +364,8 @@ class VecEpisodeStorage():
         prev_size = self.size()
         tot_copied_steps : int = 0
         overridden_steps : int = 0
-        nb = self._storage_torch_device.type == "cuda" and self._use_nonblocking_adds
+        nb = self._use_nonblocking_adds and (self._storage_torch_device.type != src_storage._storage_torch_device.type)
+        event = None
         while tot_copied_steps < src_storage.stored_frames():
             src_pos : int = (src_storage._added_vframes + tot_copied_steps)%src_storage._buffer_size_vframes
             dst_pos : int = self._added_vframes%self._buffer_size_vframes
@@ -370,12 +382,14 @@ class VecEpisodeStorage():
             self.terminated[:,copy_dst].copy_(src_storage.terminated[:,copy_src], non_blocking=nb)
             self.truncated[:,copy_dst].copy_(src_storage.truncated[:,copy_src], non_blocking=nb)
             self.ep_frame_count[:,copy_dst].copy_(src_storage.ep_frame_count[:,copy_src], non_blocking=nb)
+            last_next_obs_idx_dst = copy_dst.stop%self._buffer_size_vframes
+            last_next_obs_idx_src = copy_src.stop%src_storage._buffer_size_vframes
             for key in self.observations.keys():
                 self.observations[key][:,copy_dst].copy_(src_storage.observations[key][:,copy_src], non_blocking=nb)
-                last_next_obs_idx_dst = copy_dst.stop%self._buffer_size_vframes
-                last_next_obs_idx_src = copy_src.stop%src_storage._buffer_size_vframes
                 self.observations[key][:,last_next_obs_idx_dst].copy_(src_storage.observations[key][:,last_next_obs_idx_src], non_blocking=nb)
-
+            if nb:
+                event = th.cuda.Event()
+                event.record()
             
             tot_copied_steps += copiable_vsteps
             self._added_vframes_th += copiable_vsteps
@@ -387,6 +401,8 @@ class VecEpisodeStorage():
             self._tot_stored_episodes_th += copied_ep_ends.sum() - overridden_ep_ends.sum()
             self.full = self._added_vframes>=self._buffer_size_vframes
 
+        if nb and event is not None:
+            event.synchronize() # sync non_blocking operations
         self._current_ep_frame_counts_th = src_storage._current_ep_frame_counts_th            
         new_size = self.size()
         dbg_check(lambda: new_size-prev_size == src_storage.size() or self.full, lambda:f"Error updating buffer {new_size}-{prev_size}!={src_storage.size()}")
@@ -468,7 +484,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         if self._disable_validation_set:
             self._validation_holdout_ratio = -1
         self._validation_buffer_freeze_threshold = float("+inf") #10_000 # Just a hack to check the performance on early-training data
-        
+
         example_obs = self._observation_space.sample()
         obs_size = sum([th.as_tensor(o).nelement()*th.as_tensor(o).element_size() for o in flatten_tensor_tree(example_obs).values()])
 
@@ -500,6 +516,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._addcount = 0
         self._collected_frames = 0
         self._collected_eps_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        ggLog.info(f"Replay buffer allocated, using {self.memory_size()/1024**3:.3f} GiB of memory on device {self._storage_torch_device}")
         
     def validation_set_enabled(self):
         return not self._disable_validation_set
@@ -562,7 +579,6 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
             sync_stream : bool = True) -> None:
         # All inputs are batches of size n_envs
         # All should be copied to avoid modification by reference
-
         self._addcount+=1
 
         action = action.view((self.n_envs, self.action_dim))

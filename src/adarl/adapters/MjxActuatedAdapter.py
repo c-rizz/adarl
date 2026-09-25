@@ -193,7 +193,8 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         default_actuator_kp : float = 100.0,
                         default_actuator_kv : float = 10.0,
                         default_max_actuator_force : float = 100.0,
-                        max_actuator_forces : dict[tuple[str,str],float] = {}):
+                        max_actuator_forces : dict[tuple[str,str],float] = {},
+                        mjx_impl : Literal["jax","warp"] = "jax"):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -216,7 +217,8 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         revolute_dof_armature_override=revolute_dof_armature_override,
                         opt_preset=opt_preset,
                         opt_override=opt_override,
-                        disable_builtin_actuators=False)
+                        disable_builtin_actuators=False,
+                        mjx_impl = mjx_impl)
         self._default_actuator_kp = default_actuator_kp
         self._default_actuator_kv = default_actuator_kv
         self._default_max_actuator_force = default_max_actuator_force
