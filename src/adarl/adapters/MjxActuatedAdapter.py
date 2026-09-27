@@ -6,6 +6,8 @@ os.environ["MUJOCO_GL"] = "egl"
 from adarl.adapters.MjxAdapter import (
     MjxAdapter,
     jax2th,
+    jax2th_copy,
+    jit_th_synced,
     th2jax,
     SimState,
     SimConf,
@@ -565,7 +567,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         record_region_end("MjxActuatedAdapter.setJointsImpedanceCommand")
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=("current_ctrl", "current_cmd_pvesd"))
+    @partial(jit_th_synced, donate_argnames=("current_ctrl", "current_cmd_pvesd"))
     def _apply_pvesd_to_ctrl(current_ctrl : jnp.ndarray,
                               current_cmd_pvesd : jnp.ndarray,
                               pvesd : jnp.ndarray,
@@ -639,11 +641,11 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
 
     def get_current_joint_impedance_command(self) -> th.Tensor:
-        return jax2th(self._sim_state.current_cmd_pvesd, self._out_th_device)
+        return jax2th_copy(self._sim_state.current_cmd_pvesd, self._out_th_device)
 
 
     @override
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_commands(self, sim_state : SimStateActuated) -> SimStateActuated:
         """Write ctrl to mjx_data, then apply any direct torque commands."""
         # Write current ctrl into mjx_data.ctrl
@@ -718,7 +720,7 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
 
 
     @override
-    @partial(jax.jit, static_argnames=["self"], donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnames=["self"], donate_argnames=("sim_state",))
     def _set_joint_state_data(self, sim_state : SimState, sim_conf : SimConf, 
                               vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, 
                               js_pve : jnp.ndarray):

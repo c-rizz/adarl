@@ -30,7 +30,7 @@ import torch.utils.dlpack as thdlpack
 import numpy as np
 import copy
 from typing import Iterable
-from functools import partial
+from functools import partial, wraps
 import dataclasses
 from dataclasses import dataclass 
 import pprint
@@ -150,6 +150,47 @@ else:
     def jax2th(array : jnp.ndarray, th_device : th.device):
         return thdlpack.from_dlpack(array).to(th_device)
 
+
+def jax2th_copy(array : jnp.ndarray, th_device : th.device) -> th.Tensor:
+    """Like jax2th, but hands torch a copy that jax never recycles.
+
+    Use it for buffers of the simulation state. jax2th gives a zero-copy view, and the next jitted call
+    that donates the state lets jax overwrite that memory without waiting for the torch kernels already
+    queued to read it (a torch-side clone() is one of them). The copy runs on jax's stream, so it is
+    ordered before any such overwrite, and torch waits for it through the DLPack handshake."""
+    return jax2th(jnp.copy(array), th_device)
+
+
+def jit_th_synced(fun = None, **jit_kwargs):
+    """jax.jit that makes torch's current CUDA stream wait for each call to finish, without a host sync.
+
+    Torch memory handed to jax through th2jax is released as soon as jax drops it, which can happen at
+    dispatch (e.g. when the call donates it) while the call's kernels still have to read it. Torch's
+    caching allocator only tracks torch's streams, so it would hand that memory out again right away.
+    Waiting on one of the call's outputs, which all become ready together at the end of the call, orders
+    every later torch operation after the whole call.
+
+    Takes the same arguments as jax.jit. When called inside an outer trace it behaves as plain jax.jit."""
+    if fun is None:
+        return partial(jit_th_synced, **jit_kwargs)
+    jitted = jax.jit(fun, **jit_kwargs)
+    @wraps(fun)
+    def wrapper(*args, **kwargs):
+        out = jitted(*args, **kwargs)
+        for leaf in jax.tree_util.tree_leaves(out):
+            if isinstance(leaf, jax.core.Tracer):
+                break # traced inside an outer jit: that outer call is the one to wait on
+            if isinstance(leaf, jax.Array):
+                if next(iter(leaf.devices())).platform == "gpu":
+                    thdlpack.from_dlpack(leaf) # the DLPack handshake makes torch's stream wait for this output
+                break
+        return out
+    for attr in ("_cache_size", "lower", "trace", "eval_shape", "clear_cache"):
+        if hasattr(jitted, attr):
+            setattr(wrapper, attr, getattr(jitted, attr))
+    return wrapper
+
+
 jitted_scan = jax.jit(jax.lax.scan, static_argnames=("length", "reverse", "unroll"))
 devices_th2jax = {}
 devices_jax2th = {}
@@ -257,7 +298,7 @@ def set_rows_cols(array : jnp.ndarray,
     index_arrs = [ia if ia.dtype!=bool else jnp.nonzero(ia)[0]    for ia in index_arrs]
     return array.at[jnp.ix_(*index_arrs)].set(vals)
 
-@jax.jit
+@jit_th_synced
 def set_rows_cols_masks(array : jnp.ndarray,
                         masks : Sequence[jnp.ndarray],
                         vals : jnp.ndarray):
@@ -480,7 +521,7 @@ def put_data(
 
 
 
-@jax.jit
+@jit_th_synced
 def jax_mat_to_quat_xyzw(matrices):
     return jax.scipy.spatial.transform.Rotation.from_matrix(matrices).as_quat(scalar_first=False)
 
@@ -1269,7 +1310,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return mjx.get_rgb(render_context, cidx, pixels)
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["render_context","cam_indexes"])
+    @partial(jit_th_synced, static_argnames=["render_context","cam_indexes"])
     def _render_warp_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
         if render_context is None:
             raise RuntimeError("Warp render context not initialized")
@@ -1287,7 +1328,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return mjx.get_depth(render_context, cidx, pixels, max_depth)*max_depth
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["render_context","cam_indexes"])
+    @partial(jit_th_synced, static_argnames=["render_context","cam_indexes"])
     def _render_warp_depth_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
         if render_context is None:
             raise RuntimeError("Warp render context not initialized")
@@ -1300,7 +1341,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return depths
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["render_context","cam_indexes","want_rgb","want_depth"])
+    @partial(jit_th_synced, static_argnames=["render_context","cam_indexes","want_rgb","want_depth"])
     def _render_warp_rgbd_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int],
                               want_rgb : bool = True, want_depth : bool = False):
         """Render rgb and/or depth in a single pass.
@@ -1958,17 +1999,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         record_region_end("MjxAdapter.step")
         return stepLength
     
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_commands(self, sim_state : SimState) -> SimState:
         sim_state = self._apply_torque_cmds(sim_state)
         return sim_state
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_torque_cmds(self, sim_state : SimState) -> SimState:
         return sim_state.replace_v( "mjx_data", sim_state.mjx_data.replace(qfrc_applied=sim_state.requested_qfrc_applied))
 
 
-    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state"))
+    # @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state"))
     def _sim_step_fast_for_scan_full_pveae(self, sim_state_conf : tuple[SimState,SimConf], _) -> tuple[tuple[SimState,SimConf], jnp.ndarray | None]:
         sim_state, sim_conf = sim_state_conf
         if self._record_joint_hist:
@@ -2016,7 +2057,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                             "sim_time" : sim_substeps.astype(sim_state.sim_time.dtype)*self._sim_step_dt})
         return (sim_state, sim_conf, env_iterations), joint_state
     
-    @partial(jax.jit, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
+    @partial(jit_th_synced, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
     def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool,
                                    env_iterations : jnp.ndarray) -> tuple[SimState, jnp.ndarray | None]:
         """Run `iterations` substeps, of which env i only simulates the first env_iterations[i].
@@ -2517,9 +2558,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         self._forward_if_needed()
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
-        full_state = jax2th(self._sim_state.mon_joint_state_pveae, th_device=self._out_th_device)
+        full_state = jax2th_copy(self._sim_state.mon_joint_state_pveae, th_device=self._out_th_device)
         if requestedJoints is None:
-            return full_state.clone() # nothing selected, so nothing copied it out of the donated buffer yet
+            return full_state
         # KeyError will propagate if joint doesn't exist or isn't monitored
         if isinstance(requestedJoints, th.Tensor):
             reorder_indices = requestedJoints
@@ -2561,15 +2602,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             link_stats_v       : (vec_size, 4, L, 6)   [min,max,avg,std] of link linear+angular velocity over the step substeps
         """
         self._forward_if_needed()
-        # Zero-copy DLPack transfers for all cached arrays in one shot. These view the _sim_state
-        # arrays, which are donated to the jitted monitored data cache update, so jax may recycle
-        # those buffers and nothing that still views them can be handed to a caller. Indexing with an
-        # index tensor allocates, so the reorders below give owned copies; what is not reordered is
-        # cloned further down.
-        jstate  = jax2th(self._sim_state.mon_joint_state_pveae,          th_device=self._out_th_device) if return_jstates else None
-        lstate  = jax2th(self._sim_state.mon_link_state,                  th_device=self._out_th_device) if return_lstates else None
-        lacc    = jax2th(self._sim_state.mon_link_acceleration,            th_device=self._out_th_device) if return_accelerations else None
-        cmask   = jax2th(self._sim_state.mon_collision_mask,               th_device=self._out_th_device) if return_collisions else None
+        # The _sim_state arrays are donated to the jitted monitored data cache update, and jax overwrites
+        # them without waiting for torch reads, so they are copied out on the jax side (see jax2th_copy).
+        # The stats slices are already new jax buffers (the sliced dimension has 6 entries), so they
+        # need no extra copy. Everything below works on owned buffers.
+        jstate  = jax2th_copy(self._sim_state.mon_joint_state_pveae,     th_device=self._out_th_device) if return_jstates else None
+        lstate  = jax2th_copy(self._sim_state.mon_link_state,            th_device=self._out_th_device) if return_lstates else None
+        lacc    = jax2th_copy(self._sim_state.mon_link_acceleration,      th_device=self._out_th_device) if return_accelerations else None
+        cmask   = jax2th_copy(self._sim_state.mon_collision_mask,         th_device=self._out_th_device) if return_collisions else None
         jstats  = jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,6)
         lstats  = jax2th(self._sim_state.mon_links_stats_arr_v[:, :4],     th_device=self._out_th_device) if return_lstats else None  # (V,4,L,6)
         # Reorder joints in torch (avoids JAX retrace on dynamic indices)
@@ -2590,16 +2630,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 lacc    = lacc[:,    link_ids, :]
             if return_lstats:
                 lstats  = lstats[:, :, link_ids, :]
-        # Everything reordered above is an owned copy (indexing with an index tensor allocates), what
-        # was returned unreordered is still a view onto a donated buffer and has to be copied out.
-        if joint_ids is None:
-            jstate = jstate.clone() if jstate is not None else None
-            jstats = jstats.clone() if jstats is not None else None
-        if link_ids is None:
-            lstate = lstate.clone() if lstate is not None else None
-            lacc   = lacc.clone()   if lacc   is not None else None
-            lstats = lstats.clone() if lstats is not None else None
-        cmask = cmask.clone() if cmask is not None else None # never reordered here
         return SimElementsState(joint_state_pveae=jstate,
                                 link_state=lstate,
                                 link_linacc=lacc,
@@ -2614,7 +2644,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                             mjx_data)
     
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _get_vec_joint_states_raw_pveae(qpadr, qvadr, mjx_data):
         # What should we use as torque readings?
         # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
@@ -2628,7 +2658,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return MjxAdapter._get_vec_joint_states_raw_pveaec(qpadr, qvadr, mjx_data)[...,:5]
     
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _get_vec_joint_states_raw_pveaec(qpadr, qvadr, mjx_data):
         # What should we use as torque readings?
         # - Emo Todorov here https://www.roboti.us/forum/index.php?threads/best-way-to-represent-robots-torque-sensors.4181 says 
@@ -2651,7 +2681,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             axis = 2)
     
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _get_vec_joint_states_raw_pvae(qpadr, qvadr, mjx_data):
         return jnp.stack([  mjx_data.qpos[:,qpadr],
                             mjx_data.qvel[:,qvadr],
@@ -2664,7 +2694,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return MjxAdapter._init_stats(sim_state)
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
+    @partial(jit_th_synced, donate_argnames=["sim_state"])
     def _init_stats(sim_state : SimState):
         joint_stats_array = sim_state.mon_joint_stats_arr_pvaeep
         joint_stats_array = joint_stats_array.at[:,0].set(float("+inf")) # mins
@@ -2687,7 +2717,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
+    @partial(jit_th_synced, donate_argnames=["sim_state"])
     def _update_step_stats_arrs(current_jstate_pvae : jnp.ndarray,
                                 current_lstate_v : jnp.ndarray,
                                 sim_state : SimState,
@@ -2732,7 +2762,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _update_monitored_data_cache(self, sim_state : SimState, sim_conf : SimConf) -> SimState:
         replace = {}
         replace["mon_joint_state_pveae"] = MjxAdapter._get_vec_joint_states_raw_pveae(sim_conf.monitored_qpadr,
@@ -2767,7 +2797,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"])
+    @partial(jit_th_synced, donate_argnames=["sim_state"])
     def _update_step_stats(sim_state : SimState, sim_conf : SimConf, active : jnp.ndarray | None = None) -> SimState:
         """Add the current state to the step statistics of the envs selected by `active` (vec_size,) bool,
         by default the envs being simulated, i.e. those not frozen by a zero timestep."""
@@ -2782,7 +2812,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _check_collision_pairs_static(queried_body_pairs : jnp.ndarray, geom_bodyid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """Static version of collision pair checking for use in _update_step_stats.
         
@@ -2815,7 +2845,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jnp.logical_or(a_to_b, b_to_a)
 
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _get_links_acceleration_static(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """Static version of local link linear acceleration computation for use in _update_step_stats."""
         @jax.vmap
@@ -2861,7 +2891,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                         dtype=jnp.bool_,
                                                         device=self._jax_device)
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _reset_monitored_data_and_stats(self, sim_state : SimState, sim_conf : SimConf) -> SimState:
         # ggLog.info(f"resetting stats")
         sim_state = MjxAdapter._clear_step_stats(sim_state)
@@ -2881,7 +2911,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return stats[:, :, self._mon_link_jax_to_user, :]
 
     @staticmethod
-    @partial(jax.jit)
+    @partial(jit_th_synced)
     def _get_links_state_jax(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         # cvel is com-based: its linear part is the velocity of the point that currently coincides with
         # the subtree com of the body's kinematic tree root, not of the body frame origin. Reporting it
@@ -2899,7 +2929,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 com_angvel], axis = -1) # angular velocity, the same about any point
 
     @staticmethod
-    @partial(jax.jit)
+    @partial(jit_th_synced)
     def _get_sites_state_jax(site_ids : jnp.ndarray, site_bodyid : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """Compute state for sites treated as links.
         Position from site_xpos, orientation from site_xmat->quat,
@@ -2920,7 +2950,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jnp.concatenate([site_pos, site_quat_xyzw, site_linvel, site_angvel], axis=-1)  # (V, S, 13)
     
     @staticmethod
-    @jax.jit
+    @jit_th_synced
     def _get_links_com_state_jax(body_ids : jnp.ndarray, body_rootid : jnp.ndarray, mjx_data) -> jnp.ndarray:
         """ The COM orientation is aligned along the principal axes of inertia,
             as stated in https://mujoco.readthedocs.io/en/stable/XMLreference.html?#body-inertial
@@ -2976,7 +3006,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         self._forward_if_needed()
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
-        full_state = jax2th(self._sim_state.mon_link_state, th_device=self._out_th_device)
+        full_state = jax2th_copy(self._sim_state.mon_link_state, th_device=self._out_th_device)
         record_time("getLinksState: got full state")
         # JAX stores [bodies|sites]; permute back to user-specified order
         full_state = full_state[:, self._mon_link_jax_to_user, :]
@@ -2994,7 +3024,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return ret
 
 
-    # @partial(jax.jit, static_argnums=(0,))
+    # @partial(jit_th_synced, static_argnums=(0,))
     # def _get_local_links_linear_acceleration_jax(self, body_ids : jnp.ndarray, mjx_data, mjx_model) -> jnp.ndarray:
     #     #Inspired by mujoco/mjx/_src/sensor.py:513
     #     @jax.vmap
@@ -3026,10 +3056,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         
         self._forward_if_needed()
         # Convert to torch first (zero-copy via DLPack), then reorder in torch (lower dispatch overhead than JAX)
-        full_acc = jax2th(self._sim_state.mon_link_acceleration, th_device=self._out_th_device)
+        full_acc = jax2th_copy(self._sim_state.mon_link_acceleration, th_device=self._out_th_device)
         # Replace site entries with NaN (sites have no acceleration data, stored as zeros on JAX side to avoid jax_debug_nans)
         if self._mon_site_count > 0:
-            full_acc = full_acc.clone()
             full_acc[:, self._mon_body_count:, :] = float('nan')
         # JAX stores [bodies|sites]; permute back to user-specified order
         full_acc = full_acc[:, self._mon_link_jax_to_user, :]
@@ -3072,11 +3101,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """Simulation time of each environment since startup, float32 tensor of shape (vec_size,) on the output device.
 
         Environments frozen by run() report the time they actually simulated."""
-        # Derived from the per-env substep counter; the conversion makes a new tensor, so no view of the (donated)
-        # simulation state is handed out
-        return jax2th(self._sim_state.sim_substeps, self._out_th_device).to(th.float32)*self._sim_step_dt
+        # Derived from the per-env substep counter, copied out of the (donated) simulation state on the jax side
+        return jax2th_copy(self._sim_state.sim_substeps, self._out_th_device).to(th.float32)*self._sim_step_dt
 
-    @partial(jax.jit, static_argnames=["self"], donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnames=["self"], donate_argnames=("sim_state",))
     def _set_joint_state_data(self, sim_state : SimState, sim_conf : SimConf, vec_mask_jnp : jnp.ndarray, qpadr_qvadr : jnp.ndarray, js_pve : jnp.ndarray):
         qpadr = qpadr_qvadr[0]
         qvadr = qpadr_qvadr[1]
@@ -3096,7 +3124,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
     # @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"], static_argnames=["self","vec_size","run_forward"])
+    @partial(jit_th_synced, donate_argnames=["sim_state"], static_argnames=["self","vec_size","run_forward"])
     def _set_joints_and_links_state_data(   self,
                                             sim_state : SimState,
                                             sim_conf : SimConf,
@@ -3416,7 +3444,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_needed = forward_needed
         record_region_end("MjxAdapter.run_command_sequence")
 
-    @partial(jax.jit, static_argnames=("self","static_sim_conf"), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnames=("self","static_sim_conf"), donate_argnames=("sim_state",))
     def _run_command_sequence_jax(self,
                                   sim_state : SimState,
                                   sim_conf : SimConf,
@@ -3456,7 +3484,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._viewer.sync()
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["sim_state"], static_argnames=["vec_size"])
+    @partial(jit_th_synced, donate_argnames=["sim_state"], static_argnames=["vec_size"])
     def _set_link_poses(sim_state : SimState,
                         vec_size : int,
                         mjmodel_lids : jnp.ndarray,
@@ -3601,7 +3629,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _mark_forward_needed(self):
         self._forward_needed = True
 
-    @partial(jax.jit, static_argnames=("self",), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnames=("self",), donate_argnames=("sim_state",))
     def _forward_all(self, sim_state : SimState, sim_conf: SimConf) -> SimState:
         data = self._mjx_forward(sim_state.mjx_model, sim_state.mjx_data)
         sim_state = sim_state.replace_v("mjx_data", data)
@@ -3658,7 +3686,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"self._sim_state.requested_qfrc_applied = {self._sim_state.requested_qfrc_applied}")
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _set_effort_command(self,   sim_state : SimState,
                                     jids : jnp.ndarray,
                                     qefforts : jnp.ndarray,
@@ -3698,7 +3726,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 
     @staticmethod
-    @partial(jax.jit, donate_argnames=["mjx_model"])
+    @partial(jit_th_synced, donate_argnames=["mjx_model"])
     def _reset_model_alterations(vec_mask : jnp.ndarray, mjx_model : mjx.Model, original_mjx_model : mjx.Model) -> mjx.Model:
         resetted_body_mass = jnp.where(jnp.expand_dims(vec_mask,1),
                                        original_mjx_model.body_mass, mjx_model.body_mass)
@@ -3724,7 +3752,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return resetted_model
 
     @staticmethod
-    @partial(jax.jit, static_argnames=[ "vec_size",
+    @partial(jit_th_synced, static_argnames=[ "vec_size",
                                         "apply_link_masses", "apply_link_frictions",
                                        "apply_dof_armature_ratios", "apply_dof_damping_ratios", "apply_dof_frictionloss_ratios",
                                        "apply_com_position_diffs", "apply_com_quatxyzw_diffs",
@@ -3946,10 +3974,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             return th.empty(size=(self._vec_size, 0), dtype=th.bool, device=self._out_th_device)
         
         self._forward_if_needed()
-        full_mask = jax2th(self._sim_state.mon_collision_mask, th_device=self._out_th_device)
-        
+        full_mask = jax2th_copy(self._sim_state.mon_collision_mask, th_device=self._out_th_device)
+
         if requested_pairs is None:
-            return full_mask.clone() # nothing selected, so nothing copied it out of the donated buffer yet
+            return full_mask
 
         if isinstance(requested_pairs, th.Tensor):
             reorder_indices = requested_pairs
@@ -3968,7 +3996,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     self._forward_if_needed()
     #     return jax2th(self._sim_state.mjx_data.ncon, th_device=self._out_th_device)
     #
-    # @partial(jax.jit, static_argnames=["self"])
+    # @partial(jit_th_synced, static_argnames=["self"])
     # def _get_current_colliding_link_id_pairs(self, sim_state : SimState) -> jnp.ndarray:
     #     # ggLog.info(f"self._sim_state.mjx_data.contact.geom.shape = {self._sim_state.mjx_data.contact.geom.shape}")
     #     # self._forward_if_needed()
@@ -3996,7 +4024,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     body_pairs = body_pairs.at[:,self._sim_state.mjx_data.ncon:].set(-1)
     #     return body_pairs
     
-    # @partial(jax.jit, static_argnames=["self"])
+    # @partial(jit_th_synced, static_argnames=["self"])
     # def _check_links_colliding(self, sim_state : SimState, queried_body_pairs : jnp.ndarray) -> jnp.ndarray:
     #     """Returns a boolean array of shape (vec_size, queried_body_pairs.shape[0]).
 
@@ -4047,7 +4075,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #     is_queried = jnp.any(jnp.logical_or(a_to_b,b_to_a), axis=-1) # (vec_size, collision_num)
     #     return is_queried
     #
-    # @partial(jax.jit, static_argnames=["self"])
+    # @partial(jit_th_synced, static_argnames=["self"])
     # def _get_total_contact_forces_for_pairs(self, sim_state : SimState, queried_body_pairs : jnp.ndarray):
     #     """Get the total contact forces for a set of body pairs.
 
@@ -4208,7 +4236,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                                  )
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _set_link_impulse(self, sim_state : SimState,
                                 body_ids : jnp.ndarray,
                                 force_torques : jnp.ndarray,
@@ -4229,7 +4257,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return sim_state
 
 
-    @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     def _apply_impulses(self, sim_state : SimState):
         started_impulses = sim_state.sim_time[:,None] > sim_state.impulse_startends_stime[:,:,0] # vec_size*nbody
         ended_impulses = sim_state.sim_time[:,None] > sim_state.impulse_startends_stime[:,:,1] # vec_size*nbody
@@ -4255,7 +4283,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
 
 
-    # @partial(jax.jit, static_argnums=(0,), donate_argnames=("sim_state",))
+    # @partial(jit_th_synced, static_argnums=(0,), donate_argnames=("sim_state",))
     # def _apply_disturbances(self, sim_state : SimState):
     #     prng_key = sim_state.prng_key
     #     ending_disturbances = sim_state.sim_time > sim_state.disturbance_terminations_stime
@@ -4276,7 +4304,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #                                      "disturbance_terminations_stime":disturbance_terminations_stime,
     #                                      "mjx_data" : mjx_data})
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jit_th_synced, static_argnums=(0,))
     def _get_height_map(self, positions_vec_xy : jnp.ndarray, range_xyxy : jnp.ndarray, resolution_xy : tuple[int,int],
                                 ground_linkgroups_ids : jnp.ndarray,
                                 sim_state : SimState):
@@ -4346,7 +4374,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 "raydirs_camframe": raydirs_camframe
             }
 
-    @partial(jax.jit, static_argnums=(0,1))
+    @partial(jit_th_synced, static_argnums=(0,1))
     def _get_depth_image_jax(self, cam_id : int, sim_state : SimState, geom_group : jnp.ndarray | None = None) -> jnp.ndarray:
         body_id = self._mj_model.cam_bodyid[cam_id]
         depth_cam_params = self._depth_cam_params_by_id[cam_id]
