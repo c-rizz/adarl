@@ -544,7 +544,8 @@ def aggregate_models(models : list[ModelSpawnDef],
                      safe_revolute_dof_damping = 1.0,
                      safe_revolute_dof_frictionloss = 0.2,
                      render_znear : float | None = 0.01,
-                     render_zfar : float | None = 100.0):
+                     render_zfar : float | None = 100.0,
+                     add_ground_light : bool = True):
     
     """Aggregates multiple models into a single MjSpec and MjModel.
 
@@ -558,7 +559,7 @@ def aggregate_models(models : list[ModelSpawnDef],
         elements prefixed by `<modelname>#` (model_element_separator).
     add_ground : bool
         If True, add a ground plane geom (named "floor"), a checker ground material and a
-        directional light to the scenario.
+        directional light (see add_ground_light) to the scenario.
     add_sky : bool
         If True, add a gradient skybox texture to the scenario.
     uneven_ground : bool
@@ -595,6 +596,9 @@ def aggregate_models(models : list[ModelSpawnDef],
         Fallback damping applied to any hinge-joint DOF that has zero damping.
     safe_revolute_dof_frictionloss : float
         Fallback frictionloss applied to any hinge-joint DOF that has zero frictionloss.
+    add_ground_light : bool
+        If False, the ground is added without its directional light, for scenarios that define
+        their own lighting. Ignored unless the ground is generated.
 
     Returns
     -------
@@ -616,6 +620,13 @@ def aggregate_models(models : list[ModelSpawnDef],
             assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')
         if add_sky:
             assets.append('<texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />')
+        ground_light = """<light  pos="0 0 1"
+                                  dir="0.3 0.3 -1"
+                                  type="directional"
+                                  ambient="0.2 0.2 0.2"
+                                  diffuse="0.7 0.7 0.7"
+                                  specular="0.5 0.5 0.5"
+                                  castshadow="true"/>""" if add_ground_light else ""
         models.append(ModelSpawnDef(name="ground",
                                     definition_string=f"""
                                     <mujoco>
@@ -625,13 +636,7 @@ def aggregate_models(models : list[ModelSpawnDef],
                                         </asset>
                                         <worldbody>
                                             <body name="ground_link">
-                                                <light  pos="0 0 1"
-                                                        dir="0.3 0.3 -1"
-                                                        type="directional"
-                                                        ambient="0.2 0.2 0.2"
-                                                        diffuse="0.7 0.7 0.7"
-                                                        specular="0.5 0.5 0.5"
-                                                        castshadow="true"/>
+                                                {ground_light}
                                                 {n.join(ground_geoms)}
                                             </body>
                                         </worldbody>

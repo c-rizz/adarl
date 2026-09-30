@@ -455,7 +455,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         validation_episodes : int = 0,
         rewards_num : int = 1,
         max_vram_usage_ratio : float = 1.0,
-        min_residual_vram : int | None = None
+        min_residual_vram : float | int | None = None
     ):
         self.obs_shape : dict[str, tuple[int, ...]]
         super().__init__(buffer_size, observation_space, action_space, output_device, n_envs=n_envs)
@@ -470,6 +470,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
             raise AttributeError(f"Storage device is gpu, and output device is cpu. This doesn't make much sense. Use either [gpu,gpu], [cpu,gpu], or [cpu,cpu]")
         self.max_frames = buffer_size
         self.buffer_size = max(buffer_size // n_envs, 1)
+        self._max_vec_steps_num = self.buffer_size
         self._observation_space = observation_space
         self._action_space = action_space
         self._storage_torch_device = storage_torch_device
@@ -480,10 +481,14 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._min_episode_duration = min_episode_duration
         
         self._validation_buffer_size = int(validation_buffer_size)
-        self._disable_validation_set = disable_validation_set
+        # No validation episodes means no validation storage gets allocated, so treat it as disabled
+        self._disable_validation_set = disable_validation_set or self._validation_episodes == 0
         if self._disable_validation_set:
             self._validation_holdout_ratio = -1
         self._validation_buffer_freeze_threshold = float("+inf") #10_000 # Just a hack to check the performance on early-training data
+
+        if min_residual_vram is None:
+            min_residual_vram = float("-inf")
 
         example_obs = self._observation_space.sample()
         obs_size = sum([th.as_tensor(o).nelement()*th.as_tensor(o).element_size() for o in flatten_tensor_tree(example_obs).values()])
@@ -494,7 +499,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
             residual_memory = tot - pred_usage
             if consumptionRatio>max_vram_usage_ratio or (min_residual_vram is not None and residual_memory<min_residual_vram):
                 ggLog.warn("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
-                            f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_usage/1024**3:.3f} GiB)\n"
+                            f"Not enough memory on requested device {self._storage_torch_device} (Would consume {consumptionRatio*100:.0f}% = {pred_usage/1024**3:.3f} GiB, limit={max_vram_usage_ratio*100:.0f}%, residual={residual_memory/1024**3:.3f} GiB, min_residual={min_residual_vram/1024**3:.3f} GiB)\n"
                             f"Falling back to CPU memory\n"
                             f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
                 ggLog.warn(f"Observations are of size {obs_size} bytes, total buffer size is {self.buffer_size*n_envs} transitions")
@@ -516,7 +521,8 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._addcount = 0
         self._collected_frames = 0
         self._collected_eps_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
-        ggLog.info(f"Replay buffer allocated, using {self.memory_size()/1024**3:.3f} GiB of memory on device {self._storage_torch_device}")
+        ggLog.info(f"Replay buffer allocated, using {self.memory_size()/1024**3:.3f} GiB of memory on device {self._storage_torch_device}\n"
+                   f"  Holding {self._max_vec_steps_num} steps per env at {self.memory_size()/self._max_vec_steps_num:.0f} bytes per step, {self._max_vec_steps_num*self.n_envs} steps in total")
         
     def validation_set_enabled(self):
         return not self._disable_validation_set

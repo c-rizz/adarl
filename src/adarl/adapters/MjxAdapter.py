@@ -1018,6 +1018,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         gui_env_index : int = 0,
                         add_ground : bool = True,
                         add_sky : bool = True,
+                        add_ground_light : bool = True,
                         render_znear : float | None = 0.025,
                         render_zfar : float | None = 100.0,
                         log_freq : int = -1,
@@ -1064,6 +1065,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             _description_, by default True
         add_sky : bool, optional
             _description_, by default True
+        add_ground_light : bool, optional
+            If False the ground comes without its directional light, for scenarios that define their
+            own lighting, by default True
         log_freq : int, optional
             _description_, by default -1
         opt_preset : Literal[&quot;fast&quot;,&quot;faster&quot;,&quot;fastest&quot;,&quot;mujoco_default&quot;,&quot;slow&quot;,&quot;slower&quot;] | None, optional
@@ -1113,6 +1117,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._sim_step_count_since_build = 0
         self._add_ground = add_ground
         self._add_sky = add_sky
+        self._add_ground_light = add_ground_light
         self._render_znear = render_znear
         self._render_zfar = render_zfar
         self._log_freq = log_freq
@@ -1373,6 +1378,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return aggregate_models(models,
                                 add_ground=self._add_ground,
                                 add_sky=self._add_sky,
+                                add_ground_light=self._add_ground_light,
                                 render_znear=self._render_znear,
                                 render_zfar=self._render_zfar,
                                 uneven_ground=self._uneven_ground,
