@@ -23,7 +23,8 @@ interpolation, or the holes will bleed into their neighbours.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import math
 import torch as th
 import torch.nn.functional as F
 
@@ -45,7 +46,7 @@ class StereoDepthSimParams:
     focal_px : float
     """Focal length in pixels, at the resolution of the degraded image."""
     baseline_m : float
-    """Stereo baseline in meters (ZED 2: 0.12, ZED Mini: 0.063)."""
+    """Stereo baseline in meters (ZED 2: 0.12, ZED Mini: 0.063, ZED X Mini: 0.05)."""
     disparity_noise_px : float = 0.2
     """Std dev of the disparity matching error, in pixels. Produces the z**2 depth error."""
     subpixel_step_px : float = 1.0/16
@@ -66,6 +67,64 @@ class StereoDepthSimParams:
     """Approximate fraction of the image dropped as textureless/specular blobs. 0 disables it."""
     dropout_blob_px : int = 8
     """Characteristic size of the dropout blobs, in pixels."""
+
+
+# Published specifications of the stereo cameras we model: focal length in pixels at the camera's
+# native resolution, that native width, the baseline, and the usable depth range. The ZED X Mini is
+# natively HD1200 (1920x1200) with a 50 mm baseline, and comes with one of two lenses.
+_STEREO_CAMERAS = {
+    "zedxmini2.2mm" : dict(focal_px=737.0,  native_width_px=1920, baseline_m=0.05,
+                           min_depth_m=0.10, max_depth_m=8.0),
+    "zedxmini4mm"   : dict(focal_px=1274.0, native_width_px=1920, baseline_m=0.05,
+                           min_depth_m=0.15, max_depth_m=12.0),
+}
+
+
+def stereo_camera_params(camera : str,
+                         render_width_px : int,
+                         **overrides) -> StereoDepthSimParams:
+    """Parameters approximating a real stereo camera, for depth rendered ``render_width_px`` wide.
+
+    ``camera`` is a key of :data:`_STEREO_CAMERAS`, e.g. ``"zedxmini4mm"``. ``render_width_px`` is
+    the render resolution, not the resolution the observation is later resized to. Pixel-valued
+    figures are scaled from the camera's native width, the noise and quantization along with the
+    focal length: since ``sigma_z = z**2*sigma_d/(f*B)``, scaling only the focal length would make a
+    small render look like a far more precise sensor.
+
+    Only the baseline, focal lengths and ranges are published. The matcher-dependent figures
+    (disparity noise, window, dropout) are plausible block-matcher values rather than measurements,
+    so treat them as a starting point. Any field can be replaced through ``overrides``.
+    """
+    if camera not in _STEREO_CAMERAS:
+        raise ValueError(f"unknown stereo camera '{camera}', expected one of {sorted(_STEREO_CAMERAS)}")
+    if render_width_px <= 0:
+        raise ValueError(f"render_width_px must be positive, got {render_width_px}")
+    spec = _STEREO_CAMERAS[camera]
+    scale = render_width_px/spec["native_width_px"]
+    params = StereoDepthSimParams(focal_px = spec["focal_px"]*scale,
+                                  baseline_m = spec["baseline_m"],
+                                  min_depth_m = spec["min_depth_m"],
+                                  max_depth_m = spec["max_depth_m"],
+                                  disparity_noise_px = 0.2*scale,
+                                  subpixel_step_px = (1.0/16)*scale,
+                                  # Native-pixel sizes, floored at 1: below a pixel they vanish.
+                                  fattening_px = max(1, round(3*scale)),
+                                  occlusion_shadow_px = max(1, round(16*scale)),
+                                  dropout_rate = 0.05,
+                                  dropout_blob_px = max(1, round(64*scale)))
+    return replace(params, **overrides) if overrides else params
+
+
+def stereo_camera_hfov_degrees(camera : str) -> float:
+    """Horizontal field of view of a camera in :data:`_STEREO_CAMERAS`, in degrees.
+
+    Derived from the focal length and native width already listed there, so a camera cannot end up
+    rendered with a field of view that disagrees with the depth it is given.
+    """
+    if camera not in _STEREO_CAMERAS:
+        raise ValueError(f"unknown stereo camera '{camera}', expected one of {sorted(_STEREO_CAMERAS)}")
+    spec = _STEREO_CAMERAS[camera]
+    return math.degrees(2*math.atan(spec["native_width_px"]/(2*spec["focal_px"])))
 
 
 def depth_to_disparity(depth_m : th.Tensor, focal_px : float, baseline_m : float,

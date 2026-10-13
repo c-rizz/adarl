@@ -4,17 +4,23 @@
   <xacro:arg name="camera_name"  default="simple_camera"/>
   <xacro:arg name="position_xyz"  default="0 0 0"/>
   <xacro:arg name="orientation_wxyz"  default="1 0 0 0"/>
+  <xacro:arg name="horizontal_fov_degrees" default="70.0"/>
   <xacro:property name="camera_width" value="$(arg camera_width)" />
   <xacro:property name="camera_height" value="$(arg camera_height)" />
   <xacro:property name="camera_name" value="$(arg camera_name)" />
   <xacro:property name="position_xyz" value="$(arg position_xyz)" />
   <xacro:property name="orientation_wxyz" value="$(arg orientation_wxyz)" />
+  <xacro:property name="horizontal_fov_degrees" value="$(arg horizontal_fov_degrees)" />
+  <!-- mujoco specifies the *vertical* fov: converted through the image aspect ratio. Not a linear
+       rescaling, which would be noticeably off for a wide lens. -->
+  <xacro:property name="fovy_degrees"
+                  value="${2*atan(tan(radians(horizontal_fov_degrees)/2)*camera_height/camera_width)*180/pi}" />
     <compiler angle="radian"/>
     <worldbody>
         <body name="simple_camera_link" pos="${position_xyz}"  quat="${orientation_wxyz}">
           <!-- Make it so that, in the camera_link frame, the camera looks toward x, with z pointing up and y left -->        
           <camera name="${camera_name}"
-                  fovy="${70*camera_height/camera_width}"
+                  fovy="${fovy_degrees}"
                   resolution="${camera_width} ${camera_height}"
                   xyaxes="0 -1 0 0 0 1"
           />
