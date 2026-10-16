@@ -5,6 +5,7 @@ from typing_extensions import override
 from adarl.adapters.BaseVecJointImpedanceAdapter import BaseVecJointImpedanceAdapter
 from adarl.adapters.BaseVecJointPositionAdapter import BaseVecJointPositionAdapter
 from adarl.adapters.ZmqXbotAdapter import ZmqXbotAdapter
+from adarl.adapters.BaseVecAdapter import Renderings
 from typing import Sequence, Any, Optional
 import adarl.utils.dbg.ggLog as ggLog
 import torch as th
@@ -19,8 +20,26 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
         if not isinstance(adapter, ZmqXbotAdapter):
             raise RuntimeError(f"adapter must be a ZmqXbotAdapter")
         self._sub_adapter = adapter
-        if vec_size!=1: 
+        if vec_size!=1:
             raise NotImplementedError()
+
+    @override
+    def get_camera_images(self,  requestedCameras : list[str],
+                                 rgb : bool = True,
+                                 depth : bool = False,
+                                 vec_mask : th.Tensor | None = None,
+                                 out_th_device : th.device | None = None,
+                                 out_rgb : list[th.Tensor] | None = None,
+                                 out_depth : list[th.Tensor] | None = None,
+                                 use_fixed_shapes : bool = False) -> Renderings:
+        # The sub adapter's images already have the leading vec dimension of size 1
+        return self._sub_adapter.get_camera_images(requestedCameras, rgb=rgb, depth=depth, vec_mask=vec_mask,
+                                                   out_th_device=out_th_device if out_th_device is not None else self._out_th_device,
+                                                   out_rgb=out_rgb, out_depth=out_depth, use_fixed_shapes=use_fixed_shapes)
+
+    def get_camera_info(self, camera : str):
+        """See ZmqXbotAdapter.get_camera_info()."""
+        return self._sub_adapter.get_camera_info(camera)
 
 
     @override

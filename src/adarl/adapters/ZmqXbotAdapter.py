@@ -13,10 +13,10 @@ import numpy as np
 import torch as th
 from adarl.adapters.BaseJointImpedanceAdapter import BaseJointImpedanceAdapter
 from typing_extensions import override
-from threading import RLock, Condition
 from adarl.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
 from adarl.adapters.StandaloneRealAdapter import StandaloneRealAdapter
-from adarl.utils.base_utils import _fix_urdf_package_paths
+from adarl.adapters.BaseVecAdapter import Renderings
+from adarl.adapters.camzmq_cameras import CamZmqCameras
 
 import pyxbot
 from pyxbot.zmq_client import XbotZmqClient, JointsCommand
@@ -61,7 +61,22 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         ipc_cmd_path : str ="/tmp/xbot2_zmq_cmd.ipc",
                         ipc_service_path : str ="/tmp/xbot2_zmq_rep.ipc",
                         lock_continuous_joints : bool = False,
-                        robot_urdf : str | None = None):
+                        robot_urdf : str | None = None,
+                        camzmq_url : str | None = None,
+                        camzmq_camera_names : dict[str, str] | None = None,
+                        max_frame_age_sec : float = 0.25):
+        """
+        Parameters
+        ----------
+        camzmq_url : str | None
+            Metadata endpoint of a camzmq publisher (e.g. "tcp://robot-pc:5700"), to get camera images through
+            get_camera_images(). None for no cameras.
+        camzmq_camera_names : dict[str, str] | None
+            Maps the camera names the environment requests to the names they are published with. Check how each one
+            is published with get_camera_info().
+        max_frame_age_sec : float
+            get_camera_images() raises if a camera's latest frame is older than this.
+        """
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
         self._model_name = model_name
@@ -110,6 +125,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._jimpedance_controlled_joints : list[tuple[str,str]] = [] # The joints that this adapter exposes to its users
         self._is_simulated = is_simulated if is_simulated is not None else detect_simulated()
         self._control_dt = 0.001 # can I get this from somewhere?
+        self._camzmq_url = camzmq_url
+        self._camzmq_camera_names = camzmq_camera_names
+        self._max_frame_age_sec = max_frame_age_sec
+        self._cameras : CamZmqCameras | None = None
 
         self._xbot_zmq_client = XbotZmqClient(  remote_ip = remote_ip,
                                                 protocol = comm_protocol,
@@ -156,7 +175,18 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             self._setup_continuous_joint_locks()
 
         self._jimpedance_controlled_joints_jids = np.array([self._xbotjname_to_jid[jn] for model_name,jn in self._jimpedance_controlled_joints])
+        if self._camzmq_url is not None and self._cameras is None:
+            self._cameras = CamZmqCameras(self._camzmq_url, out_th_device=self._torch_device,
+                                          env_time=self.getEnvTimeFromStartup,
+                                          camera_names=self._camzmq_camera_names,
+                                          max_frame_age_sec=self._max_frame_age_sec)
         self._started = True
+
+    def destroy_scenario(self, **kwargs):
+        if self._cameras is not None:
+            self._cameras.close()
+            self._cameras = None
+        return super().destroy_scenario(**kwargs)
 
     @staticmethod
     def _detect_continuous_joints(urdf_str : str) -> list[str]:
@@ -205,7 +235,30 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
 
     def getRenderings(self, requestedCameras: Sequence[str]) -> Dict[str, Tuple[th.Tensor | float]]:
-        raise NotImplementedError("getRenderings not implemented for ZmqXbotAdapter")
+        raise NotImplementedError("getRenderings not implemented for ZmqXbotAdapter, use get_camera_images()")
+
+    def get_camera_images(self,  requestedCameras : List[str],
+                                 rgb : bool = True,
+                                 depth : bool = False,
+                                 vec_mask : th.Tensor | None = None,
+                                 out_th_device : th.device | None = None,
+                                 out_rgb : list[th.Tensor] | None = None,
+                                 out_depth : list[th.Tensor] | None = None,
+                                 use_fixed_shapes : bool = False) -> Renderings:
+        """Camera images received with camzmq, with the contract of BaseVecAdapter.get_camera_images() for a
+        single environment: the tensors have a leading dimension of size 1. Needs camzmq_url and startup()."""
+        if self._cameras is None:
+            raise RuntimeError("ZmqXbotAdapter has no cameras: construct it with camzmq_url, and call startup()")
+        return self._cameras.get_camera_images(requestedCameras, rgb=rgb, depth=depth, vec_mask=vec_mask,
+                                               out_th_device=out_th_device, out_rgb=out_rgb, out_depth=out_depth,
+                                               use_fixed_shapes=use_fixed_shapes)
+
+    def get_camera_info(self, camera : str):
+        """How a camera is published (resolution, rgb channels, depth, intrinsics, fovy_deg/fovx_deg), as a
+        camzmq.CameraInfo, e.g. to check it against the simulated camera. Needs camzmq_url and startup()."""
+        if self._cameras is None:
+            raise RuntimeError("ZmqXbotAdapter has no cameras: construct it with camzmq_url, and call startup()")
+        return self._cameras.camera_info(camera)
 
     @override
     def getJointsState(self, requestedJoints : Sequence[Tuple[str,str]] | None = None) -> th.Tensor:

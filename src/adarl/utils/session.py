@@ -157,9 +157,9 @@ class Session():
                                     cudagraphs=True,
                                     )
             import torch._inductor.config as iconfig
-            iconfig.trace.enabled = True
-            iconfig.trace.graph_diagram = True
             if self.debug_level>=DbgLevel.SLOW:
+                iconfig.trace.enabled = True
+                iconfig.trace.graph_diagram = True
                 warnings.simplefilter("always")
                 th.autograd.set_detect_anomaly(True) # type: ignore
                 th.distributions.Distribution.set_default_validate_args(True)
