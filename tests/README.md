@@ -28,6 +28,7 @@ tests/
     test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
     test_mjx_per_env_run.py       # per-env run() durations: frozen envs keep state/clock/stats/filters, clock past float32 limit
     test_camzmq_cameras.py        # real-robot camera images via camzmq: sim contract, invalid depth -> 0, camera_info, stale frame
+    test_th_jax_interop.py        # torch<->jax DLPack boundary: view vs copy, donation guard, stream ordering, clock read
 benchmarks/                       # perf/demo scripts (NOT collected by pytest)
   bench_mjx_adapter.py
   bench_genesis_adapter.py

@@ -3,7 +3,10 @@ import os
 
 os.environ["MUJOCO_GL"] = "egl"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
-os.environ["XLA_FLAGS"]="--xla_gpu_triton_gemm_any=true"
+# appended, not assigned: overwriting drops whatever the caller set, which makes XLA flags such as
+# --xla_dump_to impossible to pass to a run from the outside
+if "--xla_gpu_triton_gemm_any" not in os.environ.get("XLA_FLAGS", ""):
+    os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=true").strip()
 
 from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
                                          get_renderdata_into, log_largest_dataclass_fields,
@@ -151,14 +154,52 @@ else:
         return thdlpack.from_dlpack(array).to(th_device)
 
 
-def jax2th_copy(array : jnp.ndarray, th_device : th.device) -> th.Tensor:
-    """Like jax2th, but hands torch a copy that jax never recycles.
+# jax arrays whose memory torch is still reading, each with the event that reports the read done.
+# It would be nicer to invert the ownership instead: let jax write into torch-allocated memory and mark
+# it with Tensor.record_stream, which would make torch's own caching allocator defer the reuse and the
+# hazard below structurally impossible. That needs the handle of the stream jax performs its writes on,
+# and jax exposes none: Device.get_stream_for_external_ready_events() is the stream jax passes to a
+# producer when *importing* a dlpack buffer, not its compute stream, so an allocation marked with it
+# would be handed out again while jax is still writing.
+_jax2th_pending : list[tuple[th.cuda.Event, jnp.ndarray]] = []
 
-    Use it for buffers of the simulation state. jax2th gives a zero-copy view, and the next jitted call
-    that donates the state lets jax overwrite that memory without waiting for the torch kernels already
-    queued to read it (a torch-side clone() is one of them). The copy runs on jax's stream, so it is
-    ordered before any such overwrite, and torch waits for it through the DLPack handshake."""
-    return jax2th(jnp.copy(array), th_device)
+
+def jax2th_copy(array : jnp.ndarray, th_device : th.device) -> th.Tensor:
+    """Like jax2th, but hands torch memory of its own, that jax cannot recycle under it.
+
+    Use it for buffers of the simulation state. 
+    A simple JAX copy is not sufficient to guarantee correctness. A jax copy followed by the handing of the memory would do this:
+     * jax copies in a region of its own memory tracked via A
+     * torch receives a view over A
+     * jax drops the reference to A, considers that memory as freed.
+     * jax potentially overwrites memory handed to torch.
+    A simple torch copy is not enough:
+     * jax has an object tracked via A
+     * torch receives a view over A
+     * torch schedules the copy of A into its own memory
+     * jax drops the reference to A, considers that memory as freed.
+     * jax may modify the memory before the copy is done
+    So we do the following:
+     * jax gives a view of its memory tracked via A to torch
+     * torch schedules a copy from A into its own memory
+     * torch schedules a cuda event after the copy
+     * we save the jax reference A, until the event is passed (we check this on subsequent calls)
+
+    It would be nice to handle this better, for example having torch monitor the JAX stream. But jax does not a give
+    a handle of its CUDA stream.
+    """
+    out = jax2th(array, th_device)
+    if out.device.type == "cuda": # a copy to anything else is a blocking transfer, already done reading
+        out = out.clone()
+        ev = th.cuda.Event()
+        ev.record()
+        _jax2th_pending.append((ev, array))
+        # Check if jax arrays from previous calls can be released.
+        while _jax2th_pending and _jax2th_pending[0][0].query(): # one stream: they complete in order
+            _jax2th_pending.pop(0)
+        if len(_jax2th_pending) > 64: # torch is falling behind, wait instead of growing without bound
+            _jax2th_pending[0][0].synchronize()
+    return out
 
 
 def jit_th_synced(fun = None, **jit_kwargs):
@@ -2180,6 +2221,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._total_iterations += iterations
         env_durations = env_iterations.to(th.float64)*self._sim_step_dt
         self._simTime += env_durations # CPU mirror of sim_state.sim_substeps, readable without touching the device
+
+        # self._total_iterations_dev = self._total_iterations.to(device=self._out_th_device, non_blocking=self._out_cuda)
+
+
         
         # print(f"self._simTime={self._simTime}, mjData.time={self._sim_state.mjx_data.time}")
 
@@ -2907,10 +2952,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def get_joints_state_step_stats(self) -> th.Tensor:
         # a jax slice is not a selection: this is still a view of the donated buffer, so copy it out
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4,:,:4], th_device=self._out_th_device).clone()
+        return jax2th_copy(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4,:,:4], th_device=self._out_th_device)
 
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
-        return jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4], th_device=self._out_th_device).clone()
+        return jax2th_copy(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4], th_device=self._out_th_device)
     
     def get_links_state_step_stats(self) -> th.Tensor:
         stats = jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], th_device=self._out_th_device)
