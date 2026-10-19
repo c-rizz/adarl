@@ -567,15 +567,29 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         vals = self._read_links_state(lids, use_com_pose=use_com_pose)
         return th.as_tensor(vals, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0)
 
+    def _links_frame_velocities(self, lids: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Linear velocity of `points` (one per lid) and angular velocity, from mujoco's cvel.
+
+        cvel is com-based: its linear part is the velocity of the point that currently coincides with
+        the subtree com of the body's kinematic tree root (the whole robot's com, for a floating base),
+        not of the body frame origin. Reporting it as is next to xpos describes two different points,
+        off by omega x (point - subtree_com): negligible for a body sitting at the robot com, metres
+        per second for a swinging foot. The angular part needs no shift, being the same about any
+        point. This is the same correction MjxAdapter._get_links_state_jax applies."""
+        cvel = self._mj_data.cvel[lids]
+        ang_vel = cvel[:, 0:3]
+        com_lin_vel = cvel[:, 3:6]
+        com_offset = points - self._mj_data.subtree_com[self._mj_model.body_rootid[lids]]
+        return com_lin_vel + np.cross(ang_vel, com_offset), ang_vel
+
     def _read_link_velocities(self, link_names: Sequence[tuple[str, str]]) -> np.ndarray | None:
         if self._mj_model is None or self._mj_data is None:
             return None
         lids = np.array([self._lname2lid[ln] for ln in link_names], dtype=int)
         if len(lids) == 0:
             return np.empty((0, 6), dtype=np.float32)
-        cvel = self._mj_data.cvel[lids]
-        lin_vel = cvel[:, 3:6]
-        ang_vel = cvel[:, 0:3]
+        # at the link frame origin, matching what getLinksState reports the position of
+        lin_vel, ang_vel = self._links_frame_velocities(lids, self._mj_data.xpos[lids])
         return np.concatenate([lin_vel, ang_vel], axis=-1)
 
     def _read_links_state(self, lids: np.ndarray, use_com_pose: bool) -> np.ndarray:
@@ -590,9 +604,8 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             pos = self._mj_data.xpos[lids]
             quat_wxyz = self._mj_data.xquat[lids]
             quat_xyzw = quat_wxyz[:, [1, 2, 3, 0]]
-        cvel = self._mj_data.cvel[lids]
-        lin_vel = cvel[:, 3:6]
-        ang_vel = cvel[:, 0:3]
+        # the velocity of whichever point the pose above refers to, the body com or the frame origin
+        lin_vel, ang_vel = self._links_frame_velocities(lids, pos)
         return np.concatenate([pos, quat_xyzw, lin_vel, ang_vel], axis=-1)
 
     @staticmethod

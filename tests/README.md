@@ -29,6 +29,10 @@ tests/
     test_mjx_per_env_run.py       # per-env run() durations: frozen envs keep state/clock/stats/filters, clock past float32 limit
     test_camzmq_cameras.py        # real-robot camera images via camzmq: sim contract, invalid depth -> 0, camera_info, stale frame
     test_th_jax_interop.py        # torch<->jax DLPack boundary: view vs copy, donation guard, stream ordering, clock read
+    test_link_velocity_consistency.py # link velocity vs a finite difference of its own position; step stats bracket the state
+  envs/                           # env-level bookkeeping, on a minimal CPU env (no simulator)
+    test_episode_bookkeeping.py   # episodes end at their own step limit, counters reset, mean length matches the limits
+    test_recorder_roundtrip.py    # the recorder snapshots what it is handed; the saved file is the per-step series
 benchmarks/                       # perf/demo scripts (NOT collected by pytest)
   bench_mjx_adapter.py
   bench_genesis_adapter.py
@@ -93,7 +97,41 @@ Wiring the existing checks into a real suite surfaced several latent bugs.
    so impulse start/end **times were truncated to whole seconds** (sub-second impulses collapsed to
    a zero-length window and never fired). Now `float32`.
 
-With 1–7 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there are no open findings.
+8. `EnvRunner(env)` could not be constructed with its default arguments: `ui_render_envs` defaults to
+   `[]`, and `th.as_tensor([])` is a **float** tensor, which `EnvRunnerInterface` then uses as an index
+   (`IndexError: tensors used as indices must be long, int, byte or bool`). Now built with
+   `dtype=th.long`.
+9. `Async_cuda2cpu_queue`'s worker thread was not a daemon, so it deadlocked interpreter exit: Python
+   joins non-daemon threads *before* running `atexit` handlers, so the queue's own `atexit` `close()`
+   could never run and any process using it hung at exit. Now `daemon=True`.
+
+10. `MujocoAdapter` reported mjx's com-based `cvel[:,3:6]` as the link linear velocity, without
+    shifting it to the point the pose beside it refers to — the same defect `c67d8ea` fixed for
+    `MjxAdapter`, found by `test_link_velocity_consistency.py` the first time it ran. Both readers
+    (`_read_links_state`, which serves `getLinksState`, and `_read_link_velocities`, which feeds the
+    step statistics) now go through `_links_frame_velocities`:
+    `com_linvel + omega x (point - subtree_com[body_rootid])`, with `point` being `xipos` or `xpos`
+    according to the pose requested. The angular part needs no shift.
+
+**Platform bug, worked around (not an adarl defect)**
+
+- **torch 2.10 miscompiles a cudagraph-compiled function whose inputs alias one tensor.**
+  `RobotVecEnv._get_adapter_data_raw_mjx` passed slices of one link 13-vector
+  (`[:,0:2]`, `[:,2]`, `[:,3:7]`, `[:,7:10]`, `[:,10:13]`) to `_get_new_instantaneous_state`, which is
+  `th_compile_ext(copy_outs=True, mode="max-autotune", fullgraph=True)`. In real 8192-env runs the
+  compiled function returned the **body position** for the absolute linear velocity, the absolute
+  angular velocity and the height alike, from inputs verified correct immediately before: the aliased
+  views were read wrongly. Velocities read as metres of position, every velocity-derived reward and
+  the recorded episodes were nonsense, while the adapter, the state helper and the recorder were all
+  correct. Fixed either by cloning the slices (done, in both adapter-data paths) or by torch >= 2.14.
+  `tests/envs/test_compiled_state_builder.py` pins the contract; it passes on 2.14, so it guards the
+  platform rather than the env code.
+  Worth knowing for the next hunt of this shape: the corruption only ever appeared in full training
+  runs. Single-env replays, two-env replays, 64-env probes and the adapter tests were all clean on the
+  very machine that failed, which is what made it look machine-specific for a day.
+
+With 1–10 fixed, both MuJoCo and MJX (jax + warp) pass full compliance; there are no open findings in
+adarl itself.
 
 **Documented hazard (characterised, not a code bug)**
 

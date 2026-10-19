@@ -71,7 +71,10 @@ class Async_cuda2cpu_queue():
         # ggLog.info(f"Starting Async_cuda2cpu_queue worker")
         # traceback.print_stack()
         self._queue = BlockingPeekQueue()
-        self._worker_thread = threading.Thread(target=self._worker, name="Async_cuda2cpu_queue")
+        # daemon: the interpreter joins non-daemon threads *before* running atexit handlers, so a
+        # non-daemon worker here deadlocks exit against the atexit close() registered above, and a
+        # copy queue for logging must never be what keeps a process alive
+        self._worker_thread = threading.Thread(target=self._worker, name="Async_cuda2cpu_queue", daemon=True)
         self._worker_thread.start()
 
 

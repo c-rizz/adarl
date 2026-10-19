@@ -126,8 +126,17 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
         else:
             imgs = None
         record_time("EnvRunnerRecorderWrapper got renderings")
+        def _snapshot_env(tensor):
+            """This env's slice, as a copy: indexing gives a view, and the buffers behind these are
+            free to be reused by later steps, while the recording is only written out at the end of
+            the episode. Everything recorded today happens to be freshly allocated each step, so a view
+            would survive, but nothing enforces that and a stale recording fails silently."""
+            if tensor is None:
+                return None
+            element = tensor[self._env_idx]
+            return element.clone() if isinstance(element, th.Tensor) else element
         obs, action, info, reward, terminated, truncated, img = map_tensor_tree((obs, action, info, reward, terminated, truncated, imgs),
-                                                                           lambda tensor: tensor[self._env_idx] if tensor is not None else None)
+                                                                           _snapshot_env)
         if self._record_video and self._publish_imgs:
             dbg_img.helper.publishDbgImg("render", img_callback=lambda: img)
         if isinstance(action, th.Tensor):
@@ -273,7 +282,6 @@ class EnvRunnerRecorderWrapper(EnvRunnerWrapper[ObsType]):
     def _write_unstacked_thtree(self, out_filename, thtree, labels = None):
         thtree = tt.map_tensor_tree(thtree, lambda t: th.as_tensor(t).detach())
         thtree = tt.stack_tensor_tree(thtree)
-        # sizes = tt.map_tensor_tree(infos, lambda t: t.shape if t is not None else None)
         nptree = tt.map_tensor_tree(thtree, lambda t: t.cpu().numpy())
         hdf5plot.save.save_dict(out_filename+".hdf5", nptree, labels)
 

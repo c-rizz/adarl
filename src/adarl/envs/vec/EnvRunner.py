@@ -75,7 +75,9 @@ class EnvRunner(EnvRunnerInterface, Generic[ObsType]):
                          info_space=env.info_space,
                          single_reward_space=env.single_reward_space,
                          autoreset=autoreset,
-                         ui_render_envs_indexes=th.as_tensor(ui_render_envs),
+                         # dtype is explicit: the default empty list would otherwise give a float
+                         # tensor, which cannot be used as the index it becomes in EnvRunnerInterface
+                         ui_render_envs_indexes=th.as_tensor(ui_render_envs, dtype=th.long),
                          th_device=env._th_device)
         self._adarl_env = env
         self._all_vecs = th.ones((self._adarl_env.num_envs,), dtype=th.bool, device=self._adarl_env._th_device)

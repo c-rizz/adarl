@@ -1193,6 +1193,31 @@ def distr_is_constant(distr : DistributionDef) -> bool:
                 raise NotImplementedError(f"Unsupported distribution type {distr_type}")
     
     
+def distr_minmax(distr : DistributionDef) -> tuple[th.Tensor, th.Tensor]:
+    """Lowest and highest value sample_distr can return for this distribution.
+
+    The normal distribution is clamped by sample_distr, so its bounds here are the clamping bounds and
+    not infinite tails: every distribution has a finite support. Meant for building normalization
+    limits for quantities that get sampled and then observed."""
+    if isinstance(distr, (float, int, th.Tensor)):
+        constant = th.as_tensor(distr)
+        return constant, constant
+    distr_type = distr[0]
+    if distr_type == "uniform" or distr_type == "loguniform":
+        low, high = distr[1]
+        return th.as_tensor(low), th.as_tensor(high)
+    elif distr_type == "normal":
+        if len(distr[1]) == 2:
+            mean, std = distr[1]
+            clamp_width = 5.0 # the default sample_distr applies
+        else:
+            mean, std, clamp_width = distr[1]
+        mean, std, clamp_width = th.as_tensor(mean), th.as_tensor(std), th.as_tensor(clamp_width)
+        return mean - clamp_width*std, mean + clamp_width*std
+    else:
+        raise NotImplementedError(f"Unsupported distribution type {distr_type}")
+
+
 def distr_to_tensor(distr : DistributionDef, size : tuple[int,...] | None = None, device : th.device | None = None,
                     dtype : th.dtype | None = None) -> DistributionDefTh:
     if isinstance(distr, (float, int, th.Tensor)):

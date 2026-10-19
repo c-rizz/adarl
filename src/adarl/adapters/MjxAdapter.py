@@ -137,7 +137,6 @@ def _patch_mjx_warp_tileset_pytree_metadata():
 
 _patch_mjx_warp_tileset_pytree_metadata()
 
-
 if Version(jax.__version__) < Version("0.8.0"):
     def th2jax(tensor : th.Tensor, jax_device : mjutils.jax_Device):
         # apparently there are issues with non-contiguous tensors, should be fixed in 0.8.0 (https://github.com/jax-ml/jax/issues/7657)
@@ -2390,10 +2389,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         all_imgs : list[th.Tensor] = []
         for i in range(len(requestedCameras)):
             rgb = rgbs[i]
-            rgb_th = jax2th(rgb, th_device=out_th_device)
+            rgb_th = jax2th_copy(rgb, th_device=out_th_device) # owned: the masking below is only queued
             vec_mask_dev = vec_mask.to(device=rgb_th.device, non_blocking=rgb_th.device.type=="cuda")
             if use_fixed_shapes:
-                rgb_th = rgb_th.clone()
                 rgb_th[~vec_mask_dev] = 0
             else:
                 rgb_th = rgb_th[vec_mask_dev]
@@ -2453,10 +2451,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             # Each camera has its own single-camera context, so its render index within it is 0.
             depth = self._render_warp_depth_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
             # depth = jnp.expand_dims(depth, axis=-1)
-            depth_th = jax2th(depth, th_device=out_th_device)
+            depth_th = jax2th_copy(depth, th_device=out_th_device) # owned: the masking below is only queued
             vec_mask_dev = vec_mask.to(device=depth_th.device, non_blocking=depth_th.device.type=="cuda")
             if use_fixed_shapes:
-                depth_th = depth_th.clone()
                 depth_th[~vec_mask_dev] = 0
             else:
                 depth_th = depth_th[vec_mask_dev]
@@ -2499,10 +2496,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._forward_if_needed()
 
         def _to_output(jax_img, out_list, cam_i):
-            img_th = jax2th(jax_img, th_device=out_th_device)
+            img_th = jax2th_copy(jax_img, th_device=out_th_device) # owned: the masking below is only queued
             vec_mask_dev = vec_mask.to(device=img_th.device, non_blocking=img_th.device.type=="cuda")
             if use_fixed_shapes:
-                img_th = img_th.clone()
                 img_th[~vec_mask_dev] = 0
             else:
                 img_th = img_th[vec_mask_dev]
@@ -2654,15 +2650,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         """
         self._forward_if_needed()
         # The _sim_state arrays are donated to the jitted monitored data cache update, and jax overwrites
-        # them without waiting for torch reads, so they are copied out on the jax side (see jax2th_copy).
-        # The stats slices are already new jax buffers (the sliced dimension has 6 entries), so they
-        # need no extra copy. Everything below works on owned buffers.
+        # them without waiting for torch reads, so they are copied out through jax2th_copy, which keeps
+        # the jax buffer alive until torch has actually read it.
+        # The stats slices do allocate a new jax buffer, but an *unreferenced* one: it is freed as soon
+        # as jax2th returns, while the reorder below is still only queued on torch's stream, so jax can
+        # hand that memory to the next op and the reorder reads whatever landed there (this is how the
+        # body absolute velocity came back holding the body position). They need the same copy.
+        # Everything below works on owned buffers.
         jstate  = jax2th_copy(self._sim_state.mon_joint_state_pveae,     th_device=self._out_th_device) if return_jstates else None
         lstate  = jax2th_copy(self._sim_state.mon_link_state,            th_device=self._out_th_device) if return_lstates else None
         lacc    = jax2th_copy(self._sim_state.mon_link_acceleration,      th_device=self._out_th_device) if return_accelerations else None
         cmask   = jax2th_copy(self._sim_state.mon_collision_mask,         th_device=self._out_th_device) if return_collisions else None
-        jstats  = jax2th(self._sim_state.mon_joint_stats_arr_pvaeep[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,6)
-        lstats  = jax2th(self._sim_state.mon_links_stats_arr_v[:, :4],     th_device=self._out_th_device) if return_lstats else None  # (V,4,L,6)
+        jstats  = jax2th_copy(self._sim_state.mon_joint_stats_arr_pvaeep[:, :4], th_device=self._out_th_device) if return_jstats else None  # (V,4,J,6)
+        lstats  = jax2th_copy(self._sim_state.mon_links_stats_arr_v[:, :4],     th_device=self._out_th_device) if return_lstats else None  # (V,4,L,6)
         # Reorder joints in torch (avoids JAX retrace on dynamic indices)
         if joint_ids is not None:
             if not isinstance(joint_ids, th.Tensor):
@@ -2958,7 +2958,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return jax2th_copy(self._sim_state.mon_joint_stats_arr_pvaeep[:,:4], th_device=self._out_th_device)
     
     def get_links_state_step_stats(self) -> th.Tensor:
-        stats = jax2th(self._sim_state.mon_links_stats_arr_v[:,:4], th_device=self._out_th_device)
+        # copied out before the reorder: a jax slice is a buffer nothing holds, see get_sim_elements_state
+        stats = jax2th_copy(self._sim_state.mon_links_stats_arr_v[:,:4], th_device=self._out_th_device)
         return stats[:, :, self._mon_link_jax_to_user, :]
 
     @staticmethod
@@ -4388,7 +4389,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 ground_linkgroups_ids = th2jax(ground_linkgroups_ids, jax_device=self._jax_device),
                                 resolution_xy=resolution_xy,
                                 sim_state = self._sim_state)        
-        return jax2th(heights_vec_xy, th_device=self._out_th_device)
+        return jax2th_copy(heights_vec_xy, th_device=self._out_th_device)
 
     def _get_depth_cam_params(self, cam_id : int):
         cam_height, cam_width = self._camera_sizes_hw_by_id[cam_id]
@@ -4489,4 +4490,4 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         img = self._get_depth_image_jax(cam_id, sim_state, geom_group)
         # ggLog.info(f"Depth image from camera '{camera_name}' (id {cam_id}): shape {img.shape}, min {img.min()}, max {img.max()}")
         
-        return jax2th(img, th_device=self._out_th_device)
+        return jax2th_copy(img, th_device=self._out_th_device)
