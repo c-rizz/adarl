@@ -164,7 +164,7 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._joints_num = len(detected_joint_names)
         self._xbotjname_to_jid = {jname : jid for jid, jname in enumerate(detected_joint_names)}
         self._jid_to_xbotjname = {jid : jname for jname, jid in self._xbotjname_to_jid.items()}
-        ggLog.info(f"ZmqXBotAdapter: found joints: {list(self._xbotjname_to_jid.keys())}")
+        ggLog.info(f"ZmqXBotAdapter: found {self._joints_num} joints: {list(self._xbotjname_to_jid.keys())}")
         # self._robot_urdf = self._xbot_zmq_client.get_urdf()
         # self._robot_urdf = _fix_urdf_package_paths(self._robot_urdf)
         self._robot_helper = Robot(robot_description_string=self._robot_urdf)
