@@ -19,7 +19,7 @@ import multiprocessing
 import multiprocessing.pool
 import random
 import atexit
-from adarl.utils.wandb_wrapper import wandb_init, wandb
+from adarl.utils.wandb_wrapper import wandb_init, wandb, default_wrapper
 import adarl.utils.mp_helper as mp_helper
 import adarl.utils.wandb_wrapper as wandb_wrapper
 import signal
@@ -103,6 +103,7 @@ class Session():
         # self._manager = multiprocessing.Manager()
         # self.run_info = self._manager.dict()
         # ggLog.info(f"Initializing session {self} in process {os.getpid()}")
+        self._status = "init"
         self.run_info = {}
         self.run_info["comment"] = run_comment
         self.run_info["experiment_name"] = experiment_name
@@ -304,11 +305,16 @@ class Session():
     def mark_shutting_down(self):
         self._is_shutting_down = True
 
+    def set_run_status(self, status : str):
+        self._status = status
+
     def shutdown(self):
         self.mark_shutting_down()
 
         if self.is_wandb_enabled():
             import wandb
+            if self._status == "crashed":
+                default_wrapper.wandb_alert(title="Run crashed", text=f"Run {self.run_info['run_id']} crashed on host {self.run_info['hostname']}")
             wandb.finish()
             ggLog.info(f"Told wandb to finish.")
             
@@ -489,7 +495,7 @@ def runFunction_wrapper(seed,
         return runFunction(seed=seed, folderName=seedFolder, resumeModelFile=resumeModelFile, run_id=run_id, args = run_args)
     except Exception as e:
         ggLog.error(f"Run failed with exception: {exc_to_str(e)}")
-        return None
+        return -1
 
 def runFunction_wrapper_arg_kwargs(args, kwargs):
     return runFunction_wrapper(*args,**kwargs)
@@ -682,7 +688,10 @@ def launchRun(runFunction,
             # run_results = p.starmap(runFunction_wrapper, argss)
             # run_results = p.starmap(lambda f,kwargs: f(**kwargs), [([],kwargs) for kwargs in argss])
             run_results = p.starmap(runFunction_wrapper_arg_kwargs, [([],kwargs) for kwargs in argss])
-    
+
+    if any([r==-1 for r in run_results]):
+        default_session.set_run_status("crashed")
+        ggLog.error(f"Some runs failed, check the logs for details")
     ggLog.info(f"All runs finished. Results:\n"+"\n".join([str(run_result) for run_result in run_results]))
             
     default_session.shutdown() # tell whatever may be running to stop

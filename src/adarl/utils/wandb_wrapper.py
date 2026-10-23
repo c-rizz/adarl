@@ -117,6 +117,10 @@ class WandbWrapper():
         ggLog.info(f"Wandb initialized in process {self._init_pid} with run id {self._wandb_run.id}")
         # self._worker_thread = threading.Thread(target=self._worker)
         # self._worker_thread.start()
+
+
+    def wandb_alert(self, title, text):
+        self._wandb_run.alert(title, text)
     
     @staticmethod
     def _safe_wandb_log(log_dict : dict[str,th.Tensor]):

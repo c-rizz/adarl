@@ -286,3 +286,41 @@ def get_1d_space_size(space : gym.Space) -> int:
     else:
         raise RuntimeError(f"AsyncProcessExperienceCollector: unsupported space type {space}")
     return rewards_num
+
+
+def check_space_labels_mismatches(space1 : gym.spaces.Space, space2 : gym.spaces.Space, path : str = "") -> list[str]:
+    """Recursively compares the labels of the labeled (e.g. ThBox) leaves of two spaces.
+    Only leaves that have labels in both spaces are compared; Dict and Tuple spaces are
+    traversed through their common keys/indices.
+
+    Returns
+    -------
+    list[str]
+        A description of each mismatch found, empty if the labels all match.
+    """
+    mismatches = []
+    if isinstance(space1, gym.spaces.Dict) and isinstance(space2, gym.spaces.Dict):
+        for k in space1.spaces.keys():
+            if k in space2.spaces:
+                mismatches += check_space_labels_mismatches(space1.spaces[k], space2.spaces[k], f"{path}/{k}")
+    elif isinstance(space1, gym.spaces.Tuple) and isinstance(space2, gym.spaces.Tuple):
+        for i, (s1, s2) in enumerate(zip(space1.spaces, space2.spaces)):
+            mismatches += check_space_labels_mismatches(s1, s2, f"{path}/{i}")
+    else:
+        labels1 = getattr(space1, "labels", None)
+        labels2 = getattr(space2, "labels", None)
+        if labels1 is not None and labels2 is not None:
+            labels1 = np.asarray(labels1, dtype=object)
+            labels2 = np.asarray(labels2, dtype=object)
+            if not np.array_equal(labels1, labels2):
+                l1 = labels1.reshape(-1).tolist()
+                l2 = labels2.reshape(-1).tolist()
+                if len(l1) == len(l2):
+                    diffs = [f"[{i}] {a} != {b}" for i,(a,b) in enumerate(zip(l1,l2)) if a != b]
+                    mismatches.append(f"{path or '/'}: {len(diffs)} of {len(l1)} labels differ: " + "; ".join(diffs))
+                else:
+                    only1 = [l for l in l1 if l not in l2]
+                    only2 = [l for l in l2 if l not in l1]
+                    mismatches.append(f"{path or '/'}: label counts differ ({len(l1)} != {len(l2)}), "
+                                      f"only in first: {only1}, only in second: {only2}")
+    return mismatches
