@@ -62,7 +62,7 @@ def thtens(array, device:th.device | str | None = None, dtype: th.dtype | None =
         device = th.device("cpu")
     elif isinstance(device, str):
         device = th.device(device)
-    return th.tensor(array, dtype=dtype).to(device=device,non_blocking=device.type=="cuda")
+    return th.tensor(np.array(array), dtype=dtype).to(device=device,non_blocking=device.type=="cuda")
 
 
 T = TypeVar('T')
