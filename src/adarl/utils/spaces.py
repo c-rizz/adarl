@@ -134,7 +134,14 @@ class ThBox(gym.spaces.Box):
     def __setstate__(self, state):
         if "_th_rng" not in state:
             state["_th_rng"] = th.Generator(device=state["_th_rng_device"])
-            state["_th_rng"].set_state(th.ByteTensor(state["_th_rng_state"]))
+            rng_state = th.ByteTensor(state["_th_rng_state"])
+            # A space loaded onto another device type (e.g. saved on cuda, loaded on the cpu) gets a
+            # generator whose state has another format: it keeps its default seed instead.
+            if rng_state.numel() == state["_th_rng"].get_state().numel():
+                state["_th_rng"].set_state(rng_state)
+            else:
+                ggLog.warn(f"ThBox: the saved rng state does not fit a generator on {state['_th_rng_device']} "
+                           f"(it was saved from another device type), the space's rng keeps its default seed.")
         self.__dict__.update(state)
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
         if isinstance(self.high,list):
