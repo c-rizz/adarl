@@ -1094,24 +1094,47 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         r = ratios.to(device=self._sim_dev, dtype=th.float32)
         return r if envs_idx is None else r[envs_idx]
 
-    def _revert_alterations(self, envs_idx: th.Tensor | None, n_sel: int, keep: dict[str, list[int]] | None = None):
+    def _set_links_mass_scaling_inertia(self, link_ids: list[int], target_mass: th.Tensor, envs_idx: th.Tensor | None):
+        """Set the mass of the links, (n_sel, len(link_ids)), scaling their inertia by the same ratio: same geometry,
+        uniform density. genesis' set_links_inertia scales mass and inertia of the current model by a ratio."""
+        rs = self._rigid_solver()
+        current = rs.get_links_inertial_mass(links_idx=link_ids) # (n_envs, n_links); genesis refuses envs_idx here
+        current = current if envs_idx is None else current[envs_idx]
+        ratio = target_mass / th.where(current > 0, current, th.ones_like(current))
+        rs.set_links_inertia(ratio.contiguous(), links_idx=link_ids, envs_idx=envs_idx)
+
+    def _recompute_invweights(self, envs_idx: th.Tensor | None):
+        """Recompute the links' and dofs' inverse weights from the current mass matrix in the reference
+        configuration, as genesis does at build time and after an armature change. They set the softness of the
+        constraints: left at their nominal values, a heavier body would get a softer contact and a lighter one a
+        stiffer contact. The computation moves the model to qpos0, so the state is saved and restored around it."""
+        rs = self._rigid_solver()
+        qpos = rs.get_qpos(envs_idx=envs_idx)
+        vel = rs.get_dofs_velocity(envs_idx=envs_idx)
+        rs._init_invweight_and_meaninertia(envs_idx=envs_idx, force_update=True)
+        rs.set_qpos(qpos, envs_idx=envs_idx)
+        rs.set_dofs_velocity(vel, envs_idx=envs_idx)
+
+    def _revert_alterations(self, envs_idx: th.Tensor | None, n_sel: int, keep: dict[str, list[int]] | None = None) -> bool:
         """Revert the previously-applied alterations (for the selected environments) back to the
         nominal model parameters. Ids listed in keep[category] are skipped: the caller is about to
         overwrite them with fresh absolute values anyway (alterations are always computed from the
         cached originals, not compounded), so reverting them first is redundant. This matters a lot
-        for armature, whose setter triggers an expensive mass-matrix recompute in genesis."""
+        for armature, whose setter triggers an expensive mass-matrix recompute in genesis.
+        Returns whether masses or CoMs were reverted, i.e. whether the inverse weights need recomputing."""
         if not self._alter_applied:
-            return
+            return False
         rs = self._rigid_solver()
         prev = self._alter_applied
         keep = keep or {}
         def leftover(category: str) -> list[int]:
             kept = set(keep.get(category, ()))
             return [i for i in prev.get(category, ()) if i not in kept]
-        ids = leftover("mass")
+        mass_ids, com_ids = leftover("mass"), leftover("com")
+        ids = mass_ids
         if ids:
             orig = self._orig_link_mass[th.as_tensor(ids, device=self._sim_dev)]
-            rs.set_links_inertial_mass(orig.view(1, -1).expand(n_sel, -1).contiguous(), links_idx=ids, envs_idx=envs_idx)
+            self._set_links_mass_scaling_inertia(ids, orig.view(1, -1).expand(n_sel, -1), envs_idx)
         ids = leftover("friction")
         if ids:
             geom_ids, _ = self._link_cols_to_geoms(ids)
@@ -1124,10 +1147,11 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if ids:
                 orig = orig_arr[th.as_tensor(ids, device=self._sim_dev)]
                 setter(orig.view(1, -1).expand(n_sel, -1).contiguous(), dofs_idx=ids, envs_idx=envs_idx)
-        ids = leftover("com")
+        ids = com_ids
         if ids:
             rs.set_links_COM_shift(th.zeros((n_sel, len(ids), 3), device=self._sim_dev), links_idx=ids, envs_idx=envs_idx)
         self._alter_applied = {}
+        return bool(mass_ids or com_ids)
 
     def alter_model(self,
                     link_masses: tuple[Any, th.Tensor] | None = None,
@@ -1137,23 +1161,31 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     joint_frictionloss_ratios: tuple[Any, th.Tensor] | None = None,
                     com_position_diffs: tuple[Any, th.Tensor] | None = None,
                     com_quatxyzw_diffs: tuple[Any, th.Tensor] | None = None,
+                    link_scales: tuple[Any, th.Tensor] | None = None,
                     vec_mask: th.Tensor | None = None,
                     reset_first: bool = True):
         """Per-environment domain randomization of model parameters, mirroring MjxAdapter.alter_model.
 
         Each argument is a tuple (ids, values):
-        - link_masses: (link_ids, ratios of shape (vec_size, n)) -> new mass = original_mass * (1 + ratio)
-        - link_frictions: (link_ids, ratios (vec_size, n)) -> new friction = base_friction * (1 + ratio)
+        - link_masses: (link_ids, ratios of shape (vec_size, n)) -> new mass = original_mass * ratio
+        - link_frictions: (link_ids, ratios (vec_size, n)) -> new friction = base_friction * ratio
         - joint_armature_ratios / joint_damping_ratios / joint_frictionloss_ratios:
-            (joint_ids, ratios (vec_size, n)) -> new = original * (1 + ratio)
+            (joint_ids, ratios (vec_size, n)) -> new = original * ratio
         - com_position_diffs: (link_ids, diffs (vec_size, n, 3)) -> CoM shifted by diff (meters)
+        A ratio of 1 leaves the parameter unchanged, as in MjxAdapter. A link's inertia is scaled with its mass (same
+        geometry, uniform density), and after a mass or CoM change the links' and dofs' inverse weights, which set
+        the constraints' softness, are recomputed for the selected environments.
         link_ids come from get_links_ids(), joint_ids from get_joints_ids().
         vec_mask (vec_size,) selects which environments to alter (None = all). reset_first reverts the
         previous alteration before applying the new one, so repeated calls do not compound.
 
         com_quatxyzw_diffs (CoM orientation) is not supported by genesis and must be None.
+        link_scales (geometry scaling) is not supported either, genesis has no per-environment geometry: must be None.
         Requires the adapter to have been created with enable_model_randomization=True.
         """
+        if link_scales is not None:
+            raise NotImplementedError("GenesisAdapter.alter_model does not support link_scales "
+                                      "(genesis shares the collision geometry between all environments).")
         if com_quatxyzw_diffs is not None:
             raise NotImplementedError("GenesisAdapter.alter_model does not support com_quatxyzw_diffs "
                                       "(genesis exposes no inertial-frame orientation setter).")
@@ -1185,15 +1217,16 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if com_position_diffs is not None:
             new_ids["com"] = self._ids_to_list(com_position_diffs[0])
 
+        inertia_changed = link_masses is not None or com_position_diffs is not None
         if reset_first:
-            self._revert_alterations(envs_idx, n_sel, keep=new_ids)
+            inertia_changed = self._revert_alterations(envs_idx, n_sel, keep=new_ids) or inertia_changed
 
         if link_masses is not None:
             link_ids = new_ids["mass"]
             ratio = self._alter_ratio_rows(link_masses[1], envs_idx)
             orig = self._orig_link_mass[th.as_tensor(link_ids, device=self._sim_dev)]
-            new_mass = (orig.view(1, -1) * (1.0 + ratio)).clamp(min=1e-4)
-            rs.set_links_inertial_mass(new_mass.contiguous(), links_idx=link_ids, envs_idx=envs_idx)
+            new_mass = (orig.view(1, -1) * ratio).clamp(min=1e-4)
+            self._set_links_mass_scaling_inertia(link_ids, new_mass, envs_idx)
 
         if link_frictions is not None:
             link_ids = new_ids["friction"]
@@ -1204,7 +1237,7 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 ratio = ratio[:, :, 0]
             geom_ids, cols = self._link_cols_to_geoms(link_ids)
             if len(geom_ids) > 0:
-                friction_ratio = (1.0 + ratio)[:, cols].clamp(min=0.0)
+                friction_ratio = ratio[:, cols].clamp(min=0.0)
                 rs.set_geoms_friction_ratio(friction_ratio.contiguous(), geoms_idx=geom_ids, envs_idx=envs_idx)
 
         for key, arg, orig_arr, setter in (("armature", joint_armature_ratios, self._orig_dof_armature, rs.set_dofs_armature),
@@ -1214,7 +1247,7 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 dof_ids = new_ids[key]
                 ratio = self._alter_ratio_rows(arg[1], envs_idx)
                 orig = orig_arr[th.as_tensor(dof_ids, device=self._sim_dev)]
-                new_vals = (orig.view(1, -1) * (1.0 + ratio)).clamp(min=1e-4)
+                new_vals = (orig.view(1, -1) * ratio).clamp(min=0.0) # zero is valid: a ratio of 1 keeps a zero
                 setter(new_vals.contiguous(), dofs_idx=dof_ids, envs_idx=envs_idx)
 
         if com_position_diffs is not None:
@@ -1223,6 +1256,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             diff = diff if envs_idx is None else diff[envs_idx]
             rs.set_links_COM_shift(diff.contiguous(), links_idx=link_ids, envs_idx=envs_idx)
 
+        if inertia_changed:
+            self._recompute_invweights(envs_idx)
         self._alter_applied = new_ids
 
     def _apply_commands(self):

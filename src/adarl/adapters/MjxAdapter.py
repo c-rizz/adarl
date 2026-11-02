@@ -77,6 +77,8 @@ jax.config.update('jax_default_matmul_precision', "highest")
 #                     raise e
 
 from mujoco.mjx._src.forward import euler, forward, fwd_acceleration, fwd_actuation, fwd_position, fwd_velocity
+from adarl.adapters.mjx_inertial_constants import (InertialConstantsModel, build_inertial_constants_model,
+                                                   compute_invweight0, compute_subtreemass, scale_body_inertia)
 from mujoco.mjx._src import sensor
 from mujoco.mjx._src import solver
 from packaging.version import Version
@@ -178,15 +180,22 @@ def jax2th_copy(array : jnp.ndarray, th_device : th.device) -> th.Tensor:
      * torch schedules the copy of A into its own memory
      * jax drops the reference to A, considers that memory as freed.
      * jax may modify the memory before the copy is done
+    Keeping a reference to A is not enough either, if A is donated to a later jax call:
+     * jax hands A's memory to the donating call regardless of the reference, and writes its outputs into it
+     * the write is ordered after jax's own work only, so it may land before torch's queued copy has run
     So we do the following:
-     * jax gives a view of its memory tracked via A to torch
-     * torch schedules a copy from A into its own memory
+     * jax copies A into a new array B, on its stream, so before any later call that may donate A
+     * jax gives a view of B to torch
+     * torch schedules a copy from B into its own memory
      * torch schedules a cuda event after the copy
-     * we save the jax reference A, until the event is passed (we check this on subsequent calls)
+     * we save the jax reference B, until the event is passed (we check this on subsequent calls). Nothing else
+       references B, so it can be neither donated nor freed while torch reads it.
 
     It would be nice to handle this better, for example having torch monitor the JAX stream. But jax does not a give
     a handle of its CUDA stream.
     """
+    if any(d.platform == "gpu" for d in array.devices()):
+        array = array.copy() # B: only _jax2th_pending will reference it
     out = jax2th(array, th_device)
     if out.device.type == "cuda": # a copy to anything else is a blocking transfer, already done reading
         out = out.clone()
@@ -772,6 +781,7 @@ class AlterModelCommand(PublicCommand):
     joint_frictionloss_ratios : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     com_position_diffs : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     com_quatxyzw_diffs : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
+    link_scales : tuple[Sequence[int] | np.ndarray | jnp.ndarray, th.Tensor] | None = None
     vec_mask : th.Tensor | None = None
     reset_first : bool = True
 
@@ -826,6 +836,16 @@ class AlterModelCommand(PublicCommand):
             com_body_quat_ids = adapter._empty_jax_array((0,), jnp.int32)
             com_quat_diff_xyzw = adapter._empty_jax_array((adapter._vec_size, 0, 4), jnp.float32)
 
+        if self.link_scales is not None:
+            scales_body_ids = adapter._to_jax_ids(self.link_scales[0])
+            adapter._check_scalable_links(scales_body_ids)
+            body_scales = th2jax(self.link_scales[1], jax_device=adapter._jax_device)
+            adapter._geometry_altered = True
+        else:
+            scales_body_ids = adapter._empty_jax_array((0,), jnp.int32)
+            body_scales = adapter._empty_jax_array((adapter._vec_size, 0, 3), jnp.float32)
+        adapter._host_geometry = None # the alteration resets the geometry of the selected envs
+
         return _InternalAlterModelCommand(
             vec_mask=adapter._vec_mask_to_jax(self.vec_mask),
             link_masses_body_ids=link_masses_body_ids,
@@ -842,6 +862,8 @@ class AlterModelCommand(PublicCommand):
             com_position_diff_xyz=com_position_diff_xyz,
             com_body_quat_ids=com_body_quat_ids,
             com_quat_diff_xyzw=com_quat_diff_xyzw,
+            scales_body_ids=scales_body_ids,
+            body_scales=body_scales,
         )
 
 
@@ -950,6 +972,8 @@ class _InternalAlterModelCommand(_InternalCommand):
     com_position_diff_xyz : jnp.ndarray
     com_body_quat_ids : jnp.ndarray
     com_quat_diff_xyzw : jnp.ndarray
+    scales_body_ids : jnp.ndarray
+    body_scales : jnp.ndarray
 
     def has_effect(self) -> bool:
         return (   self.link_masses_body_ids.shape[0] > 0
@@ -958,7 +982,8 @@ class _InternalAlterModelCommand(_InternalCommand):
                 or self.dof_dampings_dof_ids.shape[0] > 0
                 or self.dof_frictionloss_dof_ids.shape[0] > 0
                 or self.com_body_pos_ids.shape[0] > 0
-                or self.com_body_quat_ids.shape[0] > 0)
+                or self.com_body_quat_ids.shape[0] > 0
+                or self.scales_body_ids.shape[0] > 0)
 
     def run_jax(self, adapter : MjxAdapter, sim_state : SimState, sim_conf : SimConf, static_sim_conf : StaticSimConf) -> SimState:
         if not self.has_effect():
@@ -970,6 +995,7 @@ class _InternalAlterModelCommand(_InternalCommand):
         apply_dof_frictionloss_ratios = self.dof_frictionloss_dof_ids.shape[0] > 0
         apply_com_position_diffs = self.com_body_pos_ids.shape[0] > 0
         apply_com_quatxyzw_diffs = self.com_body_quat_ids.shape[0] > 0
+        apply_link_scales = self.scales_body_ids.shape[0] > 0
         mjx_model = adapter._alter_model_jax(
             mjx_model=sim_state.mjx_model,
             vec_size=static_sim_conf.vec_size,
@@ -996,8 +1022,14 @@ class _InternalAlterModelCommand(_InternalCommand):
             apply_com_quatxyzw_diffs=apply_com_quatxyzw_diffs,
             com_body_quat_ids=self.com_body_quat_ids,
             com_quat_diff_xyzw=self.com_quat_diff_xyzw,
+            apply_link_scales=apply_link_scales,
+            scales_body_ids=self.scales_body_ids,
+            body_scales=self.body_scales,
+            geom_axis_perm=adapter._geom_axis_perm,
+            geom_rbound_is_norm=adapter._geom_rbound_is_norm,
             reset_first=True,
             original_mjx_model=adapter._original_mjx_model,
+            inertial_constants=adapter._inertial_constants,
         )
         return sim_state.replace_v("mjx_model", mjx_model)
 
@@ -1152,6 +1184,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._step_length_sec = step_length_sec
         self._simTime = th.zeros((vec_size,), dtype=th.float64) # per-env simulated time, CPU mirror of sim_state.sim_substeps
         self._env_iterations_cache : tuple[th.Tensor, jnp.ndarray] | None = None
+        self._inertial_constants : InertialConstantsModel | None = None # built in build_scenario
+        # link_scales alterations, set up in build_scenario
+        self._geom_axis_perm : jnp.ndarray | None = None # (ngeom,3): the body axis each geom axis lies along
+        self._geom_rbound_is_norm : jnp.ndarray | None = None # (ngeom,): bounding radius = |size| (boxes), else max(size)
+        self._body_unscalable_reason : dict[int, str] = {}
+        self._geometry_altered = False # whether alter_model ever scaled a link
+        self._host_geometry : dict[str, np.ndarray] | None = None # CPU copy of the per-env geometry, None when stale
         self._must_init_step = True # so that run() also works before the first step(), starting from cleared stats
         self._total_iterations = 0
         self._sim_step_count_since_build = 0
@@ -1272,6 +1311,59 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError(f"Invalid mjName: must contain one and only one '{model_element_separator}' substring, but it's {mjname}")
         return mjname[:sep],mjname[sep+len(model_element_separator):]
 
+    def _init_link_scaling(self):
+        """For alter_model's link_scales: the body axis each geom axis lies along, and why bodies cannot be scaled."""
+        m = self._mj_model
+        axis_perm = np.tile(np.arange(3, dtype=np.int32), (m.ngeom, 1))
+        geom_aligned = np.zeros((m.ngeom,), dtype=bool)
+        for g in range(m.ngeom):
+            rot = np.empty(9)
+            mujoco.mju_quat2Mat(rot, m.geom_quat[g])
+            rot = np.abs(rot.reshape(3, 3))
+            if np.allclose(rot, np.round(rot), atol=1e-6):
+                axis_perm[g] = np.argmax(rot, axis=0) # geom axis i (column i) lies along body axis axis_perm[g, i]
+                geom_aligned[g] = True
+        scalable_types = (int(mujoco.mjtGeom.mjGEOM_BOX), int(mujoco.mjtGeom.mjGEOM_ELLIPSOID))
+        reasons = {}
+        for b in range(m.nbody):
+            name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b)
+            if m.body_weldid[b] == 0:
+                reasons[b] = f"body '{name}' is fixed to the world"
+            elif np.any(m.body_parentid[b+1:] == b): # children always come after their parent
+                reasons[b] = f"body '{name}' has child bodies, whose joints would not move with its geometry"
+            else:
+                for g in np.nonzero(m.geom_bodyid == b)[0]:
+                    gname = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or f"#{g}"
+                    if int(m.geom_type[g]) not in scalable_types:
+                        reasons[b] = (f"geom '{gname}' of body '{name}' is a {mujoco.mjtGeom(int(m.geom_type[g])).name},"
+                                      f" only boxes and ellipsoids can be scaled per axis")
+                        break
+                    if not geom_aligned[g]:
+                        reasons[b] = f"geom '{gname}' of body '{name}' is not aligned with the body's axes"
+                        break
+        self._geom_axis_perm = jnp.array(axis_perm, device=self._jax_device)
+        self._geom_rbound_is_norm = jnp.array(m.geom_type == mujoco.mjtGeom.mjGEOM_BOX, device=self._jax_device)
+        self._body_unscalable_reason = reasons
+
+    def _check_scalable_links(self, body_ids):
+        reasons = [self._body_unscalable_reason[b] for b in np.asarray(body_ids).reshape(-1).tolist()
+                   if b in self._body_unscalable_reason]
+        if len(reasons) > 0:
+            raise ValueError(f"alter_model: link_scales cannot scale these links: {'; '.join(reasons)}")
+
+    def _sync_mj_model_geometry(self, env : int):
+        """Copy env's geometry, which alter_model's link_scales alter per env, into the MjModel the CPU renderer and the
+        viewer draw every env with."""
+        if not self._geometry_altered:
+            return
+        if self._host_geometry is None:
+            m = self._sim_state.mjx_model
+            self._host_geometry = {name : np.asarray(getattr(m, name))
+                                   for name in ("geom_size", "geom_pos", "geom_rbound", "geom_aabb")}
+        for name, values in self._host_geometry.items():
+            dst = getattr(self._mj_model, name)
+            dst[:] = values[env].reshape(dst.shape)
+
     def _recompute_mjxmodel_inaxes(self, mjx_model):
         # ggLog.info(f"jax.tree.structure(mjx_model) = {jax.tree.structure(mjx_model)}")
         out_axes = jax.tree_util.tree_map(lambda l:None, mjx_model)
@@ -1284,6 +1376,16 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "dof_damping":0,
                                           "body_pos":0,
                                           "body_quat":0,
+                                          "body_inertia":0,
+                                          # constants derived from the inertial parameters, recomputed by alter_model
+                                          "body_invweight0":0,
+                                          "dof_invweight0":0,
+                                          "body_subtreemass":0,
+                                          # geometry, scaled per env by alter_model's link_scales
+                                          "geom_size":0,
+                                          "geom_pos":0,
+                                          "geom_rbound":0,
+                                          "geom_aabb":0,
                                           "opt.timestep":0}) # model fields to be vmapped. Per-env timestep: run() sets it to 0 to freeze an env
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
@@ -1527,6 +1629,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl) #, graph_mode=mjxw.types.GraphMode.WARP_STAGED_EX)
         else:
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
+        try:
+            # To recompute the constraint inverse weights when alter_model changes the inertial parameters
+            self._inertial_constants = build_inertial_constants_model(big_speck, self._mj_model, self._jax_device)
+        except Exception as e:
+            self._inertial_constants = None
+            ggLog.warn(f"MjxAdapter: could not build the model to recompute body/dof_invweight0 ({type(e).__name__}: {e}). "
+                       f"alter_model will leave them at their nominal values, so the constraints of bodies whose "
+                       f"mass, inertia, armature or COM are altered will be softer or stiffer than intended.")
+        self._init_link_scaling()
         self._body_rootid = jax.device_put(self._mj_model.body_rootid, device=self._jax_device) # maps bodies to their root body
         self._sim_conf.body_rootid = self._body_rootid
         self._sim_conf.site_bodyid = jax.device_put(jnp.array(self._mj_model.site_bodyid, dtype=jnp.int32), device=self._jax_device)
@@ -2306,6 +2417,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         for env_i,env in enumerate(selected_vecs):
             if use_fixed_shapes and not active_vecs[env]:
                 continue
+            self._sync_mj_model_geometry(env)
             for cam_i in range(len(requestedCameras)):
                 cam = requestedCameras[cam_i]
                 # print(f"self._mj_model.cam_resolution[cid] = {self._mj_model.cam_resolution[self._cname2cid[cam]]}")
@@ -3532,6 +3644,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if self._show_gui and (time.monotonic() - self._last_gui_update_wtime > 1/self._gui_freq or force):
             self._forward_if_needed()
             mjx.get_data_into(self._viewer_mj_data,self._mj_model, jax.tree_util.tree_map(lambda l: l[self._gui_env_index], self._sim_state.mjx_data))
+            self._sync_mj_model_geometry(self._gui_env_index)
             self._last_gui_update_wtime = time.monotonic()
             self._viewer.sync()
 
@@ -3774,6 +3887,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # print(f"r0 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
         # print(f"r0 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         self._sim_state.mjx_model = self._reset_model_alterations(vec_mask_jnp, self._sim_state.mjx_model, self._original_mjx_model)
+        self._host_geometry = None
+        self._mark_forward_needed() # geom_pos may have changed
         # print(f"r1 self._sim_state.mjx_model.body_mass.shape {self._sim_state.mjx_model.body_mass.shape}")
         # print(f"r1 self._sim_state.mjx_model.body_ipos.shape {self._sim_state.mjx_model.body_ipos.shape}")
 
@@ -3794,7 +3909,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                        original_mjx_model.dof_frictionloss, mjx_model.dof_frictionloss)
         resetted_body_iquat = jnp.where(jnp.broadcast_to(vec_mask, original_mjx_model.body_iquat.shape[::-1]).T,
                                         original_mjx_model.body_iquat, mjx_model.body_iquat)
-        resetted_model = mjx_model.replace( body_mass = resetted_body_mass,
+        reset = lambda name: jnp.where(vec_mask.reshape((-1,) + (1,)*(getattr(mjx_model, name).ndim - 1)),
+                                       getattr(original_mjx_model, name), getattr(mjx_model, name))
+        resetted_model = mjx_model.replace( body_inertia = reset("body_inertia"),
+                                            body_invweight0 = reset("body_invweight0"),
+                                            dof_invweight0 = reset("dof_invweight0"),
+                                            body_subtreemass = reset("body_subtreemass"),
+                                            geom_size = reset("geom_size"),
+                                            geom_pos = reset("geom_pos"),
+                                            geom_rbound = reset("geom_rbound"),
+                                            geom_aabb = reset("geom_aabb"),
+                                            body_mass = resetted_body_mass,
                                             body_ipos = resetted_body_ipos,
                                             body_iquat = resetted_body_iquat,
                                             geom_friction = resetted_geom_friction,
@@ -3807,7 +3932,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @partial(jit_th_synced, static_argnames=[ "vec_size",
                                         "apply_link_masses", "apply_link_frictions",
                                        "apply_dof_armature_ratios", "apply_dof_damping_ratios", "apply_dof_frictionloss_ratios",
-                                       "apply_com_position_diffs", "apply_com_quatxyzw_diffs",
+                                       "apply_com_position_diffs", "apply_com_quatxyzw_diffs", "apply_link_scales",
                                        "reset_first"],
                         donate_argnames=["mjx_model"])
     def _alter_model_jax(mjx_model : mjx.Model,
@@ -3835,17 +3960,58 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                          apply_com_quatxyzw_diffs : bool,
                          com_body_quat_ids : jnp.ndarray | None,
                          com_quat_diff_xyzw : jnp.ndarray | None,
-                         reset_first : bool = True, 
-                         original_mjx_model : mjx.Model | None = None) -> mjx.Model:
+                         apply_link_scales : bool = False,
+                         scales_body_ids : jnp.ndarray | None = None,
+                         body_scales : jnp.ndarray | None = None,
+                         geom_axis_perm : jnp.ndarray | None = None,
+                         geom_rbound_is_norm : jnp.ndarray | None = None,
+                         reset_first : bool = True,
+                         original_mjx_model : mjx.Model | None = None,
+                         inertial_constants : InertialConstantsModel | None = None) -> mjx.Model:
         if reset_first:
             mjx_model = MjxAdapter._reset_model_alterations(vec_mask, mjx_model, original_mjx_model)
+        if apply_link_scales:
+            if (scales_body_ids is None or body_scales is None
+                    or geom_axis_perm is None or geom_rbound_is_norm is None):
+                raise ValueError("To apply link scales, scales_body_ids, body_scales, geom_axis_perm and "
+                                 "geom_rbound_is_norm must be provided")
+            # Applied first, so that the other alterations act on the scaled links: a mass ratio scales the scaled
+            # inertia, a COM diff shifts the scaled COM
+            body_scaled = jnp.zeros((mjx_model.nbody,), dtype=jnp.bool).at[scales_body_ids].set(True)
+            geom_scaled = body_scaled[geom_bodyid]
+            body_scale = jnp.ones((vec_size, mjx_model.nbody, 3), dtype=mjx_model.body_ipos.dtype)
+            body_scale = body_scale.at[:, scales_body_ids].set(body_scales)
+            geom_scale = body_scale[:, geom_bodyid] # (vec_size, ngeom, 3), along the body axes
+            geom_scale_local = geom_scale[:, jnp.arange(geom_axis_perm.shape[0])[:, None], geom_axis_perm] # along the geom axes
+            geom_size = mjx_model.geom_size*geom_scale_local
+            aabb = mjx_model.geom_aabb # (center, half-size) in the geom frame: (vec, ngeom, 6) on jax, (vec, ngeom, 2, 3) on warp
+            geom_aabb = (aabb.reshape(aabb.shape[:2] + (2, 3))*geom_scale_local[:, :, None, :]).reshape(aabb.shape)
+            geom_rbound = jnp.where(geom_rbound_is_norm, jnp.linalg.norm(geom_size, axis=-1), jnp.max(geom_size, axis=-1))
+            body_inertia, body_iquat = scale_body_inertia(mjx_model.body_inertia, mjx_model.body_iquat, body_scale)
+            env_geom = vec_mask[:, None] & geom_scaled[None, :]
+            env_body = vec_mask[:, None] & body_scaled[None, :]
+            mjx_model = mjx_model.replace(
+                geom_size=jnp.where(env_geom[..., None], geom_size, mjx_model.geom_size),
+                geom_pos=jnp.where(env_geom[..., None], mjx_model.geom_pos*geom_scale, mjx_model.geom_pos),
+                geom_aabb=jnp.where(env_geom.reshape(env_geom.shape + (1,)*(aabb.ndim - 2)), geom_aabb, aabb),
+                geom_rbound=jnp.where(env_geom, geom_rbound, mjx_model.geom_rbound),
+                body_ipos=jnp.where(env_body[..., None], mjx_model.body_ipos*body_scale, mjx_model.body_ipos),
+                body_inertia=jnp.where(env_body[..., None], body_inertia, mjx_model.body_inertia),
+                body_iquat=jnp.where(env_body[..., None], body_iquat, mjx_model.body_iquat))
         replacements = {}
         if apply_link_masses:
             if body_masses_ratio_change is None or link_masses_body_ids is None:
                 raise ValueError("To apply link mass changes, both body_masses_ratio_change and link_masses_body_ids must be provided")
-            new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].mul(body_masses_ratio_change)
-            new_body_mass = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
-            replacements["body_mass"] = jnp.clip(new_body_mass, min=0.0001)
+            # The floor applies only to the altered bodies: a moving body needs a positive mass, while untouched
+            # bodies keep theirs (the world and static bodies have mass 0)
+            old_mass = mjx_model.body_mass[:, link_masses_body_ids]
+            altered_mass = jnp.clip(old_mass*body_masses_ratio_change, min=0.0001)
+            new_body_mass = mjx_model.body_mass.at[:, link_masses_body_ids].set(altered_mass)
+            replacements["body_mass"] = jnp.where(vec_mask[:, None], new_body_mass, mjx_model.body_mass)
+            # Same geometry and uniform density: the inertia scales with the mass
+            effective_ratio = altered_mass/jnp.where(old_mass > 0, old_mass, 1.0)
+            new_body_inertia = mjx_model.body_inertia.at[:, link_masses_body_ids].multiply(effective_ratio[..., None])
+            replacements["body_inertia"] = jnp.where(vec_mask[:, None, None], new_body_inertia, mjx_model.body_inertia)
 
         if apply_link_frictions:
             frictions_body_ids_mask = jnp.zeros_like(mjx_model.geom_bodyid, shape=(mjx_model.nbody,), dtype=jnp.bool)
@@ -3869,23 +4035,25 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if apply_dof_armature_ratios:
             if dof_armatures_ratio_change is None or dof_armatures_dof_ids is None:
                 raise ValueError("To apply joint armature changes, both dof_armatures_ratio_change and dof_armatures_dof_ids must be provided")
-            new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].mul(dof_armatures_ratio_change)
-            new_armatures = jnp.clip(new_armatures, min=0.0001)
+            # Armature, damping and frictionloss can be zero: only negative values are excluded, and only on the
+            # altered dofs, so that a ratio of 1 leaves the model unchanged
+            new_armatures = mjx_model.dof_armature.at[:, dof_armatures_dof_ids].set(
+                jnp.clip(mjx_model.dof_armature[:, dof_armatures_dof_ids]*dof_armatures_ratio_change, min=0.0))
             replacements["dof_armature"] = jnp.where(vec_mask[:, None], new_armatures, mjx_model.dof_armature)
 
         if apply_dof_damping_ratios:
             if dof_dampings_ratio_change is None or dof_dampings_dof_ids is None:
                 raise ValueError("To apply joint damping changes, both dof_dampings_ratio_change and dof_dampings_dof_ids must be provided")
-            new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].mul(dof_dampings_ratio_change)
-            new_dampings = jnp.clip(new_dampings, min=0.0001)
+            new_dampings = mjx_model.dof_damping.at[:, dof_dampings_dof_ids].set(
+                jnp.clip(mjx_model.dof_damping[:, dof_dampings_dof_ids]*dof_dampings_ratio_change, min=0.0))
             replacements["dof_damping"] = jnp.where(vec_mask[:, None], new_dampings, mjx_model.dof_damping)
 
         if apply_dof_frictionloss_ratios:
             if dof_frictionloss_ratio_change is None or dof_frictionloss_dof_ids is None:
                 raise ValueError("To apply joint frictionloss changes, both dof_frictionloss_ratio_change and dof_frictionloss_dof_ids must be provided")
-            new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].mul(dof_frictionloss_ratio_change)
-            new_frictionloss = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
-            replacements["dof_frictionloss"] = jnp.clip(new_frictionloss, min=0.0001)
+            new_frictionloss = mjx_model.dof_frictionloss.at[:, dof_frictionloss_dof_ids].set(
+                jnp.clip(mjx_model.dof_frictionloss[:, dof_frictionloss_dof_ids]*dof_frictionloss_ratio_change, min=0.0))
+            replacements["dof_frictionloss"] = jnp.where(vec_mask[:, None], new_frictionloss, mjx_model.dof_frictionloss)
 
         if apply_com_position_diffs:
             new_body_ipos = mjx_model.body_ipos.at[:, com_body_pos_ids].add(com_position_diff_xyz)
@@ -3894,7 +4062,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if apply_com_quatxyzw_diffs:
             if com_quat_diff_xyzw is None or com_body_quat_ids is None:
                 raise ValueError("To apply COM orientation changes, both com_quat_diff_xyzw and com_body_quat_ids must be provided")
-            quat_mul = mjx._src.math.quat_mul
+            # mjx's quat_mul takes single (4,) quaternions: vectorize it over the (vec_size, n_bodies) leading axes
+            quat_mul = jnp.vectorize(mjx._src.math.quat_mul, signature="(4),(4)->(4)")
             altered_quat = quat_mul(
                 com_quat_diff_xyzw[:, :, [3, 0, 1, 2]],
                 mjx_model.body_iquat[:, com_body_quat_ids],
@@ -3902,7 +4071,22 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             new_body_iquat = mjx_model.body_iquat.at[:, com_body_quat_ids].set(altered_quat)
             replacements["body_iquat"] = jnp.where(vec_mask[:, None, None], new_body_iquat, mjx_model.body_iquat)
 
-        return mjx_model.replace(**replacements)
+        altered_model = mjx_model.replace(**replacements)
+        if inertial_constants is not None and (apply_link_masses or apply_dof_armature_ratios
+                                               or apply_com_position_diffs or apply_com_quatxyzw_diffs
+                                               or apply_link_scales):
+            # The mass matrix changed: recompute what MuJoCo derives from it at compile time (mj_setConst), which
+            # sets the softness of every constraint, and the subtree masses
+            body_iw, dof_iw = jax.vmap(partial(compute_invweight0, inertial_constants))(
+                                        altered_model.body_mass, altered_model.body_inertia, altered_model.body_ipos,
+                                        altered_model.body_iquat, altered_model.body_pos, altered_model.body_quat,
+                                        altered_model.dof_armature)
+            subtreemass = compute_subtreemass(inertial_constants.model.body_parentid, altered_model.body_mass)
+            altered_model = altered_model.replace(
+                body_invweight0=jnp.where(vec_mask[:, None, None], body_iw, altered_model.body_invweight0),
+                dof_invweight0=jnp.where(vec_mask[:, None], dof_iw, altered_model.dof_invweight0),
+                body_subtreemass=jnp.where(vec_mask[:, None], subtreemass, altered_model.body_subtreemass))
+        return altered_model
 
     def alter_model(self, link_masses : tuple[jnp.ndarray, th.Tensor] | None = None,
                               link_frictions : tuple[jnp.ndarray, th.Tensor] | None = None,
@@ -3911,6 +4095,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                               joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor] | None = None,
                               com_position_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
                               com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor] | None = None,
+                              link_scales : tuple[jnp.ndarray, th.Tensor] | None = None,
                               vec_mask : th.Tensor | None = None,
                               reset_first : bool = True):
         """_summary_
@@ -3920,25 +4105,35 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         link_masses : tuple[jnp.ndarray, th.Tensor]
             tuple containing  alist of link ids (from get_link_id) and corresponding
             body masses, body masses should be in a tensor of size (vec_size, len(link_ids))
-            body mass will be set to old_mass*(1+ratio)
+            body mass will be set to old_mass*ratio (a ratio of 1 leaves it unchanged)
         link_frictions : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of link ids (from get_link_id) and corresponding
-            body friction ratios, where the new friction will be computed as old_friction*(1+ratio).
+            body friction ratios, where the new friction will be computed as old_friction*ratio.
         joint_armature_ratios : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of joint ids (from get_joint_id) and corresponding
-            joint armature ratios, where the new armature will be computed as old_armature*(1+ratio).
+            joint armature ratios, where the new armature will be computed as old_armature*ratio.
         joint_damping_ratios : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of joint ids (from get_joint_id) and corresponding
-            joint damping ratios, where the new damping will be computed as old_damping*(1+ratio).
+            joint damping ratios, where the new damping will be computed as old_damping*ratio.
         joint_frictionloss_ratios : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of joint ids (from get_joint_id) and corresponding
-            joint frictionloss ratios, where the new frictionloss will be computed as old_frictionloss*(1+ratio).
+            joint frictionloss ratios, where the new frictionloss will be computed as old_frictionloss*ratio.
         com_position_diffs : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of link ids (from get_link_id) and corresponding
             COM position differences, where the new COM position will be computed as old_COM_position + diff
         com_quatxyzw_diffs : tuple[jnp.ndarray, th.Tensor]
             tuple containing a list of link ids (from get_link_id) and corresponding
-            COM orientation differences in quatxyzw format, where the new COM orientation will be computed as old_COM_orientation + diff 
+            COM orientation differences in quatxyzw format, where the new COM orientation is the quaternion product diff*old_COM_orientation
+            (Hamilton product, diff on the left; the identity quaternion leaves it unchanged)
+        link_scales : tuple[jnp.ndarray, th.Tensor]
+            tuple containing a list of link ids (from get_link_id) and corresponding scale factors along the link
+            frame's x, y and z axes, in a tensor of size (vec_size, len(link_ids), 3) (a scale of 1 leaves the link
+            unchanged). The link's geometry (shape sizes and positions, collision bounds) is stretched about the link
+            frame, and its inertia and COM position follow it at constant mass and uniform density: use link_masses
+            to change the mass too (e.g. a ratio of sx*sy*sz keeps the density). Applied before the other
+            alterations, which act on the scaled link. Only links not fixed to the world, without child links, and
+            whose geoms are boxes or ellipsoids aligned with the link frame can be scaled. Sites, cameras and lights
+            on the link are not moved.
         vec_mask : th.Tensor
             Mask of shape (vec_size,) indicating which environments to update, if None all environments will be updated
         reset_first : bool
@@ -3947,6 +4142,14 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             the same parameters are altered multiple times.
         """
         record_region_start("MjxAdapter.alter_model")
+        if link_scales is not None:
+            scales_body_ids = self._to_jax_ids(link_scales[0])
+            self._check_scalable_links(scales_body_ids)
+            body_scales = th2jax(link_scales[1], jax_device=self._jax_device)
+            self._geometry_altered = True
+        else:
+            scales_body_ids, body_scales = None, None
+        self._host_geometry = None # the alteration resets the geometry of the selected envs
         # We need to be able to alter:
         #    body masses (body_mass)
         #    body frictions (geom_friction, in the xml there are sliding, torsional and rolling friction, where are they in mjmodel?)
@@ -3989,7 +4192,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             dof_frictionloss_ratio_change=dof_frictionloss_ratio_change,
 
             apply_dof_damping_ratios=joint_damping_ratios is not None,
-            dof_damping_dof_ids=self._sim_conf.jnt_dofadr[joint_damping_ratios[0]] if joint_damping_ratios is not None else None,
+            dof_dampings_dof_ids=self._sim_conf.jnt_dofadr[joint_damping_ratios[0]] if joint_damping_ratios is not None else None,
             dof_dampings_ratio_change=dof_dampings_ratio_change,
 
             apply_com_position_diffs=com_position_diffs is not None,
@@ -3998,9 +4201,17 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             apply_com_quatxyzw_diffs=com_quatxyzw_diffs is not None,
             com_body_quat_ids=com_quatxyzw_diffs[0] if com_quatxyzw_diffs is not None else None,
             com_quat_diff_xyzw=com_quat_diff_xyzw,
+            apply_link_scales=link_scales is not None,
+            scales_body_ids=scales_body_ids,
+            body_scales=body_scales,
+            geom_axis_perm=self._geom_axis_perm,
+            geom_rbound_is_norm=self._geom_rbound_is_norm,
             reset_first=reset_first,
-            original_mjx_model=self._original_mjx_model
+            original_mjx_model=self._original_mjx_model,
+            inertial_constants=self._inertial_constants
         )
+        if self._geometry_altered:
+            self._mark_forward_needed() # geom_pos changes the geoms' world poses
         record_time("MjxAdapter.alter_model: model altered")
         # ggLog.info(f"altering model with {replacements}")
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?

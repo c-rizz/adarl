@@ -84,7 +84,7 @@ class VecEpisodeStorage():
         self._added_vframes_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
         self._added_vframes : int = 0
         self.full = False
-        self._use_nonblocking_adds = self._storage_torch_device.type == "cuda"
+        self._use_nonblocking_adds = True #self._storage_torch_device.type == "cuda"
         self._nonblocking_out = self._output_device.type == "cuda"
         self._standing_output_nonblocking_copy : th.Event | None = None
 
