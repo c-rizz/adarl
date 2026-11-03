@@ -12,7 +12,8 @@ from adarl.utils.tensor_trees import is_all_finite, map_tensor_tree, flatten_ten
 from typing_extensions import override
 from adarl.utils.dbg.dbg_checks import dbg_check_finite, dbg_check_size, dbg_check
 import adarl.utils.spaces as spaces
-from adarl.utils.utils import masked_assign, masked_to_masked_assign
+from adarl.utils.utils import masked_assign, masked_to_masked_assign, event_sync
+from adarl.utils.pinned_memory import registered_pinned_full
 
 def take_frames(buff : th.Tensor , episodes : th.Tensor, frames : th.Tensor) -> th.Tensor:
     # ggLog.info(f"episodes.size() = {episodes.size()}")
@@ -42,7 +43,8 @@ class VecEpisodeStorage():
                         action_space : spaces.ThBox,
                         min_episode_length : int = 0,
                         rng : th.Generator | None = None,
-                        rewards_num : int = 1):
+                        rewards_num : int = 1,
+                        float32_storage_dtype : th.dtype = th.float32):
         """_summary_
 
         Parameters
@@ -61,7 +63,12 @@ class VecEpisodeStorage():
             Action space
         min_episode_length : int
             Minimum episode length, useful if it always more than the sampling trajectory length, to avoid sampling retries
+        float32_storage_dtype : th.dtype
+            Dtype float32 observations are stored as, e.g. th.float16 to halve their memory. It is internal to
+            the storage: observations are converted when added and converted back when sampled or replayed.
         """
+        if float32_storage_dtype not in (th.float32, th.float16, th.bfloat16):
+            raise ValueError(f"float32_storage_dtype must be float32, float16 or bfloat16, got {float32_storage_dtype}")
         self._buffer_size_vframes = buffer_size
         self._storage_torch_device = storage_torch_device
         self._output_device = output_device
@@ -69,6 +76,9 @@ class VecEpisodeStorage():
         self._action_space : spaces.ThBox = action_space
         self._action_dim = np.prod(action_space.shape).item()
         self._obs_shape = spaces.get_obs_shape(observation_space)
+        self._obs_dtypes = {key: numpy_to_torch_dtype(self._observation_space[key].dtype) for key in self._obs_shape}
+        self._obs_storage_dtypes = {key: float32_storage_dtype if dtype == th.float32 else dtype
+                                    for key, dtype in self._obs_dtypes.items()}
         self._vec_size = vec_size
         self._min_episode_length = min_episode_length
         self._rng = rng
@@ -89,38 +99,25 @@ class VecEpisodeStorage():
         self._standing_output_nonblocking_copy : th.Event | None = None
 
         magic_value = 42
+        # Allocate pinned directly: pinning afterwards makes a copy, so the largest buffer would briefly exist twice.
+        # Pinned with cudaHostRegister, as pin_memory=True rounds each tensor up to a power of two
+        pin = self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds
+        def full(size : tuple[int,...], dtype : th.dtype) -> th.Tensor:
+            if pin:
+                return registered_pinned_full(size, magic_value, dtype)
+            return th.full(size, fill_value=magic_value, dtype=dtype, device=self._storage_torch_device)
         self.observations = {
-            key: th.full(  fill_value=magic_value,
-                            size = (self._vec_size, self._buffer_size_vframes,) + _obs_shape,
-                            dtype=numpy_to_torch_dtype(self._observation_space[key].dtype),
-                            device = self._storage_torch_device)
+            key: full((self._vec_size, self._buffer_size_vframes,) + _obs_shape, self._obs_storage_dtypes[key])
             for key, _obs_shape in self._obs_shape.items()
         }
 
-        self.actions    = th.full(  fill_value=magic_value,
-                                    size = (self._vec_size, self._buffer_size_vframes, self._action_dim),
-                                    dtype=numpy_to_torch_dtype(self._action_space.dtype),
-                                    device = self._storage_torch_device)
-        self.rewards    = th.full(  fill_value=magic_value,
-                                    size = (self._vec_size, self._buffer_size_vframes, self._rewards_num), dtype=th.float32,
-                                    device = self._storage_torch_device)
-        self.terminated = th.full(  fill_value=magic_value,
-                                    size = (self._vec_size, self._buffer_size_vframes,), dtype=th.uint8,
-                                    device = self._storage_torch_device)
-        self.truncated  = th.full(  fill_value=magic_value,
-                                    size = (self._vec_size, self._buffer_size_vframes,), dtype=th.uint8,
-                                    device = self._storage_torch_device)
+        self.actions    = full((self._vec_size, self._buffer_size_vframes, self._action_dim), numpy_to_torch_dtype(self._action_space.dtype))
+        self.rewards    = full((self._vec_size, self._buffer_size_vframes, self._rewards_num), th.float32)
+        self.terminated = full((self._vec_size, self._buffer_size_vframes,), th.uint8)
+        self.truncated  = full((self._vec_size, self._buffer_size_vframes,), th.uint8)
         self.ep_frame_count = th.zeros(size = (self._vec_size, self._buffer_size_vframes,),
                                             dtype = th.int32,
                                             device = self._storage_torch_device)
-        
-        if self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds:
-            for k in self.observations.keys():
-                self.observations[k] = self.observations[k].pin_memory()
-            self.actions = self.actions.pin_memory()
-            self.rewards = self.rewards.pin_memory()
-            self.terminated = self.terminated.pin_memory()
-            self.truncated = self.truncated.pin_memory()
 
 
     def clear(self):
@@ -207,8 +204,9 @@ class VecEpisodeStorage():
         self.truncated[:,frame_idx].copy_(truncateds, non_blocking=nb)
         next_frame_idx = (frame_idx+1) % (self._buffer_size_vframes) #careful! handle this correctly at sampling, we may be overwriting something here
         for key in self.observations.keys():
-            self.observations[key][:,frame_idx].copy_(observations[key], non_blocking=nb)
-            self.observations[key][:,next_frame_idx].copy_(next_observations[key], non_blocking=nb)
+            # Converted on the source device, so a non-blocking transfer moves the storage dtype's bytes
+            self.observations[key][:,frame_idx].copy_(observations[key].to(self._obs_storage_dtypes[key]), non_blocking=nb)
+            self.observations[key][:,next_frame_idx].copy_(next_observations[key].to(self._obs_storage_dtypes[key]), non_blocking=nb)
         if nb:
             event = th.cuda.Event()
             event.record()
@@ -224,7 +222,7 @@ class VecEpisodeStorage():
         self._tot_stored_frames_th += self._vec_size*th.logical_not(overriding_th)
             
         if sync_stream and nb:
-            event.synchronize() # sync non_blocking operations
+            event_sync(event)  # sync non_blocking operations
         # ggLog.info(f"EpisodeStorage{id(self)}: added frame {ep_idx},{frame_idx}. term={terminated} trunc={truncated}")
         
     def stored_episodes(self):
@@ -320,6 +318,9 @@ class VecEpisodeStorage():
         trajs_truncateds = self.truncated[env_idxs, frame_idxs]
         trajs_obs =      {key: self.observations[key][env_idxs, frame_idxs] for key in self.observations.keys()}
         trajs_next_obs = {key: self.observations[key][env_idxs, (frame_idxs+1)%self._buffer_size_vframes] for key in self.observations.keys()}
+        if return_traj:
+            trajs_obs =      {key: obs.to(self._obs_dtypes[key]) for key, obs in trajs_obs.items()}
+            trajs_next_obs = {key: obs.to(self._obs_dtypes[key]) for key, obs in trajs_next_obs.items()}
 
         dbg_check_size(trajs_actions, (batch_size, sample_duration, self._action_dim), "Sampled actions have wrong size")
         dbg_check_size(trajs_rewards, (batch_size, sample_duration, self._rewards_num), "Sampled rewards have wrong size")
@@ -341,8 +342,9 @@ class VecEpisodeStorage():
             next_observations = {}
             for key in self.observations:
                 obs_shape = trajs_obs[key].size()[2:]
-                observations[key]      = trajs_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out)
-                next_observations[key] = trajs_next_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out)
+                # Converted back on the output device, after the transfer of the storage dtype's bytes
+                observations[key]      = trajs_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out).to(self._obs_dtypes[key])
+                next_observations[key] = trajs_next_obs[key].view((batch_size,)+obs_shape).to(self._output_device, non_blocking=self._nonblocking_out).to(self._obs_dtypes[key])
             actions     = trajs_actions.view((batch_size,)+trajs_actions.size()[2:]).to(self._output_device, non_blocking=self._nonblocking_out)
             terminateds = trajs_terminateds.view(batch_size,1).to(self._output_device, non_blocking=self._nonblocking_out)
             rewards     = trajs_rewards.view(batch_size,self._rewards_num).to(self._output_device, non_blocking=self._nonblocking_out)
@@ -385,8 +387,10 @@ class VecEpisodeStorage():
             last_next_obs_idx_dst = copy_dst.stop%self._buffer_size_vframes
             last_next_obs_idx_src = copy_src.stop%src_storage._buffer_size_vframes
             for key in self.observations.keys():
-                self.observations[key][:,copy_dst].copy_(src_storage.observations[key][:,copy_src], non_blocking=nb)
-                self.observations[key][:,last_next_obs_idx_dst].copy_(src_storage.observations[key][:,last_next_obs_idx_src], non_blocking=nb)
+                # The source may store a different dtype, convert on its device as in add_frames
+                dst_dtype = self._obs_storage_dtypes[key]
+                self.observations[key][:,copy_dst].copy_(src_storage.observations[key][:,copy_src].to(dst_dtype), non_blocking=nb)
+                self.observations[key][:,last_next_obs_idx_dst].copy_(src_storage.observations[key][:,last_next_obs_idx_src].to(dst_dtype), non_blocking=nb)
             if nb:
                 event = th.cuda.Event()
                 event.record()
@@ -402,7 +406,7 @@ class VecEpisodeStorage():
             self.full = self._added_vframes>=self._buffer_size_vframes
 
         if nb and event is not None:
-            event.synchronize() # sync non_blocking operations
+            event_sync(event)  # sync non_blocking operations
         self._current_ep_frame_counts_th = src_storage._current_ep_frame_counts_th            
         new_size = self.size()
         dbg_check(lambda: new_size-prev_size == src_storage.size() or self.full, lambda:f"Error updating buffer {new_size}-{prev_size}!={src_storage.size()}")
@@ -428,8 +432,8 @@ class VecEpisodeStorage():
             obs = {}
             next_obs = {}
             for key in self.observations.keys():
-                obs[key] = self.observations[key][:,idx]
-                next_obs[key] = self.observations[key][:,(idx+1)%self._buffer_size_vframes]
+                obs[key] = self.observations[key][:,idx].to(self._obs_dtypes[key])
+                next_obs[key] = self.observations[key][:,(idx+1)%self._buffer_size_vframes].to(self._obs_dtypes[key])
             step += 1
             yield (obs, next_obs, actions, rewards, terminateds, truncateds)
 
@@ -455,8 +459,11 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         validation_episodes : int = 0,
         rewards_num : int = 1,
         max_vram_usage_ratio : float = 1.0,
-        min_residual_vram : float | int | None = None
+        min_residual_vram : float | int | None = None,
+        float32_storage_dtype : th.dtype = th.float32
     ):
+        """float32_storage_dtype is the dtype float32 observations are stored as (see VecEpisodeStorage),
+        e.g. th.float16 to halve their memory, transparently to what adds and samples."""
         self.obs_shape : dict[str, tuple[int, ...]]
         super().__init__(buffer_size, observation_space, action_space, output_device, n_envs=n_envs)
 
@@ -475,6 +482,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._action_space = action_space
         self._storage_torch_device = storage_torch_device
         self._rewards_num = rewards_num
+        self._float32_storage_dtype = float32_storage_dtype
         self._validation_episodes = validation_episodes if not disable_validation_set else 0
         
         self._max_episode_duration = max_episode_duration
@@ -560,7 +568,8 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
                                           observation_space=self._observation_space,
                                           action_space=self._action_space,
                                           min_episode_length=self._min_episode_duration,
-                                          rewards_num=self._rewards_num)
+                                          rewards_num=self._rewards_num,
+                                          float32_storage_dtype=self._float32_storage_dtype)
         if self._validation_episodes==0:
             self._validation_storage = None
         else:
@@ -571,7 +580,8 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
                                             observation_space=self._observation_space,
                                             action_space=self._action_space,
                                             min_episode_length=self._min_episode_duration,
-                                            rewards_num=self._rewards_num)
+                                            rewards_num=self._rewards_num,
+                                            float32_storage_dtype=self._float32_storage_dtype)
 
 
     @override

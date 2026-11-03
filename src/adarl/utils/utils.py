@@ -17,6 +17,9 @@ from adarl.utils.base_utils import *
 import functools
 import gymnasium as gym
 
+import warnings
+from collections import defaultdict
+
 numpy_to_torch_dtype_dict = {
     bool          : th.bool,
     np.uint8      : th.uint8,
@@ -1354,3 +1357,66 @@ def override_struct(struct1: _Struct, struct2: Any) -> _Struct:
 def dataclass2dict(dc):
     """Shallow-convert a dataclass instance to a dict, dataclasses.asdict does a deep conversion and deepcopies everything."""
     return {field.name: getattr(dc, field.name) for field in dataclasses.fields(dc)}
+
+
+class EventSyncWarning(UserWarning):
+    pass
+
+# Python shows a given warning only once per location by default; show every one
+warnings.simplefilter("always", EventSyncWarning)
+
+
+class _SiteStats:
+    __slots__ = ("calls", "waits", "wait_time")
+    def __init__(self):
+        self.calls = 0
+        self.waits = 0
+        self.wait_time = 0.0
+
+_event_sync_stats = defaultdict(_SiteStats)
+
+
+def event_sync(e: th.cuda.Event, min_wait_s: float = 0.0, depth: int = 1):
+    """Synchronize on `e`, recording per-call-site whether it actually waited,
+    and emitting an EventSyncWarning every time it did.
+
+    min_wait_s: waits shorter than this are counted as 'no wait'
+                (filters the race where the GPU finishes right after query()).
+    depth:      stack depth of the call site to attribute to (1 = direct caller;
+                use 2 if you call this through your own wrapper).
+    """
+    f = sys._getframe(depth)
+    st = _event_sync_stats[(f.f_code.co_filename, f.f_lineno, f.f_code.co_name)]
+    st.calls += 1
+    if e.query():
+        return
+    t0 = time.perf_counter()
+    e.synchronize()
+    dt = time.perf_counter() - t0
+    if dt >= min_wait_s:
+        st.waits += 1
+        st.wait_time += dt
+        warnings.warn(
+            f"event sync waited {dt * 1e3:.2f} ms "
+            f"(this site: {st.waits}/{st.calls} = {100 * st.waits / st.calls:.1f}% waited)",
+            EventSyncWarning,
+            stacklevel=depth + 1,
+        )
+
+
+def event_sync_report(reset: bool = False, file=sys.stderr):
+    """Print per-call-site stats, sorted by total time spent waiting."""
+    if not _event_sync_stats:
+        return
+    rows = sorted(_event_sync_stats.items(),
+                  key=lambda kv: kv[1].wait_time, reverse=True)
+    print(f"{'call site':<60} {'calls':>8} {'waited':>8} {'%':>6} "
+          f"{'total ms':>10} {'avg ms':>8}", file=file)
+    for (fname, line, func), st in rows:
+        site = f"{fname.rsplit('/', 1)[-1]}:{line} ({func})"
+        pct = 100.0 * st.waits / st.calls if st.calls else 0.0
+        avg = 1e3 * st.wait_time / st.waits if st.waits else 0.0
+        print(f"{site:<60} {st.calls:>8} {st.waits:>8} {pct:>5.1f}% "
+              f"{1e3 * st.wait_time:>10.1f} {avg:>8.2f}", file=file)
+    if reset:
+        _event_sync_stats.clear()
