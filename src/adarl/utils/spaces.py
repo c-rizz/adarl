@@ -108,40 +108,84 @@ class ThBox(gym.spaces.Box):
         return r*(self._high_th-self._low_th)+self._low_th
         # return th.as_tensor(super().sample(), device = self._th_device) # does not use the torch rng
 
+    @staticmethod
+    def _all_equal(a : th.Tensor, b : th.Tensor) -> bool:
+        """Elementwise equality of a and b (broadcasted), with nans counted as equal to nans."""
+        eq = a == b
+        if a.is_floating_point():
+            eq |= a.isnan() & b.isnan()
+        return bool(eq.all())
+
+    @staticmethod
+    def _compact(a : np.ndarray | th.Tensor) -> float | int | list:
+        """The single value of a if all its elements are equal, the nested list of its elements otherwise."""
+        t = th.as_tensor(a).cpu()
+        if t.numel() > 0 and ThBox._all_equal(t, t.flatten()[0]):
+            return t.flatten()[0].item()
+        return t.tolist()
+
+    @staticmethod
+    def _restore_rng(rng_device : th.device | str, rng_state : th.Tensor) -> th.Generator:
+        rng = th.Generator(device=rng_device)
+        # A space loaded onto another device type (e.g. saved on cuda, loaded on the cpu) gets a
+        # generator whose state has another format: it keeps its default seed instead.
+        if rng_state.numel() == rng.get_state().numel():
+            rng.set_state(rng_state)
+        else:
+            ggLog.warn(f"ThBox: the saved rng state does not fit a generator on {rng_device} "
+                       f"(it was saved from another device type), the space's rng keeps its default seed.")
+        return rng
+
     def __getstate__(self):
-        state = self.__dict__.copy()
-        state.pop("_np_random",None)
-        # serialize ndarrays as torch tensors to avoid issues with numpy 2.0/1.x
-        state["bounded_above"] = th.as_tensor(self.bounded_above*1, dtype=th.bool).tolist()
-        state["bounded_below"] = th.as_tensor(self.bounded_below*1, dtype=th.bool).tolist()
-        state["high"] = th.as_tensor(self.high).tolist()
-        state["low"] = th.as_tensor(self.low).tolist()
-        state["_high_th"] = th.as_tensor(self._high_th).tolist()
-        state["_low_th"] = th.as_tensor(self._low_th).tolist()
-        state["zero_action"] = th.as_tensor(self.zero_action).tolist()
-        if isinstance(self.labels,np.ndarray):
-            state["labels"] = self.labels.tolist()
-        state.pop("dtype", None)
+        # Saved as the constructor arguments that rebuild the space, with the arrays whose elements are all
+        # equal saved as a single value: saving the attributes stored every array several times over in full
+        # (bounds, bounded masks, default value, labels), which for an image space is hundreds of KB.
+        # Arrays are saved as lists to avoid issues with numpy 2.0/1.x
+        n = int(np.prod(self.shape, dtype=int))
+        labels = self.labels.tolist() if isinstance(self.labels, np.ndarray) else self.labels
+        if labels == [f"{i}" for i in range(n)]:
+            labels = None
+        midpoint = (self._high_th+self._low_th)/2
+        if (self.zero_action.dtype == midpoint.dtype and self.zero_action.shape == midpoint.shape
+                and self._all_equal(self.zero_action, midpoint.to(self.zero_action.device))):
+            default_value = None
+        else:
+            default_value = {"value" : self._compact(self.zero_action),
+                             "dtype" : str(self.zero_action.dtype).split(".")[1]}
+        return {"_thbox_state_format" : 2,
+                "low" : self._compact(self.low),
+                "high" : self._compact(self.high),
+                "shape" : list(self.shape),
+                "torch_dtype_str" : self.torch_dtype_str,
+                "th_device" : self.th_device,
+                "seed" : self._seed,
+                "labels" : labels,
+                "default_value" : default_value,
+                "_th_rng_state" : self._th_rng.get_state().cpu().numpy().tobytes(),
+                "_th_rng_device" : self._th_rng.device}
 
-        rng_state = self._th_rng.get_state().tolist()
-        rng_device = self._th_rng.device
-        state.pop("_th_rng", None)
-        state["_th_rng_state"] = rng_state
-        state["_th_rng_device"] = rng_device
-
-        return state
-    
     def __setstate__(self, state):
+        if state.get("_thbox_state_format") == 2:
+            torch_dtype = getattr(th, state["torch_dtype_str"])
+            numpy_dtype = torch_to_numpy_dtype_dict[torch_dtype]
+            low, high = state["low"], state["high"]
+            default_value = state["default_value"]
+            if default_value is not None:
+                default_value = th.as_tensor(default_value["value"], dtype=getattr(th, default_value["dtype"]))
+            rng = self._restore_rng(state["_th_rng_device"], th.frombuffer(bytearray(state["_th_rng_state"]), dtype=th.uint8))
+            self.__init__(low = np.asarray(low, dtype=numpy_dtype) if isinstance(low, list) else low,
+                          high = np.asarray(high, dtype=numpy_dtype) if isinstance(high, list) else high,
+                          shape = tuple(state["shape"]),
+                          dtype = torch_dtype,
+                          torch_device = state["th_device"],
+                          labels = np.array(state["labels"], dtype=object) if state["labels"] is not None else None,
+                          generator = rng,
+                          default_value = default_value)
+            self._seed = state["seed"] # set after __init__, which does not accept both a seed and a generator
+            return
+        # Older format: the attributes themselves
         if "_th_rng" not in state:
-            state["_th_rng"] = th.Generator(device=state["_th_rng_device"])
-            rng_state = th.ByteTensor(state["_th_rng_state"])
-            # A space loaded onto another device type (e.g. saved on cuda, loaded on the cpu) gets a
-            # generator whose state has another format: it keeps its default seed instead.
-            if rng_state.numel() == state["_th_rng"].get_state().numel():
-                state["_th_rng"].set_state(rng_state)
-            else:
-                ggLog.warn(f"ThBox: the saved rng state does not fit a generator on {state['_th_rng_device']} "
-                           f"(it was saved from another device type), the space's rng keeps its default seed.")
+            state["_th_rng"] = self._restore_rng(state["_th_rng_device"], th.ByteTensor(state["_th_rng_state"]))
         self.__dict__.update(state)
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
         if isinstance(self.high,list):
