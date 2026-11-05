@@ -351,24 +351,30 @@ def evaluatePolicyVec(vec_env : gym.vector.VectorEnv,
     return eval_results
 
 
-def pyTorch_makeDeterministic(seed):
-    """ Make pytorch as deterministic as possible.
+def pyTorch_makeDeterministic(seed, deterministic : bool = True):
+    """ Seed the random generators and make pytorch as deterministic as possible.
         Still, DOES NOT ENSURE REPRODUCIBILTY ACROSS DIFFERENT TORCH/CUDA BUILDS AND
         HARDWARE ARCHITECTURES
+
+        If deterministic is False the generators are still seeded, but pytorch is free to use
+        non-deterministic algorithms and cudnn autotuning, so runs are not bitwise reproducible.
+        This can be much faster: deterministic mode restricts the cudnn kernels and makes inductor
+        fall back to a slow sorted index_put.
     """
     import torch as th
     import random
     random.seed(seed)
     np.random.seed(seed)
     th.manual_seed(seed)
-    th.backends.cudnn.deterministic = True
+    th.backends.cudnn.deterministic = deterministic
 
     # print(f"Seed set to {seed}")
     # time.sleep(10)
-    th.backends.cudnn.benchmark = False
-    th.use_deterministic_algorithms(True)
-    # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    th.backends.cudnn.benchmark = not deterministic
+    th.use_deterministic_algorithms(deterministic)
+    if deterministic:
+        # Following may make things better, see https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 

@@ -292,6 +292,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         sensing_filter_decimation_time : float = 0.0,
                         mjx_impl : Literal["jax","warp"] = "jax",
                         render_backend : Literal["cpu","warp"] = "cpu",
+                        render_shadows : bool = False,
                         warp_nccdmax : int = 10,
                         warp_nconmax : int = 20):
         super().__init__(vec_size=vec_size,
@@ -321,6 +322,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         geom_overrides=geom_overrides,
                         mjx_impl=mjx_impl,
                         render_backend=render_backend,
+                        render_shadows=render_shadows,
                         warp_nccdmax=warp_nccdmax,
                         warp_nconmax=warp_nconmax)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,

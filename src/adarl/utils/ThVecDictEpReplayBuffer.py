@@ -528,7 +528,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
         self._allocate_buffers(self.buffer_size, self._validation_buffer_size)
         self._addcount = 0
         self._collected_frames = 0
-        self._collected_eps_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
+        # self._collected_eps_th = th.as_tensor(0, dtype=th.int64, device=self._storage_torch_device)
         ggLog.info(f"Replay buffer allocated, using {self.memory_size()/1024**3:.3f} GiB of memory on device {self._storage_torch_device}\n"
                    f"  Holding {self._max_vec_steps_num} steps per env at {self.memory_size()/self._max_vec_steps_num:.0f} bytes per step, {self._max_vec_steps_num*self.n_envs} steps in total")
         
@@ -621,7 +621,7 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
                                      truncateds=truncated[train_envs:],
                                      sync_stream = sync_stream)
         self._collected_frames += self.n_envs
-        self._collected_eps_th += th.logical_or(terminated, truncated).to(self._storage_torch_device).sum()
+        # self._collected_eps_th += th.logical_or(terminated, truncated).to(self._storage_torch_device).sum()
 
     def replay(self):
         yield from self._storage.replay()

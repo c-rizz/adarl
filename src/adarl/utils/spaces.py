@@ -188,7 +188,7 @@ class ThBox(gym.spaces.Box):
             state["_th_rng"] = self._restore_rng(state["_th_rng_device"], th.ByteTensor(state["_th_rng_state"]))
         self.__dict__.update(state)
         self.dtype = torch_to_numpy_dtype_dict[getattr(th,self.torch_dtype_str)]
-        if isinstance(self.high,list):
+        if isinstance(self.high,(list,int,float)):
             self.bounded_above = th.as_tensor(self.bounded_above, dtype=th.bool).cpu().numpy().astype(np.bool_)
             self.bounded_below = th.as_tensor(self.bounded_below, dtype=th.bool).cpu().numpy().astype(np.bool_)
             self.high = th.as_tensor(self.high, dtype=self.torch_dtype).cpu().numpy()

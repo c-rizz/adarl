@@ -153,6 +153,13 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
     def sim_step_duration(self) -> th.Tensor:
         raise NotImplementedError()
 
+    def alter_visuals(self, link_colors : tuple[Any, th.Tensor] | None = None,
+                            link_material_tints : tuple[Any, th.Tensor] | None = None,
+                            lights_rotation_quatxyzw : th.Tensor | None = None,
+                            camera_offset : tuple[str, th.Tensor, th.Tensor] | None = None):
+        """Change how the scene looks, per environment, without affecting the physics. See MjxAdapter.alter_visuals."""
+        raise NotImplementedError(f"{type(self).__name__} does not support altering the visuals")
+
     # @abstractmethod
     def alter_model(self,   link_masses : tuple[Any, th.Tensor] | None = None,
                             link_frictions : tuple[Any, th.Tensor] | None = None,

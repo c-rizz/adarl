@@ -89,8 +89,9 @@ class Session():
                         debug : int  = 0,
                         run_comment = "",
                         use_wandb = True,
-                        reference_data_folder : Optional[str] = None):
-        
+                        reference_data_folder : Optional[str] = None,
+                        deterministic : bool = True):
+
         self._initialized = True
         self._is_wandb_enabled = use_wandb
         if isinstance(debug, bool):
@@ -115,6 +116,7 @@ class Session():
         self.run_info["train_iterations"] = mp_helper.get_context().Value("i",0)
         self.run_info["extras"] = mp_helper.get_manager().dict() # For any extra info to be shared across processes
         self.run_info["seed"] = seed
+        self.run_info["deterministic"] = deterministic
         self.run_info["hosthostname"] = os.environ.get("HOSTHOSTNAME","") # To identify the host machine in docker
         self.run_info["hostname"] = socket.gethostname()
         self.run_info["cpu"] = cpuinfo.get_cpu_info()["brand_raw"]
@@ -144,7 +146,7 @@ class Session():
         import torch as th
         from adarl.utils.utils import get_gpu_names, pyTorch_makeDeterministic
         th.set_printoptions(linewidth=160)
-        pyTorch_makeDeterministic(self.run_info["seed"])
+        pyTorch_makeDeterministic(self.run_info["seed"], deterministic=self.run_info["deterministic"])
         th._dynamo.config.capture_scalar_outputs = True
         th.distributions.Distribution.set_default_validate_args(False) # do not check distribution args validity (it leads to cuda syncs)
         if self.debug_level>=DbgLevel.VERBOSE:
@@ -237,6 +239,7 @@ class Session():
         config["hostname"] = self.run_info["hostname"]
         config["start_time"] = self.run_info["start_time"]
         config["seed"] = self.run_info["seed"]
+        config["deterministic"] = self.run_info["deterministic"]
         config["experiment_name"] = experiment_name
         config["run_id"] = run_id
         config["comment"] = comment
@@ -423,7 +426,8 @@ def adarl_startup( main_file_path : str,
                     debug : Union[bool, int]  = False,
                     run_comment = "",
                     use_wandb = True,
-                    reference_data_folder : Optional[str] = None) -> Tuple[str, Session]:
+                    reference_data_folder : Optional[str] = None,
+                    deterministic : bool = True) -> Tuple[str, Session]:
     global default_session
     # default_session = Session()
     default_session.initialize( main_file_path = main_file_path,
@@ -436,7 +440,8 @@ def adarl_startup( main_file_path : str,
                                 debug = debug,
                                 run_comment = run_comment,
                                 use_wandb = use_wandb,
-                                reference_data_folder = reference_data_folder)
+                                reference_data_folder = reference_data_folder,
+                                deterministic = deterministic)
     return default_session.log_folder(), default_session
 
 

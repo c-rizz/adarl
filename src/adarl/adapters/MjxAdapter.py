@@ -15,6 +15,7 @@ from adarl.adapters.BaseVecAdapter import JointProperties, JointType, Renderings
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
+from adarl.utils.utils import th_quat_rotate, quat_mul_xyzw
 from adarl.utils.utils import pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, quat_xyzw_between_vecs_py
 from typing import Any
 import jax
@@ -1104,6 +1105,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         revolute_dof_frictionloss_override = None,
                         opt_override : dict[str,Any] | None = None,
                         render_backend : Literal["cpu", "warp"] = "cpu",
+                        render_shadows : bool = False,
                         mjx_impl : Literal["jax","warp"] = "jax",
                         disable_builtin_actuators : bool = True,
                         geom_overrides : dict[str,Any] | None = None,
@@ -1162,6 +1164,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             _description_, by default None
         render_backend : Literal[&quot;cpu&quot;, &quot;warp&quot;], optional
             _description_, by default "cpu"
+        render_shadows : bool, optional
+            Render cast shadows with the warp backend, at a cost in rendering time, by default False
         mjx_impl : Literal[&quot;jax&quot;,&quot;warp&quot;], optional
             _description_, by default "jax"
         disable_builtin_actuators : bool, optional
@@ -1178,6 +1182,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._disable_builtin_actuators = disable_builtin_actuators
         self._enable_rendering = enable_rendering
         self._render_backend : Literal["cpu", "warp"] = render_backend
+        self._render_shadows = render_shadows
         self._jax_device = jax_device
         self._sim_step_dt = sim_step_dt
         self._sim_step_dt_th = th.as_tensor(sim_step_dt, device=output_th_device)
@@ -1386,6 +1391,13 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "geom_pos":0,
                                           "geom_rbound":0,
                                           "geom_aabb":0,
+                                          # appearance, set per env by alter_visuals
+                                          "geom_rgba":0,
+                                          "geom_matid":0,
+                                          "mat_rgba":0,
+                                          "light_dir":0,
+                                          "cam_pos":0,
+                                          "cam_quat":0,
                                           "opt.timestep":0}) # model fields to be vmapped. Per-env timestep: run() sets it to 0 to freeze an env
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
@@ -1444,6 +1456,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 render_depth=True,
                 cam_active=cam_active,
                 enabled_geom_groups=enabled_groups,
+                use_shadows=self._render_shadows,
             )
             self._warp_render_context_objs[cam] = ctx
             self._warp_render_context_pytrees[cam] = ctx.pytree()
@@ -4216,6 +4229,72 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # ggLog.info(f"altering model with {replacements}")
         # self._recompute_mjxmodel_inaxes() # Is it really necessary?
         record_region_end("MjxAdapter.alter_model")
+
+    @override
+    def alter_visuals(self, link_colors : tuple[Any, th.Tensor] | None = None,
+                            link_material_tints : tuple[Any, th.Tensor] | None = None,
+                            lights_rotation_quatxyzw : th.Tensor | None = None,
+                            camera_offset : tuple[str, th.Tensor, th.Tensor] | None = None):
+        """Change how the scene looks, per environment, without affecting the physics. Every value is relative to
+        the original model, so repeating a call does not compound, and what is left out keeps its current value.
+        alter_model leaves all of this untouched. Only the warp renderer sees it: it reads the model of each
+        environment, while the cpu renderer draws all of them from one.
+
+        Parameters
+        ----------
+        link_colors : tuple[Any, th.Tensor] | None
+            Link ids (from get_links_ids) and the rgb of each, of size (vec_size, len(link_ids), 3). The link's geoms
+            stop using their material, so that they do not share the color with whatever else uses it.
+        link_material_tints : tuple[Any, th.Tensor] | None
+            Link ids (from get_links_ids) and the factors the rgb of their materials is multiplied by, of size
+            (vec_size, len(link_ids), 3). A material's texture is kept. Everything using the material gets tinted.
+        lights_rotation_quatxyzw : th.Tensor | None
+            Rotation applied to the direction of all the lights, of size (vec_size, 4).
+        camera_offset : tuple[str, th.Tensor, th.Tensor] | None
+            Camera name, position offset of size (vec_size, 3) and rotation of size (vec_size, 4) as a quatxyzw,
+            both expressed in the frame of the link the camera is attached to.
+        """
+        if self._render_backend != "warp":
+            raise NotImplementedError(f"alter_visuals needs the warp render backend, got '{self._render_backend}'")
+        m = self._mj_model
+        replacements = {}
+        # Copied through the host: these are small, and th2jax's memory could be released before jax is done with it
+        to_jax = lambda t: jnp.array(t.detach().cpu().numpy(), device=self._jax_device)
+        if link_colors is not None:
+            colors = to_jax(link_colors[1])
+            geom_rgba, geom_matid = self._sim_state.mjx_model.geom_rgba, self._sim_state.mjx_model.geom_matid
+            for i, link_id in enumerate(np.asarray(link_colors[0]).tolist()):
+                geoms = np.flatnonzero(m.geom_bodyid == link_id)
+                geom_rgba = geom_rgba.at[:, geoms, :3].set(colors[:, i:i+1, :])
+                geom_matid = geom_matid.at[:, geoms].set(-1)
+            replacements.update(geom_rgba=geom_rgba, geom_matid=geom_matid)
+        if link_material_tints is not None:
+            tints = to_jax(link_material_tints[1])
+            mat_rgba = self._sim_state.mjx_model.mat_rgba
+            for i, link_id in enumerate(np.asarray(link_material_tints[0]).tolist()):
+                materials = np.unique(m.geom_matid[m.geom_bodyid == link_id])
+                materials = materials[materials >= 0]
+                if len(materials) == 0:
+                    raise ValueError(f"Link {self._lid2lname[link_id]} has no material to tint")
+                nominal = jnp.array(m.mat_rgba[materials, :3], device=self._jax_device)
+                mat_rgba = mat_rgba.at[:, materials, :3].set(nominal[None]*tints[:, i:i+1, :])
+            replacements.update(mat_rgba=mat_rgba)
+        if lights_rotation_quatxyzw is not None:
+            nominal = th.as_tensor(m.light_dir, device=lights_rotation_quatxyzw.device, dtype=lights_rotation_quatxyzw.dtype)
+            rotation = lights_rotation_quatxyzw.unsqueeze(1).expand(self._vec_size, m.nlight, 4)
+            light_dirs = to_jax(th_quat_rotate(nominal.expand(self._vec_size, m.nlight, 3), rotation))
+            replacements.update(light_dir=self._sim_state.mjx_model.light_dir.at[:].set(light_dirs))
+        if camera_offset is not None:
+            camera_name, pos_offset, quatxyzw_offset = camera_offset
+            cam_id = next(cid for cid, name in self._cid2cname.items() if name == camera_name)
+            nominal_pos = th.as_tensor(m.cam_pos[cam_id], device=pos_offset.device, dtype=pos_offset.dtype)
+            nominal_quat = th.as_tensor(m.cam_quat[cam_id][[1,2,3,0]], device=pos_offset.device, dtype=pos_offset.dtype)
+            quatxyzw = quat_mul_xyzw(quatxyzw_offset, nominal_quat.expand(self._vec_size, 4))
+            replacements.update(cam_pos=self._sim_state.mjx_model.cam_pos.at[:, cam_id].set(to_jax(nominal_pos + pos_offset)),
+                                cam_quat=self._sim_state.mjx_model.cam_quat.at[:, cam_id].set(to_jax(quatxyzw[:, [3,0,1,2]])))
+        self._sim_state.mjx_model = self._sim_state.mjx_model.replace(**replacements)
+        if lights_rotation_quatxyzw is not None or camera_offset is not None:
+            self._mark_forward_needed() # the world poses of cameras and lights come from the forward kinematics
 
     @override
     def check_colliding_links(self, requested_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]] | th.Tensor | None = None) -> th.Tensor:
