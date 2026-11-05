@@ -16,6 +16,7 @@ from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import th_quat_rotate, quat_mul_xyzw
+from adarl.utils.warp_capture import install_gc_safe_capture
 from adarl.utils.utils import pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, quat_xyzw_between_vecs_py
 from typing import Any
 import jax
@@ -501,6 +502,8 @@ def _put_data_warp(
 
   impl_fields = {}
   for k in mjxw.types.DataWarp.__annotations__.keys():
+    if k == '_jax_token':  # custom token to force sequential calls in JAX
+      continue
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
@@ -591,6 +594,11 @@ def quat_wxyz_to_rotmat(quat_wxyz : jnp.ndarray) -> jnp.ndarray:
                       [2.0 * (xy + wz),       1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
                       [2.0 * (xz - wy),       2.0 * (yz + wx),     1.0 - 2.0 * (xx + yy)]],
                      dtype=quat_wxyz.dtype)
+
+
+LIGHT_COLOR_FIELDS = tuple(name for name in ("light_ambient", "light_diffuse", "light_specular")
+                           if name in {field.name for field in dataclasses.fields(mjx.Model)})
+"""The model's light colors, older mujoco versions do not have them: their renderer uses fixed lighting."""
 
 
 @jax.tree_util.register_dataclass
@@ -1110,7 +1118,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         disable_builtin_actuators : bool = True,
                         geom_overrides : dict[str,Any] | None = None,
                         warp_nccdmax : int = 10,
-                        warp_nconmax : int = 20):
+                        warp_nconmax : int = 20,
+                        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP"):
         """_summary_
 
         Parameters
@@ -1176,6 +1185,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             per-world max number of mesh contacts (handled by the CCD collider), by default 10
         warp_nconmax : int, optional
             per-world max number of overall contacts, by default 20
+        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"], optional
+            How Warp captures its CUDA graphs. "WARP" captures a new graph for each set of buffer addresses it gets, the
+            staged ones copy to and from fixed buffers so that a graph is captured once. Before mujoco 3.17 the staged
+            ones render unlit images, so they cannot be used with rendering. By default "WARP"
         """
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
@@ -1222,6 +1235,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._out_cuda = self._out_th_device.type == "cuda"
         self._warp_nccdmax = warp_nccdmax
         self._warp_nconmax = warp_nconmax
+        self._warp_graph_mode = warp_graph_mode
+        if warp_graph_mode != "WARP" and enable_rendering and tuple(int(v) for v in mujoco.__version__.split(".")[:2]) < (3,17):
+            raise ValueError(f"warp_graph_mode='{warp_graph_mode}' renders unlit images before mujoco 3.17, use 'WARP' with rendering")
+        if mjx_impl == "warp" or render_backend == "warp":
+            install_gc_safe_capture()
 
         self._realtime_factor = realtime_factor
         self._sim_state = SimState( mjx_data=jnp.empty((0,), device = jax_device), # type: ignore
@@ -1398,6 +1416,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           "light_dir":0,
                                           "cam_pos":0,
                                           "cam_quat":0,
+                                          **{name:0 for name in LIGHT_COLOR_FIELDS},
                                           "opt.timestep":0}) # model fields to be vmapped. Per-env timestep: run() sets it to 0 to freeze an env
         # out_axes = map_tensor_tree(mjx_model, lambda l:None)
         # out_axes = out_axes.tree_replace({"body_mass":0,
@@ -1475,7 +1494,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if render_context is None:
             raise RuntimeError("Warp render context not initialized")
         mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
-        pixels, aux = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        pixels = mjx.render(sim_state.mjx_model, mjx_data, render_context)[0]
         rgbs = []
         for cidx in cam_indexes:
             rgb = MjxAdapter._vec_get_rgb(render_context, cidx, pixels)
@@ -1494,7 +1513,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             raise RuntimeError("Warp render context not initialized")
         mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
         # mjx.render returns (rgb_data, depth_data); get_depth must be fed the depth buffer.
-        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)[:2]
         depths = []
         for cidx in cam_indexes:
             depths.append(MjxAdapter._vec_get_depth(render_context, cidx, depth_data))
@@ -1512,7 +1531,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if render_context is None:
             raise RuntimeError("Warp render context not initialized")
         mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
-        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)
+        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)[:2]
         rgbs = [MjxAdapter._vec_get_rgb(render_context, cidx, rgb_data)
                 for cidx in cam_indexes] if want_rgb else []
         depths = [MjxAdapter._vec_get_depth(render_context, cidx, depth_data)
@@ -1639,7 +1658,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         if self._mjx_impl == "warp":
             import mujoco.mjx.warp as mjxw
-            mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl) #, graph_mode=mjxw.types.GraphMode.WARP_STAGED_EX)
+            mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl,
+                                      graph_mode=getattr(mjxw.types.GraphMode, self._warp_graph_mode))
         else:
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         try:
@@ -2605,7 +2625,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                           out_th_device : th.device,
                           out_rgb : list[th.Tensor] | None = None,
                           out_depth : list[th.Tensor] | None = None,
-                          use_fixed_shapes : bool = False):
+                          use_fixed_shapes : bool = False,
+                          original_visuals : bool = False):
         """Render rgb and/or depth for the requested cameras with a single warp pass each."""
         if not self._warp_render_context_pytrees:
             raise RuntimeError("Warp rendering is not initialized")
@@ -2619,6 +2640,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
         times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         self._forward_if_needed()
+        sim_state = self._sim_state
+        if original_visuals:
+            sim_state = sim_state.replace_d(MjxAdapter._original_visuals_jax(sim_state.mjx_model,
+                                                                             sim_state.mjx_data,
+                                                                             self._original_mjx_model,
+                                                                             self._mj_model.cam_bodyid,
+                                                                             self._mj_model.cam_mode == mujoco.mjtCamLight.mjCAMLIGHT_FIXED,
+                                                                             self._mj_model.light_bodyid,
+                                                                             self._mj_model.light_mode == mujoco.mjtCamLight.mjCAMLIGHT_FIXED))
 
         def _to_output(jax_img, out_list, cam_i):
             img_th = jax2th_copy(jax_img, th_device=out_th_device) # owned: the masking below is only queued
@@ -2640,7 +2670,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         depth_imgs : list[th.Tensor] | None = [] if want_depth else None
         for cam_i, cam in enumerate(requestedCameras):
             # Each camera has its own single-camera context, so its render index within it is 0.
-            rgbs, depths = self._render_warp_rgbd_jax(self._sim_state,
+            rgbs, depths = self._render_warp_rgbd_jax(sim_state,
                                                       self._warp_render_context_pytrees[cam],
                                                       (0,),
                                                       want_rgb = want_rgb,
@@ -2650,6 +2680,44 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             if want_depth:
                 depth_imgs.append(_to_output(depths[0], out_depth, cam_i)) # type: ignore
         return rgb_imgs, depth_imgs, times
+
+    @staticmethod
+    @jax.jit
+    def _original_visuals_jax(mjx_model : mjx.Model, mjx_data : mjx.Data, original_mjx_model : mjx.Model,
+                              cam_bodyid, cam_fixed, light_bodyid, light_fixed) -> dict[str, Any]:
+        """The model and data of the current state, with what alter_visuals changes put back to the original.
+
+        The geometry stays the one of the current state. The world poses of cameras and lights follow from their
+        bodies, so a forward pass is not needed. Those not fixed to their body are not altered by alter_visuals either."""
+        model = mjx_model.replace(geom_rgba=original_mjx_model.geom_rgba,
+                                  geom_matid=original_mjx_model.geom_matid,
+                                  mat_rgba=original_mjx_model.mat_rgba,
+                                  light_dir=original_mjx_model.light_dir,
+                                  cam_pos=original_mjx_model.cam_pos,
+                                  cam_quat=original_mjx_model.cam_quat,
+                                  **{name:getattr(original_mjx_model, name) for name in LIGHT_COLOR_FIELDS})
+        cam_body_xmat = mjx_data.xmat[:, cam_bodyid]
+        cam_xpos = mjx_data.xpos[:, cam_bodyid] + jnp.einsum("vcij,vcj->vci", cam_body_xmat, original_mjx_model.cam_pos)
+        cam_xmat = cam_body_xmat @ jax.vmap(jax.vmap(quat_wxyz_to_rotmat))(original_mjx_model.cam_quat)
+        light_xdir = jnp.einsum("vlij,vlj->vli", mjx_data.xmat[:, light_bodyid], original_mjx_model.light_dir)
+        data = mjx_data.tree_replace({"cam_xpos" : jnp.where(cam_fixed[None,:,None], cam_xpos, mjx_data.cam_xpos),
+                                      "cam_xmat" : jnp.where(cam_fixed[None,:,None,None], cam_xmat, mjx_data.cam_xmat),
+                                      "_impl.light_xdir" : jnp.where(light_fixed[None,:,None], light_xdir, mjx_data.light_xdir)})
+        return {"mjx_model" : model, "mjx_data" : data}
+
+    @override
+    def get_original_visuals_camera_images(self, requestedCameras : list[str], rgb : bool = True, depth : bool = False) -> Renderings:
+        """Render the current state as if alter_visuals had never been called, so with the original colors, lights
+        and camera poses. Everything else is the same as in get_camera_images, link_scales included."""
+        if self._render_backend != "warp":
+            raise NotImplementedError(f"get_original_visuals_camera_images needs the warp render backend, got '{self._render_backend}'")
+        rgb_imgs, depth_imgs, times = self._render_rgbd_warp(requestedCameras,
+                                                             want_rgb = rgb,
+                                                             want_depth = depth,
+                                                             vec_mask = self._all_vecs_thcpu,
+                                                             out_th_device = self._out_th_device,
+                                                             original_visuals = True)
+        return Renderings(rgb=rgb_imgs, depth=depth_imgs, times=times)
 
     @override
     def get_camera_images(self,  requestedCameras : list[str],
@@ -4234,6 +4302,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def alter_visuals(self, link_colors : tuple[Any, th.Tensor] | None = None,
                             link_material_tints : tuple[Any, th.Tensor] | None = None,
                             lights_rotation_quatxyzw : th.Tensor | None = None,
+                            lights_intensity_ratios : th.Tensor | None = None,
+                            lights_ambient_ratios : th.Tensor | None = None,
                             camera_offset : tuple[str, th.Tensor, th.Tensor] | None = None):
         """Change how the scene looks, per environment, without affecting the physics. Every value is relative to
         the original model, so repeating a call does not compound, and what is left out keeps its current value.
@@ -4250,6 +4320,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             (vec_size, len(link_ids), 3). A material's texture is kept. Everything using the material gets tinted.
         lights_rotation_quatxyzw : th.Tensor | None
             Rotation applied to the direction of all the lights, of size (vec_size, 4).
+        lights_intensity_ratios : th.Tensor | None
+            Factors the r, g, b of the diffuse and specular color of all the lights are multiplied by, of size
+            (vec_size, 3). Needs a mujoco version with per-model light colors, 3.17 has them.
+        lights_ambient_ratios : th.Tensor | None
+            Factors the r, g, b of the ambient color of all the lights are multiplied by, of size (vec_size, 3).
+            Needs a mujoco version with per-model light colors, 3.17 has them.
         camera_offset : tuple[str, th.Tensor, th.Tensor] | None
             Camera name, position offset of size (vec_size, 3) and rotation of size (vec_size, 4) as a quatxyzw,
             both expressed in the frame of the link the camera is attached to.
@@ -4284,6 +4360,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             rotation = lights_rotation_quatxyzw.unsqueeze(1).expand(self._vec_size, m.nlight, 4)
             light_dirs = to_jax(th_quat_rotate(nominal.expand(self._vec_size, m.nlight, 3), rotation))
             replacements.update(light_dir=self._sim_state.mjx_model.light_dir.at[:].set(light_dirs))
+        if (lights_intensity_ratios is not None or lights_ambient_ratios is not None) and len(LIGHT_COLOR_FIELDS) < 3:
+            raise NotImplementedError(f"mujoco {mujoco.__version__} has no per-model light colors, it needs a newer version")
+        if lights_intensity_ratios is not None:
+            ratios = to_jax(lights_intensity_ratios)[:, None, :]
+            replacements.update(light_diffuse=jnp.array(m.light_diffuse, device=self._jax_device)[None]*ratios,
+                                light_specular=jnp.array(m.light_specular, device=self._jax_device)[None]*ratios)
+        if lights_ambient_ratios is not None:
+            ratios = to_jax(lights_ambient_ratios)[:, None, :]
+            replacements.update(light_ambient=jnp.array(m.light_ambient, device=self._jax_device)[None]*ratios)
         if camera_offset is not None:
             camera_name, pos_offset, quatxyzw_offset = camera_offset
             cam_id = next(cid for cid, name in self._cid2cname.items() if name == camera_name)

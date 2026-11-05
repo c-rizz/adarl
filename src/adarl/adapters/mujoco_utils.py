@@ -894,19 +894,19 @@ def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[
     elif preset_name == "medium":
         opt.integrator = mjINT_EULER
         opt.iterations = 20
-        opt.ls_iterations = 5
+        opt.ls_iterations = 10
         # opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         opt.impratio = good_impratio # see comment above
     elif preset_name == "slow":
         opt.integrator = mjINT_EULER
         opt.iterations = 30
-        opt.ls_iterations = 5
+        opt.ls_iterations = 10
         # opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         opt.impratio = good_impratio # see comment above
     elif preset_name == "slower":
         opt.integrator = mjINT_EULER
         opt.iterations = 50
-        opt.ls_iterations = 5
+        opt.ls_iterations = 15
         # opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         opt.impratio = good_impratio # see comment above
     else:

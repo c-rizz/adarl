@@ -394,7 +394,8 @@ def test_scaled_box_is_rendered_scaled(scale_scene):
     adapter.setLinksStateDirect([links["box"]], rest.to(adapter.output_th_device()))
     rgb, _ = adapter.getRenderings(cameras, depth=False)
     img = rgb[0].float()
-    red = (img[..., 0] > 0.5) & (img[..., 1] < 0.3) & (img[..., 2] < 0.3)
+    # Relative to the other channels: how bright the box comes out depends on the renderer's lighting
+    red = (img[..., 0] > 0.1) & (img[..., 0] > 2*img[..., 1]) & (img[..., 0] > 2*img[..., 2])
     area = red.sum(dim=(1, 2)).float().cpu().numpy()
     assert area[0] > 100, f"box not visible: {area} red pixels"
     top_dist = 0.6 - 2*half_z
