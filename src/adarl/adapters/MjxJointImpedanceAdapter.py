@@ -295,7 +295,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         render_shadows : bool = False,
                         warp_nccdmax : int = 10,
                         warp_nconmax : int = 20,
-                        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP"):
+                        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP",
+                        warp_disabled_overflow_warnings : int = 0):
         super().__init__(vec_size=vec_size,
                         enable_rendering = enable_rendering,
                         jax_device = jax_device,
@@ -326,7 +327,8 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         render_shadows=render_shadows,
                         warp_nccdmax=warp_nccdmax,
                         warp_nconmax=warp_nconmax,
-                        warp_graph_mode=warp_graph_mode)
+                        warp_graph_mode=warp_graph_mode,
+                        warp_disabled_overflow_warnings=warp_disabled_overflow_warnings)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,
                                         requested_qfrc_applied=self._sim_state.requested_qfrc_applied,
                                         sim_time=self._sim_state.sim_time,

@@ -219,7 +219,45 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
             the same parameters are altered multiple times.
         """
         raise NotImplementedError()
-    
+
+    def setup_heightfield_sensor(self, size_xy : tuple[float,float],
+                                       resolution_xy : tuple[int,int],
+                                       ignored_links : Sequence[tuple[str,str] | str],
+                                       options : dict[str,Any]):
+        """Set up the sensor read by get_heightfield. Must be called before build_scenario.
+
+        Parameters
+        ----------
+        size_xy : tuple[float,float]
+            Side lengths of the sensed area, in meters.
+        resolution_xy : tuple[int,int]
+            Number of cells along each side.
+        ignored_links : Sequence[tuple[str,str] | str]
+            Links the sensor does not see, as (model, link) pairs or bare model names, which stand for
+            all the links of that model. This is usually the robot.
+        options : dict[str,Any]
+            "mode" selects how the terrain is sensed, the others depend on the mode.
+        """
+        raise NotImplementedError()
+
+    def get_heightfield(self, center_vec_xy : th.Tensor, yaw_vec : th.Tensor) -> th.Tensor:
+        """Terrain height around a point of each env, from the collision geometry.
+
+        Parameters
+        ----------
+        center_vec_xy : th.Tensor
+            (vec_size, 2) world position of the center of the sensed area.
+        yaw_vec : th.Tensor
+            (vec_size,) rotation of the sensed area about the world z axis, in radians.
+
+        Returns
+        -------
+        th.Tensor
+            (vec_size, resolution_x, resolution_y) world z of the terrain at the cell centers. The x
+            index grows along the direction given by yaw, the y index 90 degrees counterclockwise of it.
+        """
+        raise NotImplementedError()
+
     def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
         """Set collision pairs to monitor. Must be called before build_scenario.
 

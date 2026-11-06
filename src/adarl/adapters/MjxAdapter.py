@@ -34,7 +34,8 @@ import adarl.utils.dbg.ggLog as ggLog
 import torch.utils.dlpack as thdlpack
 import numpy as np
 import copy
-from typing import Iterable
+from typing import Iterable, ClassVar
+import math
 from functools import partial, wraps
 import dataclasses
 from dataclasses import dataclass 
@@ -1064,6 +1065,23 @@ class SimElementsState:
     """(V, 4, L, 6) step stats [min,max,avg,std] of link linear+angular velocity"""
 
 
+@dataclass
+class HeightfieldSensor:
+    """The sensor of MjxAdapter.get_heightfield, in the "warp_camera" mode: a downward orthographic
+    camera whose depth image is the terrain height. The camera pose is written per env at each read."""
+    CAMERA_NAME : ClassVar[str] ="heightfield_sensor#heightfield_sensor_camera" # one '#', as all the model names
+    size_xy : tuple[float,float]
+    resolution_xy : tuple[int,int]
+    ignored_links : tuple[tuple[str,str] | str, ...]
+    camera_z : float
+    """World z the camera sits at, it must be above all the terrain."""
+    max_depth : float
+    """Largest distance from the camera that gets measured."""
+    camera_id : int = -1
+    render_context : Any = None # kept alive, the pytree only refers to it
+    render_context_pytree : Any = None
+
+
 class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     """ Adapter that uses Mujoco MJX as the underlying simulation engine, and provides a vectorized interface to it. 
     This is the most mature and feature-complete adapter in the ADARL suite.
@@ -1119,7 +1137,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         geom_overrides : dict[str,Any] | None = None,
                         warp_nccdmax : int = 10,
                         warp_nconmax : int = 20,
-                        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP"):
+                        warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP",
+                        warp_disabled_overflow_warnings : int = 0):
         """_summary_
 
         Parameters
@@ -1189,6 +1208,9 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             How Warp captures its CUDA graphs. "WARP" captures a new graph for each set of buffer addresses it gets, the
             staged ones copy to and from fixed buffers so that a graph is captured once. Before mujoco 3.17 the staged
             ones render unlit images, so they cannot be used with rendering. By default "WARP"
+        warp_disabled_overflow_warnings : int, optional
+            Overflow warnings Warp must not print, as a bitwise or of mujoco_warp's OverflowType flags, turned into an int.
+            They get removed from opt.warn_overflow. Needs a mujoco version that has it, 3.17 does. By default 0
         """
         super().__init__(vec_size=vec_size,
                          output_th_device=output_th_device)
@@ -1236,6 +1258,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._warp_nccdmax = warp_nccdmax
         self._warp_nconmax = warp_nconmax
         self._warp_graph_mode = warp_graph_mode
+        self._warp_disabled_overflow_warnings = warp_disabled_overflow_warnings
         if warp_graph_mode != "WARP" and enable_rendering and tuple(int(v) for v in mujoco.__version__.split(".")[:2]) < (3,17):
             raise ValueError(f"warp_graph_mode='{warp_graph_mode}' renders unlit images before mujoco 3.17, use 'WARP' with rendering")
         if mjx_impl == "warp" or render_backend == "warp":
@@ -1300,6 +1323,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mon_site_count = 0
         self._mon_link_jax_to_user = th.empty((0,), dtype=th.long, device=self._out_th_device)
         self._scenario_built = False
+        self._heightfield_sensor : HeightfieldSensor | None = None
         self._monitored_collision_pairs : list[tuple[tuple[str,str], tuple[str,str]]] = []
         self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
         self._record_joint_hist = record_whole_joint_trajectories
@@ -1549,6 +1573,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     return "world"
                 return p[0] + model_element_separator + p[1]
             contact_pairs = [(_to_body_name(a), _to_body_name(b)) for a, b in self._monitored_collision_pairs]
+        orthographic_camera = None
+        if self._heightfield_sensor is not None:
+            orthographic_camera = (HeightfieldSensor.CAMERA_NAME,
+                                   self._heightfield_sensor.size_xy[1],
+                                   self._heightfield_sensor.resolution_xy)
         return aggregate_models(models,
                                 add_ground=self._add_ground,
                                 add_sky=self._add_sky,
@@ -1567,7 +1596,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 revolute_dof_frictionloss_override=self._revolute_dof_frictionloss_override,
                                 safe_revolute_dof_armature=self._safe_revolute_dof_armature,
                                 safe_revolute_dof_damping=self._safe_revolute_dof_damping,
-                                safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss)
+                                safe_revolute_dof_frictionloss=self._safe_revolute_dof_frictionloss,
+                                orthographic_camera=orthographic_camera)
 
     @override
     def build_scenario(self, models : list[ModelSpawnDef],
@@ -1660,6 +1690,11 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             import mujoco.mjx.warp as mjxw
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl,
                                       graph_mode=getattr(mjxw.types.GraphMode, self._warp_graph_mode))
+            if self._warp_disabled_overflow_warnings != 0:
+                if not hasattr(mjx_model.opt._impl, "warn_overflow"):
+                    raise ValueError(f"mujoco {mujoco.__version__} has no opt.warn_overflow, it needs a newer version")
+                warn_overflow = int(mjx_model.opt._impl.warn_overflow) & ~self._warp_disabled_overflow_warnings
+                mjx_model = mjx_model.tree_replace({"opt._impl.warn_overflow" : warn_overflow})
         else:
             mjx_model = mjx.put_model(self._mj_model, device = self._jax_device, impl=self._mjx_impl)
         try:
@@ -1820,6 +1855,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             self._renderers = {}
         self._precompute_depth_cam_params()
+        self._init_heightfield_sensor()
 
 
     def startup(self):
@@ -4731,39 +4767,107 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     #                                      "disturbance_terminations_stime":disturbance_terminations_stime,
     #                                      "mjx_data" : mjx_data})
 
-    @partial(jit_th_synced, static_argnums=(0,))
-    def _get_height_map(self, positions_vec_xy : jnp.ndarray, range_xyxy : jnp.ndarray, resolution_xy : tuple[int,int],
-                                ground_linkgroups_ids : jnp.ndarray,
-                                sim_state : SimState):
-        vsize = positions_vec_xy.shape[0]
-        jnp_resolution_xy = jnp.array(resolution_xy)
-        width_height = range_xyxy[2:4] - range_xyxy[0:2]
-        coords_grid = jnp.swapaxes(jnp.mgrid[:resolution_xy[0],:resolution_xy[1]]/jnp_resolution_xy*width_height-range_xyxy[0:2],0,2) + jnp_resolution_xy/2
-        coords_grid = positions_vec_xy + coords_grid
-        ray_height = 10.0
-        ray_origins = jnp.concatenate([coords_grid,
-                                       jnp.full_like(coords_grid[...,0], fill_value=ray_height)[..., None]], axis=-1) # add z coord
-        ray_origins_flat = ray_origins.reshape(vsize, -1, 3)
-        ray_dirs_flat = jnp.broadcast_to(jnp.array([0.0, 0.0, -1.0], dtype=jnp.float32), ray_origins_flat.shape)
-        dists_vec_xy = self._mjx_ray_vec(   sim_state.mjx_model, 
-                                            sim_state.mjx_data, 
-                                            ray_origins_flat,
-                                            ray_dirs_flat,
-                                            ground_linkgroups_ids # mask that is true at each group_id to be included
-                                            ).reshape(vsize, resolution_xy[0], resolution_xy[1])
-        return dists_vec_xy - ray_height
+    @override
+    def setup_heightfield_sensor(self, size_xy : tuple[float,float],
+                                       resolution_xy : tuple[int,int],
+                                       ignored_links : Sequence[tuple[str,str] | str],
+                                       options : dict[str,Any]):
+        """See BaseVecSimulationAdapter.setup_heightfield_sensor. The cells must be square.
 
-    def get_height_map(self, positions_vec_xy : th.Tensor, range_xyxy : th.Tensor, resolution_xy : tuple[int,int],
-                                ground_linkgroups : list[tuple[tuple[str,str],...]]):
-        for g in ground_linkgroups:
-            if g not in self._linkgroup_to_id:
-                raise RuntimeError(f"Group {g} was not already defined, you can add it explicitly in set_body_collisions")
-        ground_linkgroups_ids = th.as_tensor([self._linkgroup_to_id[g] for g in ground_linkgroups])
-        heights_vec_xy = self._get_height_map(positions_vec_xy=th2jax(positions_vec_xy, jax_device=self._jax_device),
-                                range_xyxy=th2jax(range_xyxy, jax_device=self._jax_device),
-                                ground_linkgroups_ids = th2jax(ground_linkgroups_ids, jax_device=self._jax_device),
-                                resolution_xy=resolution_xy,
-                                sim_state = self._sim_state)        
+        Options
+        -------
+        mode : str
+            Only "warp_camera" is available, it needs mjx_impl="warp".
+        camera_z : float
+            World z the rays start from, it must be above all the terrain. Default is 10.0.
+        max_depth : float
+            Largest distance from camera_z that gets measured, so where nothing is hit the height is
+            camera_z-max_depth. Default is 20.0.
+        """
+        if self._scenario_built:
+            raise RuntimeError("setup_heightfield_sensor must be called before build_scenario")
+        unknown_options = set(options) - {"mode", "camera_z", "max_depth"}
+        if len(unknown_options) > 0:
+            raise ValueError(f"Unknown heightfield sensor options {unknown_options}")
+        if options.get("mode") != "warp_camera":
+            raise ValueError(f"Unknown heightfield sensor mode {options.get('mode')}, available modes are ['warp_camera']")
+        if self._mjx_impl != "warp":
+            raise ValueError(f"Heightfield sensor mode 'warp_camera' needs mjx_impl='warp', got '{self._mjx_impl}'")
+        if not math.isclose(size_xy[0]/resolution_xy[0], size_xy[1]/resolution_xy[1]):
+            raise ValueError(f"The heightfield cells must be square, but size_xy={size_xy} and resolution_xy={resolution_xy}")
+        self._heightfield_sensor = HeightfieldSensor(size_xy=(float(size_xy[0]), float(size_xy[1])),
+                                                     resolution_xy=(int(resolution_xy[0]), int(resolution_xy[1])),
+                                                     ignored_links=tuple(ignored_links),
+                                                     camera_z=float(options.get("camera_z", 10.0)),
+                                                     max_depth=float(options.get("max_depth", 20.0)))
+
+    def _heightfield_hidden_geoms(self, ignored_links : Sequence[tuple[str,str] | str]) -> np.ndarray:
+        """Boolean mask of the geoms the sensor does not see: the ignored links and the visual-only geoms."""
+        ignored_body_ids = []
+        for item in ignored_links:
+            links = [l for l in self._lname2lid if l[0] == item] if isinstance(item, str) else [tuple(item)]
+            if len(links) == 0 or any(l not in self._lname2lid for l in links):
+                raise ValueError(f"Unknown link or model in the heightfield ignored_links: {item}")
+            ignored_body_ids += [self._lname2lid[l] for l in links]
+        visual_only = np.logical_and(self._mj_model.geom_contype==0, self._mj_model.geom_conaffinity==0)
+        return np.logical_or(np.isin(self._mj_model.geom_bodyid, ignored_body_ids), visual_only)
+
+    def _init_heightfield_sensor(self):
+        sensor = self._heightfield_sensor
+        if sensor is None:
+            return
+        # The render context bakes geom_group at creation, so a copy of the model can say what the
+        # sensor sees without touching the groups that the cameras use.
+        sensor_mj_model = copy.deepcopy(self._mj_model)
+        sensor_mj_model.geom_group[:] = 0
+        sensor_mj_model.geom_group[self._heightfield_hidden_geoms(sensor.ignored_links)] = 1
+        sensor.camera_id = self._cname2cid[HeightfieldSensor.CAMERA_NAME.split("#")[1]]
+        sensor.render_context = mjx.create_render_context(sensor_mj_model,
+                                                          nworld=self._vec_size,
+                                                          cam_res=[sensor.resolution_xy],
+                                                          render_rgb=False,
+                                                          render_depth=True,
+                                                          cam_active=[cid == sensor.camera_id for cid in range(self._mj_model.ncam)],
+                                                          enabled_geom_groups=[0],
+                                                          use_textures=False,
+                                                          use_shadows=False)
+        sensor.render_context_pytree = sensor.render_context.pytree()
+
+    @staticmethod
+    @partial(jit_th_synced, static_argnames=["render_context","camera_id","camera_z","max_depth"])
+    def _render_heightfield_jax(sim_state : SimState, render_context : Any, camera_id : int,
+                                center_vec_xy : jnp.ndarray, yaw_vec : jnp.ndarray,
+                                camera_z : float, max_depth : float):
+        cos, sin = jnp.cos(yaw_vec), jnp.sin(yaw_vec)
+        zeros, ones = jnp.zeros_like(yaw_vec), jnp.ones_like(yaw_vec)
+        # Level and turned by yaw. A camera looks along its -z, so this one looks straight down, and
+        # the image columns follow the yaw direction.
+        cam_xmat = jnp.stack([jnp.stack([cos, -sin, zeros], axis=-1),
+                              jnp.stack([sin,  cos, zeros], axis=-1),
+                              jnp.stack([zeros, zeros, ones], axis=-1)], axis=-2)
+        cam_xpos = jnp.concatenate([center_vec_xy, jnp.full_like(center_vec_xy[:,:1], camera_z)], axis=-1)
+        mjx_data = sim_state.mjx_data.replace(cam_xpos=sim_state.mjx_data.cam_xpos.at[:,camera_id].set(cam_xpos),
+                                              cam_xmat=sim_state.mjx_data.cam_xmat.at[:,camera_id].set(cam_xmat))
+        mjx_data = mjx.refit_bvh(sim_state.mjx_model, mjx_data, render_context)
+        _, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)[:2]
+        depth_vec_hw = mjx.get_depth(render_context, 0, depth_data, max_depth)[...,0]*max_depth
+        heights_vec_hw = camera_z - jnp.where(depth_vec_hw > 0, depth_vec_hw, max_depth) # depth is 0 where nothing is hit
+        # Image rows go from +y to -y: flip them, and make x the first index
+        return jnp.flip(heights_vec_hw, axis=1).transpose(0,2,1)
+
+    @override
+    def get_heightfield(self, center_vec_xy : th.Tensor, yaw_vec : th.Tensor) -> th.Tensor:
+        sensor = self._heightfield_sensor
+        if sensor is None or sensor.render_context_pytree is None:
+            raise RuntimeError("The heightfield sensor is not initialized: call setup_heightfield_sensor before build_scenario, and startup")
+        self._forward_if_needed()
+        heights_vec_xy = self._render_heightfield_jax(self._sim_state,
+                                                      sensor.render_context_pytree,
+                                                      sensor.camera_id,
+                                                      th2jax(center_vec_xy, jax_device=self._jax_device),
+                                                      th2jax(yaw_vec, jax_device=self._jax_device),
+                                                      sensor.camera_z,
+                                                      sensor.max_depth)
         return jax2th_copy(heights_vec_xy, th_device=self._out_th_device)
 
     def _get_depth_cam_params(self, cam_id : int):

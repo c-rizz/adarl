@@ -545,8 +545,9 @@ def aggregate_models(models : list[ModelSpawnDef],
                      safe_revolute_dof_frictionloss = 0.2,
                      render_znear : float | None = 0.01,
                      render_zfar : float | None = 100.0,
-                     add_ground_light : bool = True):
-    
+                     add_ground_light : bool = True,
+                     orthographic_camera : tuple[str, float, tuple[int,int]] | None = None):
+
     """Aggregates multiple models into a single MjSpec and MjModel.
 
     Merges all the provided models into a single MjSpec, optionally adds ground/sky, applies
@@ -599,6 +600,9 @@ def aggregate_models(models : list[ModelSpawnDef],
     add_ground_light : bool
         If False, the ground is added without its directional light, for scenarios that define
         their own lighting. Ignored unless the ground is generated.
+    orthographic_camera : tuple[str, float, tuple[int,int]] | None
+        If not None, (name, image height in meters, (width, height) in pixels) of an orthographic
+        camera to add to the world.
 
     Returns
     -------
@@ -751,6 +755,11 @@ def aggregate_models(models : list[ModelSpawnDef],
             sens.refname = body_b
             sens.intprm = [1, 0, 1]
 
+    if orthographic_camera is not None:
+        camera = big_speck.worldbody.add_camera()
+        camera.name, camera.fovy, camera.resolution = orthographic_camera
+        camera.proj = mujoco.mjtProjection.mjPROJ_ORTHOGRAPHIC
+
     # big_speck.compiler.discardvisual = False
     big_speck.memory = 50*1024*1024 #allocate 50mb for arena (this becomes mjmodel.narena and mjdata.narena)
     big_speck = apply_opt_preset_to_spec(big_speck, preset_name=opt_preset, opt_override=opt_overrides)
@@ -900,13 +909,13 @@ def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[
     elif preset_name == "slow":
         opt.integrator = mjINT_EULER
         opt.iterations = 30
-        opt.ls_iterations = 10
+        opt.ls_iterations = 15
         # opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         opt.impratio = good_impratio # see comment above
     elif preset_name == "slower":
         opt.integrator = mjINT_EULER
         opt.iterations = 50
-        opt.ls_iterations = 15
+        opt.ls_iterations = 20
         # opt.disableflags |= mujoco_mjtDisableBit.mjDSBL_EULERDAMP
         opt.impratio = good_impratio # see comment above
     else:
