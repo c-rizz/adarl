@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import abstractmethod
 from typing import Any, Iterable, Sequence
-from adarl.utils.utils import Pose, build_pose
+from adarl.utils.utils import Pose, build_pose, DistributionDef
 from adarl.adapters.BaseVecAdapter import BaseVecAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 import adarl.utils.dbg.ggLog as ggLog
@@ -257,6 +257,22 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
             index grows along the direction given by yaw, the y index 90 degrees counterclockwise of it.
         """
         raise NotImplementedError()
+
+    def set_camera_timing(self, camera_name : str,
+                                fps : float,
+                                latency : DistributionDef = 0.0,
+                                in_order : bool = True,
+                                seed : int = 0):
+        """Give a camera a frame rate and a latency from capture to arrival, so that get_camera_images returns, as
+        from a real camera, the newest frame that has arrived instead of the current state. Adapters raise if they do
+        not support it; see the implementations for the details."""
+        raise NotImplementedError()
+
+    def reset_camera_frames(self, vec_mask : th.Tensor | None = None):
+        """Drop the frames that the cameras with a timing (set_camera_timing) have captured so far, in the envs of
+        vec_mask (all if None), so that the first images of an episode show its start. Meant to be called when
+        episodes start. Without camera timings there is nothing to drop."""
+        pass
 
     def set_monitored_collision_pairs(self, collision_pairs: Sequence[tuple[tuple[str,str], tuple[str,str]]]):
         """Set collision pairs to monitor. Must be called before build_scenario.

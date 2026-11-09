@@ -1,0 +1,3 @@
+WARNING Mon Nov  9 13:49:00 2026: Attach conflict on attach, policy is 'warning'
+gravity: parent has 0 0 -9.81 (default), child has 0 0 0, keeping parent value
+

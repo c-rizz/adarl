@@ -25,6 +25,8 @@ tests/
     test_set_rows_cols_masks.py   # unit: masked sub-block writer (sparse-mask regression)
     test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
     test_mjx_rendering.py         # warp RGB+depth: shapes/dtypes, depth content, vec_mask, out= path
+    test_mjx_camera_timing.py     # set_camera_timing: each frame is the live image of its capture, fixed and random latency
+                                  #   bounds, in-order vs overtaking arrivals, reset_camera_frames
     test_mjx_heightfield.py       # get_heightfield "warp_camera": maps vs the scene per env center and yaw, ignored links, collision vs visual geoms, moving bodies
     test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
     test_mjx_per_env_run.py       # per-env run() durations: frozen envs keep state/clock/stats/filters, clock past float32 limit

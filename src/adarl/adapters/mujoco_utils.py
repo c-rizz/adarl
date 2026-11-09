@@ -625,7 +625,7 @@ def aggregate_models(models : list[ModelSpawnDef],
                 assets.append('<texture type="2d" name="groundplane" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
                 assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
             else:
-                assets.append(f'<material name="groundplane" rgba="{" ".join(str(float(c)) for c in ground_rgba)}" reflectance="0.2" />')
+                assets.append(f'<material name="groundplane" rgba="{" ".join(str(float(c)) for c in ground_rgba)}" />')
         if uneven_ground:
             ground_geoms.append('<geom name="uneven_ground" type="hfield" hfield="uneven_ground" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
             assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')

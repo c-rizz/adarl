@@ -17,7 +17,7 @@ from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import th_quat_rotate, quat_mul_xyzw
 from adarl.utils.warp_capture import install_gc_safe_capture
-from adarl.utils.utils import pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, quat_xyzw_between_vecs_py
+from adarl.utils.utils import pkgutil_get_path, exc_to_str, build_pose, to_string_tensor, quat_xyzw_between_vecs_py, DistributionDef
 from typing import Any
 import jax
 import jax.tree_util
@@ -653,6 +653,79 @@ class SimState:
         # ggLog.info(f"type(self.mjx_data) = {type(self.mjx_data)}")
         return ret
     
+CAMERA_FRAME_FIELDS = ("geom_xpos", "geom_xmat", "cam_xpos", "cam_xmat", "light_xpos", "light_xdir", "flexvert_xpos")
+"""The mjx.Data fields the warp renderer reads, which are what a camera frame keeps."""
+_NEVER_SUBSTEP = int(np.iinfo(np.int32).max)
+"""Arrival substep of an empty frame slot."""
+
+
+@dataclass(frozen=True)
+class CameraTiming:
+    """When a camera captures its frames and how long they take to arrive, see MjxAdapter.set_camera_timing."""
+    period_substeps : int
+    latency_type : Literal["constant", "uniform", "loguniform", "normal"]
+    latency_params : tuple[float, ...] # for normal: (mean, std, clamp_width)
+    max_latency_substeps : int
+    in_order : bool
+    seed : int
+
+    @property
+    def slots(self) -> int:
+        """The most frames an env has to keep: those that have not arrived yet, plus the newest one that has.
+        A frame arrives at most max_latency_substeps after its capture, also when frames are kept in order, so at
+        most ceil(max_latency_substeps/period_substeps) of them have not arrived yet."""
+        return -(-self.max_latency_substeps//self.period_substeps) + 1
+
+    def sample_latency_substeps(self, key : jnp.ndarray, shape : tuple[int, ...], sim_step_dt : float) -> jnp.ndarray:
+        p = self.latency_params
+        if self.latency_type == "constant":
+            latency = jnp.full(shape, p[0])
+        elif self.latency_type == "uniform":
+            latency = jax.random.uniform(key, shape, minval=p[0], maxval=p[1])
+        elif self.latency_type == "loguniform":
+            latency = jnp.exp(jax.random.uniform(key, shape, minval=math.log(p[0]), maxval=math.log(p[1])))
+        else:
+            latency = jnp.clip(jax.random.normal(key, shape), -p[2], p[2])*p[1] + p[0]
+        # Clipped so that float32 rounding cannot go past the bound the slots are sized for
+        return jnp.clip(jnp.round(latency/sim_step_dt), 0, self.max_latency_substeps).astype(jnp.int32)
+
+
+@jax.tree_util.register_dataclass
+@dataclass
+class CameraFrames:
+    """The frames of a camera with a timing, in a ring of slots per env. A frame is the render state at its capture."""
+    render_fields : dict[str, jnp.ndarray] # mjx.Data path -> (slots, vec_size, ...)
+    capture_substep : jnp.ndarray # (slots, vec_size) int32
+    available_substep : jnp.ndarray # (slots, vec_size) int32, the substep the frame arrives at, _NEVER_SUBSTEP if empty
+    next_slot : jnp.ndarray # (vec_size,) int32, the slot the next capture overwrites, which holds the oldest frame
+    next_capture_substep : jnp.ndarray # (vec_size,) int32
+    last_available_substep : jnp.ndarray # (vec_size,) int32, the arrival of the last captured frame
+    rng_key : jnp.ndarray
+
+
+def _get_data_path(data : Any, path : str) -> Any:
+    for name in path.split("."):
+        data = getattr(data, name)
+    return data
+
+
+def _write_camera_frame(frames : CameraFrames, mask : jnp.ndarray, mjx_data : mjx.Data,
+                        capture_substep : jnp.ndarray, available_substep : jnp.ndarray) -> CameraFrames:
+    """Store the current render state as a new frame of the envs in mask, in the slot of their oldest frame."""
+    envs = jnp.arange(mask.shape[0])
+    slot = frames.next_slot
+    def put(buffer, value):
+        value_mask = mask.reshape(mask.shape + (1,)*(value.ndim-1))
+        return buffer.at[slot, envs].set(jnp.where(value_mask, value, buffer[slot, envs]))
+    return dataclasses.replace(frames,
+                               render_fields = {path : put(buffer, _get_data_path(mjx_data, path))
+                                                for path, buffer in frames.render_fields.items()},
+                               capture_substep = put(frames.capture_substep, capture_substep),
+                               available_substep = put(frames.available_substep, available_substep),
+                               next_slot = jnp.where(mask, (slot+1) % frames.capture_substep.shape[0], slot),
+                               last_available_substep = jnp.where(mask, available_substep, frames.last_available_substep))
+
+
 mj_jnt_type_to_adarl = {
     mjutils._mjtJoint.mjJNT_FREE  : JointType.FLOATING,
     mjutils._mjtJoint.mjJNT_HINGE : JointType.REVOLUTE,
@@ -1237,6 +1310,10 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._body_unscalable_reason : dict[int, str] = {}
         self._geometry_altered = False # whether alter_model ever scaled a link
         self._host_geometry : dict[str, np.ndarray] | None = None # CPU copy of the per-env geometry, None when stale
+        self._camera_timings : dict[str, CameraTiming] = {} # set_camera_timing, fixed once startup compiles the step
+        self._camera_frames : dict[str, CameraFrames] = {} # frames of the cameras with a timing, allocated in startup
+        self._camera_frames_reset_mask : jnp.ndarray | None = None # envs whose frames reset_camera_frames has yet to drop
+        self._started_up = False
         self._must_init_step = True # so that run() also works before the first step(), starting from cleared stats
         self._total_iterations = 0
         self._sim_step_count_since_build = 0
@@ -1521,35 +1598,19 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return mjx.get_rgb(render_context, cidx, pixels)
 
     @staticmethod
-    @partial(jit_th_synced, static_argnames=["render_context","cam_indexes"])
-    def _render_warp_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
-        if render_context is None:
-            raise RuntimeError("Warp render context not initialized")
-        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
-        pixels = mjx.render(sim_state.mjx_model, mjx_data, render_context)[0]
-        rgbs = []
-        for cidx in cam_indexes:
-            rgb = MjxAdapter._vec_get_rgb(render_context, cidx, pixels)
-            rgbs.append(rgb)
-        return rgbs
-
-    @staticmethod
     @partial(jax.vmap, in_axes=(None, None, 0))
     def _vec_get_depth(render_context, cidx, pixels, max_depth = 10.0):
         return mjx.get_depth(render_context, cidx, pixels, max_depth)*max_depth
 
     @staticmethod
-    @partial(jit_th_synced, static_argnames=["render_context","cam_indexes"])
-    def _render_warp_depth_jax(sim_state : SimState, render_context : Any, cam_indexes : tuple[int]):
-        if render_context is None:
-            raise RuntimeError("Warp render context not initialized")
-        mjx_data = mjx.refit_bvh(sim_state.mjx_model, sim_state.mjx_data, render_context)
-        # mjx.render returns (rgb_data, depth_data); get_depth must be fed the depth buffer.
-        rgb_data, depth_data = mjx.render(sim_state.mjx_model, mjx_data, render_context)[:2]
-        depths = []
-        for cidx in cam_indexes:
-            depths.append(MjxAdapter._vec_get_depth(render_context, cidx, depth_data))
-        return depths
+    @partial(jit_th_synced)
+    def _camera_frame_data_jax(frames : CameraFrames, mjx_data : mjx.Data, sim_substeps : jnp.ndarray) -> tuple[mjx.Data, jnp.ndarray]:
+        """The data to render the newest frame that has arrived in each env, and the substep the frame was captured at."""
+        arrived = frames.available_substep <= sim_substeps[None, :]
+        slot = jnp.argmax(jnp.where(arrived, frames.capture_substep, -1), axis=0)
+        envs = jnp.arange(slot.shape[0])
+        data = mjx_data.tree_replace({path : buffer[slot, envs] for path, buffer in frames.render_fields.items()})
+        return data, frames.capture_substep[slot, envs]
 
     @staticmethod
     @partial(jit_th_synced, static_argnames=["render_context","cam_indexes","want_rgb","want_depth"])
@@ -1877,6 +1938,176 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         _ = self._mjx_integrate_and_forward(self._sim_state.mjx_model, copy.deepcopy(self._sim_state.mjx_data)) # trigger jit compile
         ggLog.info(f"Compiled.")
         self._forward_needed = True
+        self._init_camera_frames()
+        self._started_up = True
+
+    def set_camera_timing(self, camera_name : str,
+                                fps : float,
+                                latency : DistributionDef = 0.0,
+                                in_order : bool = True,
+                                seed : int = 0):
+        """Give a camera a frame rate and a latency, so that get_camera_images returns, as from a real camera, the
+        newest frame that has arrived instead of the current state.
+
+        The camera captures a frame every 1/fps seconds, rounded to whole substeps, at a phase of its own in each env.
+        Each frame arrives after a latency drawn from `latency` for that frame and env, rounded to whole substeps.
+        get_camera_images renders, in each env, the newest frame that has arrived, and reports the time it was
+        captured in Renderings.times. A frame keeps where the geoms, cameras and lights were: the model is the
+        current one, so alter_model and alter_visuals changes show at once.
+
+        After resetWorld, and in the envs passed to reset_camera_frames, the frames captured so far are dropped and
+        the state at the reset becomes a frame that has already arrived. Setting the state of joints or links does
+        not drop frames, as environments also move links during an episode (e.g. markers): call
+        reset_camera_frames when an episode starts.
+
+        Only the warp render backend supports it. Must be called after build_scenario and before startup.
+
+        Parameters
+        ----------
+        camera_name : str
+            The camera, one of get_detected_cameras(). It must also be monitored.
+        fps : float
+            Frame rate of the camera, at most one frame per substep.
+        latency : DistributionDef
+            Time from the capture of a frame to its arrival, in seconds: a constant, or a ("uniform", (low, high)),
+            ("loguniform", (low, high)) or ("normal", (mean, std[, clamp_width])) distribution. The normal one is
+            clamped at clamp_width standard deviations, 5 by default, as in sample_distr.
+        in_order : bool
+            If True a frame never arrives before the one captured before it, as through a single pipeline: it waits
+            for the previous one. If False a frame can overtake the previous one, which is then never returned.
+        seed : int
+            Seed of the latency and phase draws of this camera.
+        """
+        if not self._scenario_built:
+            raise RuntimeError("set_camera_timing must be called after build_scenario")
+        if self._started_up:
+            raise RuntimeError("set_camera_timing must be called before startup, which compiles the simulation step")
+        if not self._enable_rendering or self._render_backend != "warp":
+            raise NotImplementedError(f"set_camera_timing needs rendering with the warp render backend, got "
+                                      f"enable_rendering={self._enable_rendering}, render_backend='{self._render_backend}'")
+        if camera_name not in self._cname2cid:
+            raise ValueError(f"Unknown camera '{camera_name}', the cameras are {list(self._cname2cid.keys())}")
+        if fps <= 0:
+            raise ValueError(f"fps must be positive, got {fps}")
+        if isinstance(latency, (int, float, th.Tensor, np.ndarray)) or not isinstance(latency[0], str):
+            latency_type, params = "constant", (float(th.as_tensor(latency)),)
+        else:
+            latency_type, params = latency[0], tuple(float(th.as_tensor(p)) for p in latency[1])
+        if latency_type == "constant":
+            low = high = params[0]
+        elif latency_type in ("uniform", "loguniform"):
+            low, high = params
+        elif latency_type == "normal":
+            if len(params) == 2:
+                params = params + (5.0,) # the clamp width sample_distr uses by default
+            mean, std, clamp_width = params
+            low, high = mean - clamp_width*std, mean + clamp_width*std
+        else:
+            raise ValueError(f"Unsupported latency distribution '{latency_type}'")
+        if low < 0 or (latency_type == "loguniform" and low <= 0):
+            raise ValueError(f"latency must not be negative (and loguniform needs a positive low), got {latency}")
+        timing = CameraTiming(period_substeps = max(1, round(1/(fps*self._sim_step_dt))),
+                              latency_type = latency_type, # type: ignore
+                              latency_params = params,
+                              max_latency_substeps = round(high/self._sim_step_dt),
+                              in_order = in_order,
+                              seed = seed)
+        self._camera_timings[camera_name] = timing
+        ggLog.info(f"Camera '{camera_name}' captures every {timing.period_substeps} substeps "
+                   f"({1/(timing.period_substeps*self._sim_step_dt):.2f} fps), latency {latency_type}{params} "
+                   f"up to {timing.max_latency_substeps} substeps, {timing.slots} frames kept per env")
+
+    @override
+    def reset_camera_frames(self, vec_mask : th.Tensor | None = None):
+        """Drop the frames the cameras with a timing (set_camera_timing) have captured so far, in the envs of
+        vec_mask (all if None). The state these envs are next simulated or rendered from becomes a frame that has
+        already arrived, so the first images of an episode show its start and not the end of the previous one."""
+        if len(self._camera_timings) == 0:
+            return
+        mask = jnp.array(self._vec_mask_to_jax(vec_mask), copy=True) # the caller may change its mask before the reset
+        if self._camera_frames_reset_mask is not None:
+            mask = jnp.logical_or(mask, self._camera_frames_reset_mask)
+        self._camera_frames_reset_mask = mask
+
+    def _init_camera_frames(self):
+        """Allocate the frames of the cameras with a timing, all to be reset at the first forwarded state."""
+        self._camera_frames = {}
+        if len(self._camera_timings) == 0:
+            return
+        data = self._sim_state.mjx_data
+        top_fields = {f.name for f in dataclasses.fields(data)}
+        impl = getattr(data, "_impl", None)
+        impl_fields = {f.name for f in dataclasses.fields(impl)} if dataclasses.is_dataclass(impl) else set()
+        paths = [name if name in top_fields else "_impl."+name
+                 for name in CAMERA_FRAME_FIELDS if name in top_fields or name in impl_fields]
+        for cam, timing in self._camera_timings.items():
+            if cam not in self._monitored_cameras:
+                raise RuntimeError(f"Camera '{cam}' has a timing but is not monitored, monitored cameras are {self._monitored_cameras}")
+            def full(shape, dtype, value):
+                return jnp.full(shape, value, dtype=dtype, device=self._jax_device)
+            self._camera_frames[cam] = CameraFrames(
+                render_fields = {path : jnp.zeros((timing.slots,)+_get_data_path(data, path).shape,
+                                                  dtype=_get_data_path(data, path).dtype, device=self._jax_device)
+                                 for path in paths},
+                capture_substep = full((timing.slots, self._vec_size), jnp.int32, 0),
+                available_substep = full((timing.slots, self._vec_size), jnp.int32, _NEVER_SUBSTEP),
+                next_slot = full((self._vec_size,), jnp.int32, 0),
+                next_capture_substep = full((self._vec_size,), jnp.int32, 0),
+                last_available_substep = full((self._vec_size,), jnp.int32, 0),
+                rng_key = jax.device_put(jax.random.PRNGKey(timing.seed), self._jax_device))
+        self._camera_frames_reset_mask = self._all_vecs
+
+    def _reset_camera_frames_if_needed(self):
+        """Apply reset_camera_frames. Must run on a forwarded state, the one the envs are next simulated or rendered from."""
+        if self._camera_frames_reset_mask is not None:
+            self._camera_frames = self._reset_camera_frames_jax(self._camera_frames,
+                                                                self._sim_state.mjx_data,
+                                                                self._sim_state.sim_substeps,
+                                                                self._camera_frames_reset_mask)
+            self._camera_frames_reset_mask = None
+
+    @partial(jit_th_synced, static_argnames=("self",), donate_argnames=("camera_frames",))
+    def _reset_camera_frames_jax(self, camera_frames : dict[str, CameraFrames], mjx_data : mjx.Data,
+                                 sim_substeps : jnp.ndarray, vec_mask : jnp.ndarray) -> dict[str, CameraFrames]:
+        reset = {}
+        for cam, frames in camera_frames.items():
+            timing = self._camera_timings[cam]
+            rng_key, phase_key = jax.random.split(frames.rng_key)
+            frames = dataclasses.replace(frames,
+                                         available_substep = jnp.where(vec_mask[None, :], _NEVER_SUBSTEP, frames.available_substep),
+                                         rng_key = rng_key)
+            frames = _write_camera_frame(frames, vec_mask, mjx_data, sim_substeps, sim_substeps)
+            phase = jax.random.randint(phase_key, sim_substeps.shape, 1, timing.period_substeps+1, dtype=jnp.int32)
+            reset[cam] = dataclasses.replace(frames, next_capture_substep = jnp.where(vec_mask, sim_substeps+phase,
+                                                                                      frames.next_capture_substep))
+        return reset
+
+    def _capture_camera_frames(self, camera_frames : dict[str, CameraFrames], mjx_data : mjx.Data,
+                               sim_substeps : jnp.ndarray, active : jnp.ndarray) -> dict[str, CameraFrames]:
+        """Capture a frame of each camera with a timing, in the envs that have reached their next capture. Runs after each substep."""
+        captured = {}
+        for cam, frames in camera_frames.items():
+            timing = self._camera_timings[cam]
+            capture = jnp.logical_and(active, sim_substeps >= frames.next_capture_substep)
+            rng_key, latency_key = jax.random.split(frames.rng_key)
+            available = sim_substeps + timing.sample_latency_substeps(latency_key, sim_substeps.shape, self._sim_step_dt)
+            if timing.in_order:
+                available = jnp.maximum(available, frames.last_available_substep)
+            frames = _write_camera_frame(frames, capture, mjx_data, sim_substeps, available)
+            captured[cam] = dataclasses.replace(frames,
+                                                rng_key = rng_key,
+                                                next_capture_substep = jnp.where(capture,
+                                                                                 frames.next_capture_substep+timing.period_substeps,
+                                                                                 frames.next_capture_substep))
+        return captured
+
+    def _camera_frame_times(self, capture_substep : jnp.ndarray, vec_mask : th.Tensor, out_th_device : th.device,
+                            use_fixed_shapes : bool) -> th.Tensor:
+        """Capture times of the rendered frames of one camera, shape (nvecs,), the rows _render_times has."""
+        times = jax2th_copy(capture_substep, out_th_device).to(th.float64)*self._sim_step_dt
+        if not use_fixed_shapes:
+            times = times[vec_mask.to(device=times.device, non_blocking=times.device.type=="cuda")]
+        return times.to(th.float32)
 
     def _compute_collision_masks(self,  link_group_collisions : list[tuple[tuple[str,str] | str, list[tuple[str,str] | str]]],
                                         explicit_groups : list[tuple[tuple[str,str] | str,...]] = []) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -2282,28 +2513,31 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         opt = sim_state.mjx_model.opt
         return sim_state.replace_d({"mjx_model" : sim_state.mjx_model.replace(opt=opt.replace(timestep=timesteps.astype(opt.timestep.dtype)))})
 
-    def _substep(self, sim_state_conf : tuple[SimState,SimConf, jnp.ndarray], i : jnp.ndarray):
-        sim_state, sim_conf, env_iterations = sim_state_conf
+    def _substep(self, sim_state_conf : tuple[SimState, SimConf, jnp.ndarray, dict[str, CameraFrames]], i : jnp.ndarray):
+        sim_state, sim_conf, env_iterations, camera_frames = sim_state_conf
         active = i < env_iterations
         sim_state = MjxAdapter._set_sim_timestep(sim_state, jnp.where(active, self._sim_step_dt, 0.0))
         (sim_state, sim_conf), joint_state = self._sim_step_fast_for_scan_full_pveae((sim_state, sim_conf), None)
         sim_substeps = sim_state.sim_substeps + active.astype(sim_state.sim_substeps.dtype)
         sim_state = sim_state.replace_d({"sim_substeps" : sim_substeps,
                                             "sim_time" : sim_substeps.astype(sim_state.sim_time.dtype)*self._sim_step_dt})
-        return (sim_state, sim_conf, env_iterations), joint_state
-    
-    @partial(jit_th_synced, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state"))
+        camera_frames = self._capture_camera_frames(camera_frames, sim_state.mjx_data, sim_substeps, active)
+        return (sim_state, sim_conf, env_iterations, camera_frames), joint_state
+
+    @partial(jit_th_synced, static_argnames=("self","iterations","must_init_step"), donate_argnames=("sim_state","camera_frames"))
     def _run_fast_save_full_jpveae(self, sim_state : SimState, iterations : int, sim_conf : SimConf, must_init_step : bool,
-                                   env_iterations : jnp.ndarray) -> tuple[SimState, jnp.ndarray | None]:
+                                   env_iterations : jnp.ndarray, camera_frames : dict[str, CameraFrames]
+                                   ) -> tuple[SimState, dict[str, CameraFrames], jnp.ndarray | None]:
         """Run `iterations` substeps, of which env i only simulates the first env_iterations[i].
 
         Once past its own count an env is frozen: its timestep is set to 0, and neither its clock nor its step
         statistics advance, so what it reports does not depend on how long the other envs are simulated.
+        The cameras with a timing capture their frames along the way.
         """
         if must_init_step:
             sim_state = MjxAdapter._clear_step_stats(sim_state)
-        (sim_state, sim_conf, _), joints_state_history = jax.lax.scan(self._substep,
-                                                  init = (sim_state, sim_conf, env_iterations),
+        (sim_state, sim_conf, _, camera_frames), joints_state_history = jax.lax.scan(self._substep,
+                                                  init = (sim_state, sim_conf, env_iterations, camera_frames),
                                                   xs = jnp.arange(iterations, dtype=jnp.int32),
                                                   length = iterations)
         # sim_state, joint_stats_arr  = jax.lax.fori_loop(lower=0, upper=iterations,
@@ -2314,7 +2548,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # An env that has not simulated a single substep since the stats were cleared reports its current state,
         # rather than empty (+-inf) statistics
         sim_state = MjxAdapter._update_step_stats(sim_state, sim_conf, sim_state.stats_step_count == 0)
-        return sim_state, joints_state_history
+        return sim_state, camera_frames, joints_state_history
 
     def _get_joint_state_for_history(self, sim_state : SimState) -> jnp.ndarray:
         return MjxAdapter._get_vec_joint_states_raw_pveaec( self._sim_conf.monitored_qpadr,
@@ -2388,9 +2622,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         # The Euler stepper integrates with the forward quantities of the current state (it forwards after
         # integrating, not before), so a pending forward (after a reset or a state set) has to happen first
         self._forward_if_needed()
+        self._reset_camera_frames_if_needed()
         record_time("MjxAdapter.run: before fast step")
-        self._sim_state, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf, self._must_init_step,
-                                                                                self._env_iterations_to_jax(env_iterations))
+        self._sim_state, self._camera_frames, joints_state_history = self._run_fast_save_full_jpveae(self._sim_state, iterations, self._sim_conf,
+                                                                                                     self._must_init_step,
+                                                                                                     self._env_iterations_to_jax(env_iterations),
+                                                                                                     self._camera_frames)
         record_time("MjxAdapter.run: after fast step")
         self._must_init_step = False
         self._forward_needed = False
@@ -2557,44 +2794,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             times = times[vec_mask.to(device="cpu")]
         return times.unsqueeze(1).repeat(1, n_cameras).to(out_th_device, non_blocking=out_th_device.type=="cuda")
 
-    def _render_rgb_warp(self,
-                         requestedCameras : list[str],
-                         vec_mask : th.Tensor,
-                         out_th_device : th.device,
-                         out : list[th.Tensor] | None = None,
-                         use_fixed_shapes : bool = False):
-        if not self._warp_render_has_rgb or not self._warp_render_context_pytrees:
-            raise RuntimeError("Warp RGB rendering is not initialized")
-        for cam in requestedCameras:
-            if cam not in self._warp_render_context_pytrees:
-                raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
-        nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
-        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
-        self._forward_if_needed()
-        # Each camera has its own single-camera context, so its render index within it is 0.
-        rgbs = [self._render_warp_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
-                for cam in requestedCameras]
-        # ggLog.info(f"got warp render pixels with shape {[i.shape for i in rgbs]} for {nvecs} vecs and {len(requestedCameras)} cameras")
-
-        all_imgs : list[th.Tensor] = []
-        for i in range(len(requestedCameras)):
-            rgb = rgbs[i]
-            rgb_th = jax2th_copy(rgb, th_device=out_th_device) # owned: the masking below is only queued
-            vec_mask_dev = vec_mask.to(device=rgb_th.device, non_blocking=rgb_th.device.type=="cuda")
-            if use_fixed_shapes:
-                rgb_th[~vec_mask_dev] = 0
-            else:
-                rgb_th = rgb_th[vec_mask_dev]
-            if out is not None:
-                if out[i].shape != rgb_th.shape:
-                    raise RuntimeError(f"getRenderings: out[{i}].shape={out[i].shape} != expected shape={rgb_th.shape}")
-                out[i].copy_(rgb_th, non_blocking=out_th_device.type=="cuda")
-                all_imgs.append(out[i])
-            else:
-                all_imgs.append(rgb_th)
-        return all_imgs, times
-
-
     def _render_depth(self, requestedCameras : list[str],
                             vec_mask : th.Tensor,
                             out_th_device : th.device,
@@ -2621,41 +2820,6 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                 all_imgs.append(imgs)
         return all_imgs, times
 
-    def _render_depth_warp(self,
-                           requestedCameras : list[str],
-                           vec_mask : th.Tensor,
-                           out_th_device : th.device,
-                           out : list[th.Tensor] | None = None,
-                           use_fixed_shapes : bool = False):
-        if not self._warp_render_has_depth or not self._warp_render_context_pytrees:
-            raise RuntimeError("Warp depth rendering is not initialized")
-        for cam in requestedCameras:
-            if cam not in self._warp_render_context_pytrees:
-                raise RuntimeError(f"Camera {cam} is not in monitored. monitored_cameras={list(self._warp_render_context_pytrees.keys())}")
-        nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
-        times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
-        self._forward_if_needed()
-
-        all_imgs : list[th.Tensor] = []
-        for cam_i, cam in enumerate(requestedCameras):
-            # Each camera has its own single-camera context, so its render index within it is 0.
-            depth = self._render_warp_depth_jax(self._sim_state, self._warp_render_context_pytrees[cam], (0,))[0]
-            # depth = jnp.expand_dims(depth, axis=-1)
-            depth_th = jax2th_copy(depth, th_device=out_th_device) # owned: the masking below is only queued
-            vec_mask_dev = vec_mask.to(device=depth_th.device, non_blocking=depth_th.device.type=="cuda")
-            if use_fixed_shapes:
-                depth_th[~vec_mask_dev] = 0
-            else:
-                depth_th = depth_th[vec_mask_dev]
-            if out is not None:
-                if out[cam_i].shape != depth_th.shape:
-                    raise RuntimeError(f"getRenderings: out[{cam_i}].shape={out[cam_i].shape} != expected shape={depth_th.shape}")
-                out[cam_i].copy_(depth_th, non_blocking=out_th_device.type=="cuda")
-                all_imgs.append(out[cam_i])
-            else:
-                all_imgs.append(depth_th)
-        return all_imgs, times
-    
     def _depth_img_to_rgb(self, depth_img, maxdist=3.0):
         img_batch = (depth_img/maxdist).to(dtype=th.uint8)
         img_batch = img_batch.unsqueeze(-1).repeat((1,1,1,3))
@@ -2672,7 +2836,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                           out_depth : list[th.Tensor] | None = None,
                           use_fixed_shapes : bool = False,
                           original_visuals : bool = False):
-        """Render rgb and/or depth for the requested cameras with a single warp pass each."""
+        """Render rgb and/or depth for the requested cameras with a single warp pass each. Cameras with a timing
+        (set_camera_timing) render their newest frame that has arrived, unless original_visuals is set."""
         if not self._warp_render_context_pytrees:
             raise RuntimeError("Warp rendering is not initialized")
         if want_rgb and not self._warp_render_has_rgb:
@@ -2685,6 +2850,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         nvecs = self._vec_size if use_fixed_shapes else int(th.count_nonzero(vec_mask).item()) #type: ignore
         times = self._render_times(vec_mask, len(requestedCameras), out_th_device, use_fixed_shapes)
         self._forward_if_needed()
+        self._reset_camera_frames_if_needed()
         sim_state = self._sim_state
         if original_visuals:
             sim_state = sim_state.replace_d(MjxAdapter._original_visuals_jax(sim_state.mjx_model,
@@ -2714,8 +2880,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         rgb_imgs : list[th.Tensor] | None = [] if want_rgb else None
         depth_imgs : list[th.Tensor] | None = [] if want_depth else None
         for cam_i, cam in enumerate(requestedCameras):
+            cam_sim_state = sim_state
+            if cam in self._camera_frames and not original_visuals:
+                frame_data, capture_substep = MjxAdapter._camera_frame_data_jax(self._camera_frames[cam],
+                                                                                sim_state.mjx_data,
+                                                                                sim_state.sim_substeps)
+                cam_sim_state = sim_state.replace_v("mjx_data", frame_data)
+                times[:, cam_i] = self._camera_frame_times(capture_substep, vec_mask, out_th_device, use_fixed_shapes)
             # Each camera has its own single-camera context, so its render index within it is 0.
-            rgbs, depths = self._render_warp_rgbd_jax(sim_state,
+            rgbs, depths = self._render_warp_rgbd_jax(cam_sim_state,
                                                       self._warp_render_context_pytrees[cam],
                                                       (0,),
                                                       want_rgb = want_rgb,
@@ -2753,7 +2926,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     @override
     def get_original_visuals_camera_images(self, requestedCameras : list[str], rgb : bool = True, depth : bool = False) -> Renderings:
         """Render the current state as if alter_visuals had never been called, so with the original colors, lights
-        and camera poses. Everything else is the same as in get_camera_images, link_scales included."""
+        and camera poses. Everything else is the same as in get_camera_images, link_scales included, except that
+        cameras with a timing (set_camera_timing) render the current state too and not their newest frame."""
         if self._render_backend != "warp":
             raise NotImplementedError(f"get_original_visuals_camera_images needs the warp render backend, got '{self._render_backend}'")
         rgb_imgs, depth_imgs, times = self._render_rgbd_warp(requestedCameras,
@@ -2816,10 +2990,15 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             vec_mask = self._all_vecs_thcpu
 
         if self._render_backend == "warp":
-            if depth:
-                r = self._render_depth_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
-            else:
-                r = self._render_rgb_warp(requestedCameras, vec_mask, out_th_device, out, use_fixed_shapes)
+            rgb_imgs, depth_imgs, times = self._render_rgbd_warp(requestedCameras,
+                                                                 want_rgb = not depth,
+                                                                 want_depth = depth,
+                                                                 vec_mask = vec_mask,
+                                                                 out_th_device = out_th_device,
+                                                                 out_rgb = None if depth else out,
+                                                                 out_depth = out if depth else None,
+                                                                 use_fixed_shapes = use_fixed_shapes)
+            r = (depth_imgs if depth else rgb_imgs), times
         else:
             if len(self._renderers)==0:
                 raise RuntimeError("CPU rendering backend selected, but renderers were not initialized")
@@ -3382,6 +3561,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._mj_model = copy.deepcopy(self._original_mj_model)
         self._sim_state = self._reset_monitored_data_and_stats(self._sim_state, self._sim_conf)
         self._mark_forward_needed() # the restored data has not been forwarded in this configuration
+        self.reset_camera_frames()
         # self._recompute_mjxmodel_inaxes(self._sim_state.mjx_model)
         
 
