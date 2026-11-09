@@ -818,22 +818,29 @@ def find_pose_np(  root_joint : str,
                 samples : int = 10_000,
                 debug : bool = False,
                 print_id = ""):
-    """Search jointly over joint space and body xyz for a collision-free initial pose.
+    """Search over joint space and body height for a collision-free initial pose, at a random x, y.
 
-    Each sample draws a joint configuration around homing (within joint_randomization_ranges, scaled to
-    the joint limits) and a position for `body_frame` within body_xyz_minmax. x and y are world-absolute,
-    while z is a clearance *above the local terrain* at that (x, y) - so a zero-width x/y range
-    degenerates to searching only over height, and a zero-width z range fixes the clearance. The body
-    orientation is the one of default_body_pose_xyzxyzw.
+    The x, y of `body_frame` are drawn once, uniformly within body_xyz_minmax, and stay fixed for the
+    whole search. Each sample then draws a joint configuration around homing (within
+    joint_randomization_ranges, scaled to the joint limits) and a z within body_xyz_minmax. x and y are
+    world-absolute, while z is a clearance *above the local terrain* at that (x, y), so a zero-width z
+    range fixes the clearance. The body orientation is the one of default_body_pose_xyzxyzw.
 
-    Returns (joint_pose, body_pose_xyzxyzw) for the first non-colliding sample, or the homing joint pose
-    and the last tried body pose if none was found.
+    Returns (joint_pose, body_pose_xyzxyzw) for the first non-colliding sample, or, if none was found,
+    the homing joint pose with the body at the same x, y, lifted to clear the terrain.
     """
     rng = np.random.default_rng(seed=rng_seed)
     truncnorm = scipy.stats.truncnorm(-1, 1, loc=0, scale=1/3)
     jp_dict = noncontrolled_jointpos
     joint_ranges = np.array([joint_randomization_ranges[jn] for jn in controlled_joints], dtype=np.float32)
     xyz_min, xyz_max = body_xyz_minmax[0], body_xyz_minmax[1]
+    # x, y are drawn once, before the search: drawing them in every sample would move the robot at every
+    # rejection, biasing the spawns towards where poses are accepted more easily (on stepped terrain,
+    # where the legs over the lower steps have more room, rather than on flat ground)
+    body_xy = rng.random(size=(2,)).astype(np.float32)*(xyz_max[:2] - xyz_min[:2]) + xyz_min[:2]
+    body_xy_ground_z = float(robot_model.get_ground_z(body_xy,
+                                                      footprint_radius=footprint_radius,
+                                                      baseline_z=ground_baseline_z)) if is_floating_base else 0.0
 
     found = False
     seen_collision_pairs = {}
@@ -849,11 +856,9 @@ def find_pose_np(  root_joint : str,
         jp_dict.update({jn:joint_pose[i] for i,jn in enumerate(controlled_joints)})
         robot_model.set_joint_pose_by_names({jn[1]:jp for jn,jp in jp_dict.items()})
         if is_floating_base:
-            body_xyz = rng.random(size=(3,)).astype(np.float32)*(xyz_max - xyz_min) + xyz_min
-            # z is relative to the terrain under the robot's footprint at the sampled (x, y)
-            body_xyz[2] += robot_model.get_ground_z(body_xyz[:2],
-                                                    footprint_radius=footprint_radius,
-                                                    baseline_z=ground_baseline_z)
+            # z is a clearance above the terrain under the robot's footprint at (x, y)
+            body_z = rng.random()*(xyz_max[2] - xyz_min[2]) + xyz_min[2] + body_xy_ground_z
+            body_xyz = np.array([body_xy[0], body_xy[1], body_z], dtype=np.float32)
             body_pose_xyzxyzw = default_body_pose_xyzxyzw.copy()
             body_pose_xyzxyzw[:3] = body_xyz
             # Robot resolves the root-joint value that puts body_frame exactly at this pose

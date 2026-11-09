@@ -546,7 +546,8 @@ def aggregate_models(models : list[ModelSpawnDef],
                      render_znear : float | None = 0.01,
                      render_zfar : float | None = 100.0,
                      add_ground_light : bool = True,
-                     orthographic_camera : tuple[str, float, tuple[int,int]] | None = None):
+                     orthographic_camera : tuple[str, float, tuple[int,int]] | None = None,
+                     ground_rgba : tuple[float,float,float,float] | None = None):
 
     """Aggregates multiple models into a single MjSpec and MjModel.
 
@@ -603,6 +604,9 @@ def aggregate_models(models : list[ModelSpawnDef],
     orthographic_camera : tuple[str, float, tuple[int,int]] | None
         If not None, (name, image height in meters, (width, height) in pixels) of an orthographic
         camera to add to the world.
+    ground_rgba : tuple[float,float,float,float] | None
+        If not None, the ground material is this flat color instead of the checker texture.
+        Ignored unless the ground is generated.
 
     Returns
     -------
@@ -617,8 +621,11 @@ def aggregate_models(models : list[ModelSpawnDef],
         uneven_ground = False
         if add_ground:
             ground_geoms.append('<geom name="floor" size="0 0 0.05" type="plane" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
-            assets.append('<texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
-            assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
+            if ground_rgba is None:
+                assets.append('<texture type="2d" name="groundplane" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />')
+                assets.append('<material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />')
+            else:
+                assets.append(f'<material name="groundplane" rgba="{" ".join(str(float(c)) for c in ground_rgba)}" reflectance="0.2" />')
         if uneven_ground:
             ground_geoms.append('<geom name="uneven_ground" type="hfield" hfield="uneven_ground" material="groundplane" friction="1.0 0.005 0.0001" solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" margin="0.0" pos="0 0 0"/>')
             assets.append('<hfield name="uneven_ground" nrow="128" ncol="128" size="10 10 10 10" />')
@@ -675,7 +682,10 @@ def aggregate_models(models : list[ModelSpawnDef],
             pathlib.Path(log_folder).mkdir(parents=True, exist_ok=True)
             with open(f"{log_folder}/model_{model.name}.{mformat}", "w") as f:
                 f.write(def_string)
-        mjSpec = mjutils._MjSpec.from_string(def_string)
+        try:
+            mjSpec = mjutils._MjSpec.from_string(def_string)
+        except ValueError as e:
+            raise ValueError(f"Failed to parse model '{model.name}' ({mformat}): {e}") from e
         # mjSpec.compiler.discardvisual = False
         mjSpec.compiler.degree = False
         mjSpec.compiler.inertiafromgeom = mjutils._mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE

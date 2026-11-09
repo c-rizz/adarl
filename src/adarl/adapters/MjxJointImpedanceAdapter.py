@@ -273,6 +273,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         max_joint_impedance_ctrl_torques : dict[tuple[str,str],float] = {},
                         add_ground : bool = True,
                         add_sky : bool = True,
+                        ground_rgba : tuple[float,float,float,float] | None = None,
                         render_znear : float | None = 0.025,
                         render_zfar : float | None = 100.0,
                         impedance_commands_queue_size : int = 10,
@@ -295,6 +296,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         render_shadows : bool = False,
                         warp_nccdmax : int = 10,
                         warp_nconmax : int = 20,
+                        warp_njmax : int = 100,
                         warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP",
                         warp_disabled_overflow_warnings : int = 0):
         super().__init__(vec_size=vec_size,
@@ -309,6 +311,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         output_th_device=output_th_device,
                         add_ground=add_ground,
                         add_sky = add_sky,
+                        ground_rgba = ground_rgba,
                         render_znear = render_znear,
                         render_zfar = render_zfar,
                         log_freq=log_freq,
@@ -327,6 +330,7 @@ class MjxJointImpedanceAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
                         render_shadows=render_shadows,
                         warp_nccdmax=warp_nccdmax,
                         warp_nconmax=warp_nconmax,
+                        warp_njmax=warp_njmax,
                         warp_graph_mode=warp_graph_mode,
                         warp_disabled_overflow_warnings=warp_disabled_overflow_warnings)
         self._sim_state = SimStateJimp( mjx_data=self._sim_state.mjx_data,

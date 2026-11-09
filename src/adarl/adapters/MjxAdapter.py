@@ -1118,6 +1118,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         add_ground : bool = True,
                         add_sky : bool = True,
                         add_ground_light : bool = True,
+                        ground_rgba : tuple[float,float,float,float] | None = None,
                         render_znear : float | None = 0.025,
                         render_zfar : float | None = 100.0,
                         log_freq : int = -1,
@@ -1137,6 +1138,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         geom_overrides : dict[str,Any] | None = None,
                         warp_nccdmax : int = 10,
                         warp_nconmax : int = 20,
+                        warp_njmax : int = 100,
                         warp_graph_mode : Literal["WARP","WARP_STAGED","WARP_STAGED_EX"] = "WARP",
                         warp_disabled_overflow_warnings : int = 0):
         """_summary_
@@ -1170,6 +1172,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         add_ground_light : bool, optional
             If False the ground comes without its directional light, for scenarios that define their
             own lighting, by default True
+        ground_rgba : tuple[float,float,float,float] | None, optional
+            Flat color of the ground, None for the checker texture, by default None
         log_freq : int, optional
             _description_, by default -1
         opt_preset : Literal[&quot;fast&quot;,&quot;faster&quot;,&quot;fastest&quot;,&quot;mujoco_default&quot;,&quot;slow&quot;,&quot;slower&quot;] | None, optional
@@ -1200,6 +1204,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             _description_, by default True
         geom_overrides : dict[str,Any] | None, optional
             _description_, by default None
+        warp_njmax : int, optional
+            max number of constraints, by default 100
         warp_nccdmax : int, optional
             per-world max number of mesh contacts (handled by the CCD collider), by default 10
         warp_nconmax : int, optional
@@ -1237,6 +1243,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._add_ground = add_ground
         self._add_sky = add_sky
         self._add_ground_light = add_ground_light
+        self._ground_rgba = ground_rgba
         self._render_znear = render_znear
         self._render_zfar = render_zfar
         self._log_freq = log_freq
@@ -1257,6 +1264,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._out_cuda = self._out_th_device.type == "cuda"
         self._warp_nccdmax = warp_nccdmax
         self._warp_nconmax = warp_nconmax
+        self._warp_njmax = warp_njmax
         self._warp_graph_mode = warp_graph_mode
         self._warp_disabled_overflow_warnings = warp_disabled_overflow_warnings
         if warp_graph_mode != "WARP" and enable_rendering and tuple(int(v) for v in mujoco.__version__.split(".")[:2]) < (3,17):
@@ -1582,6 +1590,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                 add_ground=self._add_ground,
                                 add_sky=self._add_sky,
                                 add_ground_light=self._add_ground_light,
+                                ground_rgba=self._ground_rgba,
                                 render_znear=self._render_znear,
                                 render_zfar=self._render_zfar,
                                 uneven_ground=self._uneven_ground,
@@ -1726,7 +1735,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         if self._mjx_impl == "warp":
             mjx_data = put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl,
-                                    naconmax = self._vec_size*self._warp_nconmax, njmax = 100, naccdmax = self._vec_size*self._warp_nccdmax)
+                                    naconmax = self._vec_size*self._warp_nconmax, njmax = self._warp_njmax, naccdmax = self._vec_size*self._warp_nccdmax)
         else:
             mjx_data = mjx.put_data(self._mj_model, self._mj_data, device = self._jax_device, impl=self._mjx_impl)
         data_nbytes = jax.tree_util.tree_map(lambda x: x.nbytes, mjx_data)
@@ -4792,7 +4801,7 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if options.get("mode") != "warp_camera":
             raise ValueError(f"Unknown heightfield sensor mode {options.get('mode')}, available modes are ['warp_camera']")
         if self._mjx_impl != "warp":
-            raise ValueError(f"Heightfield sensor mode 'warp_camera' needs mjx_impl='warp', got '{self._mjx_impl}'")
+            raise NotImplementedError(f"Heightfield sensor mode 'warp_camera' needs mjx_impl='warp', got '{self._mjx_impl}'")
         if not math.isclose(size_xy[0]/resolution_xy[0], size_xy[1]/resolution_xy[1]):
             raise ValueError(f"The heightfield cells must be square, but size_xy={size_xy} and resolution_xy={resolution_xy}")
         self._heightfield_sensor = HeightfieldSensor(size_xy=(float(size_xy[0]), float(size_xy[1])),

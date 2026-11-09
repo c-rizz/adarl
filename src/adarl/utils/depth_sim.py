@@ -56,7 +56,8 @@ class StereoDepthSimParams:
     max_depth_m : float = 20.0
     """Measurements farther than this are dropped."""
     fattening_px : int = 1
-    """Radius of the foreground-fattening dilation, approximating the block-matching window."""
+    """Radius of the foreground-fattening dilation, approximating the block-matching window. 0 disables
+    it."""
     occlusion_shadow_px : int = 4
     """Maximum width, in pixels, of the occlusion shadow searched for beside depth discontinuities.
     0 disables occlusion shadows."""
@@ -91,6 +92,9 @@ def stereo_camera_params(camera : str,
     focal length: since ``sigma_z = z**2*sigma_d/(f*B)``, scaling only the focal length would make a
     small render look like a far more precise sensor.
 
+    The fattening and the occlusion shadow are rounded to whole render pixels, so at a low render
+    resolution they can round to 0 and be disabled.
+
     Only the baseline, focal lengths and ranges are published. The matcher-dependent figures
     (disparity noise, window, dropout) are plausible block-matcher values rather than measurements,
     so treat them as a starting point. Any field can be replaced through ``overrides``.
@@ -107,9 +111,14 @@ def stereo_camera_params(camera : str,
                                   max_depth_m = spec["max_depth_m"],
                                   disparity_noise_px = 0.2*scale,
                                   subpixel_step_px = (1.0/16)*scale,
-                                  # Native-pixel sizes, floored at 1: below a pixel they vanish.
-                                  fattening_px = max(1, round(3*scale)),
-                                  occlusion_shadow_px = max(1, round(16*scale)),
+                                  # Native-pixel sizes, rounded at the render resolution. Below half a
+                                  # render pixel they round to 0 rather than being floored at 1: a 1 px
+                                  # fattening at a 102 px wide render is ~19 native pixels against the
+                                  # real 3, and doubles the depth silhouette of a 4 cm cube in a 64x64
+                                  # observation. Resized down to the observation, a sub-pixel artifact
+                                  # vanishes from the real camera's images as well.
+                                  fattening_px = round(3*scale),
+                                  occlusion_shadow_px = round(16*scale),
                                   dropout_rate = 0.05,
                                   dropout_blob_px = max(1, round(64*scale)))
     return replace(params, **overrides) if overrides else params
@@ -210,13 +219,14 @@ def stereo_depth_degradation(depth_m : th.Tensor,
 
     # Everything the matcher does happens in disparity space, which is what makes the depth error
     # grow with z**2 and the quantization coarsen with range, without modelling either explicitly.
-    disparity = f_b/depth_m.clamp(min=1e-6)
-    if params.disparity_noise_px > 0:
-        disparity = disparity + th.randn(disparity.shape, device=disparity.device,
-                                         dtype=disparity.dtype, generator=generator)*params.disparity_noise_px
-    if params.subpixel_step_px > 0:
-        disparity = th.round(disparity/params.subpixel_step_px)*params.subpixel_step_px
+    # Pixels with no hit are infinitely far, so their disparity is 0: they must not dilate as if
+    # they were nearer than everything else.
+    disparity = th.where(depth_m > 0, f_b/depth_m.clamp(min=1e-6), th.zeros_like(depth_m))
 
+    # The geometric artifacts first, on the exact disparity. The fattening is a max over a window:
+    # applied to the noisy disparity it picks the largest noise sample everywhere, which biases the
+    # whole image towards the camera (~1 cm at 0.75 m with the ZED X Mini figures) instead of only
+    # dilating the near side of the edges.
     if params.occlusion_shadow_px > 0:
         valid = valid & ~_occlusion_shadow_mask(disparity, params.occlusion_shadow_px,
                                                 params.shadow_direction)
@@ -226,6 +236,13 @@ def stereo_depth_degradation(depth_m : th.Tensor,
         kernel = 2*params.fattening_px+1
         disparity = F.max_pool2d(disparity.unsqueeze(1), kernel_size=kernel, stride=1,
                                  padding=params.fattening_px).squeeze(1)
+
+    # Then the matching error and the sub-pixel quantization of the matcher's output.
+    if params.disparity_noise_px > 0:
+        disparity = disparity + th.randn(disparity.shape, device=disparity.device,
+                                         dtype=disparity.dtype, generator=generator)*params.disparity_noise_px
+    if params.subpixel_step_px > 0:
+        disparity = th.round(disparity/params.subpixel_step_px)*params.subpixel_step_px
 
     valid = valid & (disparity > 0)
     degraded = f_b/disparity.clamp(min=1e-6)
