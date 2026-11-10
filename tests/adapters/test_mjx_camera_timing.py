@@ -1,9 +1,12 @@
 """Camera timing in MjxAdapter (set_camera_timing): frames captured at a frame rate and returned once their latency
 has passed, as from a real camera.
 
-Four cameras with the same pose look down at a bar spinning about z, at a different rate in each env. "live" has no
+Five cameras with the same pose look down at a bar spinning about z, at a different rate in each env. "live" has no
 timing. The scene is advanced one substep at a time and the live image of every substep is kept, so each frame a timed
 camera returns can be checked against the live image of the substep its Renderings.times reports.
+
+Two more cameras ride on the bar, one of them timed, and see a mark on the ground turn: they check the frames of a
+camera that moves, rendered with the original visuals.
 """
 import numpy as np
 import pytest
@@ -21,8 +24,12 @@ SPIN_RATES = (15.0, 20.0, 25.0) # rad/s about z, one per env
 SUBSTEPS = 120
 FIXED_PERIOD, FIXED_LATENCY = 4, 3 # substeps
 RANDOM_PERIOD, RANDOM_MAX_LATENCY = 2, 10 # substeps
-CAMERAS = ("live", "fixed", "in_order", "overtaking")
+OFFSET_PERIOD = 2 # substeps
+OFFSET_RANGE = (4, 16) # substeps, the latency offset an env draws when its frames are reset
+OFFSET_JITTER_STD, OFFSET_JITTER_CLAMP = 0.5, 2.0 # substeps and standard deviations, of each frame around the offset
+CAMERAS = ("live", "fixed", "in_order", "overtaking", "offset")
 TIMED_CAMERAS = CAMERAS[1:]
+BAR_CAMERAS = ("bar_live", "bar_timed") # on the bar, the second with the timing of "fixed"
 
 # No gravity (set through opt_override: the aggregated model keeps its own option), so the bar spins in place
 SCENE_MJCF = f"""
@@ -31,10 +38,12 @@ SCENE_MJCF = f"""
   <worldbody>
     <light pos="0 0 3" dir="0 0 -1" diffuse="1 1 1"/>
     {"".join(f'<camera name="{c}" pos="0 0 2" xyaxes="1 0 0 0 1 0" resolution="{RES} {RES}"/>' for c in CAMERAS)}
+    <geom name="mark" type="box" pos="0.4 0.25 0" size="0.1 0.1 0.02" rgba="0 1 0 1" contype="0" conaffinity="0"/>
     <body name="bar" pos="0 0 0.5">
       <freejoint/>
       <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.1 0.1"/>
       <geom type="box" size="0.6 0.05 0.05" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      {"".join(f'<camera name="{c}" pos="0 0 1.5" xyaxes="1 0 0 0 1 0" resolution="{RES} {RES}"/>' for c in BAR_CAMERAS)}
     </body>
   </worldbody>
 </mujoco>"""
@@ -79,11 +88,16 @@ def timed_cameras():
         adapter.build_scenario([ModelSpawnDef(name="scene", definition_string=SCENE_MJCF,
                                               format="mjcf", pose=None, kwargs={})])
         cams = {c.split("#")[-1] : c for c in adapter.get_detected_cameras()}
-        adapter.set_monitored_cameras([cams[c] for c in CAMERAS])
+        adapter.set_monitored_cameras([cams[c] for c in CAMERAS+BAR_CAMERAS])
         random_latency = ("uniform", (0.0, RANDOM_MAX_LATENCY*DT))
         adapter.set_camera_timing(cams["fixed"], fps=1/(FIXED_PERIOD*DT), latency=FIXED_LATENCY*DT)
         adapter.set_camera_timing(cams["in_order"], fps=1/(RANDOM_PERIOD*DT), latency=random_latency, in_order=True, seed=1)
         adapter.set_camera_timing(cams["overtaking"], fps=1/(RANDOM_PERIOD*DT), latency=random_latency, in_order=False, seed=2)
+        adapter.set_camera_timing(cams["offset"], fps=1/(OFFSET_PERIOD*DT),
+                                  latency=("normal", (0.0, OFFSET_JITTER_STD*DT, OFFSET_JITTER_CLAMP)),
+                                  latency_offset=("uniform", (OFFSET_RANGE[0]*DT, OFFSET_RANGE[1]*DT)),
+                                  in_order=False, seed=3)
+        adapter.set_camera_timing(cams["bar_timed"], fps=1/(FIXED_PERIOD*DT), latency=FIXED_LATENCY*DT)
         adapter.startup()
         bar = next(link for link in adapter.get_detected_links() if link[1] == "bar")
         adapter.setLinksStateDirect([bar], _bar_state(th.zeros(VEC_SIZE), th.tensor(SPIN_RATES)))
@@ -195,3 +209,63 @@ def test_set_camera_timing_after_startup_raises(timed_cameras):
     adapter, cams, _ = timed_cameras
     with pytest.raises(RuntimeError, match="before startup"):
         adapter.set_camera_timing(cams["live"], fps=30.0)
+
+
+def test_latency_offset(timed_cameras, recording):
+    """Each env draws a latency offset when its frames are reset, and the latency of its frames stays around it."""
+    adapter, cams, _ = timed_cameras
+    from adarl.adapters.MjxAdapter import _NEVER_SUBSTEP
+    jitter = OFFSET_JITTER_STD*OFFSET_JITTER_CLAMP + 0.5 + 1e-3 # the latency is rounded to whole substeps
+    offsets = []
+    for _ in range(2):
+        adapter.reset_camera_frames()
+        reset_substep = int(_render(adapter, cams)["live"][1][0]) # rendering applies the reset
+        offset = np.asarray(adapter._camera_frames[cams["offset"]].latency_offset)/DT
+        assert ((offset >= OFFSET_RANGE[0]) & (offset <= OFFSET_RANGE[1])).all(), f"offsets {offset.tolist()}"
+        offsets.append(offset)
+        latencies = [set() for _ in range(VEC_SIZE)]
+        for _ in range(40):
+            adapter.run(DT)
+            frames = adapter._camera_frames[cams["offset"]]
+            captures = np.asarray(frames.capture_substep)
+            arrivals = np.asarray(frames.available_substep)
+            for env in range(VEC_SIZE):
+                kept = (arrivals[:, env] != _NEVER_SUBSTEP) & (captures[:, env] > reset_substep) # not the reset's frame
+                latencies[env].update((arrivals[kept, env] - captures[kept, env]).tolist())
+        for env in range(VEC_SIZE):
+            assert len(latencies[env]) > 1, f"env {env}: every frame had the same latency, {latencies[env]}"
+            assert all(abs(latency - offset[env]) <= jitter for latency in latencies[env]), \
+                f"env {env}: latencies {sorted(latencies[env])} are not around its offset {offset[env]}"
+    assert np.unique(offsets[0]).size == VEC_SIZE, "the envs drew the same offset"
+    assert (offsets[0] != offsets[1]).all(), "resetting the frames did not draw the offsets again"
+
+
+def test_original_visuals_of_the_arrived_frame(timed_cameras, recording):
+    """get_original_visuals_camera_images renders the current state, and with apply_camera_timing the newest frame
+    that has arrived, the one get_camera_images returns, from where the camera's body was at its capture."""
+    adapter, cams, bar = timed_cameras
+    live, timed = cams["bar_live"], cams["bar_timed"]
+    def on_envs(values : list[float], *shape : int) -> th.Tensor:
+        return th.tensor(values, device="cuda").expand(VEC_SIZE, *shape)
+    adapter.alter_visuals(link_colors=(adapter.get_links_ids([bar]), on_envs([0.0, 0.0, 1.0], 1, 3)),
+                          camera_offset=(timed, on_envs([0.2, 0.0, 0.0], 3), on_envs([0.0, 0.0, 0.0, 1.0], 4)))
+    originals = {} # substep -> the current state with the original visuals, from the bar
+    checked, older = 0, 0
+    for _ in range(FIXED_LATENCY + 4*FIXED_PERIOD):
+        adapter.run(DT)
+        current = adapter.get_original_visuals_camera_images([live, timed], rgb=True)
+        now = int(th.round(current.times[0, 0].double()/DT))
+        assert th.equal(current.rgb[1], current.rgb[0]), "without apply_camera_timing the timed camera is not current"
+        originals[now] = current.rgb[0].clone()
+        altered = adapter.get_camera_images([timed], rgb=True)
+        arrived = adapter.get_original_visuals_camera_images([timed], rgb=True, apply_camera_timing=True)
+        assert th.equal(arrived.times, altered.times), "not the frame get_camera_images returns"
+        assert not th.equal(arrived.rgb[0], altered.rgb[0]), "the visuals were not put back to the original ones"
+        for env, capture in enumerate(th.round(arrived.times[:, 0].double()/DT).long().tolist()):
+            if capture in originals:
+                assert th.equal(arrived.rgb[0][env], originals[capture][env]), \
+                    f"substep {now}, env {env}: not the original visuals of substep {capture}"
+                checked += 1
+                older += capture < now and not th.equal(arrived.rgb[0][env], originals[now][env])
+    assert checked >= VEC_SIZE*2*FIXED_PERIOD
+    assert older > 0, "no frame older than the current state was rendered"

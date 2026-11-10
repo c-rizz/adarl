@@ -130,9 +130,12 @@ class VecEpisodeStorage():
 
     def memory_size(self):
         """ Calculate the total memory size of the replay buffer, in bytes. """
+        details = {}
+
         obs_nbytes = 0
-        for _, obs in self.observations.items():
+        for k, obs in self.observations.items():
             obs_nbytes += obs.element_size()*obs.nelement()
+            details[f"obs_{k}"] = obs_nbytes
         
         action_nbytes = self.actions.element_size()*self.actions.nelement()
         rewards_nbytes = self.rewards.element_size()*self.rewards.nelement()
@@ -142,7 +145,13 @@ class VecEpisodeStorage():
 
         total_memory_usage = obs_nbytes + action_nbytes + rewards_nbytes + terminated_nbytes + timeouts_nbytes + ep_durations
 
-        return total_memory_usage
+        details["action"] = action_nbytes
+        details["rewards"] = rewards_nbytes
+        details["terminated"] = terminated_nbytes
+        details["truncated"] = timeouts_nbytes
+        details["ep_frame_count"] = ep_durations
+
+        return total_memory_usage, details
 
     def add_frames(self, observations : dict[Any, th.Tensor], 
                          actions : th.Tensor, 
@@ -539,8 +548,13 @@ class ThVecDictEpReplayBuffer(BaseValidatingBuffer):
     def memory_size(self):
         """ Calculate the total memory size of the replay buffer, in bytes. """
         if self._validation_episodes==0:
-            return self._storage.memory_size()
-        return self._storage.memory_size() + self._validation_storage.memory_size()
+            val_size, val_details = 0, {"validation": 0}
+        else:
+            val_size, val_details = self._validation_storage.memory_size()
+        train_size, train_details = self._storage.memory_size()
+        tot_size = train_size + val_size
+        tot_details = train_details | val_details
+        return tot_size
     
     @override
     def predict_memory_consumption(self):

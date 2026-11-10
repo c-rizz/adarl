@@ -30,7 +30,7 @@ tests/
     test_mjx_heightfield.py       # get_heightfield "warp_camera": maps vs the scene per env center and yaw, ignored links, collision vs visual geoms, moving bodies
     test_mjx_impedance_queue.py   # impedance command queue: bounded under stepping, delay, drain, fill
     test_mjx_per_env_run.py       # per-env run() durations: frozen envs keep state/clock/stats/filters, clock past float32 limit
-    test_camzmq_cameras.py        # real-robot camera images via camzmq: sim contract, invalid depth -> 0, camera_info, stale frame
+    test_camzmq_cameras.py        # real-robot camera images via camzmq: sim contract, invalid depth -> 0 (too far stays +inf), camera_info, stale frame
     test_alter_model.py           # alter_model: multiplicative ratios (MJX+Genesis); mass scales inertia; invweight0/subtreemass
                                   #   recomputed (= mj_setConst on jax+warp); contact penetration independent of mass;
                                   #   link_scales: per-axis geometry/inertia, resting height and warp render per env,

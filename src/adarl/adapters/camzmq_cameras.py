@@ -2,8 +2,8 @@
 
 The frames arrive at the resolution the policy's simulated camera renders at, so the environment processes them with
 the same code as in simulation. This module turns them into what get_camera_images() returns in simulation: rgb as
-(vec, H, W, 3) uint8, depth as (vec, H, W, 1) float32 meters with every invalid measurement mapped to INVALID_DEPTH,
-and times in the adapter's env time.
+(vec, H, W, 3) uint8, depth as (vec, H, W, 1) float32 meters with every invalid measurement mapped to INVALID_DEPTH
+except too-far (+inf) pixels, which stay +inf, and times in the adapter's env time.
 """
 from __future__ import annotations
 
@@ -110,8 +110,8 @@ class CamZmqCameras:
                 img = frame.rgb if frame.rgb.shape[2] == 3 else np.repeat(frame.rgb, 3, axis=2) # gray -> 3 equal channels
                 rgb_imgs.append(self._to_output(img, rows, selected, out_rgb[i] if out_rgb is not None else None, device))
             if depth:
-                valid = np.isfinite(frame.depth) & (frame.depth > 0)
-                d = np.where(valid, frame.depth, INVALID_DEPTH).astype(np.float32)[..., None]
+                keep = (np.isfinite(frame.depth) & (frame.depth > 0)) | np.isposinf(frame.depth)
+                d = np.where(keep, frame.depth, INVALID_DEPTH).astype(np.float32)[..., None]
                 depth_imgs.append(self._to_output(d, rows, selected, out_depth[i] if out_depth is not None else None, device))
         return Renderings(rgb=rgb_imgs if rgb else None, depth=depth_imgs if depth else None,
                           times=times.to(device))

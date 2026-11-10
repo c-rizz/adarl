@@ -2,7 +2,7 @@
 
 Driven by a real camzmq publisher with its synthetic source, so no camera or robot is needed. Checks that the images
 come out as get_camera_images() returns them in simulation (rgb (1,H,W,3) uint8, depth (1,H,W,1) float32 with every
-invalid measurement at INVALID_DEPTH), that times are in env time, that camera_info() describes the published camera,
+invalid measurement at INVALID_DEPTH, except too far, which stays +inf), that times are in env time, that camera_info() describes the published camera,
 and that a stale frame is refused.
 """
 import threading
@@ -57,8 +57,11 @@ def test_images_match_the_simulation_contract(publisher):
         rgb, depth = r.rgb[0], r.depth[0]
         assert rgb.shape == (1, H, W, 3) and rgb.dtype == th.uint8
         assert depth.shape == (1, H, W, 1) and depth.dtype == th.float32
-        assert th.isfinite(depth).all()
-        assert (depth[0, 0, :3, 0] == INVALID_DEPTH).all()   # NaN, +inf and -inf all mapped to INVALID_DEPTH
+        assert not th.isnan(depth).any() and not th.isneginf(depth).any()
+        assert depth[0, 0, 0, 0] == INVALID_DEPTH            # NaN (no measurement)
+        assert th.isposinf(depth[0, 0, 1, 0])                # +inf (too far) is kept
+        assert depth[0, 0, 2, 0] == INVALID_DEPTH            # -inf (too close)
+        assert th.isfinite(depth[0, 0, 3:]).all() and (depth[0, 0, 3:] > 0).all()
         assert (depth[0, 1:] > 0).all()
         age = _env_time() - r.times[0, 0].item()
         assert r.times.shape == (1, 1) and 0 <= age < 0.1, age

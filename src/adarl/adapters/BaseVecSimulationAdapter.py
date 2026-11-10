@@ -162,8 +162,10 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
         """Change how the scene looks, per environment, without affecting the physics. See MjxAdapter.alter_visuals."""
         raise NotImplementedError(f"{type(self).__name__} does not support altering the visuals")
 
-    def get_original_visuals_camera_images(self, requestedCameras : list[str], rgb : bool = True, depth : bool = False):
-        """Render the current state as if alter_visuals had never been called. See MjxAdapter."""
+    def get_original_visuals_camera_images(self, requestedCameras : list[str], rgb : bool = True, depth : bool = False,
+                                           apply_camera_timing : bool = False):
+        """Render as if alter_visuals had never been called: the current state, or with apply_camera_timing the
+        frame get_camera_images returns for the cameras with a timing (set_camera_timing). See MjxAdapter."""
         raise NotImplementedError(f"{type(self).__name__} does not support altering the visuals")
 
     # @abstractmethod
@@ -262,10 +264,12 @@ class BaseVecSimulationAdapter(BaseVecAdapter):
                                 fps : float,
                                 latency : DistributionDef = 0.0,
                                 in_order : bool = True,
-                                seed : int = 0):
+                                seed : int = 0,
+                                latency_offset : DistributionDef = 0.0):
         """Give a camera a frame rate and a latency from capture to arrival, so that get_camera_images returns, as
-        from a real camera, the newest frame that has arrived instead of the current state. Adapters raise if they do
-        not support it; see the implementations for the details."""
+        from a real camera, the newest frame that has arrived instead of the current state. The latency of a frame is
+        drawn from `latency`, plus the `latency_offset` its env drew when its frames were last reset. Adapters raise
+        if they do not support it; see the implementations for the details."""
         raise NotImplementedError()
 
     def reset_camera_frames(self, vec_mask : th.Tensor | None = None):
