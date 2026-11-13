@@ -8,7 +8,7 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 if "--xla_gpu_triton_gemm_any" not in os.environ.get("XLA_FLAGS", ""):
     os.environ["XLA_FLAGS"] = (os.environ.get("XLA_FLAGS", "") + " --xla_gpu_triton_gemm_any=true").strip()
 
-from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, 
+from adarl.adapters.mujoco_utils import (add_arrow_to_renderer, aggregate_models, apply_opt_preset, compute_collision_masks, 
                                          get_renderdata_into, log_largest_dataclass_fields,
                                          model_element_separator, print_mj_model, apply_dof_overrides)
 from adarl.adapters.BaseVecAdapter import JointProperties, JointType, Renderings
@@ -2177,124 +2177,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         link_group_collisions, explicit_groups = self.expand_link_group_collisions(link_group_collisions,
                                                                                   self._lname2lid.keys(),
                                                                                   explicit_groups)
-        input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
-        ggLog.info(f"input link_group_collisions = {link_group_collisions}")
-        ggLog.info(f"input_collision_groups = {input_collision_groups}")
-
-        # Reorganize the links in a small set of groups of links that always collide together
-        best_collision_groups : list[set[tuple[str,str]]] = []
-        while len(input_collision_groups)>0:
-            biggest_common_subgroup = set(input_collision_groups[0])
-            for g in input_collision_groups:
-                prev_biggest_common_subgroup = biggest_common_subgroup
-                biggest_common_subgroup = biggest_common_subgroup.intersection(g)
-                if len(biggest_common_subgroup)==0:
-                    # Then there is not common subgroup, use the one that was common up to now
-                    biggest_common_subgroup = prev_biggest_common_subgroup
-            best_collision_groups.append(biggest_common_subgroup)
-            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups] # remove subgroup
-            input_collision_groups = [g for g in input_collision_groups if len(g)>0] # remove empty groups
-            # print(f"biggest_common_subgroup = {biggest_common_subgroup}")
-            # print(f"input_collision_group = {input_collision_groups}")
-            # time.sleep(1)
-
-
-        best_collision_groups_set = {tuple(g) for g in best_collision_groups}
-        best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
-        ggLog.info(f"best_collision_groups = {best_collision_groups}")
-        link_to_group_ids = {} # Which groups each link is part of
-        group_to_links = {}
-        self._linkgroup_to_id : dict[tuple[tuple[str,str],...], int] = {}
-        for i,g in enumerate(best_collision_groups):
-            g_t = tuple(g)
-            self._linkgroup_to_id[g_t] = i
-            group_to_links[g_t] = []
-            for l in g:
-                if l not in link_to_group_ids:
-                    link_to_group_ids[l] = []
-                link_to_group_ids[l].append(i)
-                group_to_links[g_t].append(l)
-        ggLog.info(f"link_to_groups = \n{pprint.pformat(link_to_group_ids)}")
-        ggLog.info(f"group_to_links = \n{pprint.pformat(group_to_links)}")
-
-        link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
-        for link,colliding_links in link_group_collisions:
-            colliding_links = set(colliding_links)
-            for i,g in enumerate(best_collision_groups):
-                if g.issubset(colliding_links):
-                    # then link collides with the group g
-                    if link not in link_colliding_groups:
-                        link_colliding_groups[link] = []
-                    link_colliding_groups[link].append(i)
-        ggLog.info(f"link_colliding_groups = \n{ pprint.pformat(link_colliding_groups)}")
-
-        if len(best_collision_groups) > 32:
-            raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")
-        
-        all_links = list(self._lname2lid.keys()) #list(link_to_groups.keys())+list(link_colliding_groups.keys())
-        for l in all_links:
-            if l not in link_to_group_ids:
-                link_to_group_ids[l] = []
-            if l not in link_colliding_groups:
-                link_colliding_groups[l] = []
-        
-        for l in link_to_group_ids.keys():
-            if l not in all_links:
-                raise RuntimeError(f"Link {l} specified as a group in link_group_collisions is not present in the model")
-        for l in link_colliding_groups.keys():
-            if l not in all_links:
-                raise RuntimeError(f"Link {l} specified in link_group_collisions is not present in the model")
-        link_contypes = {}
-        link_conaffinity = {}
-        for l in all_links:
-            if self._lname2lid[l] >= self._nbody:
-                continue  # skip sites, they don't participate in collisions
-            contype_mask = 0
-            for gid in link_to_group_ids[l]:
-                contype_mask |= 1<<gid
-            link_contypes[l] = contype_mask
-            conaffinity_mask = 0
-            for gid in link_colliding_groups[l]:
-                conaffinity_mask |= 1<<gid
-            link_conaffinity[l] = conaffinity_mask
-
-        
-
-        # print(f"self._mj_model.geom_contype =     {self._mj_model.geom_contype}")
-        # print(f"self._mj_model.geom_conaffinity = {self._mj_model.geom_conaffinity}")
-        # print(f"self._sim_state.mjx_model.geom_contype =     {self._sim_state.mjx_model.geom_contype}")
-        # print(f"self._sim_state.mjx_model.geom_conaffinity = {self._sim_state.mjx_model.geom_conaffinity}")
-
-        body_contype : jnp.ndarray = self._mj_model.body_contype.copy()
-        body_conaffinity : jnp.ndarray = self._mj_model.body_conaffinity.copy()
-        geom_contype : jnp.ndarray = self._mj_model.geom_contype.copy()
-        geom_conaffinity : jnp.ndarray = self._mj_model.geom_conaffinity.copy()
-        for lname in all_links:
-            body_id = self._lname2lid[lname]
-            if body_id >= self._nbody:
-                continue  # skip sites
-            for geom_id in range(self._mj_model.body_geomadr[body_id],
-                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
-                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
-        for lname in all_links:
-            body_id = self._lname2lid[lname]
-            if body_id >= self._nbody:
-                continue  # skip sites
-            aff = link_conaffinity[lname]
-            typ = link_contypes[lname]
-            body_conaffinity[body_id] = aff
-            body_contype[body_id] = typ
-            for geom_id in range(self._mj_model.body_geomadr[body_id],
-                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
-                # this will pass also through the visual geoms!
-                # geom_name = mujoco_mj_id2name(self._mj_model, mujoco_mjtObj.mjOBJ_GEOM, geom_id)
-                # geom_rgba = self._mj_model.geom_rgba[geom_id]
-                # ggLog.info(f"{lname} [{body_id}] : {geom_id} [{geom_name}]: coll={typ:b}/{aff:b} rgba = {geom_rgba}, aff = {aff}, typ = {typ} ")
-                # geom_contype[geom_id] = 1
-                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
-                if not visual:
-                    geom_conaffinity[geom_id] = aff
-                    geom_contype[geom_id] = typ
+        geom_contype, geom_conaffinity, body_contype, body_conaffinity, self._linkgroup_to_id = \
+            compute_collision_masks(self._mj_model, self._lname2lid, link_group_collisions, explicit_groups)
         return geom_contype, geom_conaffinity, body_contype, body_conaffinity
     
     @override

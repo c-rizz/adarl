@@ -16,6 +16,7 @@ from adarl.utils.utils import compile_xacro_string
 import dataclasses
 import jax
 import pathlib
+import pprint
 
 mjtGeom :             TypeAlias = mujoco.mjtGeom # type: ignore
 mju_quat2Mat :        TypeAlias = mujoco.mju_quat2Mat # type: ignore
@@ -527,6 +528,12 @@ def get_data_into(
 model_element_separator = "#"
 
 
+def model_element_prefix(model_name : str, unprefixed_models : set[str] | frozenset[str] = frozenset()) -> str:
+    """The prefix aggregate_models gives the elements of a model: `<modelname>#`, or nothing for the models in
+    unprefixed_models."""
+    return "" if model_name in unprefixed_models else model_name + model_element_separator
+
+
 def aggregate_models(models : list[ModelSpawnDef],
                      add_ground : bool,
                      add_sky : bool,
@@ -547,7 +554,8 @@ def aggregate_models(models : list[ModelSpawnDef],
                      render_zfar : float | None = 100.0,
                      add_ground_light : bool = True,
                      orthographic_camera : tuple[str, float, tuple[int,int]] | None = None,
-                     ground_rgba : tuple[float,float,float,float] | None = None):
+                     ground_rgba : tuple[float,float,float,float] | None = None,
+                     unprefixed_models : set[str] | frozenset[str] = frozenset()):
 
     """Aggregates multiple models into a single MjSpec and MjModel.
 
@@ -607,6 +615,11 @@ def aggregate_models(models : list[ModelSpawnDef],
     ground_rgba : tuple[float,float,float,float] | None
         If not None, the ground material is this flat color instead of the checker texture.
         Ignored unless the ground is generated.
+    unprefixed_models : set[str] | frozenset[str]
+        Names of models whose elements are attached without the `<modelname>#` prefix, keeping
+        their own names (e.g. a robot for a simulator that matches joints by their URDF names).
+        Their names must not clash with those of the other models. MjxAdapter cannot use such a
+        model, as it splits every name on model_element_separator.
 
     Returns
     -------
@@ -676,7 +689,7 @@ def aggregate_models(models : list[ModelSpawnDef],
             def_string, model_adarl = extract_adarl_directives(def_string)
             ggLog.info(f"Extracted <adarl> directives for model '{model.name}': {model_adarl}")
             for geom_name, directives in model_adarl.items():
-                adarl_overrides[model.name + model_element_separator + geom_name] = directives
+                adarl_overrides[model_element_prefix(model.name, unprefixed_models) + geom_name] = directives
             def_string = add_compiler_options(def_string, discardvisual=discardvisual)
         if log_folder is not None:
             pathlib.Path(log_folder).mkdir(parents=True, exist_ok=True)
@@ -711,12 +724,20 @@ def aggregate_models(models : list[ModelSpawnDef],
         # that (a) skips worldbody-level geoms and (b) mujoco forbids more than one attach_body()
         # from a spec that defines <material>s (it raises "incompatible id in material array").
         # spec.attach() merges bodies, worldbody geoms and the referenced assets in one call.
+        prefix = model_element_prefix(mname, unprefixed_models)
+        if prefix == "":
+            # Without a prefix the model's main default class would be named "", which to_xml writes as a
+            # <default> without a class, which MuJoCo then refuses to load.
+            spec.default.name = mname + "_main"
         if attachment_link is None:
-            big_speck.attach(spec, prefix=mname+model_element_separator, suffix="", frame=world_frame)
+            big_speck.attach(spec, prefix=prefix, suffix="", frame=world_frame)
         else:
-            parentbody : mjutils._MjsBody = big_speck.body(model_element_separator.join(attachment_link))
+            parent_name = model_element_prefix(attachment_link[0], unprefixed_models) + attachment_link[1]
+            parentbody : mjutils._MjsBody = big_speck.body(parent_name)
+            if parentbody is None:
+                raise RuntimeError(f"Model '{mname}' is attached to body '{parent_name}', which does not exist")
             f = parentbody.add_frame()
-            big_speck.attach(spec, prefix=mname+model_element_separator, suffix="", frame=f)
+            big_speck.attach(spec, prefix=prefix, suffix="", frame=f)
         
 
     if geom_overrides:
@@ -795,6 +816,135 @@ def aggregate_models(models : list[ModelSpawnDef],
         with open(log_folder+"/aggregated_model.xml", "w") as text_file:
                 text_file.write(big_speck.to_xml())
     return mj_model, big_speck
+
+
+def compute_collision_masks(mj_model : mjutils._MjModel,
+                            links : dict[tuple[str,str], int],
+                            link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]],
+                            explicit_groups : list[tuple[tuple[str,str],...]] = []):
+    """Collision masks (contype, conaffinity) of the geoms and bodies of mj_model that make each link collide only
+    with the links it is given.
+
+    The links are grouped into the smallest set of groups that always collide together, each group is one bit of
+    the masks, so there can be at most 32 groups. Visual geoms (contype and conaffinity both 0) are left as they are.
+    A link that is not in link_group_collisions collides with nothing.
+
+    Parameters
+    ----------
+    mj_model : mjutils._MjModel
+        The model whose masks are computed. It is not modified.
+    links : dict[tuple[str,str], int]
+        All the links of the model, (model_name, link_name) -> body id. Ids from mj_model.nbody on are sites: they
+        can be named but have no collision masks.
+    link_group_collisions : list[tuple[tuple[str,str], list[tuple[str,str]]]]
+        (link, colliding_links) pairs: what each link collides with. Model names must already be expanded to their
+        links (BaseVecSimulationAdapter.expand_link_group_collisions).
+    explicit_groups : list[tuple[tuple[str,str],...]]
+        Collision groups to have in addition to the computed ones.
+
+    Returns
+    -------
+    tuple
+        geom_contype, geom_conaffinity, body_contype, body_conaffinity (copies of the mj_model arrays, changed), and
+        the id of each group: dict[tuple[link,...], int].
+    """
+    input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
+    ggLog.info(f"input link_group_collisions = {link_group_collisions}")
+    ggLog.info(f"input_collision_groups = {input_collision_groups}")
+
+    # Reorganize the links in a small set of groups of links that always collide together
+    best_collision_groups : list[set[tuple[str,str]]] = []
+    while len(input_collision_groups)>0:
+        biggest_common_subgroup = set(input_collision_groups[0])
+        for g in input_collision_groups:
+            prev_biggest_common_subgroup = biggest_common_subgroup
+            biggest_common_subgroup = biggest_common_subgroup.intersection(g)
+            if len(biggest_common_subgroup)==0:
+                # Then there is not common subgroup, use the one that was common up to now
+                biggest_common_subgroup = prev_biggest_common_subgroup
+        best_collision_groups.append(biggest_common_subgroup)
+        input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups] # remove subgroup
+        input_collision_groups = [g for g in input_collision_groups if len(g)>0] # remove empty groups
+
+    best_collision_groups_set = {tuple(g) for g in best_collision_groups}
+    best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
+    ggLog.info(f"best_collision_groups = {best_collision_groups}")
+    link_to_group_ids = {} # Which groups each link is part of
+    group_to_links = {}
+    linkgroup_to_id : dict[tuple[tuple[str,str],...], int] = {}
+    for i,g in enumerate(best_collision_groups):
+        g_t = tuple(g)
+        linkgroup_to_id[g_t] = i
+        group_to_links[g_t] = []
+        for l in g:
+            if l not in link_to_group_ids:
+                link_to_group_ids[l] = []
+            link_to_group_ids[l].append(i)
+            group_to_links[g_t].append(l)
+    ggLog.info(f"link_to_groups = \n{pprint.pformat(link_to_group_ids)}")
+    ggLog.info(f"group_to_links = \n{pprint.pformat(group_to_links)}")
+
+    link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
+    for link,colliding_links in link_group_collisions:
+        colliding_links = set(colliding_links)
+        for i,g in enumerate(best_collision_groups):
+            if g.issubset(colliding_links):
+                # then link collides with the group g
+                if link not in link_colliding_groups:
+                    link_colliding_groups[link] = []
+                link_colliding_groups[link].append(i)
+    ggLog.info(f"link_colliding_groups = \n{ pprint.pformat(link_colliding_groups)}")
+
+    if len(best_collision_groups) > 32:
+        raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")
+
+    all_links = list(links.keys())
+    for l in all_links:
+        if l not in link_to_group_ids:
+            link_to_group_ids[l] = []
+        if l not in link_colliding_groups:
+            link_colliding_groups[l] = []
+
+    for l in link_to_group_ids.keys():
+        if l not in links:
+            raise RuntimeError(f"Link {l} specified as a group in link_group_collisions is not present in the model")
+    for l in link_colliding_groups.keys():
+        if l not in links:
+            raise RuntimeError(f"Link {l} specified in link_group_collisions is not present in the model")
+    link_contypes = {}
+    link_conaffinity = {}
+    for l in all_links:
+        if links[l] >= mj_model.nbody:
+            continue  # skip sites, they don't participate in collisions
+        contype_mask = 0
+        for gid in link_to_group_ids[l]:
+            contype_mask |= 1<<gid
+        link_contypes[l] = contype_mask
+        conaffinity_mask = 0
+        for gid in link_colliding_groups[l]:
+            conaffinity_mask |= 1<<gid
+        link_conaffinity[l] = conaffinity_mask
+
+    body_contype = mj_model.body_contype.copy()
+    body_conaffinity = mj_model.body_conaffinity.copy()
+    geom_contype = mj_model.geom_contype.copy()
+    geom_conaffinity = mj_model.geom_conaffinity.copy()
+    for lname in all_links:
+        body_id = links[lname]
+        if body_id >= mj_model.nbody:
+            continue  # skip sites
+        aff = link_conaffinity[lname]
+        typ = link_contypes[lname]
+        body_conaffinity[body_id] = aff
+        body_contype[body_id] = typ
+        for geom_id in range(mj_model.body_geomadr[body_id],
+                             mj_model.body_geomadr[body_id]+mj_model.body_geomnum[body_id]):
+            visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
+            if not visual:
+                geom_conaffinity[geom_id] = aff
+                geom_contype[geom_id] = typ
+    return geom_contype, geom_conaffinity, body_contype, body_conaffinity, linkgroup_to_id
+
 
 def apply_dof_overrides(mj_model : mjutils._MjModel,
                         revolute_dof_armature_override : float | None = None,

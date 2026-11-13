@@ -25,6 +25,11 @@ tests/
     test_set_rows_cols_masks.py   # unit: masked sub-block writer (sparse-mask regression)
     test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
     test_mjx_rendering.py         # warp RGB+depth: shapes/dtypes, depth content, vec_mask, out= path
+    test_mujoco_rendering_collisions.py # MujocoAdapter: rgb+depth as MjxAdapter's (planar, 0 = no hit, 10 m clamp),
+                                  #   masks and out tensors, build_scenario's default_link_group_collisions
+    test_mjcf_export.py           # mjcf_export: the written MJCF reloads as the aggregated model, unprefixed models
+                                  #   keep their names and default classes, collisions (which link pairs can collide),
+                                  #   pydescriptions packages (with a stand-in module), scene errors, clean stdout
     test_mjx_camera_timing.py     # set_camera_timing: each frame is the live image of its capture, fixed and random latency
                                   #   bounds, in-order vs overtaking arrivals, reset_camera_frames
     test_mjx_heightfield.py       # get_heightfield "warp_camera": maps vs the scene per env center and yaw, ignored links, collision vs visual geoms, moving bodies

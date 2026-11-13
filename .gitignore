@@ -2,3 +2,4 @@
 *__pycache__*
 *.gch
 build
+MUJOCO_LOG.TXT

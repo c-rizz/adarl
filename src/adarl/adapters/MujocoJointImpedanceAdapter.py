@@ -96,7 +96,10 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
                  gains_exp_filter_decimation_time: float = 0.05,
                  gains_filter_cutoff_frequency: float = 20.0,
                  use_gains_filter: bool = False,
-                 geom_overrides : dict[str,Any] | None = None):
+                 geom_overrides : dict[str,Any] | None = None,
+                 ground_rgba : tuple[float,float,float,float] | None = None,
+                 render_znear : float | None = 0.01,
+                 render_shadows : bool = True):
         super().__init__(vec_size=vec_size,
                          sim_step_dt=sim_step_dt,
                          step_length_sec=step_length_sec,
@@ -110,7 +113,10 @@ class MujocoJointImpedanceAdapter(MujocoAdapter, BaseVecJointImpedanceAdapter):
                          revolute_dof_armature_override=revolute_dof_armature_override,
                          revolute_dof_damping_override=revolute_dof_damping_override,
                          revolute_dof_frictionloss_override=revolute_dof_frictionloss_override,
-                         geom_overrides=geom_overrides)
+                         geom_overrides=geom_overrides,
+                         ground_rgba=ground_rgba,
+                         render_znear=render_znear,
+                         render_shadows=render_shadows)
         self._max_torque_default = default_max_joint_impedance_ctrl_torque
         self._max_torque_overrides = max_joint_impedance_ctrl_torques or {}
         self._imp_ctrl_joints: list[tuple[str, str]] = []

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os
 
-from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models, print_mj_model
+from adarl.adapters.mujoco_utils import add_arrow_to_renderer, aggregate_models, compute_collision_masks, print_mj_model
 from adarl.utils.base_utils import record_region_end, record_region_start, record_time
 os.environ["MUJOCO_GL"] = "egl"
 
@@ -16,6 +16,7 @@ from typing_extensions import override
 
 from adarl.adapters.BaseVecSimulationAdapter import BaseVecSimulationAdapter
 from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
+from adarl.adapters.BaseVecAdapter import Renderings
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import compile_xacro_string
 from adarl.adapters.mujoco_utils import apply_opt_preset
@@ -88,7 +89,12 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  revolute_dof_damping_override: float | None = None,
                  revolute_dof_frictionloss_override: float | None = None,
                  disable_builtin_actuators: bool = True,
-                 geom_overrides : dict[str,Any] | None = None):
+                 geom_overrides : dict[str,Any] | None = None,
+                 ground_rgba : tuple[float,float,float,float] | None = None,
+                 render_znear : float | None = 0.01,
+                 render_shadows : bool = True):
+        """ground_rgba, render_znear and render_shadows are as in MjxAdapter: a flat ground color instead of the
+        checker texture, the near clipping plane of the cameras in meters, and whether camera images have shadows."""
         if vec_size != 1:
             raise ValueError("MujocoAdapter only supports vec_size=1")
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
@@ -126,6 +132,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._viewer_mj_data : mujoco_MjData | None = None
         self._last_gui_update_wtime = 0.0
         self._geom_overrides = geom_overrides
+        self._ground_rgba = ground_rgba
+        self._render_znear = render_znear
+        self._render_shadows = render_shadows
         self._monitored_collision_pairs : list[tuple[tuple[str,str], tuple[str,str]]] = []
         self._monitored_collision_body_pairs = np.empty((0, 2), dtype=np.int64)
         self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
@@ -140,6 +149,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         add_ground = kwargs.pop("add_ground", None)
         if add_ground is not None:
             self._add_ground = add_ground
+        default_link_group_collisions = kwargs.pop("default_link_group_collisions", None)
         if self._vec_size != 1:
             raise RuntimeError("MujocoAdapter only supports vec_size=1")
         models = list(models)
@@ -153,7 +163,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           uneven_ground=self._uneven_ground,
                                           discardvisual=self._discardvisual,
                                           log_folder=scenario_logs_folder,
-                                          geom_overrides=self._geom_overrides)
+                                          geom_overrides=self._geom_overrides,
+                                          ground_rgba=self._ground_rgba,
+                                          render_znear=self._render_znear)
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
         
         self._mj_model.opt.timestep = self._sim_step_dt
@@ -177,6 +189,10 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         self._renderer_cache.clear()
         self._build_name_maps()
+        if default_link_group_collisions is not None:
+            # As MjxAdapter: each link collides only with the links it is given, the others with nothing
+            self._apply_collision_masks(default_link_group_collisions)
+            mujoco_mj_forward(self._mj_model, self._mj_data)
         self._resolve_monitored_collision_pairs()
         self._build_renderers()
 
@@ -214,13 +230,16 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _build_renderers(self):
         self._camera_sizes_wh :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
         if self._enable_rendering:
+            # The camera images show the scene only, as MjxAdapter's: no contact points or other visual aids
             self._render_scene_option = mujoco_MjvOption()
-            self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_CONTACTPOINT] = 1
+            self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_CONTACTPOINT] = 0
             # self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_COM] = 1
             # self._render_scene_option.flags[mujoco_mjtVisFlag.mjVIS_TRANSPARENT] = 1
             ggLog.info(f"Making rederer for resolutions: {set(self._camera_sizes_wh.values())}, MUJOCO_GL={os.environ.get('MUJOCO_GL','<not set>')}")
             self._renderers : dict[tuple[int,int],mujoco.Renderer]= {resolution: mujoco.Renderer(self._mj_model,resolution[0],resolution[1])
                                                                         for resolution in set(self._camera_sizes_wh.values())}
+            for renderer in self._renderers.values(): # update_scene leaves the scene's render flags as they are
+                renderer.scene.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = self._render_shadows
         else:
             self._renderers = {}
 
@@ -410,29 +429,86 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._compute_stats()
         return th.full((self._vec_size,), duration, dtype=th.float32) # every env steps together
 
+    # As MjxAdapter's warp depth (MjxAdapter._vec_get_depth): depths are clamped to this, in meters
+    _MAX_DEPTH = 10.0
+
     @override
-    def getRenderings(self, requestedCameras: list[str], vec_mask: th.Tensor | None = None) -> tuple[list[th.Tensor], th.Tensor]:
-        if vec_mask is None:
-            vec_mask = th.tensor([1], device=self._out_th_device, dtype=th.bool)
-        images: list[th.Tensor] = []
-        for cam in requestedCameras:
-            width, height = self._camera_sizes_wh[cam]
-            if not vec_mask.item():
-                images.append(th.empty((0, height, width, 3), dtype=th.uint8, device=self._out_th_device))
+    def getRenderings(self, requestedCameras: list[str],
+                            vec_mask: th.Tensor | None = None,
+                            out_th_device : th.device | None = None,
+                            out : list[th.Tensor] | None = None,
+                            depth : bool = False,
+                            use_fixed_shapes : bool = False) -> tuple[list[th.Tensor], th.Tensor]:
+        """Deprecated: use get_camera_images(), which can render rgb and depth together."""
+        renderings = self.get_camera_images(requestedCameras,
+                                            rgb = not depth,
+                                            depth = depth,
+                                            vec_mask = vec_mask,
+                                            out_th_device = out_th_device,
+                                            out_rgb = None if depth else out,
+                                            out_depth = out if depth else None,
+                                            use_fixed_shapes = use_fixed_shapes)
+        images = renderings.depth if depth else renderings.rgb
+        assert images is not None
+        return images, renderings.times
+
+    @override
+    def get_camera_images(self,  requestedCameras : list[str],
+                                 rgb : bool = True,
+                                 depth : bool = False,
+                                 vec_mask : th.Tensor | None = None,
+                                 out_th_device : th.device | None = None,
+                                 out_rgb : list[th.Tensor] | None = None,
+                                 out_depth : list[th.Tensor] | None = None,
+                                 use_fixed_shapes : bool = False) -> Renderings:
+        """Rgb and/or depth images of the cameras, both from the same scene update. Depth images are as MjxAdapter's:
+        planar depth (along the optical axis) in meters, float32, 0 where nothing is hit, clamped to _MAX_DEPTH."""
+        if not rgb and not depth:
+            raise AttributeError(f"get_camera_images: at least one of rgb and depth must be requested")
+        if not self._enable_rendering:
+            raise RuntimeError(f"Called get_camera_images, but rendering is not enabled")
+        if out_th_device is None:
+            out_th_device = self._out_th_device
+        render = vec_mask is None or bool(vec_mask.item())
+        num_out = 1 if render or use_fixed_shapes else 0
+        if render:
+            self._forward_if_needed()
+        # beyond the far clipping plane nothing is hit: the depth buffer holds the far plane there
+        far = float(self._mj_model.vis.map.zfar*self._mj_model.stat.extent)
+        rgb_imgs : list[th.Tensor] | None = [] if rgb else None
+        depth_imgs : list[th.Tensor] | None = [] if depth else None
+        for i, cam in enumerate(requestedCameras):
+            height, width = self._camera_sizes_wh[cam] # (height, width), as mujoco.Renderer takes them
+            if render:
+                renderer = self._renderers[height, width]
+                renderer.update_scene(self._mj_data, camera=self._cname2cid[cam], scene_option=self._render_scene_option)
+                if rgb:
+                    rgb_img = th.as_tensor(renderer.render().copy()).unsqueeze(0)
+                if depth:
+                    renderer.enable_depth_rendering()
+                    try:
+                        depth_np = renderer.render().copy()
+                    finally:
+                        renderer.disable_depth_rendering()
+                    depth_np[depth_np >= far*(1-1e-4)] = 0.0
+                    np.clip(depth_np, 0.0, self._MAX_DEPTH, out=depth_np)
+                    depth_img = th.as_tensor(depth_np, dtype=th.float32).view(1, height, width, 1)
             else:
-                renderer = self._renderers[width, height]
-                cam_id = self._cname2cid[cam]
-                renderer.update_scene(self._mj_data, camera=cam_id, scene_option=self._render_scene_option)
-                # if self._visualize_xfrc_applied:
-                #     for body_id in range(0,self._mj_model.nbody):
-                #         if np.linalg.norm(self._mj_data.xfrc_applied[body_id]) != 0.0:
-                #             force_vec = self._mj_data.xfrc_applied[body_id,:3]
-                #             body_pos = self._mj_data.xipos[body_id]
-                #             add_arrow_to_renderer(renderer, body_pos, body_pos+force_vec/10, radius=0.03, rgba=[0.8, 0.1, 0.1, 1])
-                img = renderer.render()
-                images.append(th.as_tensor(img, device=self._out_th_device).unsqueeze(0))
-        times = th.full((1, len(requestedCameras)), fill_value=float(self._mj_data.time), device=self._out_th_device, dtype=self._out_th_float_dtype)
-        return images, times
+                rgb_img = th.zeros((num_out, height, width, 3), dtype=th.uint8)
+                depth_img = th.zeros((num_out, height, width, 1), dtype=th.float32)
+            if rgb_imgs is not None:
+                if out_rgb is not None:
+                    rgb_imgs.append(out_rgb[i].copy_(rgb_img))
+                else:
+                    rgb_imgs.append(rgb_img.to(out_th_device))
+            if depth_imgs is not None:
+                if out_depth is not None:
+                    depth_imgs.append(out_depth[i].copy_(depth_img))
+                else:
+                    depth_imgs.append(depth_img.to(out_th_device))
+        times = th.full((num_out, len(requestedCameras)), fill_value=float(self._mj_data.time),
+                        device=out_th_device, dtype=self._out_th_float_dtype)
+        return Renderings(rgb=rgb_imgs, depth=depth_imgs, times=times)
 
     def _forward_if_needed(self):
         if self._forward_needed:
@@ -786,93 +862,23 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         link_group_collisions, explicit_groups = self.expand_link_group_collisions(link_group_collisions,
                                                                                   self._lname2lid.keys(),
                                                                                   explicit_groups)
-        input_collision_groups = [set(lg[1]) for lg in link_group_collisions]
-
-        # Reorganize the links into a small set of groups of links that always collide together
-        best_collision_groups : list[set[tuple[str,str]]] = []
-        while len(input_collision_groups)>0:
-            biggest_common_subgroup = set(input_collision_groups[0])
-            for g in input_collision_groups:
-                prev_biggest_common_subgroup = biggest_common_subgroup
-                biggest_common_subgroup = biggest_common_subgroup.intersection(g)
-                if len(biggest_common_subgroup)==0:
-                    biggest_common_subgroup = prev_biggest_common_subgroup
-            best_collision_groups.append(biggest_common_subgroup)
-            input_collision_groups = [(g.difference(biggest_common_subgroup)) for g in input_collision_groups]
-            input_collision_groups = [g for g in input_collision_groups if len(g)>0]
-
-        best_collision_groups_set = {tuple(g) for g in best_collision_groups}
-        best_collision_groups = [set(g) for g in best_collision_groups_set.union(set(explicit_groups))]
-        link_to_group_ids = {} # Which groups each link is part of
-        self._linkgroup_to_id : dict[tuple[tuple[str,str],...], int] = {}
-        for i,g in enumerate(best_collision_groups):
-            g_t = tuple(g)
-            self._linkgroup_to_id[g_t] = i
-            for l in g:
-                link_to_group_ids.setdefault(l, []).append(i)
-
-        link_colliding_groups : dict[tuple[str,str], list[int]] = {} # Which groups each link collides with
-        for link,colliding_links in link_group_collisions:
-            colliding_links = set(colliding_links)
-            for i,g in enumerate(best_collision_groups):
-                if g.issubset(colliding_links):
-                    link_colliding_groups.setdefault(link, []).append(i)
-
-        if len(best_collision_groups) > 32:
-            raise RuntimeError(f"Detected more than 32 separate collision groups. Cannot represent in Mujoco collision masks.")
-
-        nbody = self._mj_model.nbody
-        all_links = list(self._lname2lid.keys())
-        for l in all_links:
-            link_to_group_ids.setdefault(l, [])
-            link_colliding_groups.setdefault(l, [])
-        for l in list(link_to_group_ids.keys())+list(link_colliding_groups.keys()):
-            if l not in all_links:
-                raise RuntimeError(f"Link {l} specified in link_group_collisions is not present in the model")
-
-        link_contypes = {}
-        link_conaffinity = {}
-        for l in all_links:
-            if self._lname2lid[l] >= nbody:
-                continue  # skip non-body elements
-            contype_mask = 0
-            for gid in link_to_group_ids[l]:
-                contype_mask |= 1<<gid
-            link_contypes[l] = contype_mask
-            conaffinity_mask = 0
-            for gid in link_colliding_groups[l]:
-                conaffinity_mask |= 1<<gid
-            link_conaffinity[l] = conaffinity_mask
-
-        body_contype : np.ndarray = self._mj_model.body_contype.copy()
-        body_conaffinity : np.ndarray = self._mj_model.body_conaffinity.copy()
-        geom_contype : np.ndarray = self._mj_model.geom_contype.copy()
-        geom_conaffinity : np.ndarray = self._mj_model.geom_conaffinity.copy()
-        for lname in all_links:
-            body_id = self._lname2lid[lname]
-            if body_id >= nbody:
-                continue
-            aff = link_conaffinity[lname]
-            typ = link_contypes[lname]
-            body_conaffinity[body_id] = aff
-            body_contype[body_id] = typ
-            for geom_id in range(self._mj_model.body_geomadr[body_id],
-                                 self._mj_model.body_geomadr[body_id]+self._mj_model.body_geomnum[body_id]):
-                visual = geom_contype[geom_id]==0 and geom_conaffinity[geom_id]==0
-                if not visual:
-                    geom_conaffinity[geom_id] = aff
-                    geom_contype[geom_id] = typ
+        geom_contype, geom_conaffinity, body_contype, body_conaffinity, self._linkgroup_to_id = \
+            compute_collision_masks(self._mj_model, self._lname2lid, link_group_collisions, explicit_groups)
         return geom_contype, geom_conaffinity, body_contype, body_conaffinity
 
-    @override
-    def set_body_collisions(self, link_group_collisions: list[tuple[tuple[str, str], list[tuple[str, str]]]],
-                            explicit_groups: list[tuple[tuple[str, str], ...]] = []):
-        self._ensure_ready()
+    def _apply_collision_masks(self, link_group_collisions: list[tuple[tuple[str, str], list[tuple[str, str]]]],
+                               explicit_groups: list[tuple[tuple[str, str], ...]] = []):
         geom_contype, geom_conaffinity, body_contype, body_conaffinity = self._compute_collision_masks(link_group_collisions, explicit_groups)
         self._mj_model.geom_contype[:] = geom_contype
         self._mj_model.geom_conaffinity[:] = geom_conaffinity
         self._mj_model.body_contype[:] = body_contype
         self._mj_model.body_conaffinity[:] = body_conaffinity
+
+    @override
+    def set_body_collisions(self, link_group_collisions: list[tuple[tuple[str, str], list[tuple[str, str]]]],
+                            explicit_groups: list[tuple[tuple[str, str], ...]] = []):
+        self._ensure_ready()
+        self._apply_collision_masks(link_group_collisions, explicit_groups)
         self._forward_needed = True
 
     @override
