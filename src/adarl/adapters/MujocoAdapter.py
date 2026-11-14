@@ -9,6 +9,7 @@ import numpy as np
 import torch as th
 import mujoco
 import mujoco.viewer
+from mujoco import batch as mujoco_batch
 import time
 
 from typing import Sequence, Any
@@ -19,13 +20,13 @@ from adarl.adapters.BaseVecJointEffortAdapter import BaseVecJointEffortAdapter
 from adarl.adapters.BaseVecAdapter import Renderings
 from adarl.adapters.BaseSimulationAdapter import ModelSpawnDef
 from adarl.utils.utils import compile_xacro_string
-from adarl.adapters.mujoco_utils import apply_opt_preset
+from adarl.adapters.mujoco_utils import apply_opt_preset, resolve_dof_override, DofOverride
 import copy
 import adarl.utils.dbg.ggLog as ggLog
 import pprint
 
 
-from typing import TypeAlias 
+from typing import TypeAlias
 mujoco_mjtGeom :            TypeAlias = mujoco.mjtGeom # type: ignore
 mujoco_mju_quat2Mat :       TypeAlias = mujoco.mju_quat2Mat # type: ignore
 mujoco_mju_mat2Quat :       TypeAlias = mujoco.mju_mat2Quat # type: ignore
@@ -68,8 +69,12 @@ def add_compiler_options(urdf_def: str,
 
 
 class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
-    """Single-simulation adapter for Mujoco classic.
-    This adapter implements the BaseVecSimulationAdapter interface but only supports vec_size == 1.
+    """Adapter for Mujoco classic, simulating vec_size environments of one model on CPU threads (mujoco.batch).
+
+    The environments are the simulations of a mujoco.batch.Batch, stepped on sim_threads threads. Each environment
+    steps exactly as a single MjData would: the results do not depend on the number of environments or threads.
+    All the environments share the model, so setting the pose of a fixed (non-free, non-mocap) body, which moves it
+    in the model, moves it in every environment.
 
     WARNING: This adapter should still be considered as a Work In Progress.
     """
@@ -85,24 +90,30 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                  opt_preset: str = "mujoco_default",
                  opt_override: dict | None = None,
                  safe_revolute_dof_armature: float = 0.01,
-                 revolute_dof_armature_override: float | None = None,
-                 revolute_dof_damping_override: float | None = None,
-                 revolute_dof_frictionloss_override: float | None = None,
+                 revolute_dof_armature_override: DofOverride = None,
+                 revolute_dof_damping_override: DofOverride = None,
+                 revolute_dof_frictionloss_override: DofOverride = None,
                  disable_builtin_actuators: bool = True,
                  geom_overrides : dict[str,Any] | None = None,
                  ground_rgba : tuple[float,float,float,float] | None = None,
                  render_znear : float | None = 0.01,
-                 render_shadows : bool = True):
+                 render_shadows : bool = True,
+                 sim_threads : int | None = None):
         """ground_rgba, render_znear and render_shadows are as in MjxAdapter: a flat ground color instead of the
-        checker texture, the near clipping plane of the cameras in meters, and whether camera images have shadows."""
-        if vec_size != 1:
-            raise ValueError("MujocoAdapter only supports vec_size=1")
+        checker texture, the near clipping plane of the cameras in meters, and whether camera images have shadows.
+        sim_threads is the number of threads the environments are simulated on, by default one per environment up
+        to the number of CPUs."""
+        if vec_size < 1:
+            raise ValueError(f"vec_size must be at least 1, got {vec_size}")
         super().__init__(vec_size=vec_size, output_th_device=output_th_device)
         self._sim_step_dt = float(sim_step_dt)
         self._sim_step_dt_th = th.as_tensor(self._sim_step_dt, device=output_th_device)
+        self._sim_threads = sim_threads if sim_threads is not None else min(vec_size, os.cpu_count() or 1)
         self._mj_model: mujoco_MjModel = None
-        self._mj_data: mujoco_MjData | None = None
-        self._requested_qfrc_applied = np.zeros((0,), dtype=np.float64)
+        self._batch : mujoco_batch.Batch | None = None
+        self._env_datas : list[mujoco_MjData | None] = [] # per environment, its MjData as of its last batch call
+        self._env_datas_valid = np.zeros((vec_size,), dtype=bool)
+        self._requested_qfrc_applied = np.zeros((vec_size, 0), dtype=np.float64)
         self._renderer_cache: dict[str, mujoco.Renderer] = {}
         self._jname2jid: dict[tuple[str, str], int] = {}
         self._jid2jname: dict[int, tuple[str, str]] = {}
@@ -123,7 +134,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._stepping = False
         self._step_length_sec = step_length_sec
         self._forward_needed = True
-        self._time_since_startup = 0.0
+        self._time_since_startup = np.zeros((vec_size,), dtype=np.float64)
         self._step_stats_len = 1000
         self._log_folder = log_folder
         self._show_gui = show_gui
@@ -140,8 +151,69 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._monitored_collision_pair_to_idx : dict[tuple[int,int], int] = {}
 
     def _ensure_ready(self):
-        if self._mj_model is None or self._mj_data is None:
+        if self._mj_model is None or self._batch is None:
             raise RuntimeError("Mujoco model not built. Call build_scenario first.")
+
+    def _vec_mask_to_ids(self, vec_mask: th.Tensor | None) -> np.ndarray | None:
+        """The environments of vec_mask as batch simulation ids, None for all of them."""
+        if vec_mask is None:
+            return None
+        mask = vec_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+        if mask.shape[0] != self._vec_size:
+            raise ValueError(f"vec_mask has {mask.shape[0]} elements, expected vec_size={self._vec_size}")
+        if mask.all():
+            return None
+        return np.nonzero(mask)[0]
+
+    def _all_ids(self, ids: np.ndarray | None) -> np.ndarray:
+        return np.arange(self._vec_size) if ids is None else ids
+
+    def _bind_fields(self):
+        b = self._batch
+        assert b is not None
+        # state fields: writable views of the simulations' state
+        self._b_time = b.bind("time")
+        self._b_qpos = b.bind("qpos")
+        self._b_qvel = b.bind("qvel")
+        self._b_qfrc_applied = b.bind("qfrc_applied")
+        self._b_mocap_pos = b.bind("mocap_pos")
+        self._b_mocap_quat = b.bind("mocap_quat")
+        # derived fields: read-only, as computed by each simulation's last call
+        self._b_qacc = b.bind("qacc")
+        self._b_xpos = b.bind("xpos")
+        self._b_xquat = b.bind("xquat")
+        self._b_xipos = b.bind("xipos")
+        self._b_ximat = b.bind("ximat")
+        self._b_cvel = b.bind("cvel")
+        self._b_subtree_com = b.bind("subtree_com")
+        self._b_qfrc_smooth = b.bind("qfrc_smooth")
+        self._b_qfrc_constraint = b.bind("qfrc_constraint")
+        self._b_qfrc_actuator = b.bind("qfrc_actuator")
+        self._b_qfrc_passive = b.bind("qfrc_passive")
+
+    def _model_changed(self):
+        """Make the simulations see the edits to the model, which the batch reads (set_models)."""
+        assert self._batch is not None
+        self._batch.set_models(self._mj_model)
+        self._env_datas_valid[:] = False
+
+    def _batch_forward(self, ids: np.ndarray | None = None):
+        assert self._batch is not None
+        self._batch.forward(ids)
+        self._env_datas_valid[self._all_ids(ids)] = False
+
+    def _env_data(self, env: int) -> mujoco_MjData:
+        """Environment env's whole MjData as of its last batch call (step, forward or reset), as a single MjData
+        would be, for what the batch does not bind: contacts, accelerations, rendering."""
+        assert self._batch is not None
+        data = self._env_datas[env]
+        if data is None:
+            data = mujoco_MjData(self._mj_model)
+            self._env_datas[env] = data
+        if not self._env_datas_valid[env]:
+            self._batch.get_data(env, data)
+            self._env_datas_valid[env] = True
+        return data
 
     @override
     def build_scenario(self, models: Sequence[ModelSpawnDef] = (), **kwargs):
@@ -150,8 +222,6 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if add_ground is not None:
             self._add_ground = add_ground
         default_link_group_collisions = kwargs.pop("default_link_group_collisions", None)
-        if self._vec_size != 1:
-            raise RuntimeError("MujocoAdapter only supports vec_size=1")
         models = list(models)
         if len(models) == 0:
             raise RuntimeError("No models provided to build_scenario")
@@ -167,7 +237,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                           ground_rgba=self._ground_rgba,
                                           render_znear=self._render_znear)
         self._mj_model = apply_opt_preset(self._mj_model, self._opt_preset, self._opt_override)
-        
+
         self._mj_model.opt.timestep = self._sim_step_dt
         if self._disable_builtin_actuators:
             # Disable all built-in actuators; we apply forces/torques directly to the joints in the control step.
@@ -183,16 +253,22 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             text_file.write(str(self._mj_model.opt))
         print_mj_model(self._mj_model, full_dump=True, file=scenario_logs_folder+"/mj_model_full.txt")
 
-        self._mj_data = mujoco_MjData(self._mj_model)
-        self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
-        mujoco_mj_forward(self._mj_model, self._mj_data)
+        # persistent: one MjData per simulation, so that get_data gives each environment's whole MjData
+        self._batch = mujoco_batch.Batch(self._mj_model, nsim=self._vec_size, nthread=self._sim_threads, persistent=True)
+        self._batch.set_models(self._mj_model) # run on the adapter's model, so that its edits reach the simulations
+        self._env_datas = [None]*self._vec_size
+        self._env_datas_valid[:] = False
+        self._bind_fields()
+        self._requested_qfrc_applied = np.zeros((self._vec_size, self._mj_model.nv), dtype=np.float64)
+        self._batch.reset() # a new MjData, then mj_forward
 
         self._renderer_cache.clear()
         self._build_name_maps()
         if default_link_group_collisions is not None:
             # As MjxAdapter: each link collides only with the links it is given, the others with nothing
             self._apply_collision_masks(default_link_group_collisions)
-            mujoco_mj_forward(self._mj_model, self._mj_data)
+            self._model_changed()
+            self._batch_forward()
         self._resolve_monitored_collision_pairs()
         self._build_renderers()
 
@@ -214,18 +290,22 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         for dof_id in range(self._mj_model.nv):
             if self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]] != mujoco_mjtJoint.mjJNT_HINGE:
                 continue
+            joint_name = mujoco_mj_id2name(self._mj_model, mujoco_mjtObj.mjOBJ_JOINT, self._mj_model.dof_jntid[dof_id])
+            armature_override = resolve_dof_override(self._revolute_dof_armature_override, joint_name)
+            frictionloss_override = resolve_dof_override(self._revolute_dof_frictionloss_override, joint_name)
+            damping_override = resolve_dof_override(self._revolute_dof_damping_override, joint_name)
             if self._mj_model.dof_armature[dof_id] == 0:
                 self._mj_model.dof_armature[dof_id] = self._safe_revolute_dof_armature
-            if self._revolute_dof_armature_override is not None:
-                self._mj_model.dof_armature[dof_id] = self._revolute_dof_armature_override
+            if armature_override is not None:
+                self._mj_model.dof_armature[dof_id] = armature_override
             if self._mj_model.dof_frictionloss[dof_id] == 0:
                 self._mj_model.dof_frictionloss[dof_id] = safe_frictionloss
-            if self._revolute_dof_frictionloss_override is not None:
-                self._mj_model.dof_frictionloss[dof_id] = self._revolute_dof_frictionloss_override
+            if frictionloss_override is not None:
+                self._mj_model.dof_frictionloss[dof_id] = frictionloss_override
             if self._mj_model.dof_damping[dof_id] == 0:
                 self._mj_model.dof_damping[dof_id] = safe_damping
-            if self._revolute_dof_damping_override is not None:
-                self._mj_model.dof_damping[dof_id] = self._revolute_dof_damping_override
+            if damping_override is not None:
+                self._mj_model.dof_damping[dof_id] = damping_override
 
     def _build_renderers(self):
         self._camera_sizes_wh :dict[str,tuple[int,int]] = {self._cid2cname[cid]:(self._mj_model.cam_resolution[cid][1],self._mj_model.cam_resolution[cid][0]) for cid in self._cid2cname}
@@ -247,18 +327,21 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def destroy_scenario(self, **kwargs):
         self._close_gui()
         self._mj_model = None
-        self._mj_data = None
+        self._batch = None
+        self._env_datas = []
+        self._env_datas_valid[:] = False
         self._renderers = {}
-        self._renderers_mj_data = []
 
     def _launch_gui_if_needed(self):
-        """Open the interactive passive viewer window, if show_gui is enabled."""
+        """Open the interactive passive viewer window on the first environment, if show_gui is enabled."""
         if not self._show_gui or self._viewer is not None:
             return
         try:
-            # Bind the viewer directly to the live data. resetWorld() resets it in place
-            # (rather than reallocating) so this reference stays valid across episodes.
-            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._mj_data)
+            # The viewer shows its own MjData, into which _update_gui copies the first environment
+            self._viewer_mj_data = mujoco_MjData(self._mj_model)
+            assert self._batch is not None
+            self._batch.get_data(0, self._viewer_mj_data)
+            self._viewer = mujoco.viewer.launch_passive(self._mj_model, self._viewer_mj_data)
             self._last_gui_update_wtime = 0.0
         except Exception as e:
             ggLog.warn(f"MujocoAdapter: could not open interactive gui ({type(e).__name__}: {e}); disabling show_gui.")
@@ -278,6 +361,9 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             self._forward_if_needed()
             record_time("MujocoAdapter.update_gui() forward done")
             self._last_gui_update_wtime = time.monotonic()
+            assert self._batch is not None and self._viewer_mj_data is not None
+            with self._viewer.lock():
+                self._batch.get_data(0, self._viewer_mj_data)
             self._viewer.sync(state_only=True)
         record_region_end("MujocoAdapter.update_gui()")
 
@@ -332,7 +418,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def set_monitored_joints(self, jointsToObserve: Sequence[tuple[str, str]]):
         super().set_monitored_joints(jointsToObserve)
         self._reset_step_stats(self._step_stats_len)
-    
+
     @override
     def set_monitored_links(self, linksToObserve: Sequence[tuple[str, str]]):
         super().set_monitored_links(linksToObserve)
@@ -383,21 +469,22 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         mask = np.zeros((self._vec_size, num_pairs), dtype=bool)
         if num_pairs == 0:
             return th.as_tensor(mask, device=self._out_th_device)
-        d = self._mj_data
         geom_bodyid = self._mj_model.geom_bodyid
-        colliding : set[tuple[int, int]] = set()
-        for i in range(int(d.ncon)):
-            c = d.contact[i]
-            if c.dist >= c.includemargin:
-                continue
-            body_a = int(geom_bodyid[int(c.geom[0])])
-            body_b = int(geom_bodyid[int(c.geom[1])])
-            colliding.add((body_a, body_b))
-            colliding.add((body_b, body_a))
-        for idx in range(num_pairs):
-            body_a, body_b = self._monitored_collision_body_pairs[idx]
-            if (int(body_a), int(body_b)) in colliding:
-                mask[0, idx] = True
+        for env in range(self._vec_size):
+            d = self._env_data(env)
+            colliding : set[tuple[int, int]] = set()
+            for i in range(int(d.ncon)):
+                c = d.contact[i]
+                if c.dist >= c.includemargin:
+                    continue
+                body_a = int(geom_bodyid[int(c.geom[0])])
+                body_b = int(geom_bodyid[int(c.geom[1])])
+                colliding.add((body_a, body_b))
+                colliding.add((body_b, body_a))
+            for idx in range(num_pairs):
+                body_a, body_b = self._monitored_collision_body_pairs[idx]
+                if (int(body_a), int(body_b)) in colliding:
+                    mask[env, idx] = True
         return th.as_tensor(mask, device=self._out_th_device)
 
     @override
@@ -416,7 +503,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def initialize_for_step(self):
-        if self._mj_model is None or self._mj_data is None:
+        if self._mj_model is None or self._batch is None:
             return
 
     @override
@@ -424,10 +511,10 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self.initialize_for_step()
         self._reset_step_stats(self._step_stats_len)
         self._stepping = True
-        duration = self.run(self._step_length_sec)
+        durations = self.run(self._step_length_sec)
         self._stepping = False
         self._compute_stats()
-        return th.full((self._vec_size,), duration, dtype=th.float32) # every env steps together
+        return durations
 
     # As MjxAdapter's warp depth (MjxAdapter._vec_get_depth): depths are clamped to this, in meters
     _MAX_DEPTH = 10.0
@@ -462,16 +549,21 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                                  out_depth : list[th.Tensor] | None = None,
                                  use_fixed_shapes : bool = False) -> Renderings:
         """Rgb and/or depth images of the cameras, both from the same scene update. Depth images are as MjxAdapter's:
-        planar depth (along the optical axis) in meters, float32, 0 where nothing is hit, clamped to _MAX_DEPTH."""
+        planar depth (along the optical axis) in meters, float32, 0 where nothing is hit, clamped to _MAX_DEPTH.
+        The environments are rendered one after the other."""
         if not rgb and not depth:
             raise AttributeError(f"get_camera_images: at least one of rgb and depth must be requested")
         if not self._enable_rendering:
             raise RuntimeError(f"Called get_camera_images, but rendering is not enabled")
         if out_th_device is None:
             out_th_device = self._out_th_device
-        render = vec_mask is None or bool(vec_mask.item())
-        num_out = 1 if render or use_fixed_shapes else 0
-        if render:
+        ids = self._vec_mask_to_ids(vec_mask)
+        rendered = np.zeros((self._vec_size,), dtype=bool)
+        rendered[self._all_ids(ids)] = True
+        # the environments of the output rows: all of them with fixed shapes (the masked ones zeroed), else the rendered ones
+        out_envs = np.arange(self._vec_size) if use_fixed_shapes else self._all_ids(ids)
+        num_out = len(out_envs)
+        if rendered.any():
             self._forward_if_needed()
         # beyond the far clipping plane nothing is hit: the depth buffer holds the far plane there
         far = float(self._mj_model.vis.map.zfar*self._mj_model.stat.extent)
@@ -479,11 +571,15 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         depth_imgs : list[th.Tensor] | None = [] if depth else None
         for i, cam in enumerate(requestedCameras):
             height, width = self._camera_sizes_wh[cam] # (height, width), as mujoco.Renderer takes them
-            if render:
+            rgb_img = th.zeros((num_out, height, width, 3), dtype=th.uint8)
+            depth_img = th.zeros((num_out, height, width, 1), dtype=th.float32)
+            for row, env in enumerate(out_envs):
+                if not rendered[env]:
+                    continue
                 renderer = self._renderers[height, width]
-                renderer.update_scene(self._mj_data, camera=self._cname2cid[cam], scene_option=self._render_scene_option)
+                renderer.update_scene(self._env_data(int(env)), camera=self._cname2cid[cam], scene_option=self._render_scene_option)
                 if rgb:
-                    rgb_img = th.as_tensor(renderer.render().copy()).unsqueeze(0)
+                    rgb_img[row] = th.as_tensor(renderer.render().copy())
                 if depth:
                     renderer.enable_depth_rendering()
                     try:
@@ -492,10 +588,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                         renderer.disable_depth_rendering()
                     depth_np[depth_np >= far*(1-1e-4)] = 0.0
                     np.clip(depth_np, 0.0, self._MAX_DEPTH, out=depth_np)
-                    depth_img = th.as_tensor(depth_np, dtype=th.float32).view(1, height, width, 1)
-            else:
-                rgb_img = th.zeros((num_out, height, width, 3), dtype=th.uint8)
-                depth_img = th.zeros((num_out, height, width, 1), dtype=th.float32)
+                    depth_img[row] = th.as_tensor(depth_np, dtype=th.float32).view(height, width, 1)
             if rgb_imgs is not None:
                 if out_rgb is not None:
                     rgb_imgs.append(out_rgb[i].copy_(rgb_img))
@@ -506,13 +599,13 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                     depth_imgs.append(out_depth[i].copy_(depth_img))
                 else:
                     depth_imgs.append(depth_img.to(out_th_device))
-        times = th.full((num_out, len(requestedCameras)), fill_value=float(self._mj_data.time),
-                        device=out_th_device, dtype=self._out_th_float_dtype)
+        times = th.as_tensor(self._b_time[out_envs], device=out_th_device, dtype=self._out_th_float_dtype
+                             ).unsqueeze(1).expand(num_out, len(requestedCameras)).contiguous()
         return Renderings(rgb=rgb_imgs, depth=depth_imgs, times=times)
 
     def _forward_if_needed(self):
         if self._forward_needed:
-            mujoco_mj_forward(self._mj_model, self._mj_data)
+            self._batch_forward()
             self._forward_needed = False
 
     @override
@@ -526,61 +619,52 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         else:
             jids = [self._jname2jid[j] for j in requestedJoints]
         if len(jids) == 0:
-            return th.empty((1, 0, 3), device=self._out_th_device, dtype=self._out_th_float_dtype)
-        pve = self._read_joints_pve(np.array([jids]))
-        return th.as_tensor(pve, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1, len(jids), 3)
+            return th.empty((self._vec_size, 0, 3), device=self._out_th_device, dtype=self._out_th_float_dtype)
+        pve = self._read_joints_pve(np.array(jids, dtype=int).reshape(-1))
+        return th.as_tensor(pve, device=self._out_th_device, dtype=self._out_th_float_dtype).view(self._vec_size, len(jids), 3)
+
+    def _check_hinge_slide(self, jids: np.ndarray):
+        jtypes = self._mj_model.jnt_type[jids]
+        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
+            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
 
     def _read_joints_pve(self, jids: np.ndarray) -> np.ndarray:
+        """(vec_size, len(jids), 3)"""
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
-        pos = self._mj_data.qpos[qpos_adrs]
-        vel = self._mj_data.qvel[qvel_adrs]
-        effort = self._mj_data.qfrc_applied[qvel_adrs]
+        self._check_hinge_slide(jids)
+        pos = self._b_qpos[:, qpos_adrs]
+        vel = self._b_qvel[:, qvel_adrs]
+        effort = self._b_qfrc_applied[:, qvel_adrs]
         return np.stack([pos, vel, effort],axis=-1)
 
-    def _read_joints_pvae(self, jids: np.ndarray) -> np.ndarray:
-        qpos_adrs = self._mj_model.jnt_qposadr[jids]
-        qvel_adrs = self._mj_model.jnt_dofadr[jids]
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
-        pos = self._mj_data.qpos[qpos_adrs]
-        vel = self._mj_data.qvel[qvel_adrs]
-        acc = self._mj_data.qacc[qpos_adrs]
-        eff = self._mj_data.qfrc_smooth[qvel_adrs] + self._mj_data.qfrc_constraint[qvel_adrs]
-        return np.stack([pos, vel, acc, eff], axis=-1)
-
-    def _read_joints_pvaeep(self, jids: np.ndarray) -> np.ndarray:
+    def _read_joints_pvaeep(self, jids: np.ndarray, envs: np.ndarray | None = None) -> np.ndarray:
         """Per-substep joint quantities for the extended step stats, ordered
         [position, velocity, acceleration, commanded_effort, sensed_effort, power]
-        (matching MjxAdapter.get_joints_state_step_stats_extended)."""
+        (matching MjxAdapter.get_joints_state_step_stats_extended), (len(envs), len(jids), 6)."""
+        envs = self._all_ids(envs)
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
-        pos = self._mj_data.qpos[qpos_adrs]
-        vel = self._mj_data.qvel[qvel_adrs]
-        acc = self._mj_data.qacc[qvel_adrs]
-        commanded_effort = self._mj_data.qfrc_applied[qvel_adrs] + self._mj_data.qfrc_actuator[qvel_adrs]
-        sensed_effort = commanded_effort + self._mj_data.qfrc_passive[qvel_adrs] + self._mj_data.qfrc_constraint[qvel_adrs]
+        self._check_hinge_slide(jids)
+        rows = envs[:, None]
+        pos = self._b_qpos[rows, qpos_adrs]
+        vel = self._b_qvel[rows, qvel_adrs]
+        acc = self._b_qacc[rows, qvel_adrs]
+        commanded_effort = self._b_qfrc_applied[rows, qvel_adrs] + self._b_qfrc_actuator[rows, qvel_adrs]
+        sensed_effort = commanded_effort + self._b_qfrc_passive[rows, qvel_adrs] + self._b_qfrc_constraint[rows, qvel_adrs]
         power = np.clip(vel * commanded_effort, 0.0, 1e6)
         return np.stack([pos, vel, acc, commanded_effort, sensed_effort, power], axis=-1)
 
     def _read_joints_pveae(self, jids: np.ndarray) -> np.ndarray:
+        """(vec_size, len(jids), 5)"""
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
-        pos = self._mj_data.qpos[qpos_adrs]
-        vel = self._mj_data.qvel[qvel_adrs]
-        applied_eff = self._mj_data.qfrc_applied[qvel_adrs]
-        acc = self._mj_data.qacc[qpos_adrs]
-        sensed_eff = self._mj_data.qfrc_smooth[qvel_adrs] + self._mj_data.qfrc_constraint[qvel_adrs]
+        self._check_hinge_slide(jids)
+        pos = self._b_qpos[:, qpos_adrs]
+        vel = self._b_qvel[:, qvel_adrs]
+        applied_eff = self._b_qfrc_applied[:, qvel_adrs]
+        acc = self._b_qacc[:, qvel_adrs] # qacc is per dof, as qvel
+        sensed_eff = self._b_qfrc_smooth[:, qvel_adrs] + self._b_qfrc_constraint[:, qvel_adrs]
         return np.stack([pos, vel, applied_eff, acc, sensed_eff], axis=-1)
 
     @override
@@ -588,63 +672,63 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if requestedJoints is None:
             requestedJoints = self._monitored_joints
         if len(requestedJoints) == 0:
-            return th.empty((1, 0, 5), device=self._out_th_device, dtype=self._out_th_float_dtype)
+            return th.empty((self._vec_size, 0, 5), device=self._out_th_device, dtype=self._out_th_float_dtype)
         jids = np.array([self._jname2jid[j] for j in requestedJoints], dtype=int)
         vals = self._read_joints_pveae(jids)
-        return th.as_tensor(vals, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0)
+        return th.as_tensor(vals, device=self._out_th_device, dtype=self._out_th_float_dtype)
 
     @override
     def get_joints_state_step_stats(self) -> th.Tensor:
-        stats = th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_joints),6)
+        stats = th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).view(self._vec_size,4,len(self._monitored_joints),6)
         return stats[:, :, :, :4]
 
     @override
     def get_joints_state_step_stats_extended(self) -> th.Tensor:
-        return th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_joints),6)
+        return th.as_tensor(self._joint_step_stats_mmas_j_pvaeep, device=self._out_th_device, dtype=self._out_th_float_dtype).view(self._vec_size,4,len(self._monitored_joints),6)
 
     @override
     def get_links_state_step_stats(self) -> th.Tensor:
-        return th.as_tensor(self._link_step_stats_mmas_l_vels, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0).view(1,4,len(self._monitored_links),6)
+        return th.as_tensor(self._link_step_stats_mmas_l_vels, device=self._out_th_device, dtype=self._out_th_float_dtype).view(self._vec_size,4,len(self._monitored_links),6)
 
     def _set_effort_command(self, jids: np.ndarray, efforts: th.Tensor | np.ndarray, vec_mask: th.Tensor | None = None) -> None:
-        if efforts.shape[0] != 1:
-            raise ValueError("efforts must have leading dimension 1 for MujocoAdapter")
+        """efforts: (vec_size, len(jids)), applied to the environments of vec_mask."""
+        if efforts.shape[0] != self._vec_size:
+            raise ValueError(f"efforts must have leading dimension vec_size={self._vec_size}, got shape {tuple(efforts.shape)}")
         if efforts.shape[1] != len(jids):
-            raise ValueError(f"efforts has wrong shape {tuple(efforts.shape)}, expected (1,{len(jids)})")
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
+            raise ValueError(f"efforts has wrong shape {tuple(efforts.shape)}, expected ({self._vec_size},{len(jids)})")
+        self._check_hinge_slide(jids)
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
         if isinstance(efforts, th.Tensor):
-            eff_np = efforts[0].detach().cpu().numpy()
+            eff_np = efforts.detach().cpu().numpy()
         else:
-            eff_np = efforts[0]
-        self._requested_qfrc_applied[qvel_adrs] = eff_np
+            eff_np = efforts
+        envs = self._all_ids(self._vec_mask_to_ids(vec_mask))
+        self._requested_qfrc_applied[envs[:, None], qvel_adrs] = eff_np[envs]
 
-    def _apply_torques_cmd(self):
+    def _apply_torques_cmd(self, ids: np.ndarray | None = None):
         # Replace qfrc_applied with requested torques
-        self._mj_data.qfrc_applied[:] = 0.0
-        if self._requested_qfrc_applied.size > 0:
-            self._mj_data.qfrc_applied[:] = self._requested_qfrc_applied
+        envs = self._all_ids(ids)
+        self._b_qfrc_applied[envs] = self._requested_qfrc_applied[envs]
 
-    def _apply_commands(self):
-        self._apply_torques_cmd()
+    def _apply_commands(self, ids: np.ndarray | None = None):
+        """Before each substep, for the environments about to be stepped (None: all)."""
+        self._apply_torques_cmd(ids)
 
     @override
     def getLinksState(self, requestedLinks: Sequence[tuple[str, str]] | np.ndarray | None = None, use_com_pose: bool = False) -> th.Tensor:
         if requestedLinks is None:
             requestedLinks = self._monitored_links
         if len(requestedLinks) == 0:
-            return th.empty((1, 0, 13), device=self._out_th_device, dtype=self._out_th_float_dtype)
+            return th.empty((self._vec_size, 0, 13), device=self._out_th_device, dtype=self._out_th_float_dtype)
         if isinstance(requestedLinks, np.ndarray):
             lids = requestedLinks
         else:
             lids = np.array([self._lname2lid[l] for l in requestedLinks], dtype=int)
         vals = self._read_links_state(lids, use_com_pose=use_com_pose)
-        return th.as_tensor(vals, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0)
+        return th.as_tensor(vals, device=self._out_th_device, dtype=self._out_th_float_dtype)
 
-    def _links_frame_velocities(self, lids: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Linear velocity of `points` (one per lid) and angular velocity, from mujoco's cvel.
+    def _links_frame_velocities(self, lids: np.ndarray, points: np.ndarray, envs: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Linear velocity of `points` (one per lid, (len(envs), len(lids), 3)) and angular velocity, from mujoco's cvel.
 
         cvel is com-based: its linear part is the velocity of the point that currently coincides with
         the subtree com of the body's kinematic tree root (the whole robot's com, for a floating base),
@@ -652,34 +736,38 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         off by omega x (point - subtree_com): negligible for a body sitting at the robot com, metres
         per second for a swinging foot. The angular part needs no shift, being the same about any
         point. This is the same correction MjxAdapter._get_links_state_jax applies."""
-        cvel = self._mj_data.cvel[lids]
-        ang_vel = cvel[:, 0:3]
-        com_lin_vel = cvel[:, 3:6]
-        com_offset = points - self._mj_data.subtree_com[self._mj_model.body_rootid[lids]]
+        rows = self._all_ids(envs)[:, None]
+        cvel = self._b_cvel[rows, lids]
+        ang_vel = cvel[..., 0:3]
+        com_lin_vel = cvel[..., 3:6]
+        com_offset = points - self._b_subtree_com[rows, self._mj_model.body_rootid[lids]]
         return com_lin_vel + np.cross(ang_vel, com_offset), ang_vel
 
-    def _read_link_velocities(self, link_names: Sequence[tuple[str, str]]) -> np.ndarray | None:
-        if self._mj_model is None or self._mj_data is None:
+    def _read_link_velocities(self, link_names: Sequence[tuple[str, str]], envs: np.ndarray | None = None) -> np.ndarray | None:
+        if self._mj_model is None or self._batch is None:
             return None
+        envs = self._all_ids(envs)
         lids = np.array([self._lname2lid[ln] for ln in link_names], dtype=int)
         if len(lids) == 0:
-            return np.empty((0, 6), dtype=np.float32)
+            return np.empty((len(envs), 0, 6), dtype=np.float32)
         # at the link frame origin, matching what getLinksState reports the position of
-        lin_vel, ang_vel = self._links_frame_velocities(lids, self._mj_data.xpos[lids])
+        lin_vel, ang_vel = self._links_frame_velocities(lids, self._b_xpos[envs[:, None], lids], envs)
         return np.concatenate([lin_vel, ang_vel], axis=-1)
 
     def _read_links_state(self, lids: np.ndarray, use_com_pose: bool) -> np.ndarray:
+        """(vec_size, len(lids), 13)"""
         if use_com_pose:
-            pos = self._mj_data.xipos[lids]
-            ximat = self._mj_data.ximat[lids]
-            if ximat.shape[0] == 0:
-                quat_xyzw = np.empty((0, 4), dtype=np.float32)
+            pos = self._b_xipos[:, lids]
+            ximat = self._b_ximat[:, lids]
+            if ximat.shape[1] == 0:
+                quat_xyzw = np.empty((self._vec_size, 0, 4), dtype=np.float32)
             else:
-                quat_xyzw = np.stack([self._mat_to_quat_xyzw(m) for m in ximat], axis=0)
+                quat_xyzw = np.stack([np.stack([self._mat_to_quat_xyzw(m) for m in env_ximat], axis=0)
+                                      for env_ximat in ximat], axis=0)
         else:
-            pos = self._mj_data.xpos[lids]
-            quat_wxyz = self._mj_data.xquat[lids]
-            quat_xyzw = quat_wxyz[:, [1, 2, 3, 0]]
+            pos = self._b_xpos[:, lids]
+            quat_wxyz = self._b_xquat[:, lids]
+            quat_xyzw = quat_wxyz[..., [1, 2, 3, 0]]
         # the velocity of whichever point the pose above refers to, the body com or the frame origin
         lin_vel, ang_vel = self._links_frame_velocities(lids, pos)
         return np.concatenate([pos, quat_xyzw, lin_vel, ang_vel], axis=-1)
@@ -688,7 +776,8 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
     def _mat_to_quat_xyzw(rotmat: np.ndarray) -> np.ndarray:
         # if rotmat.shape == (9,):
         #     rotmat = rotmat.reshape(3, 3)
-        quat = mujoco_mju_mat2Quat(rotmat.flatten())
+        quat = np.zeros((4,), dtype=np.float64)
+        mujoco_mju_mat2Quat(quat, np.ascontiguousarray(rotmat, dtype=np.float64).flatten())
         return quat[[1,2,3,0]]
 
     @override
@@ -696,46 +785,49 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         if requestedLinks is None:
             requestedLinks = self._monitored_links
         if len(requestedLinks) == 0:
-            return th.empty((1, 0, 3), device=self._out_th_device, dtype=self._out_th_float_dtype)
+            return th.empty((self._vec_size, 0, 3), device=self._out_th_device, dtype=self._out_th_float_dtype)
         self._ensure_ready()
         if isinstance(requestedLinks, np.ndarray):
             lids = requestedLinks
         else:
             lids = np.array([self._lname2lid[l] for l in requestedLinks], dtype=int)
         self._forward_if_needed()
-        # mj_objectAcceleration reads mjData.cacc, which is only filled by mj_rnePostConstraint.
-        # cacc is the com-based spatial acceleration with the world acceleration initialized to
-        # -gravity, so the result is the proper (accelerometer-style) acceleration of the link.
-        mujoco.mj_rnePostConstraint(self._mj_model, self._mj_data)
-        accs = np.empty((len(lids), 3), dtype=np.float64)
+        accs = np.empty((self._vec_size, len(lids), 3), dtype=np.float64)
         res = np.zeros(6, dtype=np.float64)  # [angular_xyz, linear_xyz]
-        for i, lid in enumerate(lids):
-            # flg_local=1 -> express the 6D acceleration in the link's local frame
-            mujoco.mj_objectAcceleration(self._mj_model, self._mj_data, mujoco.mjtObj.mjOBJ_BODY, int(lid), res, 1)
-            accs[i] = res[3:6]
-        return th.as_tensor(accs, device=self._out_th_device, dtype=self._out_th_float_dtype).unsqueeze(0)
+        for env in range(self._vec_size):
+            d = self._env_data(env)
+            # mj_objectAcceleration reads mjData.cacc, which is only filled by mj_rnePostConstraint.
+            # cacc is the com-based spatial acceleration with the world acceleration initialized to
+            # -gravity, so the result is the proper (accelerometer-style) acceleration of the link.
+            mujoco.mj_rnePostConstraint(self._mj_model, d)
+            for i, lid in enumerate(lids):
+                # flg_local=1 -> express the 6D acceleration in the link's local frame
+                mujoco.mj_objectAcceleration(self._mj_model, d, mujoco.mjtObj.mjOBJ_BODY, int(lid), res, 1)
+                accs[env, i] = res[3:6]
+        return th.as_tensor(accs, device=self._out_th_device, dtype=self._out_th_float_dtype)
 
     @override
     def setJointsStateDirect(self, joint_names: Sequence[tuple[str, str]], joint_states_pve: th.Tensor, vec_mask: th.Tensor | None = None):
-        if vec_mask is not None and not vec_mask.item():
+        """joint_states_pve: (vec_size, len(joint_names), 3), set in the environments of vec_mask."""
+        ids = self._vec_mask_to_ids(vec_mask)
+        if ids is not None and len(ids) == 0:
             return
-        if joint_states_pve.shape[0] != 1:
-            raise ValueError("joint_states_pve must have leading dimension 1 for MujocoAdapter")
         jids = np.array([self._jname2jid[jn] for jn in joint_names], dtype=int)
-        if joint_states_pve.shape[1] != len(jids) or joint_states_pve.shape[2] != 3:
-            raise ValueError(f"joint_states_pve has wrong shape {tuple(joint_states_pve.shape)}, expected (1,{len(jids)},3)")
-        jtypes = self._mj_model.jnt_type[jids]
-        if not np.all((jtypes == mujoco_mjtJoint.mjJNT_HINGE) | (jtypes == mujoco_mjtJoint.mjJNT_SLIDE)):
-            raise NotImplementedError(f"Joint types other than HINGE and SLIDE are not supported, but got types {jtypes}")
+        if tuple(joint_states_pve.shape) != (self._vec_size, len(jids), 3):
+            raise ValueError(f"joint_states_pve has wrong shape {tuple(joint_states_pve.shape)}, expected ({self._vec_size},{len(jids)},3)")
+        self._check_hinge_slide(jids)
         qpos_adrs = self._mj_model.jnt_qposadr[jids]
         qvel_adrs = self._mj_model.jnt_dofadr[jids]
-        states_np = joint_states_pve[0].detach().cpu().numpy()
-        self._mj_data.qpos[qpos_adrs] = states_np[:, 0]
-        self._mj_data.qvel[qvel_adrs] = states_np[:, 1]
-        self._mj_data.qfrc_applied[qvel_adrs] = states_np[:, 2]
-        mujoco_mj_forward(self._mj_model, self._mj_data)
+        states_np = joint_states_pve.detach().cpu().numpy()
+        envs = self._all_ids(ids)
+        rows = envs[:, None]
+        self._b_qpos[rows, qpos_adrs] = states_np[envs, :, 0]
+        self._b_qvel[rows, qvel_adrs] = states_np[envs, :, 1]
+        self._b_qfrc_applied[rows, qvel_adrs] = states_np[envs, :, 2]
+        self._batch_forward(ids)
 
-    def _move_free_links(self, lids: np.ndarray, link_states_pose_vel: np.ndarray):
+    def _move_free_links(self, lids: np.ndarray, link_states_pose_vel: np.ndarray, envs: np.ndarray):
+        """link_states_pose_vel: (len(envs), len(lids), 13)"""
         jnt_ids = self._mj_model.body_jntadr[lids]
         jtypes = self._mj_model.jnt_type[jnt_ids]
         if not np.all(jtypes == mujoco_mjtJoint.mjJNT_FREE):
@@ -744,10 +836,10 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         qpos_adrs = self._mj_model.jnt_qposadr[jnt_ids]
         qvel_adrs = self._mj_model.jnt_dofadr[jnt_ids]
 
-        pos =       link_states_pose_vel[:, 0:3]
-        quat_wxyz = link_states_pose_vel[:, 3:7][:, [3, 0, 1, 2]]
-        lin_vel =   link_states_pose_vel[:, 7:10]
-        ang_vel =   link_states_pose_vel[:, 10:13]
+        pos =       link_states_pose_vel[..., 0:3]
+        quat_wxyz = link_states_pose_vel[..., 3:7][..., [3, 0, 1, 2]]
+        lin_vel =   link_states_pose_vel[..., 7:10]
+        ang_vel =   link_states_pose_vel[..., 10:13]
 
         pos_idx  = qpos_adrs[:, None] + np.arange(3)
         quat_idx = qpos_adrs[:, None] + 3 + np.arange(4)
@@ -755,55 +847,64 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         lin_vel_idx = qvel_adrs[:, None] + np.arange(3)
         ang_vel_idx = qvel_adrs[:, None] + 3 + np.arange(3)
 
-        self._mj_data.qpos[pos_idx] = pos
-        self._mj_data.qpos[quat_idx] = quat_wxyz
-        self._mj_data.qvel[ang_vel_idx] = ang_vel
-        self._mj_data.qvel[lin_vel_idx] = lin_vel
+        rows = envs[:, None, None]
+        self._b_qpos[rows, pos_idx] = pos
+        self._b_qpos[rows, quat_idx] = quat_wxyz
+        self._b_qvel[rows, ang_vel_idx] = ang_vel
+        self._b_qvel[rows, lin_vel_idx] = lin_vel
 
-    def _move_fixed_links(self, lids: np.ndarray, link_states_pose_vel: np.ndarray):
+    def _move_fixed_links(self, lids: np.ndarray, link_states_pose_vel: np.ndarray, envs: np.ndarray):
+        """link_states_pose_vel: (len(envs), len(lids), 13). Mocap bodies move in each environment; the other fixed
+        bodies are moved in the model, which all the environments share, so they must get the same pose in all."""
         if lids.size == 0:
             return
-        pos = link_states_pose_vel[:, 0:3].astype(self._mj_model.body_pos.dtype, copy=False)
-        quat_wxyz = link_states_pose_vel[:, 3:7][:, [3, 0, 1, 2]].astype(self._mj_model.body_quat.dtype, copy=False)
-        lin_vel = link_states_pose_vel[:, 7:10].astype(self._mj_data.cvel.dtype, copy=False)
-        ang_vel = link_states_pose_vel[:, 10:13].astype(self._mj_data.cvel.dtype, copy=False)
+        pos = link_states_pose_vel[..., 0:3].astype(self._mj_model.body_pos.dtype, copy=False)
+        quat_wxyz = link_states_pose_vel[..., 3:7][..., [3, 0, 1, 2]].astype(self._mj_model.body_quat.dtype, copy=False)
+        lin_vel = link_states_pose_vel[..., 7:10]
+        ang_vel = link_states_pose_vel[..., 10:13]
 
         if np.any(lin_vel!=0.0) or np.any(ang_vel!=0.0):
-            mask = (lin_vel!=0.0) | (ang_vel!=0.0)
+            mask = np.any((lin_vel!=0.0) | (ang_vel!=0.0), axis=0)
             raise NotImplementedError(f"Setting velocities for fixed bodies is not supported in MujocoAdapter, but links {self.get_monitored_links_ids_names(lids[mask])} have non-zero velocities")
 
         mocap_ids = self._mj_model.body_mocapid[lids]
         mocap_mask = mocap_ids != -1
         if np.any(mocap_mask):
             mids = mocap_ids[mocap_mask]
-            self._mj_data.mocap_pos[mids] = pos[mocap_mask]
-            self._mj_data.mocap_quat[mids] = quat_wxyz[mocap_mask]
-            if hasattr(self._mj_data, "mocap_velp"):
-                self._mj_data.mocap_velp[mids] = lin_vel[mocap_mask]
-            if hasattr(self._mj_data, "mocap_velr"):
-                self._mj_data.mocap_velr[mids] = ang_vel[mocap_mask]
+            rows = envs[:, None]
+            self._b_mocap_pos[rows, mids] = pos[:, mocap_mask]
+            self._b_mocap_quat[rows, mids] = quat_wxyz[:, mocap_mask]
 
         static_mask = ~mocap_mask
         if np.any(static_mask):
             lids_static = lids[static_mask]
-            self._mj_model.body_pos[lids_static] = pos[static_mask]
-            self._mj_model.body_quat[lids_static] = quat_wxyz[static_mask]
+            static_pos = pos[:, static_mask]
+            static_quat = quat_wxyz[:, static_mask]
+            if (len(envs) != self._vec_size or np.any(static_pos != static_pos[0:1])
+                                           or np.any(static_quat != static_quat[0:1])):
+                raise NotImplementedError(f"Links {self.get_monitored_links_ids_names(lids_static)} are fixed bodies, which "
+                                          f"all the environments share: they can only be moved in all the environments "
+                                          f"at once, to the same pose")
+            self._mj_model.body_pos[lids_static] = static_pos[0]
+            self._mj_model.body_quat[lids_static] = static_quat[0]
+            self._model_changed()
 
 
     @override
     def setLinksStateDirect(self, link_names: Sequence[tuple[str, str]] | np.ndarray, link_states_pose_vel: th.Tensor, vec_mask: th.Tensor | None = None):
-        if vec_mask is not None and not vec_mask.item():
+        """link_states_pose_vel: (vec_size, len(link_names), 13), set in the environments of vec_mask."""
+        ids = self._vec_mask_to_ids(vec_mask)
+        if ids is not None and len(ids) == 0:
             return
-        if link_states_pose_vel.shape[0] != 1:
-            raise ValueError("link_states_pose_vel must have leading dimension 1 for MujocoAdapter")
         if isinstance(link_names, np.ndarray):
             lids = link_names
         else:
             lids = np.array([self._lname2lid[ln] for ln in link_names], dtype=int)
-        if link_states_pose_vel.shape[1] != len(lids) or link_states_pose_vel.shape[2] != 13:
-            raise ValueError(f"link_states_pose_vel has wrong shape {tuple(link_states_pose_vel.shape)}, expected (1,{len(lids)},13)")
+        if tuple(link_states_pose_vel.shape) != (self._vec_size, len(lids), 13):
+            raise ValueError(f"link_states_pose_vel has wrong shape {tuple(link_states_pose_vel.shape)}, expected ({self._vec_size},{len(lids)},13)")
 
-        link_states_pose_vel_np = link_states_pose_vel[0].cpu().numpy()
+        envs = self._all_ids(ids)
+        link_states_pose_vel_np = link_states_pose_vel.detach().cpu().numpy()[envs]
 
         root_body_ids = self._mj_model.body_rootid[lids]
         if not np.all(root_body_ids == lids):
@@ -824,18 +925,16 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
         # the links in fixed_bodies are "attached with fixed joints" we alter the model to move them
 
-        self._move_fixed_links(fixed_bodies, link_states_pose_vel_np[fixed_bodies_mask])
-        self._move_free_links(floating_bodies, link_states_pose_vel_np[floating_bodies_mask])
-        
-        mujoco_mj_forward(self._mj_model, self._mj_data)
-            
+        self._move_fixed_links(fixed_bodies, link_states_pose_vel_np[:, fixed_bodies_mask], envs)
+        self._move_free_links(floating_bodies, link_states_pose_vel_np[:, floating_bodies_mask], envs)
+
+        self._batch_forward(ids)
+
 
     @override
     def setJointsEffortCommand(self, joint_names: Sequence[tuple[str, str]], efforts: th.Tensor, vec_mask: th.Tensor | None = None) -> None:
-        if vec_mask is not None and not vec_mask.item():
-            return
         jids = np.array([self._jname2jid[jn] for jn in joint_names], dtype=int)
-        self._set_effort_command(jids=jids, efforts=efforts)
+        self._set_effort_command(jids=jids, efforts=efforts, vec_mask=vec_mask)
 
     @override
     def setupLight(self):
@@ -879,6 +978,7 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
                             explicit_groups: list[tuple[tuple[str, str], ...]] = []):
         self._ensure_ready()
         self._apply_collision_masks(link_group_collisions, explicit_groups)
+        self._model_changed()
         self._forward_needed = True
 
     @override
@@ -894,72 +994,99 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     @override
     def resetWorld(self):
-        # Reset in place rather than reallocating, so a gui viewer bound to this MjData keeps
-        # following the simulation across episodes (and to avoid a per-episode allocation).
-        if self._mj_data is None:
-            self._mj_data = mujoco_MjData(self._mj_model)
-        else:
-            mujoco_mj_resetData(self._mj_model, self._mj_data)
-        mujoco_mj_forward(self._mj_model, self._mj_data)
+        # The viewer has its own MjData, which _update_gui refreshes, so it keeps following the first environment
+        assert self._batch is not None
+        self._batch.reset() # mj_resetData, then mj_forward
+        self._env_datas_valid[:] = False
         self._forward_needed = False
-        self._requested_qfrc_applied = np.zeros((self._mj_model.nv,), dtype=np.float64)
+        self._requested_qfrc_applied = np.zeros((self._vec_size, self._mj_model.nv), dtype=np.float64)
         self.initialize_for_episode()
 
     @override
     def getEnvTimeFromStartup(self) -> th.Tensor:
-        return th.full((self._vec_size,), self._time_since_startup, dtype=th.float32, device=self._out_th_device) 
+        # created on the output device: .to() would leave a "cpu" tensor where the device is "cpu:0", which
+        # torch.compile tells apart
+        return th.as_tensor(self._time_since_startup, dtype=th.float32, device=self._out_th_device)
 
     def _reset_step_stats(self, max_substeps_count: int):
-        self._recorded_stats_substeps = 0
         if max_substeps_count < self._step_length_sec/self._sim_step_dt:
             raise RuntimeError(f"max_substeps_count {max_substeps_count} is less than expected number of substeps per step "
                           f"{int(self._step_length_sec/self._sim_step_dt)}; step stats would be incomplete.")
+        self._recorded_stats_substeps = np.zeros((self._vec_size,), dtype=np.int64) # per environment
         self._step_stats_buff_len = max_substeps_count
-        self._joint_pvaeep_step_history = np.zeros((max_substeps_count, len(self._monitored_joints), 6), dtype=np.float32)
-        self._link_vels_step_history = np.zeros((max_substeps_count, len(self._monitored_links), 6), dtype=np.float32)
-        self._joint_step_stats_mmas_j_pvaeep = np.zeros((4, len(self._monitored_joints), 6), dtype=np.float32)
-        self._link_step_stats_mmas_l_vels = np.zeros((4, len(self._monitored_links), 6), dtype=np.float32)
+        self._joint_pvaeep_step_history = np.zeros((max_substeps_count, self._vec_size, len(self._monitored_joints), 6), dtype=np.float32)
+        self._link_vels_step_history = np.zeros((max_substeps_count, self._vec_size, len(self._monitored_links), 6), dtype=np.float32)
+        self._joint_step_stats_mmas_j_pvaeep = np.zeros((self._vec_size, 4, len(self._monitored_joints), 6), dtype=np.float32)
+        self._link_step_stats_mmas_l_vels = np.zeros((self._vec_size, 4, len(self._monitored_links), 6), dtype=np.float32)
 
 
-    def _update_step_stats(self):
+    def _update_step_stats(self, ids: np.ndarray | None = None):
+        """Record the substep just taken by the environments of ids (None: all)."""
         if not self._stepping:
             return
+        envs = self._all_ids(ids)
+        slots = self._recorded_stats_substeps[envs] % self._step_stats_buff_len
         if len(self._monitored_joints) > 0:
-            joint_pvaeep = self._read_joints_pvaeep(np.array([self._jname2jid[jn] for jn in self._monitored_joints], dtype=int))
-            self._joint_pvaeep_step_history[self._recorded_stats_substeps%self._step_stats_buff_len] = joint_pvaeep
+            joint_pvaeep = self._read_joints_pvaeep(np.array([self._jname2jid[jn] for jn in self._monitored_joints], dtype=int), envs)
+            self._joint_pvaeep_step_history[slots, envs] = joint_pvaeep
         if len(self._monitored_links) > 0:
-            link_vels = self._read_link_velocities(self._monitored_links)
-            self._link_vels_step_history[self._recorded_stats_substeps%self._step_stats_buff_len] = link_vels
-        self._recorded_stats_substeps += 1
+            link_vels = self._read_link_velocities(self._monitored_links, envs)
+            self._link_vels_step_history[slots, envs] = link_vels
+        self._recorded_stats_substeps[envs] += 1
+
+    @staticmethod
+    def _mmas(history: np.ndarray) -> np.ndarray:
+        """min, max, mean and std over the first axis, stacked on a new axis 1 after the second: (n, A, ...) ->
+        (A, 4, ...)"""
+        return np.stack([history.min(axis=0), history.max(axis=0), history.mean(axis=0), history.std(axis=0)], axis=1)
 
     def _compute_stats(self) -> None:
-        l = min(self._recorded_stats_substeps, self._step_stats_buff_len)
-        if l == 0:
-            return
-        jmins = self._joint_pvaeep_step_history[:l].min(axis=0)
-        jmaxs = self._joint_pvaeep_step_history[:l].max(axis=0)
-        javg = self._joint_pvaeep_step_history[:l].mean(axis=0)
-        jstd = self._joint_pvaeep_step_history[:l].std(axis=0)
-        self._joint_step_stats_mmas_j_pvaeep = np.stack([jmins, jmaxs, javg, jstd], axis=0)
-        lmins = self._link_vels_step_history[:l].min(axis=0)
-        lmaxs = self._link_vels_step_history[:l].max(axis=0)
-        lavg = self._link_vels_step_history[:l].mean(axis=0)
-        lstd = self._link_vels_step_history[:l].std(axis=0)
-        self._link_step_stats_mmas_l_vels = np.stack([lmins, lmaxs, lavg, lstd], axis=0)
+        lengths = np.minimum(self._recorded_stats_substeps, self._step_stats_buff_len)
+        if np.all(lengths == lengths[0]):
+            l = int(lengths[0])
+            if l == 0:
+                return
+            self._joint_step_stats_mmas_j_pvaeep = self._mmas(self._joint_pvaeep_step_history[:l])
+            self._link_step_stats_mmas_l_vels = self._mmas(self._link_vels_step_history[:l])
+        else: # environments that ran for different numbers of substeps
+            for env, l in enumerate(lengths):
+                if l == 0:
+                    continue
+                self._joint_step_stats_mmas_j_pvaeep[env] = self._mmas(self._joint_pvaeep_step_history[:l, env:env+1])[0]
+                self._link_step_stats_mmas_l_vels[env] = self._mmas(self._link_vels_step_history[:l, env:env+1])[0]
 
     @override
-    def run(self, duration_sec: float):
-        target_time = self._mj_data.time + duration_sec
-        start_time = self._mj_data.time
-        while self._mj_data.time < target_time:
-            self._apply_commands()
-            mujoco.mj_step(self._mj_model, self._mj_data)  # type: ignore[arg-type]
-            self._update_step_stats()
-        ran_time = float(self._mj_data.time - start_time)
+    def run(self, duration_sec: float | th.Tensor) -> th.Tensor:
+        """Run the simulation for a duration that can be different for each environment (one, or one per
+        environment, shape (vec_size,)). Each environment is stepped until its own duration has passed, and is left
+        as it is after that: the environments do not depend on each other.
+
+        Returns
+        -------
+        th.Tensor
+            The time each environment was simulated for, CPU float32 of shape (vec_size,).
+        """
+        self._ensure_ready()
+        if isinstance(duration_sec, th.Tensor):
+            duration_sec = duration_sec.detach().cpu().numpy()
+        # in float64, as the simulation time: a float duration is not rounded to float32
+        durations = np.broadcast_to(np.asarray(duration_sec, dtype=np.float64), (self._vec_size,))
+        start_time = self._b_time.copy()
+        target_time = start_time + durations
+        active = self._b_time < target_time
+        while np.any(active):
+            ids = None if np.all(active) else np.nonzero(active)[0]
+            self._apply_commands(ids)
+            assert self._batch is not None
+            self._batch.step(ids)
+            self._update_step_stats(ids)
+            active = self._b_time < target_time
+        self._env_datas_valid[:] = False
+        ran_time = self._b_time - start_time
         self._time_since_startup += ran_time
         self._forward_needed = True
         self._update_gui()
-        return ran_time
+        return th.as_tensor(ran_time, dtype=th.float32)
 
     @override
     def get_monitored_links_ids(self, link_names: Sequence[tuple[str, str]]):

@@ -25,6 +25,10 @@ tests/
     test_set_rows_cols_masks.py   # unit: masked sub-block writer (sparse-mask regression)
     test_impulse_persistence.py   # regression: per-env impulse persists & is env-isolated
     test_mjx_rendering.py         # warp RGB+depth: shapes/dtypes, depth content, vec_mask, out= path
+    test_mujoco_vec.py            # MujocoAdapter with vec_size>1 (mujoco.batch): each env steps exactly as a vec_size=1
+                                  #   adapter fed its inputs; masks, per-env durations, shared fixed bodies
+    test_mujoco_batch_vs_legacy.py # TEMPORARY: the batch MujocoJointImpedanceAdapter vs its pre-batch copy, exact
+                                  #   equality of everything after every step (arm scene, kyon grasp scene)
     test_mujoco_rendering_collisions.py # MujocoAdapter: rgb+depth as MjxAdapter's (planar, 0 = no hit, 10 m clamp),
                                   #   masks and out tensors, build_scenario's default_link_group_collisions
     test_mjcf_export.py           # mjcf_export: the written MJCF reloads as the aggregated model, unprefixed models

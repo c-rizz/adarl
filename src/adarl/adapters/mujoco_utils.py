@@ -527,6 +527,8 @@ def get_data_into(
 
 model_element_separator = "#"
 
+DofOverride : TypeAlias = float | dict[Any, float | None] | None
+
 
 def model_element_prefix(model_name : str, unprefixed_models : set[str] | frozenset[str] = frozenset()) -> str:
     """The prefix aggregate_models gives the elements of a model: `<modelname>#`, or nothing for the models in
@@ -544,9 +546,9 @@ def aggregate_models(models : list[ModelSpawnDef],
                      contact_pairs : list[tuple[str, str]] | None = None,
                      opt_preset : str | None = None,
                      opt_overrides : dict[str, Any] | None = None,
-                     revolute_dof_armature_override : float | None = None,
-                     revolute_dof_damping_override : float | None = None,
-                     revolute_dof_frictionloss_override : float | None = None,
+                     revolute_dof_armature_override  : DofOverride = None,
+                     revolute_dof_damping_override  : DofOverride = None,
+                     revolute_dof_frictionloss_override  : DofOverride = None,
                      safe_revolute_dof_armature = 0.01,
                      safe_revolute_dof_damping = 1.0,
                      safe_revolute_dof_frictionloss = 0.2,
@@ -593,12 +595,14 @@ def aggregate_models(models : list[ModelSpawnDef],
         apply_opt_preset_to_spec / _apply_opt_preset_to_opt). None leaves the MuJoCo defaults.
     opt_overrides : dict[str, Any] | None
         Optional per-field overrides for the spec options, applied on top of opt_preset.
-    revolute_dof_armature_override : float | None
-        If not None, force this armature on every hinge-joint DOF (see apply_dof_overrides_to_spec).
-    revolute_dof_damping_override : float | None
-        If not None, force this damping on every hinge-joint DOF.
-    revolute_dof_frictionloss_override : float | None
-        If not None, force this frictionloss on every hinge-joint DOF.
+    revolute_dof_armature_override : float | dict | None
+        If not None, force this armature on hinge-joint DOFs (see apply_dof_overrides_to_spec). Either a
+        float for all of them, or a dict giving it per joint (see resolve_dof_override), with the key
+        None (or "default") for the joints not listed.
+    revolute_dof_damping_override : float | dict | None
+        Same as revolute_dof_armature_override, for the damping.
+    revolute_dof_frictionloss_override : float | dict | None
+        Same as revolute_dof_armature_override, for the frictionloss.
     safe_revolute_dof_armature : float
         Fallback armature applied to any hinge-joint DOF that has zero armature (avoids
         instability). Used only when the value would otherwise be zero.
@@ -946,42 +950,66 @@ def compute_collision_masks(mj_model : mjutils._MjModel,
     return geom_contype, geom_conaffinity, body_contype, body_conaffinity, linkgroup_to_id
 
 
+def resolve_dof_override(override : DofOverride, joint_name : str) -> float | None:
+    """Get the value of a dof property override for a joint.
+
+    `override` is either None/a float (applied to all the joints) or a dict. In a dict a joint is
+    looked up by its full merged name ("model#joint"), by (model, joint), or by the bare joint name.
+    Joints that match none of these get the value under the key None (or "default"), or no
+    override if there is no such key. A value of None means no override for that joint.
+    """
+    if override is None or isinstance(override, (int, float)):
+        return override
+    model_name, sep, bare_name = joint_name.partition(model_element_separator)
+    keys = [joint_name]
+    if sep != "":
+        keys += [(model_name, bare_name), bare_name]
+    keys += [None, "default"]
+    for k in keys:
+        if k in override:
+            return override[k]
+    return None
+
 def apply_dof_overrides(mj_model : mjutils._MjModel,
-                        revolute_dof_armature_override : float | None = None,
-                        revolute_dof_damping_override : float | None = None,
-                        revolute_dof_frictionloss_override : float | None = None,
+                        revolute_dof_armature_override : DofOverride = None,
+                        revolute_dof_damping_override : DofOverride = None,
+                        revolute_dof_frictionloss_override : DofOverride = None,
                         safe_revolute_dof_armature = 0.01,
                         safe_revolute_dof_damping = 1.0,
                         safe_revolute_dof_frictionloss = 0.2):
     for dof_id in range(mj_model.nv):
         joint_type = mj_model.jnt_type[mj_model.dof_jntid[dof_id]]
         if joint_type == mjutils._mjtJoint.mjJNT_HINGE:
+            joint_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, mj_model.dof_jntid[dof_id])
+            armature_override = resolve_dof_override(revolute_dof_armature_override, joint_name)
+            damping_override = resolve_dof_override(revolute_dof_damping_override, joint_name)
+            frictionloss_override = resolve_dof_override(revolute_dof_frictionloss_override, joint_name)
             if mj_model.dof_armature[dof_id] == 0:
                 ggLog.warn(f"Revolute dof {dof_id} has zero armature. Setting it to {safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
                 mj_model.dof_armature[dof_id] = safe_revolute_dof_armature
-            if revolute_dof_armature_override is not None:
-                ggLog.info(f"Overriding revolute dof {dof_id} armature to {revolute_dof_armature_override} (was {mj_model.dof_armature[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
-                mj_model.dof_armature[dof_id] = revolute_dof_armature_override
+            if armature_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} armature to {armature_override} (was {mj_model.dof_armature[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                mj_model.dof_armature[dof_id] = armature_override
 
             if mj_model.dof_frictionloss[dof_id] == 0:
                 ggLog.warn(f"Revolute dof {dof_id} has zero frictionloss. Setting it to {safe_revolute_dof_frictionloss}.")
                 mj_model.dof_frictionloss[dof_id] = safe_revolute_dof_frictionloss
-            if revolute_dof_frictionloss_override is not None:
-                ggLog.info(f"Overriding revolute dof {dof_id} frictionloss to {revolute_dof_frictionloss_override} (was {mj_model.dof_frictionloss[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
-                mj_model.dof_frictionloss[dof_id] = revolute_dof_frictionloss_override
+            if frictionloss_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} frictionloss to {frictionloss_override} (was {mj_model.dof_frictionloss[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
+                mj_model.dof_frictionloss[dof_id] = frictionloss_override
 
             if mj_model.dof_damping[dof_id] == 0:
                 ggLog.warn(f"Revolute dof {dof_id} has zero damping. Setting it to {safe_revolute_dof_damping}.")
                 mj_model.dof_damping[dof_id] = safe_revolute_dof_damping
-            if revolute_dof_damping_override is not None:
-                ggLog.info(f"Overriding revolute dof {dof_id} damping to {revolute_dof_damping_override} (was {mj_model.dof_damping[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
-                mj_model.dof_damping[dof_id] = revolute_dof_damping_override
+            if damping_override is not None:
+                ggLog.info(f"Overriding revolute dof {dof_id} damping to {damping_override} (was {mj_model.dof_damping[dof_id]}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                mj_model.dof_damping[dof_id] = damping_override
     return mj_model
 
 def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
-                                revolute_dof_armature_override : float | None = None,
-                                revolute_dof_damping_override : float | None = None,
-                                revolute_dof_frictionloss_override : float | None = None,
+                                revolute_dof_armature_override : DofOverride = None,
+                                revolute_dof_damping_override : DofOverride = None,
+                                revolute_dof_frictionloss_override : DofOverride = None,
                                 safe_revolute_dof_armature = 0.01,
                                 safe_revolute_dof_damping = 1.0,
                                 safe_revolute_dof_frictionloss = 0.2):
@@ -992,19 +1020,22 @@ def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
     """
     for joint in spec.joints:
         if joint.type == mjutils._mjtJoint.mjJNT_HINGE:
+            armature_override = resolve_dof_override(revolute_dof_armature_override, joint.name)
+            damping_override = resolve_dof_override(revolute_dof_damping_override, joint.name)
+            frictionloss_override = resolve_dof_override(revolute_dof_frictionloss_override, joint.name)
             if joint.armature == 0:
                 ggLog.warn(f"Revolute joint '{joint.name}' has zero armature. Setting it to {safe_revolute_dof_armature}. Override with MjxAdapter constructor argument 'revolute_dof_armature_override'.")
                 joint.armature = safe_revolute_dof_armature
-            if revolute_dof_armature_override is not None:
-                ggLog.info(f"Overriding revolute joint '{joint.name}' armature to {revolute_dof_armature_override} (was {joint.armature}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
-                joint.armature = revolute_dof_armature_override
+            if armature_override is not None:
+                ggLog.info(f"Overriding revolute joint '{joint.name}' armature to {armature_override} (was {joint.armature}), due to MjxAdapter constructor argument 'revolute_dof_armature_override'.")
+                joint.armature = armature_override
 
             if joint.frictionloss == 0:
                 ggLog.warn(f"Revolute joint '{joint.name}' has zero frictionloss. Setting it to {safe_revolute_dof_frictionloss}.")
                 joint.frictionloss = safe_revolute_dof_frictionloss
-            if revolute_dof_frictionloss_override is not None:
-                ggLog.info(f"Overriding revolute joint '{joint.name}' frictionloss to {revolute_dof_frictionloss_override} (was {joint.frictionloss}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
-                joint.frictionloss = revolute_dof_frictionloss_override
+            if frictionloss_override is not None:
+                ggLog.info(f"Overriding revolute joint '{joint.name}' frictionloss to {frictionloss_override} (was {joint.frictionloss}), due to MjxAdapter constructor argument 'revolute_dof_frictionloss_override'.")
+                joint.frictionloss = frictionloss_override
 
             # In mujoco >=3.9 the spec joint 'damping' is a per-DOF vector (shape (3,)) to
             # support ball/free joints; for a hinge only index 0 is meaningful. Older versions
@@ -1016,13 +1047,13 @@ def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
                     joint.damping[0] = safe_revolute_dof_damping
                 else:
                     joint.damping = safe_revolute_dof_damping
-            if revolute_dof_damping_override is not None:
+            if damping_override is not None:
                 old_damping = joint.damping[0] if damping_is_vec else joint.damping
-                ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {revolute_dof_damping_override} (was {old_damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {damping_override} (was {old_damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
                 if damping_is_vec:
-                    joint.damping[0] = revolute_dof_damping_override
+                    joint.damping[0] = damping_override
                 else:
-                    joint.damping = revolute_dof_damping_override
+                    joint.damping = damping_override
     return spec
 
 def _apply_opt_preset_to_opt(opt, preset_name : str | None, opt_override : dict[str,Any] | None,

@@ -1296,12 +1296,12 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
             _description_, by default 1000
         safe_revolute_dof_armature : float, optional
             _description_, by default 0.01
-        revolute_dof_armature_override : _type_, optional
-            _description_, by default None
-        revolute_dof_damping_override : _type_, optional
-            _description_, by default None
-        revolute_dof_frictionloss_override : _type_, optional
-            _description_, by default None
+        revolute_dof_armature_override : float | dict | None, optional
+            Float for all hinge joints, or dict per joint (key None for the default), see resolve_dof_override. By default None
+        revolute_dof_damping_override : float | dict | None, optional
+            Float for all hinge joints, or dict per joint (key None for the default), see resolve_dof_override. By default None
+        revolute_dof_frictionloss_override : float | dict | None, optional
+            Float for all hinge joints, or dict per joint (key None for the default), see resolve_dof_override. By default None
         opt_override : dict[str,Any] | None, optional
             _description_, by default None
         render_backend : Literal[&quot;cpu&quot;, &quot;warp&quot;], optional
