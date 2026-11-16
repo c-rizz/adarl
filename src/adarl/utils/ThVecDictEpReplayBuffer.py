@@ -104,6 +104,7 @@ class VecEpisodeStorage():
         pin = self._storage_torch_device.type == "cpu" and self._use_nonblocking_adds
         def full(size : tuple[int,...], dtype : th.dtype) -> th.Tensor:
             if pin:
+                ggLog.info(f"Allocating pinned memory for buffer of size {size} and dtype {dtype} (bytes: {np.prod(size)*th.as_tensor([],dtype=dtype).element_size()/1024**3:.3f} GiB, on device {self._storage_torch_device})")
                 return registered_pinned_full(size, magic_value, dtype)
             return th.full(size, fill_value=magic_value, dtype=dtype, device=self._storage_torch_device)
         self.observations = {

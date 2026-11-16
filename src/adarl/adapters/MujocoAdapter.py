@@ -284,13 +284,27 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
 
     def _apply_revolute_dof_overrides(self):
         """Ensure revolute DOFs have nonzero armature/damping/frictionloss and apply the
-        configured overrides, matching MjxAdapter so the two backends share the same joint dynamics."""
+        configured overrides, matching MjxAdapter so the two backends share the same joint dynamics.
+        A prismatic DOF is only changed by a dict override that names its joint (see
+        apply_dof_overrides_to_spec)."""
         safe_damping = 1.0
         safe_frictionloss = 0.2
         for dof_id in range(self._mj_model.nv):
-            if self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]] != mujoco_mjtJoint.mjJNT_HINGE:
-                continue
+            joint_type = self._mj_model.jnt_type[self._mj_model.dof_jntid[dof_id]]
             joint_name = mujoco_mj_id2name(self._mj_model, mujoco_mjtObj.mjOBJ_JOINT, self._mj_model.dof_jntid[dof_id])
+            if joint_type == mujoco_mjtJoint.mjJNT_SLIDE:
+                armature_override = resolve_dof_override(self._revolute_dof_armature_override, joint_name, named_only=True)
+                frictionloss_override = resolve_dof_override(self._revolute_dof_frictionloss_override, joint_name, named_only=True)
+                damping_override = resolve_dof_override(self._revolute_dof_damping_override, joint_name, named_only=True)
+                if armature_override is not None:
+                    self._mj_model.dof_armature[dof_id] = armature_override
+                if frictionloss_override is not None:
+                    self._mj_model.dof_frictionloss[dof_id] = frictionloss_override
+                if damping_override is not None:
+                    self._mj_model.dof_damping[dof_id] = damping_override
+                continue
+            if joint_type != mujoco_mjtJoint.mjJNT_HINGE:
+                continue
             armature_override = resolve_dof_override(self._revolute_dof_armature_override, joint_name)
             frictionloss_override = resolve_dof_override(self._revolute_dof_frictionloss_override, joint_name)
             damping_override = resolve_dof_override(self._revolute_dof_damping_override, joint_name)

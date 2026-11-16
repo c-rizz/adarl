@@ -598,7 +598,8 @@ def aggregate_models(models : list[ModelSpawnDef],
     revolute_dof_armature_override : float | dict | None
         If not None, force this armature on hinge-joint DOFs (see apply_dof_overrides_to_spec). Either a
         float for all of them, or a dict giving it per joint (see resolve_dof_override), with the key
-        None (or "default") for the joints not listed.
+        None (or "default") for the joints not listed. A prismatic joint named in the dict gets its
+        value too (in kg), the other prismatic joints are left as they are.
     revolute_dof_damping_override : float | dict | None
         Same as revolute_dof_armature_override, for the damping.
     revolute_dof_frictionloss_override : float | dict | None
@@ -950,21 +951,24 @@ def compute_collision_masks(mj_model : mjutils._MjModel,
     return geom_contype, geom_conaffinity, body_contype, body_conaffinity, linkgroup_to_id
 
 
-def resolve_dof_override(override : DofOverride, joint_name : str) -> float | None:
+def resolve_dof_override(override : DofOverride, joint_name : str, named_only : bool = False) -> float | None:
     """Get the value of a dof property override for a joint.
 
     `override` is either None/a float (applied to all the joints) or a dict. In a dict a joint is
     looked up by its full merged name ("model#joint"), by (model, joint), or by the bare joint name.
     Joints that match none of these get the value under the key None (or "default"), or no
     override if there is no such key. A value of None means no override for that joint.
+    With named_only only a dict entry that names the joint counts: a float override and the
+    None/"default" key give no override.
     """
     if override is None or isinstance(override, (int, float)):
-        return override
+        return None if named_only else override
     model_name, sep, bare_name = joint_name.partition(model_element_separator)
     keys = [joint_name]
     if sep != "":
         keys += [(model_name, bare_name), bare_name]
-    keys += [None, "default"]
+    if not named_only:
+        keys += [None, "default"]
     for k in keys:
         if k in override:
             return override[k]
@@ -1017,6 +1021,10 @@ def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
 
     A hinge joint has exactly one DOF, so the spec joint's scalar armature/damping/frictionloss
     fields correspond directly to the per-DOF fields of the compiled model.
+
+    A slide (prismatic) joint is only changed by a dict override that names it, with values in its
+    own units (kg, Ns/m, N): the values for all the joints, the None/"default" key and the safe
+    fallbacks are meant for hinge joints and are not applied to it.
     """
     for joint in spec.joints:
         if joint.type == mjutils._mjtJoint.mjJNT_HINGE:
@@ -1050,6 +1058,24 @@ def apply_dof_overrides_to_spec(spec : mjutils._MjSpec,
             if damping_override is not None:
                 old_damping = joint.damping[0] if damping_is_vec else joint.damping
                 ggLog.info(f"Overriding revolute joint '{joint.name}' damping to {damping_override} (was {old_damping}), due to MjxAdapter constructor argument 'revolute_dof_damping_override'.")
+                if damping_is_vec:
+                    joint.damping[0] = damping_override
+                else:
+                    joint.damping = damping_override
+        elif joint.type == mjutils._mjtJoint.mjJNT_SLIDE:
+            armature_override = resolve_dof_override(revolute_dof_armature_override, joint.name, named_only=True)
+            damping_override = resolve_dof_override(revolute_dof_damping_override, joint.name, named_only=True)
+            frictionloss_override = resolve_dof_override(revolute_dof_frictionloss_override, joint.name, named_only=True)
+            if armature_override is not None:
+                ggLog.info(f"Overriding prismatic joint '{joint.name}' armature to {armature_override} (was {joint.armature}), as it is named in 'revolute_dof_armature_override'.")
+                joint.armature = armature_override
+            if frictionloss_override is not None:
+                ggLog.info(f"Overriding prismatic joint '{joint.name}' frictionloss to {frictionloss_override} (was {joint.frictionloss}), as it is named in 'revolute_dof_frictionloss_override'.")
+                joint.frictionloss = frictionloss_override
+            if damping_override is not None:
+                damping_is_vec = getattr(joint.damping, "ndim", 0) > 0
+                old_damping = joint.damping[0] if damping_is_vec else joint.damping
+                ggLog.info(f"Overriding prismatic joint '{joint.name}' damping to {damping_override} (was {old_damping}), as it is named in 'revolute_dof_damping_override'.")
                 if damping_is_vec:
                     joint.damping[0] = damping_override
                 else:
