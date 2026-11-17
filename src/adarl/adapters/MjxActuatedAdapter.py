@@ -282,9 +282,12 @@ class MjxActuatedAdapter(MjxAdapter, BaseVecJointImpedanceAdapter):
         
         # Add position actuators with zero gains for hinge/slide joints without actuators
         added = 0
+        # Compared as plain ints: membership of a numpy scalar in a tuple of mjtJoint values is always False with
+        # recent MuJoCo versions (3.17), which would add no actuator at all
+        hinge_slide = (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE))
         for jid in range(mj_model.njnt):
-            jtype = mj_model.jnt_type[jid]
-            if jtype in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE) and jid not in actuated_jids:
+            jtype = int(mj_model.jnt_type[jid])
+            if jtype in hinge_slide and jid not in actuated_jids:
                 jname = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_JOINT, jid)
                 act = big_speck.add_actuator()
                 act.name = f"auto_pos_{jname}"

@@ -698,7 +698,7 @@ def launchRun(runFunction,
             # run_results = p.starmap(lambda f,kwargs: f(**kwargs), [([],kwargs) for kwargs in argss])
             run_results = p.starmap(runFunction_wrapper_arg_kwargs, [([],kwargs) for kwargs in argss])
 
-    if any([r<0 for r in run_results]):
+    if any([r is not None and r<0 for r in run_results]):
         default_session.set_run_status("crashed")
         ggLog.error(f"Some runs failed, check the logs for details")
     ggLog.info(f"All runs finished. Results:\n"+"\n".join([str(run_result) for run_result in run_results]))
