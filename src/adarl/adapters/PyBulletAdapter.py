@@ -741,7 +741,8 @@ class PyBulletAdapter(BaseSimulationAdapter, BaseJointEffortAdapter, BaseJointPo
 
 
 
-    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose : bool = False) -> Dict[Tuple[str,str],LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose : bool = False, reference_frame : str = "world") -> Dict[Tuple[str,str],LinkState]:
+        self._require_world_frame(reference_frame)
         # ggLog.info(f"Getting link states for {requestedLinks}")
         #For each bodyId I submit a request for joint state
         requests = {} #for each body id we will have a list of joints

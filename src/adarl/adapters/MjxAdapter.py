@@ -3404,7 +3404,8 @@ class MjxAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return [self._monitored_joints[idx] for idx in joint_ids.tolist()]
 
     @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | th.Tensor | None = None, use_com_pose : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | th.Tensor | None = None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
+        self._require_world_frame(reference_frame)
         if use_com_pose:
             raise ValueError(f"getLinksState: use_com_pose=True is not supported.")
         

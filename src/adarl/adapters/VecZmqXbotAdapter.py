@@ -85,16 +85,26 @@ class VecZmqXbotAdapter(BaseVecJointImpedanceAdapter, BaseVecJointPositionAdapte
         raise NotImplementedError()
     
     @override
-    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_pose : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[tuple[str,str]] | None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
         if requestedLinks is None:
             requestedLinks = self.sub_adapter()._monitored_links
-        ls = self._sub_adapter.getLinksState(requestedLinks, use_com_pose=use_com_pose)
+        ls = self._sub_adapter.getLinksState(requestedLinks, use_com_pose=use_com_pose, reference_frame=reference_frame)
         r = th.stack([th.cat([ ls[k].pose.position,
                                 ls[k].pose.orientation_xyzw,
                                 ls[k].pos_velocity_xyz,
                                 ls[k].ang_velocity_xyz])
                         for k in requestedLinks]).unsqueeze(0).to(self._out_th_device)
         return r
+
+    @override
+    def getLinksPose(self, requestedLinks : Sequence[tuple[str,str]] | None = None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
+        if requestedLinks is None:
+            requestedLinks = self.sub_adapter()._monitored_links
+        if len(requestedLinks) == 0:
+            return th.empty((1, 0, 7), device=self._out_th_device, dtype=self._out_th_float_dtype)
+        lp = self._sub_adapter.getLinksPose(requestedLinks, use_com_pose=use_com_pose, reference_frame=reference_frame)
+        r = th.stack([th.cat([lp[k].position, lp[k].orientation_xyzw]) for k in requestedLinks]).unsqueeze(0)
+        return r.to(device=self._out_th_device, dtype=self._out_th_float_dtype)
 
     @override
     def get_link_gravity_direction(self, requestedLinks : Sequence[tuple[str,str]] | None) -> th.Tensor:

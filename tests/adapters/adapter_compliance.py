@@ -115,6 +115,22 @@ def check_state_shapes(ctx: ComplianceContext):
         ctx.skip("shapes.extended_joints_state", "not implemented by this adapter")
 
 
+def check_links_pose(ctx: ComplianceContext):
+    ls = ctx.adapter.getLinksState([BAR_LINK, BALL_LINK])
+    lp = ctx.adapter.getLinksPose([BAR_LINK, BALL_LINK])
+    ctx.check("links_pose.shape", tuple(lp.shape) == (ctx.vec, 2, 7), f"got {tuple(lp.shape)}")
+    ctx.check("links_pose.matches_state", bool(th.equal(lp, ls[..., :7])),
+              "getLinksPose differs from getLinksState[..., :7]")
+    world = ctx.adapter.getLinksPose([BAR_LINK, BALL_LINK], reference_frame="world")
+    ctx.check("links_pose.world_frame", bool(th.equal(world, lp)), "reference_frame='world' changed the poses")
+    for name, call in (("links_pose", ctx.adapter.getLinksPose), ("links_state", ctx.adapter.getLinksState)):
+        try:
+            call([BAR_LINK], reference_frame="not_a_frame")
+            ctx.check(f"{name}.unsupported_frame_raises", False, "no error for reference_frame='not_a_frame'")
+        except ValueError:
+            ctx.check(f"{name}.unsupported_frame_raises", True)
+
+
 def check_set_joint_state(ctx: ComplianceContext):
     _set_pole_state(ctx, 0.3)
     pos = _pole_pos(ctx)
@@ -369,6 +385,7 @@ def run_vec_adapter_compliance_test(adapter: BaseVecSimulationAdapter) -> Compli
 
     check_introspection(ctx)
     check_state_shapes(ctx)
+    check_links_pose(ctx)
     check_set_joint_state(ctx)
     check_set_link_state_and_gravity(ctx)
     check_time(ctx)

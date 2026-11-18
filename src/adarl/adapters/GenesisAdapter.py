@@ -730,7 +730,8 @@ class GenesisAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         return out
 
     @override
-    def getLinksState(self, requestedLinks=None, use_com_pose: bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks=None, use_com_pose: bool = False, reference_frame: str = "world") -> th.Tensor:
+        self._require_world_frame(reference_frame)
         ids = self._monitored_lids if requestedLinks is None else self._to_link_ids(requestedLinks)
         return self._links_state_from_ids(ids, use_com_pose)
 

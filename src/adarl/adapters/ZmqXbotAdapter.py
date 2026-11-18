@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Tuple, Union, Optional, Sequence, Mapping, Literal
 
 import adarl.utils.dbg.ggLog as ggLog
-from adarl.utils.utils import JointState, LinkState, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate, expand_default_dict, thtens
+from adarl.utils.utils import JointState, LinkState, Pose, RequestFailError, build_1D_vramp_trajectory, MoveFailError, quat_mul_xyzw, th_quat_rotate, th_quat_conj, expand_default_dict, thtens
 from adarl.utils.robot_helpers import Robot
 import numpy as np
 
@@ -17,6 +17,7 @@ from adarl.adapters.BaseJointPositionAdapter import BaseJointPositionAdapter
 from adarl.adapters.StandaloneRealAdapter import StandaloneRealAdapter
 from adarl.adapters.BaseVecAdapter import Renderings
 from adarl.adapters.camzmq_cameras import CamZmqCameras
+from adarl.adapters.simpleposes_links import SimplePosesLinks
 
 import pyxbot
 from pyxbot.zmq_client import XbotZmqClient, JointsCommand
@@ -64,7 +65,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                         robot_urdf : str | None = None,
                         camzmq_url : str | None = None,
                         camzmq_camera_names : dict[str, str] | None = None,
-                        max_frame_age_sec : float = 0.25):
+                        max_frame_age_sec : float = 0.25,
+                        simpleposes_url : str | None = None,
+                        simpleposes_link_names : dict[str, str] | None = None,
+                        max_pose_age_sec : float = 0.25):
         """
         Parameters
         ----------
@@ -76,6 +80,14 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
             is published with get_camera_info().
         max_frame_age_sec : float
             get_camera_images() raises if a camera's latest frame is older than this.
+        simpleposes_url : str | None
+            Endpoint of a simpleposes publisher (e.g. "tcp://robot-pc:5800"), to get link poses through
+            getLinksPose(). None for no link poses.
+        simpleposes_link_names : dict[str, str] | None
+            Maps the link names the environment requests (the link part of its (model, link) names) to the names
+            they are published with.
+        max_pose_age_sec : float
+            getLinksPose() raises if the latest link poses arrived longer ago than this.
         """
         super().__init__(stepLength_sec, walltime_factor=walltime_factor)
         self._is_floating_base = is_floating_base
@@ -129,6 +141,10 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         self._camzmq_camera_names = camzmq_camera_names
         self._max_frame_age_sec = max_frame_age_sec
         self._cameras : CamZmqCameras | None = None
+        self._simpleposes_url = simpleposes_url
+        self._simpleposes_link_names = simpleposes_link_names
+        self._max_pose_age_sec = max_pose_age_sec
+        self._links : SimplePosesLinks | None = None
 
         self._xbot_zmq_client = XbotZmqClient(  remote_ip = remote_ip,
                                                 protocol = comm_protocol,
@@ -180,12 +196,19 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
                                           env_time=self.getEnvTimeFromStartup,
                                           camera_names=self._camzmq_camera_names,
                                           max_frame_age_sec=self._max_frame_age_sec)
+        if self._simpleposes_url is not None and self._links is None:
+            self._links = SimplePosesLinks(self._simpleposes_url, out_th_device=self._torch_device,
+                                           link_names=self._simpleposes_link_names,
+                                           max_pose_age_sec=self._max_pose_age_sec)
         self._started = True
 
     def destroy_scenario(self, **kwargs):
         if self._cameras is not None:
             self._cameras.close()
             self._cameras = None
+        if self._links is not None:
+            self._links.close()
+            self._links = None
         return super().destroy_scenario(**kwargs)
 
     @staticmethod
@@ -288,8 +311,20 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         return th.as_tensor(joints_pve).view(size=(len(requestedJoints),3)).to(device=self._torch_device, dtype=th.float32)
 
     @override
-    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose = False) -> Dict[Tuple[str,str],LinkState]:
-        raise RuntimeError("getLinksState not yet implemented for ZmqXbotAdapter") # Could at least be implemented for robot links, relative to the robot
+    def getLinksState(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose = False, reference_frame : str = "world") -> Dict[Tuple[str,str],LinkState]:
+        raise RuntimeError("getLinksState not yet implemented for ZmqXbotAdapter: link velocities are not available. "
+                           "getLinksPose() gives link poses, with simpleposes_url") # Could at least be implemented for robot links, relative to the robot
+
+    @override
+    def getLinksPose(self, requestedLinks : Sequence[Tuple[str,str]], use_com_pose : bool = False, reference_frame : str = "world") -> Dict[Tuple[str,str],Pose]:
+        """Link poses received with simpleposes, each of which must be published in reference_frame.
+        Needs simpleposes_url and startup()."""
+        if use_com_pose:
+            raise ValueError("ZmqXbotAdapter.getLinksPose: use_com_pose=True is not supported, only link frame poses are published")
+        if self._links is None:
+            raise RuntimeError("ZmqXbotAdapter has no link poses: construct it with simpleposes_url, and call startup()")
+        poses = self._links.get_links_pose(requestedLinks, reference_frame)
+        return {link : Pose(position=poses[i, :3], orientation_xyzw=poses[i, 3:]) for i, link in enumerate(requestedLinks)}
 
     @override
     def setJointsImpedanceCommand(self, joint_impedances_pvesd : Mapping[Tuple[str,str],Tuple[float,float,float,float,float]] | th.Tensor,
@@ -628,7 +663,9 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
 
         quat_imu2world = th.as_tensor(self._xbot_zmq_client.getImuOrientation([imu_name])[0])
         quats_link2world = quat_mul_xyzw(quat_imu2world.expand(linksnum, 4), quats_link2imu)
-        gdirs = th_quat_rotate(th.as_tensor([0,0,-1.0]).expand(linksnum, 3), quats_link2world.to(dtype=th.float32))
+        # Gravity points down in the world frame: it is brought into each link's frame by the inverse of the
+        # link's orientation in the world, as in BaseVecAdapter.get_link_gravity_direction
+        gdirs = th_quat_rotate(th.as_tensor([0,0,-1.0]).expand(linksnum, 3), th_quat_conj(quats_link2world.to(dtype=th.float32)))
         return gdirs
 
     @override
@@ -640,7 +677,8 @@ class ZmqXbotAdapter(StandaloneRealAdapter, BaseJointImpedanceAdapter, BaseJoint
         quats_link2imu = th.stack([th.as_tensor(poses_link2imu[ln][3:7]) for ln in requested_linknames])
 
         imulocal_angvel = th.as_tensor(self._xbot_zmq_client.getImuAngularVelocity([imu_name])[0])
-        linklocal_angvel = th_quat_rotate(imulocal_angvel.expand(linksnum, 3).to(dtype=th.float32), quats_link2imu.to(dtype=th.float32))
+        # From the imu's frame to each link's: the inverse of the link's orientation in the imu frame
+        linklocal_angvel = th_quat_rotate(imulocal_angvel.expand(linksnum, 3).to(dtype=th.float32), th_quat_conj(quats_link2imu.to(dtype=th.float32)))
         return linklocal_angvel
 
 

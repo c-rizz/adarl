@@ -729,7 +729,8 @@ class MujocoAdapter(BaseVecSimulationAdapter, BaseVecJointEffortAdapter):
         self._apply_torques_cmd(ids)
 
     @override
-    def getLinksState(self, requestedLinks: Sequence[tuple[str, str]] | np.ndarray | None = None, use_com_pose: bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks: Sequence[tuple[str, str]] | np.ndarray | None = None, use_com_pose: bool = False, reference_frame: str = "world") -> th.Tensor:
+        self._require_world_frame(reference_frame)
         if requestedLinks is None:
             requestedLinks = self._monitored_links
         if len(requestedLinks) == 0:

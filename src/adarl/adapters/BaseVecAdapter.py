@@ -282,7 +282,7 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
         """Get the state of the requested links.
 
         Parameters
@@ -291,6 +291,9 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
             Names of the link to get the state of
         use_com_pose : bool
             Defines if the link pose should be the one of the frame pose or the center of mass pose. linear/angular velocity are always in the com frame
+        reference_frame : str
+            Frame the state is expressed in. Every adapter supports "world"; adapters raise ValueError for frames
+            they cannot report in.
 
         Returns
         -------
@@ -317,8 +320,21 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
         
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[LinkName] | None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
         raise NotImplementedError()
+
+    def getLinksPose(self, requestedLinks : Sequence[LinkName] | None = None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
+        """Get the pose of the requested links (None: the monitored links), in reference_frame (see getLinksState).
+
+        The default takes it from getLinksState(). Adapters that know link poses but not link velocities
+        implement this, and leave getLinksState() raising.
+
+        Returns
+        -------
+        th.Tensor
+            Tensor of shape (vec_size, len(requestedLinks), 7): position_xyz, orientation_xyzw of each link.
+        """
+        return self.getLinksState(requestedLinks, use_com_pose=use_com_pose, reference_frame=reference_frame)[..., :7]
     
     def get_local_link_linear_acceleration(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
         """Get the acceleration of the requested links.
@@ -338,8 +354,13 @@ class BaseVecAdapter(BaseAdapter, Generic[LinkIdSequence, JointIdSequence]):
 
 
     def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName] | None) -> th.Tensor:
-        ls = self.getLinksState(requestedLinks=requestedLinks)
-        return th_quat_rotate(th.as_tensor([0., 0., -1.], device=ls.device).expand(self._vec_size,3), th_quat_conj(ls[:3:7]))
+        """Direction of gravity in the frame of each of the requested links, shape (vec_size, len(requestedLinks), 3).
+        It is [0, 0, -1] for a level link."""
+        ls = self.getLinksState(requestedLinks=requestedLinks) # (vec_size, links, 13)
+        link_quats = ls[..., 3:7]
+        # Gravity points down in the world frame: the inverse of each link's orientation brings it in the link's frame
+        gravity_world = th.as_tensor([0., 0., -1.], device=ls.device, dtype=ls.dtype).expand(link_quats.shape[:-1]+(3,))
+        return th_quat_rotate(gravity_world, th_quat_conj(link_quats))
     
     
     def get_links_ids(self, link_names : Sequence[tuple[str,str]]) -> LinkIdSequence:

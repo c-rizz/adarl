@@ -7,7 +7,7 @@ from typing_extensions import deprecated
 from abc import ABC, abstractmethod
 from threading import Thread, RLock
 import torch as th
-from adarl.utils.utils import JointState, LinkState, th_quat_rotate
+from adarl.utils.utils import JointState, LinkState, Pose, th_quat_rotate
 from typing import overload, Sequence
 
 JointName = Tuple[str,str]
@@ -177,13 +177,16 @@ class BaseAdapter(ABC):
 
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False) -> Dict[LinkName,LinkState]:
+    def getLinksState(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False, reference_frame : str = "world") -> Dict[LinkName,LinkState]:
         """Get the state of the requested links.
 
         Parameters
         ----------
         linkNames : List[str]
             Names of the link to get the state of
+        reference_frame : str
+            Frame the state is expressed in. Every adapter supports "world"; adapters raise ValueError for frames
+            they cannot report in.
 
         Returns
         -------
@@ -194,7 +197,7 @@ class BaseAdapter(ABC):
         ...
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : None) -> th.Tensor:
+    def getLinksState(self, requestedLinks : None, use_com_pose : bool = False, reference_frame : str = "world") -> th.Tensor:
         """Get the state of the monitored links.
 
         Returns
@@ -206,8 +209,28 @@ class BaseAdapter(ABC):
         ...
     @abstractmethod
     @overload
-    def getLinksState(self, requestedLinks : Sequence[LinkName] | None) -> Dict[LinkName,LinkState] | th.Tensor:
+    def getLinksState(self, requestedLinks : Sequence[LinkName] | None, use_com_pose : bool = False, reference_frame : str = "world") -> Dict[LinkName,LinkState] | th.Tensor:
         raise NotImplementedError()
+
+    def getLinksPose(self, requestedLinks : Sequence[LinkName], use_com_pose : bool = False, reference_frame : str = "world") -> Dict[LinkName,Pose]:
+        """Get the pose of the requested links, in reference_frame (see getLinksState).
+
+        The default takes it from getLinksState(). Adapters that know link poses but not link velocities
+        implement this, and leave getLinksState() raising.
+
+        Returns
+        -------
+        Dict[LinkName,Pose]
+            Dictionary, indexed by link name, containing the pose of each link
+        """
+        links_state = self.getLinksState(requestedLinks, use_com_pose=use_com_pose, reference_frame=reference_frame)
+        return {link : state.pose for link, state in links_state.items()}
+
+    def _require_world_frame(self, reference_frame : str):
+        """For adapters that report link states and poses in the world frame only."""
+        if reference_frame != "world":
+            raise ValueError(f"{type(self).__name__} reports links in the 'world' frame only, "
+                             f"not in {reference_frame!r}")
 
 
     def get_link_gravity_direction(self, requestedLinks : Sequence[LinkName]) -> th.Tensor:
